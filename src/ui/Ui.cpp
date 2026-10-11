@@ -1,0 +1,1405 @@
+#include "Ui.h"
+
+#include <Arduino.h>
+#include <LV_Helper.h>
+#include <LilyGo_AMOLED.h>
+#include <lvgl.h>
+
+#include "App.h"
+#include "core/SettingsUtil.h"
+#include "Log.h"
+
+using bbw::GrindAction;
+using bbw::State;
+
+// Screen language borrowed from the Yield Target Pro guide (status line, one
+// dominant value, detail line), with its knob replaced by touch keys down the
+// right-hand side. The brew screen adds a progress ring around the weight.
+
+namespace ui {
+
+namespace {
+
+LilyGo_Class amoled;
+
+constexpr uint32_t COLOR_BG = 0x000000;  // true black: AMOLED pixels off
+constexpr uint32_t COLOR_TEXT = 0xFFFFFF;
+constexpr uint32_t COLOR_DIM = 0x8A8A8A;
+constexpr uint32_t COLOR_OK = 0x2ECC71;
+constexpr uint32_t COLOR_BAD = 0xE74C3C;
+constexpr uint32_t COLOR_SLEEP = 0x777777;
+constexpr uint32_t COLOR_ACCENT = 0xE67E22;
+constexpr uint32_t COLOR_PANEL = 0x1C1C1C;
+constexpr uint32_t COLOR_TRACK = 0x2A2A2A;
+
+// Landscape with the USB-C connector on the left. On the 1.91" panel
+// rotations 0 and 2 are landscape; 0 puts the connector, and the touch key
+// printed beside it, on the right.
+constexpr uint8_t ROTATION_USB_LEFT = 2;
+
+constexpr uint8_t BRIGHT_ACTIVE = 220;
+constexpr uint8_t BRIGHT_IDLE = 40;
+constexpr uint32_t IDLE_DIM_MS = 180000;
+// Standby follows the scale: this long after the scale switches off, the
+// panel goes dark and the CPU slows down. Bluetooth keeps listening and the
+// web page stays up; the scale's power button brings everything back.
+constexpr uint32_t SCALE_OFF_SLEEP_MS = 30000;
+constexpr uint32_t CPU_ACTIVE_MHZ = 240;
+constexpr uint32_t CPU_STANDBY_MHZ = 80;  // lowest clock the radios accept
+
+// Home screen recipe card: full-width lines and two columns beneath them.
+constexpr int CARD_BOX_W = 404;
+constexpr int CARD_PAD = 12;
+constexpr int CARD_W = CARD_BOX_W - 2 * CARD_PAD;
+constexpr int COL_GAP = 12;
+constexpr int COL_W = (CARD_W - COL_GAP) / 2;
+
+// Left 2/3 of the screen carries the text, the right 1/3 the keys.
+constexpr int LEFT_W = 330;
+constexpr int KEY_X = -12;
+constexpr int KEY_W = 180;
+
+enum class Panel : uint8_t { HOME, BREW, RESULT, FAULT, SETTINGS, RECIPES, EDIT };
+
+lv_obj_t *panels[7];
+constexpr int EDIT_FIELDS = 5;
+Panel shown = Panel::HOME;
+bool settingsOpen = false;
+bool recipesOpen = false;
+bool editOpen = false;
+int editField = 0;
+bbw::Recipe editRecipe;         // working copy on the edit panel
+// BOOT asks before it stops a running shot: the question stays up this long.
+constexpr uint32_t STOP_CONFIRM_MS = 5000;
+uint32_t stopConfirmUntilMs = 0;
+uint32_t recipesOpenedAtMs = 0;
+// The capacitive key on the glass. The touch chip reports it on every poll
+// while a finger is on it; a press is the first report after a quiet gap.
+volatile uint32_t touchKeySeenMs = 0;
+volatile bool touchKeyPressed = false;
+bool dimmed = false;
+bool screenOff = false;
+bool started = false;
+uint32_t scaleLostAtMs = 0;
+char wifiText[128] = "Wi-Fi starting";
+
+// Home
+lv_obj_t *homeStatus, *homeScaleBattery, *homeBotBattery, *homeScaleDot, *homeBotDot, *homeCard, *homeHint, *homeEditLabel;
+lv_obj_t *homeName, *homeYield, *homeGrind, *homeAdvice, *homePre;
+lv_obj_t *homeCoffee, *homeRegion, *homeVarietal, *homeRoast, *homeFoot;
+lv_obj_t *recipeBar;
+lv_obj_t *editFieldBtn[EDIT_FIELDS], *editTitle, *editValue, *editHint;
+lv_obj_t *recipeList;
+// Brew
+lv_obj_t *brewArc, *brewWeight, *brewUnit, *brewTime, *brewTarget, *brewFlow, *brewPhase;
+lv_obj_t *brewStopLabel;
+// Result
+lv_obj_t *resTop, *resWeight, *resLine1, *resLine2, *resGrind, *resGrindSub;
+lv_obj_t *resReview, *resReadyBtn, *resIgnoreBtn, *resCountBtn;
+uint32_t resShotId = 0;  // the shot the two ruling keys act on
+// Fault
+lv_obj_t *faultTitle, *faultText, *faultPressBtn;
+// Settings
+lv_obj_t *setLearnLabel, *setBotLabel, *setScaleLabel, *setWifiLabel;
+
+void setText(lv_obj_t *label, const char *text) {
+  if (strcmp(lv_label_get_text(label), text) != 0) lv_label_set_text(label, text);
+}
+
+void setTextF(lv_obj_t *label, const char *fmt, ...) {
+  char buffer[96];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buffer, sizeof(buffer), fmt, args);
+  va_end(args);
+  setText(label, buffer);
+}
+
+void setColor(lv_obj_t *label, uint32_t color) {
+  lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
+}
+
+lv_obj_t *makeLabel(lv_obj_t *parent, const lv_font_t *font, uint32_t color,
+                    lv_align_t align, int x, int y, const char *text) {
+  lv_obj_t *label = lv_label_create(parent);
+  lv_obj_set_style_text_font(label, font, 0);
+  lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
+  lv_label_set_text(label, text);
+  lv_obj_align(label, align, x, y);
+  return label;
+}
+
+// A centred line of fixed width at (x, y).
+lv_obj_t *makeLine(lv_obj_t *parent, const lv_font_t *font, uint32_t color, int y,
+                   int x = 8, int width = LEFT_W) {
+  lv_obj_t *label = lv_label_create(parent);
+  lv_obj_set_style_text_font(label, font, 0);
+  lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
+  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(label, width);
+  lv_label_set_text(label, "");
+  lv_obj_align(label, LV_ALIGN_TOP_LEFT, x, y);
+  return label;
+}
+
+lv_obj_t *makeButton(lv_obj_t *parent, const char *text, const lv_font_t *font,
+                     uint32_t color, int w, int h, lv_align_t align, int x, int y,
+                     lv_event_cb_t cb, lv_obj_t **labelOut = nullptr) {
+  lv_obj_t *button = lv_btn_create(parent);
+  lv_obj_set_size(button, w, h);
+  lv_obj_align(button, align, x, y);
+  lv_obj_set_style_bg_color(button, lv_color_hex(color), 0);
+  lv_obj_set_style_radius(button, 14, 0);
+  lv_obj_set_style_shadow_width(button, 0, 0);
+  lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *label = lv_label_create(button);
+  lv_obj_set_style_text_font(label, font, 0);
+  lv_obj_set_style_text_color(label, lv_color_hex(COLOR_TEXT), 0);
+  lv_label_set_text(label, text);
+  lv_obj_center(label);
+  if (labelOut) *labelOut = label;
+  return button;
+}
+
+// A key that acts on a tap and repeats while held. CLICKED also fires when a
+// long press is released, so these keys listen to the two events below only.
+lv_obj_t *makeRepeatKey(lv_obj_t *parent, const char *text, int w, int h, lv_align_t align,
+                        int x, int y, lv_event_cb_t cb) {
+  lv_obj_t *key = makeButton(parent, text, &lv_font_montserrat_24, COLOR_PANEL, w, h, align, x, y,
+                             [](lv_event_t *) {});
+  lv_obj_add_event_cb(key, cb, LV_EVENT_SHORT_CLICKED, nullptr);
+  lv_obj_add_event_cb(key, cb, LV_EVENT_LONG_PRESSED_REPEAT, nullptr);
+  return key;
+}
+
+// A left-aligned line of fixed width (a column entry).
+lv_obj_t *makeLeft(lv_obj_t *parent, uint32_t color, int x, int y, int width) {
+  lv_obj_t *label = makeLine(parent, &lv_font_montserrat_16, color, y, x, width);
+  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_LEFT, 0);
+  return label;
+}
+
+// Sets the text in the largest of the given fonts that fits the width, so
+// nothing on the card is ever cut off with "...".
+void fitText(lv_obj_t *label, const char *text, int width, int count, ...) {
+  va_list fonts;
+  va_start(fonts, count);
+  const lv_font_t *chosen = nullptr;
+  for (int i = 0; i < count; ++i) {
+    chosen = va_arg(fonts, const lv_font_t *);
+    if (lv_txt_get_width(text, strlen(text), chosen, 0, LV_TEXT_FLAG_NONE) <= width) break;
+  }
+  va_end(fonts);
+  if (lv_obj_get_style_text_font(label, LV_PART_MAIN) != chosen) {
+    lv_obj_set_style_text_font(label, chosen, 0);
+  }
+  setText(label, text);
+}
+
+// A full-width line on the result screen: 22 pt if it fits, smaller if not.
+void fitLine(lv_obj_t *label, const char *text) {
+  fitText(label, text, LEFT_W, 4, &lv_font_montserrat_22, &lv_font_montserrat_20,
+          &lv_font_montserrat_18, &lv_font_montserrat_16);
+}
+
+// The same for the result screen's detail lines.
+void fitDetail(lv_obj_t *label, const char *fmt, ...) {
+  char buffer[96];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buffer, sizeof(buffer), fmt, args);
+  va_end(args);
+  fitText(label, buffer, LEFT_W, 3, &lv_font_montserrat_18, &lv_font_montserrat_16,
+          &lv_font_montserrat_14);
+}
+
+void fitSmall(lv_obj_t *label, const char *text) {
+  fitText(label, text, COL_W, 3, &lv_font_montserrat_16, &lv_font_montserrat_14,
+          &lv_font_montserrat_12);
+}
+
+// A status lamp.
+lv_obj_t *makeDot(lv_obj_t *parent, int x, int y) {
+  lv_obj_t *dot = lv_obj_create(parent);
+  lv_obj_set_size(dot, 12, 12);
+  lv_obj_align(dot, LV_ALIGN_TOP_LEFT, x, y);
+  lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_border_width(dot, 0, 0);
+  lv_obj_set_style_bg_color(dot, lv_color_hex(COLOR_BAD), 0);
+  lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+  return dot;
+}
+
+void setDot(lv_obj_t *dot, uint32_t color) {
+  lv_obj_set_style_bg_color(dot, lv_color_hex(color), 0);
+}
+
+lv_obj_t *makePanel() {
+  lv_obj_t *panel = lv_obj_create(lv_scr_act());
+  lv_obj_set_size(panel, lv_pct(100), lv_pct(100));
+  lv_obj_set_style_bg_color(panel, lv_color_hex(COLOR_BG), 0);
+  lv_obj_set_style_border_width(panel, 0, 0);
+  lv_obj_set_style_radius(panel, 0, 0);
+  lv_obj_set_style_pad_all(panel, 0, 0);
+  lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+  return panel;
+}
+
+void show(Panel panel) {
+  if (panel == shown && !lv_obj_has_flag(panels[static_cast<int>(panel)], LV_OBJ_FLAG_HIDDEN)) {
+    return;
+  }
+  for (lv_obj_t *p : panels) lv_obj_add_flag(p, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(panels[static_cast<int>(panel)], LV_OBJ_FLAG_HIDDEN);
+  shown = panel;
+  wake();
+}
+
+bool repeating(lv_event_t *e) { return lv_event_get_code(e) == LV_EVENT_LONG_PRESSED_REPEAT; }
+
+// ------------------------------------------------------------- callbacks --
+
+void onStop(lv_event_t *) {
+  stopConfirmUntilMs = 0;
+  app::stop();
+}
+void onTare(lv_event_t *) { app::tare(); }
+void onAck(lv_event_t *) { app::acknowledge(); }
+void onManualPress(lv_event_t *) { app::manualPress(); }
+// Recipe quick edit. Works on a copy; SAVE writes it back.
+void onOpenEdit(lv_event_t *) {
+  editRecipe = app::activeRecipe();
+  editField = 0;
+  editOpen = true;
+}
+void onEditField(lv_event_t *e) {
+  editField = static_cast<int>(reinterpret_cast<intptr_t>(lv_obj_get_user_data(lv_event_get_target(e))));
+}
+void editStep(int direction, bool held) {
+  bbw::Recipe &r = editRecipe;
+  switch (editField) {
+    case 0:
+      if (r.useRatio) r.ratio += direction * 0.1f;
+      else r.targetWeightG += direction * (held ? 0.1f : 0.5f);
+      break;
+    case 1: r.doseG += direction * (held ? 0.5f : 0.1f); break;
+    case 2: {
+      int um = r.grindUm ? r.grindUm : 250;  // somewhere to start from on first use
+      um += direction * (held ? 10 : 1);
+      r.grindUm = static_cast<uint16_t>(um < 1 ? 1 : (um > 2000 ? 2000 : um));
+      break;
+    }
+    case 3: r.targetTimeS += direction * (held ? 1.0f : 0.5f); break;
+    default:
+      // Minus at the shortest hold goes back to the machine's own pre-infusion.
+      if (r.preinfusion != bbw::Preinfusion::HOLD) {
+        if (direction > 0) {
+          r.preinfusion = bbw::Preinfusion::HOLD;
+          r.preinfusionHoldMs = 500;
+        }
+      } else {
+        const int ms = static_cast<int>(r.preinfusionHoldMs) + direction * (held ? 500 : 100);
+        if (ms < 300) r.preinfusion = bbw::Preinfusion::MACHINE;
+        else r.preinfusionHoldMs = static_cast<uint16_t>(ms > bbw::MAX_PREINFUSION_HOLD_MS
+                                                              ? bbw::MAX_PREINFUSION_HOLD_MS : ms);
+      }
+      break;
+  }
+  bbw::sanitizeRecipe(r);
+}
+void onEditMinus(lv_event_t *e) { editStep(-1, repeating(e)); }
+void onEditPlus(lv_event_t *e) { editStep(+1, repeating(e)); }
+void onEditSave(lv_event_t *) {
+  app::applyPresetEdit(app::activePreset(), editRecipe);
+  editOpen = false;
+}
+void onEditCancel(lv_event_t *) { editOpen = false; }
+void onOpenRecipes(lv_event_t *) {
+  recipesOpenedAtMs = millis();
+  recipesOpen = true;
+}
+void onCloseRecipes(lv_event_t *) { recipesOpen = false; }
+// The bar and the list move each other. The bar's top is scroll position 0.
+void onRecipeBarMoved(lv_event_t *) {
+  lv_obj_scroll_to_y(recipeList, lv_slider_get_max_value(recipeBar) - lv_slider_get_value(recipeBar),
+                     LV_ANIM_OFF);
+}
+void onRecipeListScrolled(lv_event_t *) {
+  if (lv_obj_has_state(recipeBar, LV_STATE_PRESSED)) return;  // the finger is on the bar
+  int y = lv_obj_get_scroll_y(recipeList);
+  const int max = lv_slider_get_max_value(recipeBar);
+  y = y < 0 ? 0 : (y > max ? max : y);
+  lv_slider_set_value(recipeBar, max - y, LV_ANIM_OFF);
+}
+void onPickRecipe(lv_event_t *e) {
+  app::selectRecipe(static_cast<uint8_t>(reinterpret_cast<uintptr_t>(lv_event_get_user_data(e))));
+  recipesOpen = false;
+}
+void onTouchKey(void *) {
+  const uint32_t now = millis();
+  if (static_cast<uint32_t>(now - touchKeySeenMs) > 400) touchKeyPressed = true;
+  touchKeySeenMs = now ? now : 1;
+}
+// The user's ruling on an unusual shot.
+void onVoteIgnore(lv_event_t *) {
+  app::setShotGrindVote(resShotId, static_cast<uint8_t>(bbw::GrindVote::IGNORE));
+}
+void onVoteCount(lv_event_t *) {
+  app::setShotGrindVote(resShotId, static_cast<uint8_t>(bbw::GrindVote::COUNT));
+}
+void onOpenSettings(lv_event_t *) { settingsOpen = true; }
+void onCloseSettings(lv_event_t *) { settingsOpen = false; }
+void onPairBot(lv_event_t *) {
+  setText(setBotLabel, app::pairStrongestBot() ? "Bot: pairing..." : "Bot: none found nearby");
+}
+void onForgetScale(lv_event_t *) { app::pairScale("", 0); }
+void onToggleLearning(lv_event_t *) {
+  bbw::Settings s = app::settings();
+  s.learningEnabled = !s.learningEnabled;
+  app::applySettings(s);
+}
+
+// ---------------------------------------------------------------- panels --
+
+void buildHome() {
+  lv_obj_t *p = panels[static_cast<int>(Panel::HOME)] = makePanel();
+  // Status line: state and live weight, then the two links.
+  homeStatus = makeLabel(p, &lv_font_montserrat_20, COLOR_TEXT, LV_ALIGN_TOP_LEFT, 16, 8, "");
+  makeLabel(p, &lv_font_montserrat_14, COLOR_DIM, LV_ALIGN_TOP_LEFT, 286, 4, "SCALE");
+  // The scale's battery, after its light.
+  homeScaleBattery = makeLabel(p, &lv_font_montserrat_14, COLOR_DIM, LV_ALIGN_TOP_LEFT, 355, 4, "");
+  homeScaleDot = makeDot(p, 338, 6);
+  makeLabel(p, &lv_font_montserrat_14, COLOR_DIM, LV_ALIGN_TOP_LEFT, 286, 21, "BOT");
+  homeBotDot = makeDot(p, 338, 23);
+  homeBotBattery = makeLabel(p, &lv_font_montserrat_14, COLOR_DIM, LV_ALIGN_TOP_LEFT, 355, 21, "");
+
+  // The selected recipe, in full: what goes in, what comes out, the grind,
+  // the pre-infusion and the coffee. Tapping it opens the recipe list.
+  homeCard = lv_btn_create(p);
+  lv_obj_set_size(homeCard, CARD_BOX_W, 152);
+  lv_obj_align(homeCard, LV_ALIGN_TOP_LEFT, 12, 40);
+  lv_obj_set_style_bg_color(homeCard, lv_color_hex(COLOR_PANEL), 0);
+  lv_obj_set_style_radius(homeCard, 14, 0);
+  lv_obj_set_style_shadow_width(homeCard, 0, 0);
+  lv_obj_set_style_pad_all(homeCard, 0, 0);
+  lv_obj_add_event_cb(homeCard, onOpenRecipes, LV_EVENT_CLICKED, nullptr);
+  // Name and yield across the top, then two columns: how it is brewed on the
+  // left, what coffee it is on the right, and a footer line.
+  homeName = makeLine(homeCard, &lv_font_montserrat_26, COLOR_ACCENT, 4, CARD_PAD, CARD_W - 24);
+  lv_obj_align(homeName, LV_ALIGN_TOP_LEFT, CARD_PAD + 12, 4);
+  homeYield = makeLine(homeCard, &lv_font_montserrat_24, COLOR_TEXT, 36, CARD_PAD, CARD_W);
+  constexpr int ROW0 = 70, ROW = 19;
+  constexpr int RIGHT_X = CARD_PAD + COL_W + COL_GAP;
+  homeGrind = makeLeft(homeCard, COLOR_TEXT, CARD_PAD, ROW0, COL_W);
+  homeAdvice = makeLeft(homeCard, COLOR_ACCENT, CARD_PAD, ROW0 + ROW, COL_W);
+  homePre = makeLeft(homeCard, COLOR_TEXT, CARD_PAD, ROW0 + 2 * ROW, COL_W);
+  homeFoot = makeLeft(homeCard, COLOR_DIM, CARD_PAD, ROW0 + 3 * ROW, COL_W);
+  homeCoffee = makeLeft(homeCard, COLOR_TEXT, RIGHT_X, ROW0, COL_W);
+  homeRegion = makeLeft(homeCard, COLOR_DIM, RIGHT_X, ROW0 + ROW, COL_W);
+  homeVarietal = makeLeft(homeCard, COLOR_DIM, RIGHT_X, ROW0 + 2 * ROW, COL_W);
+  homeRoast = makeLeft(homeCard, COLOR_DIM, RIGHT_X, ROW0 + 3 * ROW, COL_W);
+  makeLabel(homeCard, &lv_font_montserrat_16, COLOR_DIM, LV_ALIGN_TOP_RIGHT, -10, 10,
+            LV_SYMBOL_DOWN);
+
+  // No start key on the screen: the touch key on the glass, at this end of
+  // the panel, is the start button.
+  homeHint = makeLine(p, &lv_font_montserrat_20, COLOR_OK, 204, 12, CARD_BOX_W);
+
+  makeButton(p, "EDIT\nRECIPE", &lv_font_montserrat_16, COLOR_PANEL, 100, 108,
+             LV_ALIGN_TOP_RIGHT, KEY_X, 8, onOpenEdit, &homeEditLabel);
+  lv_obj_set_style_text_align(homeEditLabel, LV_TEXT_ALIGN_CENTER, 0);
+  makeButton(p, LV_SYMBOL_SETTINGS, &lv_font_montserrat_28, COLOR_PANEL, 100, 108,
+             LV_ALIGN_BOTTOM_RIGHT, KEY_X, -8, onOpenSettings);
+}
+
+// Quick edits to the selected recipe. Everything else is on the web page.
+void buildEdit() {
+  lv_obj_t *p = panels[static_cast<int>(Panel::EDIT)] = makePanel();
+  static const char *const names[EDIT_FIELDS] = {"TARGET", "DOSE", "GRIND", "BREW TIME", "PRE-INF"};
+  for (int i = 0; i < EDIT_FIELDS; ++i) {
+    editFieldBtn[i] = makeButton(p, names[i], &lv_font_montserrat_16, COLOR_PANEL, 132, 40,
+                                 LV_ALIGN_TOP_LEFT, 8, 8 + 45 * i, onEditField);
+    lv_obj_set_user_data(editFieldBtn[i], reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+  }
+  editTitle = makeLine(p, &lv_font_montserrat_18, COLOR_DIM, 22, 146, 190);
+  editValue = makeLine(p, &lv_font_montserrat_30, COLOR_TEXT, 62, 146, 190);
+  editHint = makeLine(p, &lv_font_montserrat_14, COLOR_DIM, 122, 146, 190);
+  lv_label_set_long_mode(editHint, LV_LABEL_LONG_WRAP);
+  makeRepeatKey(p, LV_SYMBOL_MINUS, 86, 86, LV_ALIGN_TOP_RIGHT, KEY_X - 94, 8, onEditMinus);
+  makeRepeatKey(p, LV_SYMBOL_PLUS, 86, 86, LV_ALIGN_TOP_RIGHT, KEY_X, 8, onEditPlus);
+  makeButton(p, "SAVE", &lv_font_montserrat_24, COLOR_OK, KEY_W, 70, LV_ALIGN_TOP_RIGHT, KEY_X,
+             102, onEditSave);
+  makeButton(p, "CANCEL", &lv_font_montserrat_16, COLOR_PANEL, KEY_W, 52, LV_ALIGN_BOTTOM_RIGHT,
+             KEY_X, -8, onEditCancel);
+}
+
+void buildRecipes() {
+  lv_obj_t *p = panels[static_cast<int>(Panel::RECIPES)] = makePanel();
+  // A scrolling list: drag the list or the bar beside it, tap to select.
+  recipeList = lv_list_create(p);
+  lv_obj_set_size(recipeList, 400, 224);
+  lv_obj_align(recipeList, LV_ALIGN_TOP_LEFT, 8, 8);
+  lv_obj_set_style_bg_color(recipeList, lv_color_hex(COLOR_BG), 0);
+  lv_obj_set_style_border_width(recipeList, 0, 0);
+  lv_obj_set_style_pad_all(recipeList, 0, 0);
+  lv_obj_set_style_pad_row(recipeList, 6, 0);
+  // LVGL's own scrollbar is a thin indicator that cannot be dragged. It is
+  // replaced by a finger-sized bar that moves the list and follows it.
+  lv_obj_set_scrollbar_mode(recipeList, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_add_event_cb(recipeList, onRecipeListScrolled, LV_EVENT_SCROLL, nullptr);
+
+  recipeBar = lv_slider_create(p);
+  lv_obj_set_size(recipeBar, 28, 154);
+  lv_obj_align(recipeBar, LV_ALIGN_TOP_RIGHT, -12 - (104 - 28) / 2, 68);
+  lv_obj_set_style_bg_color(recipeBar, lv_color_hex(COLOR_TRACK), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(recipeBar, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(recipeBar, LV_OPA_TRANSP, LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(recipeBar, lv_color_hex(COLOR_ACCENT), LV_PART_KNOB);
+  lv_obj_set_style_radius(recipeBar, 8, LV_PART_KNOB);
+  lv_obj_set_style_pad_hor(recipeBar, 24, LV_PART_KNOB);  // handle 76 wide ...
+  lv_obj_set_style_pad_ver(recipeBar, -6, LV_PART_KNOB);  // ... and 16 tall
+  lv_obj_set_ext_click_area(recipeBar, 36);               // the whole column grabs it
+  lv_obj_add_event_cb(recipeBar, onRecipeBarMoved, LV_EVENT_VALUE_CHANGED, nullptr);
+
+  makeButton(p, LV_SYMBOL_LEFT " BACK", &lv_font_montserrat_18, COLOR_PANEL, 104, 40,
+             LV_ALIGN_TOP_RIGHT, -12, 6, onCloseRecipes);
+}
+
+void buildBrew() {
+  lv_obj_t *p = panels[static_cast<int>(Panel::BREW)] = makePanel();
+
+  // Progress ring: weight in the cup as a share of the target. Red while the
+  // machine is running but nothing has reached the cup (pre-infusion), green
+  // once coffee is flowing, closing the circle as the target is reached.
+  constexpr int RING = 212;
+  brewArc = lv_arc_create(p);
+  lv_obj_set_size(brewArc, RING, RING);
+  lv_obj_align(brewArc, LV_ALIGN_LEFT_MID, 10, 0);
+  lv_arc_set_rotation(brewArc, 270);
+  lv_arc_set_bg_angles(brewArc, 0, 360);
+  lv_arc_set_range(brewArc, 0, 1000);
+  lv_arc_set_value(brewArc, 0);
+  lv_obj_remove_style(brewArc, nullptr, LV_PART_KNOB);
+  lv_obj_clear_flag(brewArc, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_style_arc_width(brewArc, 16, LV_PART_MAIN);
+  lv_obj_set_style_arc_width(brewArc, 16, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(brewArc, lv_color_hex(COLOR_TRACK), LV_PART_MAIN);
+  lv_obj_set_style_arc_color(brewArc, lv_color_hex(COLOR_BAD), LV_PART_INDICATOR);
+
+  // Inside the ring: the target until coffee arrives, then the live weight.
+  brewWeight = makeLine(p, &lv_font_montserrat_48, COLOR_TEXT, 84, 10 + 20, RING - 40);
+  brewUnit = makeLine(p, &lv_font_montserrat_18, COLOR_DIM, 142, 10 + 20, RING - 40);
+
+  // Beside it: time, target, flow, and what is happening.
+  constexpr int INFO_X = 232;
+  constexpr int INFO_W = 150;
+  brewPhase = makeLine(p, &lv_font_montserrat_16, COLOR_ACCENT, 16, INFO_X, INFO_W);
+  brewTime = makeLine(p, &lv_font_montserrat_36, COLOR_TEXT, 48, INFO_X, INFO_W);
+  brewTarget = makeLine(p, &lv_font_montserrat_22, COLOR_DIM, 100, INFO_X, INFO_W);
+  brewFlow = makeLine(p, &lv_font_montserrat_22, COLOR_TEXT, 146, INFO_X, INFO_W);
+  lv_label_set_long_mode(brewPhase, LV_LABEL_LONG_WRAP);
+
+  makeButton(p, "STOP", &lv_font_montserrat_28, COLOR_BAD, 132, 216, LV_ALIGN_RIGHT_MID, KEY_X, 0,
+             onStop, &brewStopLabel);
+  lv_obj_set_style_text_align(brewStopLabel, LV_TEXT_ALIGN_CENTER, 0);
+}
+
+void buildResult() {
+  lv_obj_t *p = panels[static_cast<int>(Panel::RESULT)] = makePanel();
+  resTop = makeLine(p, &lv_font_montserrat_26, COLOR_OK, 6);          // "OVER +0.2 g"
+  resWeight = makeLine(p, &lv_font_montserrat_48, COLOR_TEXT, 38);    // final weight
+  resLine1 = makeLine(p, &lv_font_montserrat_18, COLOR_TEXT, 98);     // times
+  resLine2 = makeLine(p, &lv_font_montserrat_18, COLOR_DIM, 124);     // flow, drip, auto adjust
+  resGrind = makeLine(p, &lv_font_montserrat_22, COLOR_ACCENT, 162);  // "BREW FAST  GRIND FINER"
+  resGrindSub = makeLine(p, &lv_font_montserrat_16, COLOR_DIM, 192);  // amount or where to look
+  lv_label_set_long_mode(resGrindSub, LV_LABEL_LONG_WRAP);  // two lines rather than "..."
+  resReadyBtn = makeButton(p, "READY", &lv_font_montserrat_28, COLOR_PANEL, KEY_W, 216,
+                           LV_ALIGN_RIGHT_MID, KEY_X, 0, onAck);
+
+  // An unusual shot (a one-off, or one that ran out of time) is put to the
+  // user instead of being quietly set aside: three lines of advice in place
+  // of the grind verdict, and two keys in place of READY.
+  resReview = makeLine(p, &lv_font_montserrat_16, COLOR_ACCENT, 150);
+  lv_label_set_long_mode(resReview, LV_LABEL_LONG_WRAP);
+  lv_obj_t *label = nullptr;
+  resIgnoreBtn = makeButton(p, "IGNORE\nSHOT", &lv_font_montserrat_20, COLOR_PANEL, KEY_W, 104,
+                            LV_ALIGN_TOP_RIGHT, KEY_X, 12, onVoteIgnore, &label);
+  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+  resCountBtn = makeButton(p, "COUNT FOR\nGRIND", &lv_font_montserrat_20, COLOR_ACCENT, KEY_W,
+                           104, LV_ALIGN_BOTTOM_RIGHT, KEY_X, -12, onVoteCount, &label);
+  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+}
+
+void buildFault() {
+  lv_obj_t *p = panels[static_cast<int>(Panel::FAULT)] = makePanel();
+  faultTitle = makeLabel(p, &lv_font_montserrat_24, COLOR_BAD, LV_ALIGN_TOP_LEFT, 16, 12, "");
+  lv_label_set_long_mode(faultTitle, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(faultTitle, LEFT_W - 16);
+  faultText = makeLabel(p, &lv_font_montserrat_16, COLOR_TEXT, LV_ALIGN_TOP_LEFT, 16, 52, "");
+  lv_label_set_long_mode(faultText, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(faultText, LEFT_W - 16);
+  faultPressBtn = makeButton(p, "PRESS BUTTON", &lv_font_montserrat_16, COLOR_ACCENT, 170, 48,
+                             LV_ALIGN_BOTTOM_LEFT, 16, -12, onManualPress);
+  makeButton(p, "OK", &lv_font_montserrat_32, COLOR_PANEL, KEY_W, 216, LV_ALIGN_RIGHT_MID, KEY_X,
+             0, onAck);
+}
+
+void buildSettings() {
+  lv_obj_t *p = panels[static_cast<int>(Panel::SETTINGS)] = makePanel();
+  makeLabel(p, &lv_font_montserrat_22, COLOR_ACCENT, LV_ALIGN_TOP_LEFT, 16, 10, "SETTINGS");
+  makeButton(p, "", &lv_font_montserrat_14, COLOR_PANEL, 196, 44, LV_ALIGN_TOP_LEFT, 12, 46,
+             onToggleLearning, &setLearnLabel);
+  makeButton(p, "PAIR NEAREST BOT", &lv_font_montserrat_14, COLOR_PANEL, 196, 44,
+             LV_ALIGN_TOP_LEFT, 12, 96, onPairBot);
+  makeButton(p, "FORGET SCALE", &lv_font_montserrat_14, COLOR_PANEL, 196, 44, LV_ALIGN_TOP_LEFT,
+             12, 146, onForgetScale);
+  makeButton(p, "TARE SCALE", &lv_font_montserrat_14, COLOR_PANEL, 150, 44, LV_ALIGN_TOP_LEFT,
+             216, 46, onTare);
+  setBotLabel = makeLabel(p, &lv_font_montserrat_14, COLOR_TEXT, LV_ALIGN_TOP_LEFT, 376, 56, "");
+  setScaleLabel = makeLabel(p, &lv_font_montserrat_14, COLOR_TEXT, LV_ALIGN_TOP_LEFT, 376, 122, "");
+  lv_label_set_long_mode(setBotLabel, LV_LABEL_LONG_WRAP);
+  lv_label_set_long_mode(setScaleLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(setBotLabel, 152);
+  lv_obj_set_width(setScaleLabel, 152);
+  setWifiLabel = makeLabel(p, &lv_font_montserrat_14, COLOR_DIM, LV_ALIGN_BOTTOM_LEFT, 16, -6, "");
+  lv_label_set_long_mode(setWifiLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(setWifiLabel, 500);
+  makeButton(p, LV_SYMBOL_LEFT " BACK", &lv_font_montserrat_18, COLOR_PANEL, 104, 40,
+             LV_ALIGN_TOP_RIGHT, -12, 6, onCloseSettings);
+}
+
+// Short enough to fit beside the OK key; the exact state name is still what
+// the web page, the log and the CSV use.
+const char *faultTitle_(State state) {
+  switch (state) {
+    case State::SCALE_DISCONNECTED: return "SCALE DISCONNECTED";
+    case State::SWITCHBOT_DISCONNECTED: return "BOT NOT CONNECTED";
+    case State::SCALE_DATA_STALE: return "SCALE WENT SILENT";
+    case State::START_COMMAND_FAILED: return "START NOT CONFIRMED";
+    case State::STOP_COMMAND_FAILED: return "STOP NOT CONFIRMED";
+    case State::TARE_FAILED: return "TARE FAILED";
+    case State::SHOT_TIMEOUT: return "SHOT TIMED OUT";
+    case State::INVALID_WEIGHT: return "WEIGHT NOT VALID";
+    case State::BLE_ERROR: return "BLUETOOTH ERROR";
+    default: return bbw::stateName(state);
+  }
+}
+
+const char *faultMessage(State state, bool manualStop, bool stopStartedPump) {
+  if (manualStop) return "STOP THE MACHINE BY HAND.\nThe stop press could not be delivered or confirmed.";
+  if (state == State::START_COMMAND_FAILED && stopStartedPump) {
+    return "The start press never reached the button, so STOP started the pump. It was stopped "
+           "again when coffee appeared. Check the Bot's arm.";
+  }
+  switch (state) {
+    case State::SCALE_DISCONNECTED: return "The scale is not connected. Switch it on.";
+    case State::SWITCHBOT_DISCONNECTED: return "The brew bot did not answer. Check it is paired, in range and has battery.";
+    case State::SCALE_DATA_STALE: return "The scale stopped sending weight. The shot was stopped.";
+    case State::START_COMMAND_FAILED: return "The start press was not confirmed by coffee flow. Check the machine.";
+    case State::STOP_COMMAND_FAILED: return "The stop press was not confirmed. Check the machine.";
+    case State::TARE_FAILED: return "The scale did not settle at zero. Keep the cup still and start again.";
+    case State::SHOT_TIMEOUT: return "Maximum shot time reached. The shot was stopped.";
+    case State::INVALID_WEIGHT: return "Implausible weight (cup removed?). The shot was stopped.";
+    case State::BLE_ERROR: return "Bluetooth failed to start. Restart the controller.";
+    default: return "";
+  }
+}
+
+void refreshSettings() {
+  app::discover();  // keep the pairing list fresh while this panel is open
+  const bbw::Settings s = app::settings();
+  const app::Devices d = app::devices();
+  setTextF(setLearnLabel, "OFFSET LEARNING: %s", s.learningEnabled ? "ON" : "OFF");
+  char battery[24] = "";
+  if (d.bot.valid) snprintf(battery, sizeof(battery), "battery %u%%", d.bot.batteryPercent);
+  if (d.pairing.botAddress[0] == '\0') {
+    setText(setBotLabel, "Bot: not paired\nhold it close, tap PAIR");
+  } else if (d.botConnected) {
+    setTextF(setBotLabel, "Bot: connected  %s%s", battery,
+             d.bot.valid && d.bot.switchMode ? "\nSWITCH MODE: set Press mode" : "");
+  } else {
+    setTextF(setBotLabel, "Bot: asleep until needed\n%s", battery);
+  }
+  char scaleBattery[24] = "";
+  if (d.scaleConnected && d.scale.batteryPercent >= 0) {
+    snprintf(scaleBattery, sizeof(scaleBattery), "battery %d%%", d.scale.batteryPercent);
+  }
+  setTextF(setScaleLabel, "Scale: %s\n%s",
+           d.scaleConnected ? d.scaleName
+                            : (d.pairing.scaleAddress[0] ? "searching" : "first scale found"),
+           d.scaleConnected ? (scaleBattery[0] ? scaleBattery : d.scaleProtocol)
+                            : d.pairing.scaleAddress);
+  setText(setWifiLabel, wifiText);
+  show(Panel::SETTINGS);
+}
+
+// Days from 1970-01-01 to a YYYYMMDD date (proleptic Gregorian).
+long daysFromCivil(uint32_t yyyymmdd) {
+  long y = yyyymmdd / 10000;
+  const unsigned m = (yyyymmdd / 100) % 100, d = yyyymmdd % 100;
+  y -= m <= 2;
+  const long era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(y - era * 400);
+  const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + static_cast<long>(doe) - 719468;
+}
+
+// "roasted 12 d ago", or the date itself until the clock has been set.
+void describeRoastAge(const bbw::Recipe &r, char *out, size_t size) {
+  out[0] = '\0';
+  if (r.roastDate == 0) return;
+  const uint32_t now = app::epochNow();
+  const long days = now ? static_cast<long>(now / 86400) - daysFromCivil(r.roastDate) : -1;
+  if (days >= 0 && days < 1000) {
+    snprintf(out, size, "%ld d off roast", days);
+  } else {
+    snprintf(out, size, "roasted %04u-%02u-%02u", static_cast<unsigned>(r.roastDate / 10000),
+             static_cast<unsigned>((r.roastDate / 100) % 100),
+             static_cast<unsigned>(r.roastDate % 100));
+  }
+}
+
+// What a grind setting is read in on this controller's grinder ("um", "steps"...).
+const char *grindUnit() {
+  static bbw::Grinder grinder;
+  grinder = app::grinder();
+  return grinder.unit;
+}
+
+void describePreinfusion(const bbw::Recipe &r, char *out, size_t size) {
+  if (r.preinfusion == bbw::Preinfusion::HOLD) {
+    if (r.bloomPauseMs) {
+      snprintf(out, size, "pre-inf %.1f s, bloom %.0f s", r.preinfusionHoldMs / 1000.0f,
+               r.bloomPauseMs / 1000.0f);
+    } else {
+      snprintf(out, size, "pre-inf: hold %.1f s", r.preinfusionHoldMs / 1000.0f);
+    }
+  } else {
+    snprintf(out, size, "pre-inf: machine");
+  }
+}
+
+void refreshRecipes() {
+  static uint32_t builtFor = 0;
+  if (builtFor != recipesOpenedAtMs) {  // build once per opening, not every refresh
+    builtFor = recipesOpenedAtMs;
+    const uint8_t count = app::presetCount(), activeIndex = app::activePreset();
+    const char *unit = grindUnit();
+    lv_obj_clean(recipeList);
+    for (uint8_t i = 0; i < count; ++i) {
+      const bbw::Recipe r = app::preset(i);
+      // Two lines that fit the list's width: the coffee, then the recipe with
+      // what it makes and the grind. A recipe listed by itself has its name
+      // on the first line. The roast details are on the home screen.
+      char grind[24] = "", text[144];
+      if (r.grindUm) snprintf(grind, sizeof(grind), "   %u %s", r.grindUm, unit);
+      if (r.coffee[0]) {
+        snprintf(text, sizeof(text), "%s\n%s   %.1f -> %.1f g%s", r.coffee, r.name, r.doseG,
+                 r.targetWeightG, grind);
+      } else {
+        snprintf(text, sizeof(text), "%s\n%.1f -> %.1f g%s", r.name, r.doseG, r.targetWeightG,
+                 grind);
+      }
+      lv_obj_t *item = lv_list_add_btn(recipeList, nullptr, text);
+      // The list's default is a scrolling marquee; show the text still.
+      lv_label_set_long_mode(lv_obj_get_child(item, 0), LV_LABEL_LONG_WRAP);
+      const bool active = i == activeIndex;
+      lv_obj_set_style_bg_color(item, lv_color_hex(active ? 0x3A2A12 : COLOR_PANEL), 0);
+      lv_obj_set_style_text_color(item, lv_color_hex(active ? COLOR_ACCENT : COLOR_TEXT), 0);
+      lv_obj_set_style_text_font(item, &lv_font_montserrat_16, 0);
+      lv_obj_set_style_radius(item, 10, 0);
+      lv_obj_set_style_border_width(item, 0, 0);
+      lv_obj_set_style_pad_ver(item, 12, 0);
+      lv_obj_add_event_cb(item, onPickRecipe, LV_EVENT_CLICKED,
+                          reinterpret_cast<void *>(static_cast<uintptr_t>(i)));
+      if (active) lv_obj_scroll_to_view(item, LV_ANIM_OFF);
+    }
+    // Size the bar to the list: its range is how far the list can scroll.
+    lv_obj_update_layout(recipeList);
+    const int range = lv_obj_get_scroll_y(recipeList) + lv_obj_get_scroll_bottom(recipeList);
+    if (range > 0) {
+      lv_slider_set_range(recipeBar, 0, range);
+      lv_slider_set_value(recipeBar, range - lv_obj_get_scroll_y(recipeList), LV_ANIM_OFF);
+      lv_obj_clear_flag(recipeBar, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(recipeBar, LV_OBJ_FLAG_HIDDEN);  // everything fits: nothing to scroll
+    }
+  }
+  show(Panel::RECIPES);
+}
+
+void describeEditField(const bbw::Recipe &r, int field, char *title, char *value, char *hint,
+                       size_t size) {
+  switch (field) {
+    case 0:
+      if (r.useRatio) {
+        snprintf(title, size, "RATIO");
+        snprintf(value, size, "1:%.1f", r.ratio);
+        snprintf(hint, size, "%.1f g in gives %.1f g out", r.doseG, r.doseG * r.ratio);
+      } else {
+        snprintf(title, size, "TARGET OUT");
+        snprintf(value, size, "%.1f g", r.targetWeightG);
+        snprintf(hint, size, "tap 0.5 g, hold for 0.1 g");
+      }
+      break;
+    case 1:
+      snprintf(title, size, "DOSE IN");
+      snprintf(value, size, "%.1f g", r.doseG);
+      snprintf(hint, size, "dry coffee in the basket");
+      break;
+    case 2:
+      snprintf(title, size, "GRIND");
+      if (r.grindUm) snprintf(value, size, "%u %s", r.grindUm, grindUnit());
+      else snprintf(value, size, "not set");
+      {
+        const bbw::GrindAdvice g = app::grindAdvice();
+        if (g.action == GrindAction::FINER || g.action == GrindAction::COARSER) {
+          const char *way = g.action == GrindAction::FINER ? "finer" : "coarser";
+          if (g.learned) snprintf(hint, size, "advice: go %s,\nset %u %s", way, g.suggestedUm, grindUnit());
+          else snprintf(hint, size, "advice: go %s\namount on the web page", way);
+        } else {
+          snprintf(hint, size, "number on the grinder\ntap 1, hold for 10");
+        }
+      }
+      break;
+    case 3:
+      snprintf(title, size, "TARGET BREW TIME");
+      snprintf(value, size, "%.1f s", r.targetTimeS);
+      snprintf(hint, size, "used for grind advice");
+      break;
+    default:
+      snprintf(title, size, "PRE-INFUSION");
+      if (r.preinfusion == bbw::Preinfusion::HOLD) {
+        snprintf(value, size, "HOLD %.1f s", r.preinfusionHoldMs / 1000.0f);
+        snprintf(hint, size, "pre-infusion lasts only\nas long as the hold");
+      } else {
+        snprintf(value, size, "MACHINE");
+        snprintf(hint, size, "press and release:\nmachine pre-infuses");
+      }
+      break;
+  }
+}
+
+void refreshEdit() {
+  char title[48], value[48], hint[96];
+  describeEditField(editRecipe, editField, title, value, hint, sizeof(title));
+  fitText(editTitle, title, 190, 2, &lv_font_montserrat_18, &lv_font_montserrat_16);
+  fitText(editValue, value, 190, 3, &lv_font_montserrat_30, &lv_font_montserrat_26,
+          &lv_font_montserrat_22);
+  setText(editHint, hint);
+  for (int i = 0; i < EDIT_FIELDS; ++i) {
+    lv_obj_set_style_bg_color(editFieldBtn[i],
+                              lv_color_hex(i == editField ? 0x3A2A12 : COLOR_PANEL), 0);
+  }
+  show(Panel::EDIT);
+}
+
+void refreshHome(const bbw::LiveStatus &st) {
+  const bool ready = st.state == State::READY;
+  if (!ready) {
+    setText(homeStatus, "NO SCALE");
+  } else if (!st.botPaired) {
+    setText(homeStatus, "NO BOT");
+  } else if (st.cupRequired && !st.cupPresent) {
+    setTextF(homeStatus, "NO CUP  %.1f g", st.weightG);
+  } else {
+    setTextF(homeStatus, "READY  %.1f g", st.weightG);
+  }
+  // Red: no scale. Amber: scale, but no cup on it yet. Green: ready to brew.
+  const bool cupMissing = st.state == State::READY && st.cupRequired && !st.cupPresent;
+  setDot(homeScaleDot, !st.scaleConnected ? COLOR_BAD : (cupMissing ? COLOR_ACCENT : COLOR_OK));
+  if (st.scaleConnected && st.scaleBatteryPercent >= 0) {
+    setTextF(homeScaleBattery, "%d%%", st.scaleBatteryPercent);
+    setColor(homeScaleBattery, st.scaleBatteryPercent <= 15 ? COLOR_ACCENT : COLOR_DIM);
+  } else {
+    setText(homeScaleBattery, "");
+  }
+  // Grey: paired and asleep, which is the normal idle state.
+  setDot(homeBotDot, st.botConnected ? COLOR_OK : (st.botPaired ? COLOR_SLEEP : COLOR_BAD));
+  if (st.botBatteryPercent >= 0) {
+    setTextF(homeBotBattery, "%d%%", st.botBatteryPercent);
+    setColor(homeBotBattery, st.botBatteryPercent <= 15 ? COLOR_ACCENT : COLOR_DIM);
+  } else {
+    setText(homeBotBattery, "");
+  }
+
+  const bbw::Recipe r = app::activeRecipe();
+  char text[64];
+  // The coffee is what the card is headed by; a recipe listed by itself heads its own.
+  fitText(homeName, r.coffee[0] ? r.coffee : r.name, CARD_W - 24, 3, &lv_font_montserrat_26, &lv_font_montserrat_22,
+          &lv_font_montserrat_18);
+  if (r.useRatio) {
+    snprintf(text, sizeof(text), "%.1f g in  ->  %.1f g out  1:%.1f", r.doseG, r.targetWeightG,
+             r.ratio);
+  } else {
+    snprintf(text, sizeof(text), "%.1f g in  ->  %.1f g out", r.doseG, r.targetWeightG);
+  }
+  fitText(homeYield, text, CARD_W, 4, &lv_font_montserrat_24, &lv_font_montserrat_22,
+          &lv_font_montserrat_18, &lv_font_montserrat_16);
+
+  // Left column: grind, the advisor's verdict, pre-infusion.
+  const bbw::GrindAdvice g = app::grindAdvice();
+  const char *unit = grindUnit();
+  if (r.grindUm) snprintf(text, sizeof(text), "grind %u %s", r.grindUm, unit);
+  else snprintf(text, sizeof(text), "grind not set");
+  fitSmall(homeGrind, text);
+  // As on the result screen, the setting to go to is only shown once the
+  // sensitivity has been measured from this grinder's own shots.
+  if (r.grindUm && g.action == GrindAction::FINER) {
+    if (g.learned) snprintf(text, sizeof(text), "go finer: %u %s", g.suggestedUm, unit);
+    else snprintf(text, sizeof(text), "go finer");
+  } else if (r.grindUm && g.action == GrindAction::COARSER) {
+    if (g.learned) snprintf(text, sizeof(text), "go coarser: %u %s", g.suggestedUm, unit);
+    else snprintf(text, sizeof(text), "go coarser");
+  } else if (r.grindUm && g.action == GrindAction::INCONSISTENT) {
+    snprintf(text, sizeof(text), "brew times vary");
+  } else if (r.grindUm && g.action == GrindAction::HOLD) {
+    snprintf(text, sizeof(text), "brew time on target");
+  } else if (!r.grindUm && app::communityStartForActive().setting != 0) {
+    // No setting entered yet, and the shared library has somewhere to start.
+    snprintf(text, sizeof(text), "community: start %u %s", app::communityStartForActive().setting,
+             unit);
+  } else {
+    text[0] = '\0';
+  }
+  fitSmall(homeAdvice, text);
+  setColor(homeAdvice, g.action == GrindAction::HOLD ? COLOR_OK : COLOR_ACCENT);
+  describePreinfusion(r, text, sizeof(text));
+  fitSmall(homePre, text);
+
+  // The stop offset is learned and looks after itself; it is not shown here.
+  snprintf(text, sizeof(text), "brew time %.0f s", r.targetTimeS);
+  fitSmall(homeFoot, text);
+
+  // Right column: the coffee, each fact on its own line.
+  const bool anyCoffee = r.coffee[0] || r.region[0] || r.varietal[0] || r.roastLevel || r.roastDate;
+  // With the coffee as the heading, this line is the recipe.
+  fitSmall(homeCoffee, r.coffee[0] ? r.name : (anyCoffee ? "" : "no coffee attached"));
+  setColor(homeCoffee, r.coffee[0] ? COLOR_TEXT : COLOR_DIM);
+  fitSmall(homeRegion, r.region);
+  fitSmall(homeVarietal, r.varietal);
+  // Roast level and age share a line: "medium-light, 129 d".
+  char age[32];
+  describeRoastAge(r, age, sizeof(age));
+  snprintf(text, sizeof(text), "%s%s%s", bbw::roastLevelName(r.roastLevel),
+           r.roastLevel && age[0] ? ", " : "", age);
+  fitSmall(homeRoast, text);
+
+  if (!ready) {
+    setText(homeHint, "SWITCH ON THE SCALE");
+    setColor(homeHint, COLOR_DIM);
+  } else if (!st.botPaired) {
+    setText(homeHint, "PAIR THE BOT IN SETTINGS");
+    setColor(homeHint, COLOR_DIM);
+  } else if (!st.weightFresh) {
+    setText(homeHint, "WAITING FOR WEIGHT");
+    setColor(homeHint, COLOR_DIM);
+  } else if (st.cupRequired && !st.cupPresent) {
+    setText(homeHint, "PLACE CUP ON SCALE");
+    setColor(homeHint, COLOR_ACCENT);
+  } else {
+    setText(homeHint, LV_SYMBOL_LEFT "  TOUCH KEY TO BREW");
+    setColor(homeHint, COLOR_OK);
+  }
+  show(Panel::HOME);
+}
+
+void refreshBrew(const bbw::LiveStatus &st) {
+  const char *stopText = "STOP";
+  const char *phase = "";
+  uint32_t phaseColor = COLOR_ACCENT;
+  uint32_t ringColor = COLOR_TRACK;
+  bool running = false;  // the machine has been started
+  switch (st.state) {
+    case State::TARING:
+      phase = "AUTO TARE\nWAIT FOR ZERO";
+      stopText = "CANCEL";
+      break;
+    case State::WAITING_FOR_CUP:
+      phase = "PLACE CUP\nON THE SCALE";
+      stopText = "CANCEL";
+      break;
+    case State::READY_TO_BREW:
+      phase = st.botConnected ? "TOUCH KEY\nTO BREW" : "WAKING BOT";
+      stopText = "CANCEL";
+      break;
+    case State::STARTING_SHOT:
+      phase = st.holdingButton ? "PRE-INFUSION\nHOLDING BUTTON" : "STARTING";
+      running = true;
+      break;
+    case State::BREWING:
+      phase = st.firstDropSeen ? "BREWING" : "PRE-INFUSION";
+      running = true;
+      break;
+    case State::BLOOMING: {
+      static char bloomText[24];
+      snprintf(bloomText, sizeof(bloomText), "BLOOM\n%.0f s", st.bloomLeftS);
+      phase = st.holdingButton ? "BLOOM DONE\nSTARTING" : bloomText;
+      running = true;
+      break;
+    }
+    case State::STOPPING_SHOT:
+      phase = st.manualStopNeeded ? "STOP BY HAND!" : "STOPPING";
+      if (st.manualStopNeeded) phaseColor = COLOR_BAD;
+      running = true;
+      break;
+    default:  // POST_SHOT_DRIP
+      // After a stop with no coffee seen, the pump is watched for a while:
+      // one press toggles, so the stop may have been a start.
+      phase = st.verifyingStop ? "CHECKING\nPUMP IS OFF" : "FINALIZING\nLEAVE CUP";
+      running = true;
+      break;
+  }
+
+  // Ring: empty and grey before the machine starts, a full red ring while it
+  // runs with nothing in the cup, then green growing with the weight.
+  int progress = 0;
+  if (running && st.firstDropSeen && st.targetWeightG > 0.0f) {
+    const float share = st.weightG / st.targetWeightG;
+    progress = static_cast<int>((share < 0 ? 0 : (share > 1 ? 1 : share)) * 1000.0f);
+    ringColor = COLOR_OK;
+  }
+  lv_obj_set_style_arc_color(brewArc, lv_color_hex(running ? COLOR_BAD : COLOR_TRACK),
+                             LV_PART_MAIN);
+  if (lv_arc_get_value(brewArc) != progress) lv_arc_set_value(brewArc, progress);
+  lv_obj_set_style_arc_color(brewArc, lv_color_hex(ringColor), LV_PART_INDICATOR);
+
+  // Centre: the target until coffee is detected, then the live weight.
+  const bool showWeight = st.firstDropSeen || st.state == State::TARING ||
+                          st.state == State::WAITING_FOR_CUP;
+  if (showWeight) {
+    setTextF(brewWeight, "%.1f", st.weightG);
+    setColor(brewWeight, st.firstDropSeen ? COLOR_OK : COLOR_TEXT);
+    setText(brewUnit, "g");
+  } else {
+    setTextF(brewWeight, "%.1f", st.targetWeightG);
+    setColor(brewWeight, COLOR_DIM);
+    setText(brewUnit, "g target");
+  }
+
+  // The time is the scale's own timer whenever the scale reports it, so the
+  // two displays agree; otherwise the controller's clock.
+  const float seconds =
+      st.scaleTimerValid && st.state == State::BREWING ? st.scaleTimerS : st.shotTimeS;
+  char clock[16];
+  snprintf(clock, sizeof(clock), "%.1f s", running ? seconds : 0.0f);
+  fitText(brewTime, clock, 150, 3, &lv_font_montserrat_36, &lv_font_montserrat_30,
+          &lv_font_montserrat_26);
+  setTextF(brewTarget, "/ %.1f g", st.targetWeightG);
+  setTextF(brewFlow, "%.1f g/s", st.flowGS);
+  // BOOT was pressed during the shot: ask before stopping.
+  const bool stoppable = st.state == State::STARTING_SHOT || st.state == State::BREWING ||
+                         st.state == State::BLOOMING;
+  if (!stoppable) stopConfirmUntilMs = 0;
+  if (stopConfirmUntilMs != 0 && static_cast<int32_t>(millis() - stopConfirmUntilMs) >= 0) {
+    stopConfirmUntilMs = 0;
+  }
+  if (stopConfirmUntilMs != 0) {
+    phase = "STOP SHOT?\nPRESS AGAIN";
+    phaseColor = COLOR_BAD;
+    stopText = "YES\nSTOP";
+  }
+  setText(brewPhase, phase);
+  setColor(brewPhase, phaseColor);
+  setText(brewStopLabel, stopText);
+  show(Panel::BREW);
+}
+
+// The result of a shot. Also used for a shot that ran out of time: the same
+// details, under a heading that says so.
+void refreshResult(State state) {
+  bbw::ShotRecord shot;
+  const bool have = app::lastShot(shot);
+  const bbw::EndReason ended =
+      have ? static_cast<bbw::EndReason>(shot.endReason) : bbw::EndReason::NONE;
+  // Anything but a normal finish gets a red heading saying what ended it.
+  const bool abnormal = state != State::SHOT_COMPLETE;
+  // Of those, the ones that ran out of time are put to the user (below).
+  const bool timedOut = abnormal && (ended == bbw::EndReason::TIMEOUT ||
+                                     ended == bbw::EndReason::MACHINE_STOPPED);
+  if (have) {
+    const float error = shot.finalWeightG - shot.targetWeightG;
+    char yield[32];
+    if (fabsf(error) < 0.05f) snprintf(yield, sizeof(yield), "ON TARGET");
+    else snprintf(yield, sizeof(yield), "%s %+.1f g", error > 0 ? "OVER" : "UNDER", error);
+
+    if (abnormal) {
+      const char *heading = "SHOT ENDED EARLY";
+      switch (ended) {
+        case bbw::EndReason::TIMEOUT: heading = "SHOT TIMED OUT"; break;
+        // The pour stopped with nothing pressed here: the machine's own
+        // time-out, or someone pressed its button. The scale cannot tell which.
+        case bbw::EndReason::MACHINE_STOPPED: heading = "STOPPED AT THE MACHINE"; break;
+        case bbw::EndReason::CUP_REMOVED: heading = "CUP LIFTED: STOPPED"; break;
+        case bbw::EndReason::RECOVERED: heading = "STOPPED AFTER RESTART"; break;
+        default: break;
+      }
+      fitText(resTop, heading, LEFT_W, 3, &lv_font_montserrat_26, &lv_font_montserrat_22,
+              &lv_font_montserrat_18);
+      setColor(resTop, COLOR_BAD);
+    } else {
+      // How far off the weight, and how far off the brew time.
+      const bbw::Settings cfg = app::settings();
+      const float brewS = bbw::grindShotTime(shot, cfg.grindTimeBasis);
+      const float late = brewS - shot.targetTimeS;
+      const bool timed = shot.targetTimeS > 0.0f && brewS > 0.0f;
+      char top[64];
+      if (!timed) snprintf(top, sizeof(top), "%s", yield);
+      else if (fabsf(late) < 0.05f) snprintf(top, sizeof(top), "%s   ON TIME", yield);
+      else snprintf(top, sizeof(top), "%s   %s %+.1f s", yield, late > 0 ? "SLOW" : "FAST", late);
+      fitText(resTop, top, LEFT_W, 2, &lv_font_montserrat_26, &lv_font_montserrat_22,
+              &lv_font_montserrat_20);
+      const bool good = fabsf(error) <= 0.5f && (!timed || fabsf(late) <= cfg.grindToleranceS);
+      setColor(resTop, good ? COLOR_OK : COLOR_ACCENT);
+    }
+    // An asterisk marks a weight that did not settle (cup lifted early).
+    setTextF(resWeight, "%.1f g%s", shot.finalWeightG,
+             (shot.flags & bbw::SHOT_FLAG_FINAL_VALID) ? "" : " *");
+    if (abnormal && shot.pourTimeS > 0.0f) {
+      fitDetail(resLine1, "%s   %.1f s   pour %.1f s", yield, shot.shotTimeS, shot.pourTimeS);
+    } else if (abnormal) {
+      fitDetail(resLine1, "%s   %.1f s", yield, shot.shotTimeS);
+    } else if (shot.pourTimeS > 0.0f) {
+      fitDetail(resLine1, "%.1f s total   pour %.1f s", shot.shotTimeS, shot.pourTimeS);
+    } else {
+      fitDetail(resLine1, "%.1f s", shot.shotTimeS);
+    }
+    const float flow = shot.pourTimeS > 0.0f ? shot.pourFlowGS : shot.averageFlowGS;
+    const float change = shot.nextStopOffsetG - shot.stopOffsetG;
+    if ((shot.flags & bbw::SHOT_FLAG_LEARNED) && fabsf(change) >= 0.005f) {
+      // A larger offset means the next shot is stopped earlier.
+      fitDetail(resLine2, "%.2f g/s  drip %.1f g  auto %s %.2f", flow, shot.dripWeightG,
+                change > 0 ? "earlier" : "later", fabsf(change));
+    } else {
+      fitDetail(resLine2, "%.2f g/s   drip %.1f g", flow, shot.dripWeightG);
+    }
+  }
+
+  // Grinder verdict. Two different things are kept apart here: how THIS shot
+  // ran, and what the recent shots at this setting say about the grind. A
+  // single fast shot among consistent ones is reported as fast, with the
+  // grind left alone until it happens again.
+  const bbw::GrindAdvice g = app::grindAdvice();
+  const bbw::Settings s = app::settings();
+  const bbw::GrindUse use =
+      have ? bbw::grindShotUse(shot, s.grindTimeBasis) : bbw::GrindUse::NO_TIME;
+  const bool counted = use == bbw::GrindUse::COUNTED;
+  const float thisTime = have ? bbw::grindShotTime(shot, s.grindTimeBasis) : 0.0f;
+
+  // Ask rather than decide, when the shot was unusual and has not been ruled
+  // on yet: a one-off among consistent shots, or one that ran out of time.
+  const bool undecided = have && shot.grindVote == static_cast<uint8_t>(bbw::GrindVote::AUTO) &&
+                         shot.grindUm != 0 && thisTime > 0.0f;
+  const bool oneOff = undecided && counted && g.newestIgnored;
+  // ...or one that reached its weight but so far off the target time that it
+  // falls outside what is counted automatically.
+  const bool offTime = undecided && (use == bbw::GrindUse::TOO_SHORT ||
+                                     use == bbw::GrindUse::TOO_LONG);
+  const bool review = oneOff || offTime || (undecided && timedOut);
+  auto showIf = [](lv_obj_t *obj, bool visible) {
+    if (visible) lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+  };
+  showIf(resReview, review);
+  showIf(resIgnoreBtn, review);
+  showIf(resCountBtn, review);
+  showIf(resReadyBtn, !review);
+  showIf(resGrind, !review);
+  showIf(resGrindSub, !review);
+  if (review) {
+    resShotId = shot.id;
+    // A shot that ran out of time was slow by definition.
+    const bool fast = !timedOut && thisTime < shot.targetTimeS;
+    setTextF(resReview, "Shot %s than expected.\nReview preparation routine.\nGrind %s if necessary.",
+             fast ? "faster" : "slower", fast ? "finer" : "coarser");
+    show(Panel::RESULT);
+    return;
+  }
+
+  setColor(resGrind, COLOR_ACCENT);
+  if (g.action == GrindAction::NO_GRIND_SET) {
+    setText(resGrind, "");
+    setText(resGrindSub, "set the grind in EDIT RECIPE\nto get grind advice");
+  } else if (!counted) {
+    // Say why, in each case.
+    const char *why = "this shot is not counted\nfor grind advice";
+    switch (use) {
+      case bbw::GrindUse::IGNORED_BY_USER: why = "ignored for grind advice,\nas you chose"; break;
+      case bbw::GrindUse::NO_TIME: why = "no first drops detected:\nnot counted for grind advice"; break;
+      case bbw::GrindUse::OTHER_BASIS: why = "brew time basis was changed:\nnot counted for grind advice"; break;
+      case bbw::GrindUse::NOT_SETTLED: why = "weight did not settle (cup lifted):\nnot counted for grind advice"; break;
+      case bbw::GrindUse::STOP_RETRIED: why = "stop had to be repeated:\nnot counted for grind advice"; break;
+      case bbw::GrindUse::NOT_WEIGHT_STOP:
+        switch (ended) {
+          case bbw::EndReason::USER: why = "stopped with STOP:\nnot counted for grind advice"; break;
+          case bbw::EndReason::CUP_REMOVED: why = "cup lifted during the shot:\nnot counted for grind advice"; break;
+          case bbw::EndReason::RECOVERED: why = "controller restarted mid-shot:\nnot counted for grind advice"; break;
+          default: why = "did not end on the target weight:\nnot counted for grind advice"; break;
+        }
+        break;
+      default: break;
+    }
+    setText(resGrind, "");
+    setText(resGrindSub, why);
+  } else if (g.newestIgnored) {
+    fitLine(resGrind, thisTime < shot.targetTimeS ? "BREW FAST   ONE-OFF?"
+                                                  : "BREW SLOW   ONE-OFF?");
+    setTextF(resGrindSub, "%.1f s against %.0f s. grind kept:\nadvice follows if it repeats",
+             thisTime, shot.targetTimeS);
+  } else if (g.action == GrindAction::FINER || g.action == GrindAction::COARSER) {
+    const bool finer = g.action == GrindAction::FINER;
+    fitLine(resGrind, finer ? "BREW FAST   GRIND FINER" : "BREW SLOW   GRIND COARSER");
+    // The amount is only shown once it rests on a sensitivity measured from
+    // this grinder's own history.
+    if (g.learned) {
+      setTextF(resGrindSub, "%d %s %s  ->  set %u %s", g.deltaUm < 0 ? -g.deltaUm : g.deltaUm,
+               grindUnit(), finer ? "finer" : "coarser", g.suggestedUm, grindUnit());
+    } else {
+      setText(resGrindSub, "see web page for details");
+    }
+  } else if (g.action == GrindAction::INCONSISTENT) {
+    fitLine(resGrind, "BREW TIMES VARY   NO ADVICE");
+    setTextF(resGrindSub, "%.0f to %.0f s at %u %s. review preparation;\nif the grinder was changed, set it in EDIT",
+             g.minTimeS, g.maxTimeS, g.currentUm, grindUnit());
+  } else if (g.action == GrindAction::HOLD) {
+    fitLine(resGrind, "BREW TIME OK   KEEP GRIND");
+    setColor(resGrind, COLOR_OK);
+    if (g.shotsUsed > 1) {
+      setTextF(resGrindSub, "this shot %.1f s, last %u average\n%.1f s against %.0f s target",
+               thisTime, g.shotsUsed, g.averageTimeS, g.targetTimeS);
+    } else {
+      setTextF(resGrindSub, "%.1f s against %.0f s target", thisTime, g.targetTimeS);
+    }
+  } else {
+    setText(resGrind, "");
+    setText(resGrindSub, "");
+  }
+  show(Panel::RESULT);
+}
+
+void setStandby(bool on) {
+  if (on == screenOff) return;
+  screenOff = on;
+  if (on) {
+    amoled.setBrightness(0);  // AMOLED: every pixel off
+    setCpuFrequencyMhz(CPU_STANDBY_MHZ);
+    LOGI("ui: scale is off, standby");
+  } else {
+    setCpuFrequencyMhz(CPU_ACTIVE_MHZ);
+    amoled.setBrightness(BRIGHT_ACTIVE);
+    LOGI("ui: awake");
+  }
+}
+
+void refresh() {
+  const bbw::LiveStatus st = app::status();
+  static State lastState = State::BOOT;
+  if (st.state != lastState) {
+    lastState = st.state;
+    wake();
+  }
+  const bool idle = st.state == State::READY || st.state == State::CONNECTING_SCALE;
+
+  // Standby with the scale. Only while idle with no scale; anything else
+  // (scale back, a shot, a fault, a touch) brings the controller back. After
+  // a touch it stays awake until it has been left alone again.
+  const uint32_t now = millis();
+  if (st.state == State::CONNECTING_SCALE && !st.scaleConnected) {
+    if (scaleLostAtMs == 0) scaleLostAtMs = now ? now : 1;
+    if (!screenOff && now - scaleLostAtMs >= SCALE_OFF_SLEEP_MS &&
+        lv_disp_get_inactive_time(nullptr) >= SCALE_OFF_SLEEP_MS) {
+      settingsOpen = recipesOpen = editOpen = false;
+      setStandby(true);
+    }
+  } else {
+    scaleLostAtMs = 0;
+    if (screenOff) wake();
+  }
+  if (screenOff) {
+    if (lv_disp_get_inactive_time(nullptr) < 1000) {
+      // Touched while dark: wake only, the touch must not press a key.
+      lv_indev_wait_release(lv_indev_get_next(nullptr));
+      wake();
+    }
+    return;
+  }
+
+  if (recipesOpen && idle) {
+    refreshRecipes();
+    return;
+  }
+  recipesOpen = false;
+  if (editOpen && idle) {
+    refreshEdit();
+    return;
+  }
+  editOpen = false;
+  if (settingsOpen && idle) {
+    refreshSettings();
+    return;
+  }
+  settingsOpen = false;
+
+  switch (st.state) {
+    case State::BOOT:
+    case State::INITIALIZING:
+    case State::CONNECTING_SCALE:
+    case State::READY:
+      refreshHome(st);
+      break;
+    case State::TARING:
+    case State::WAITING_FOR_CUP:
+    case State::READY_TO_BREW:
+    case State::STARTING_SHOT:
+    case State::BREWING:
+    case State::BLOOMING:
+    case State::STOPPING_SHOT:
+    case State::POST_SHOT_DRIP:
+      refreshBrew(st);
+      break;
+    case State::SHOT_COMPLETE:
+      refreshResult(st.state);
+      break;
+    case State::SHOT_TIMEOUT:
+    case State::INVALID_WEIGHT: {
+      // A shot that ran out of time, or was stopped because the cup was
+      // lifted, still gets its summary. If the stop could not be confirmed,
+      // or the weight was simply implausible, the warning screen takes over.
+      bbw::ShotRecord last;
+      const bool cupLifted = app::lastShot(last) &&
+                             last.endReason == static_cast<uint8_t>(bbw::EndReason::CUP_REMOVED);
+      if (!st.manualStopNeeded && (st.state == State::SHOT_TIMEOUT || cupLifted)) {
+        refreshResult(st.state);
+        break;
+      }
+    }
+      [[fallthrough]];
+    default: {
+      fitText(faultTitle, st.manualStopNeeded ? "STOP MACHINE" : faultTitle_(st.state),
+              LEFT_W - 16, 3, &lv_font_montserrat_24, &lv_font_montserrat_22,
+              &lv_font_montserrat_18);
+      setText(faultText, faultMessage(st.state, st.manualStopNeeded, st.stopStartedPump));
+      const bool offerPress = st.botConnected && (st.state == State::START_COMMAND_FAILED ||
+                                                  st.state == State::STOP_COMMAND_FAILED);
+      if (offerPress) lv_obj_clear_flag(faultPressBtn, LV_OBJ_FLAG_HIDDEN);
+      else lv_obj_add_flag(faultPressBtn, LV_OBJ_FLAG_HIDDEN);
+      show(Panel::FAULT);
+      break;
+    }
+  }
+
+  // Dim an idle home screen; never during a shot or a fault.
+  if (idle && !dimmed && lv_disp_get_inactive_time(nullptr) > IDLE_DIM_MS) {
+    amoled.setBrightness(BRIGHT_IDLE);
+    dimmed = true;
+  } else if (dimmed && lv_disp_get_inactive_time(nullptr) < 1000) {
+    wake();
+  }
+}
+
+}  // namespace
+
+bool begin() {
+  if (!amoled.begin()) {
+    LOGW("ui: AMOLED panel not detected");
+    return false;
+  }
+  LOGI("ui: board %s", amoled.getName());
+  amoled.setRotation(ROTATION_USB_LEFT);
+  amoled.setBrightness(BRIGHT_ACTIVE);
+  beginLvglHelper(amoled);
+  lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(COLOR_BG), 0);
+  buildHome();
+  buildBrew();
+  buildResult();
+  buildFault();
+  buildSettings();
+  buildRecipes();
+  buildEdit();
+  // The CST816T reports the key on the glass as a touch at a fixed point off
+  // the end of the panel; the library turns that into this callback.
+  amoled.setHomeButtonCallback(onTouchKey, nullptr);
+  started = true;
+  show(Panel::HOME);
+  return true;
+}
+
+void wake() {
+  if (!started) return;
+  if (screenOff) {
+    setStandby(false);
+    // Stay up for a full idle period before considering standby again.
+    if (scaleLostAtMs != 0) scaleLostAtMs = millis() ? millis() : 1;
+  } else if (dimmed) {
+    amoled.setBrightness(BRIGHT_ACTIVE);
+  }
+  dimmed = false;
+  lv_disp_trig_activity(nullptr);
+}
+
+bool isOff() { return screenOff; }
+
+void setWifiLine(const char *text) { strlcpy(wifiText, text, sizeof(wifiText)); }
+const char *wifiLine() { return wifiText; }
+
+void loop() {
+  if (!started) return;
+  static uint32_t lastRefresh = 0;
+  const uint32_t now = millis();
+  if (now - lastRefresh >= 100) {
+    lastRefresh = now;
+    refresh();
+  }
+  lv_timer_handler();
+
+  // The touch key starts a shot. It never stops one: it is too easy to
+  // brush against. From a menu it goes back to the home screen (an unsaved
+  // recipe edit is dropped), so starting always takes a press on that screen.
+  if (touchKeyPressed) {
+    touchKeyPressed = false;
+    const bool wasOff = screenOff;
+    wake();
+    if (wasOff) {
+      // a press on a dark screen only wakes it
+    } else if (settingsOpen || recipesOpen || editOpen) {
+      settingsOpen = recipesOpen = editOpen = false;
+    } else {
+      const State state = app::status().state;
+      if (state == State::READY || state == State::READY_TO_BREW) app::start();
+      else if (state == State::SHOT_COMPLETE || bbw::isFault(state)) app::acknowledge();
+    }
+  }
+}
+
+void bootShortPress() {
+  if (!started) return;
+  wake();
+  const State state = app::status().state;
+  if (state == State::STARTING_SHOT || state == State::BREWING || state == State::BLOOMING) {
+    // Stopping a shot from the button takes two presses, with the question
+    // shown in between. The STOP key on the screen stays a single touch.
+    if (stopConfirmUntilMs != 0) {
+      stopConfirmUntilMs = 0;
+      app::stop();
+    } else {
+      stopConfirmUntilMs = millis() + STOP_CONFIRM_MS;
+      if (stopConfirmUntilMs == 0) stopConfirmUntilMs = 1;
+    }
+  } else if (state == State::TARING || state == State::WAITING_FOR_CUP ||
+             state == State::READY_TO_BREW) {
+    app::stop();  // nothing is running yet: this only cancels
+  } else if (state == State::SHOT_COMPLETE || bbw::isFault(state)) {
+    app::acknowledge();
+  } else if (state == State::READY) {
+    if (settingsOpen || recipesOpen || editOpen) {
+      settingsOpen = recipesOpen = editOpen = false;  // back to the home screen
+    } else {
+      app::start();  // spare start button, should the touch key ever fail
+    }
+  }
+}
+
+}  // namespace ui

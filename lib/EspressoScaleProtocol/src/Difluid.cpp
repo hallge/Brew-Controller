@@ -1,0 +1,96 @@
+#include "ScaleProtocol.h"
+
+namespace {
+
+static const uint8_t TARE_DIFLUID[7] =
+    {0xdf, 0xdf, 0x03, 0x02, 0x01, 0x01, 0xc5};
+static const uint8_t UNIT_GRAM[7] =
+    {0xdf, 0xdf, 0x01, 0x04, 0x01, 0x00, 0xc4};
+static const uint8_t AUTO_NOTIFY[7] =
+    {0xdf, 0xdf, 0x01, 0x00, 0x01, 0x01, 0xc1};
+static const uint8_t HEARTBEAT_DIFLUID[6] =
+    {0xdf, 0xdf, 0x03, 0x05, 0x00, 0xc6};
+
+static const char *const kDifluidPrefixes[] = {"Microbalance"};
+
+static const ScalePayload kDifluidInitWrites[] = {
+    {UNIT_GRAM, static_cast<int>(sizeof(UNIT_GRAM)), "unit_gram"},
+    {AUTO_NOTIFY, static_cast<int>(sizeof(AUTO_NOTIFY)), "auto_notify"}
+};
+
+static const ScaleFeatureSet kDifluidFeatures = {
+    ScaleFeatureWeight | ScaleFeatureTare | ScaleFeatureHeartbeat,
+    0,
+    0,
+    2000,
+    5000,
+    0
+};
+
+uint8_t difluidChecksum(const uint8_t *data, int length) {
+    uint16_t sum = 0;
+    for (int i = 0; i < length - 1; ++i) {
+        sum = static_cast<uint16_t>(sum + data[i]);
+    }
+    return static_cast<uint8_t>(sum & 0xff);
+}
+
+bool difluidSupportedPacketLength(int length) {
+    return length == 19 || length == 20;
+}
+
+bool parseDifluidWeight(const uint8_t *data, int length, float *weight) {
+    if (length < 19 || data[0] != 0xdf || data[1] != 0xdf) {
+        return false;
+    }
+    if (difluidChecksum(data, length) != data[length - 1]) {
+        return false;
+    }
+    const uint8_t func = data[2];
+    const uint8_t cmd = data[3];
+    const uint8_t dataLen = data[4];
+    if (func != 0x03 || cmd != 0x00 || dataLen < 13 ||
+        length < 6 + static_cast<int>(dataLen)) {
+        return false;
+    }
+    const int32_t raw =
+        (static_cast<int32_t>(data[5]) << 24) |
+        (static_cast<int32_t>(data[6]) << 16) |
+        (static_cast<int32_t>(data[7]) << 8) | data[8];
+    *weight = static_cast<float>(raw) / 10.0f;
+    return scaleValidWeight(*weight);
+}
+
+bool encodeDifluidCommand(ScaleOp op, uint8_t arg, uint8_t *out, int *length) {
+    (void)arg;
+    switch (op) {
+        case ScaleOp::Tare:
+            return scaleCopyPayload(TARE_DIFLUID, sizeof(TARE_DIFLUID), out,
+                               length);
+        case ScaleOp::Heartbeat:
+            return scaleCopyPayload(HEARTBEAT_DIFLUID, sizeof(HEARTBEAT_DIFLUID),
+                               out, length);
+        default:
+            break;
+    }
+    return false;
+}
+
+} // namespace
+
+const ScaleProtocol kScaleProtocolDifluid = {
+    "difluid",
+    "DiFluid Microbalance detected",
+    "aa01",
+    "aa01",
+    kDifluidPrefixes,
+    sizeof(kDifluidPrefixes) / sizeof(kDifluidPrefixes[0]),
+    kDifluidFeatures,
+    &difluidSupportedPacketLength,
+    &parseDifluidWeight,
+    nullptr,
+    &encodeDifluidCommand,
+    kDifluidInitWrites,
+    sizeof(kDifluidInitWrites) / sizeof(kDifluidInitWrites[0]),
+    false
+};

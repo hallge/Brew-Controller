@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brew by Weight emulator</title>
+<style>
+  :root {
+    --bg: #14161a; --card: #1d2026; --line: #2c3038; --text: #e6e8ec; --dim: #8b919c;
+    --ok: #2ecc71; --bad: #e74c3c; --accent: #e67e22; --blue: #5aa9e6;
+    font: 14px/1.4 "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header a { color: var(--blue); text-decoration: none; }
+  .pill { padding: 2px 10px; border-radius: 99px; background: var(--line); font-size: 12px; font-weight: 600; letter-spacing: .03em; }
+  .pill.ok { background: #17442b; color: #7be0a5; } .pill.bad { background: #4a1d18; color: #ff9a8f; } .pill.busy { background: #4a3210; color: #ffc27a; }
+  main { display: grid; grid-template-columns: minmax(600px, 1fr) minmax(360px, 460px); gap: 14px; padding: 14px 18px; align-items: start; }
+  @media (max-width: 1080px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .card h2 { font-size: 13px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); display: flex; align-items: center; gap: 8px; }
+  .card h2 .pill { text-transform: none; letter-spacing: 0; }
+  .col { display: flex; flex-direction: column; gap: 14px; }
+  /* The board */
+  .bench { display: flex; align-items: center; justify-content: center; padding: 22px 10px; overflow-x: auto; }
+  /* Drawn as mounted: USB-C end on the left when the firmware uses rotation 2. */
+  .board { position: relative; display: flex; align-items: center; margin: 18px 0; }
+  .board.usb-right, .board.usb-right .face { flex-direction: row-reverse; }
+  .usb { width: 14px; height: 40px; border-radius: 4px 0 0 4px; background: linear-gradient(#999, #666); margin-right: -1px; }
+  .board.usb-right .usb { border-radius: 0 4px 4px 0; margin: 0 0 0 -1px; }
+  .face { background: #060606; border: 1px solid #3a3a3a; border-radius: 12px; padding: 10px 12px; display: flex; align-items: center; gap: 12px; box-shadow: 0 6px 24px #0008; }
+  .glass { background: #000; border-radius: 4px; line-height: 0; }
+  canvas { display: block; cursor: pointer; touch-action: none; image-rendering: auto; }
+  .key { width: 30px; height: 30px; border-radius: 50%; border: 3px solid var(--accent); background: transparent; padding: 0; cursor: pointer; }
+  .key:hover { background: #e67e2222; } .key:active { background: #e67e2266; }
+  /* Side buttons on the long edges, at the USB end. */
+  .edge { position: absolute; left: 34px; width: 50px; height: 15px; padding: 0; border: 1px solid #666; background: #2b2b2b; color: #bbb; font-size: 9px; font-weight: 700; line-height: 13px; cursor: pointer; }
+  .edge:active { background: #666; }
+  .edge.top { top: -15px; border-radius: 4px 4px 0 0; border-bottom: 0; }
+  .edge.bottom { bottom: -15px; border-radius: 0 0 4px 4px; border-top: 0; }
+  .board.usb-right .edge { left: auto; right: 34px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 6px 0; }
+  .facts { color: var(--dim); font-size: 12px; }
+  .facts b { color: var(--text); font-weight: 600; }
+  button { background: #2a2f38; color: var(--text); border: 1px solid #3a404b; border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer; }
+  button:hover { background: #343a45; } button.warn { border-color: #7a3a32; color: #ffb0a6; } button.go { border-color: #2f6d47; color: #8be0ad; }
+  label { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 13px; }
+  label.wide { display: grid; grid-template-columns: 150px 1fr 54px; width: 100%; }
+  input[type=number], input[type=text], select { background: #12141a; color: var(--text); border: 1px solid #3a404b; border-radius: 5px; padding: 3px 6px; font: inherit; width: 76px; }
+  input[type=text] { width: 110px; } select { width: auto; }
+  input[type=range] { width: 100%; }
+  .out { color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+  .readout { font: 600 30px/1 Consolas, monospace; background: #0b0d10; border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; min-width: 150px; text-align: right; }
+  .readout small { font-size: 13px; color: var(--dim); }
+  .readout.off { color: #333; }
+  details { margin-top: 6px; } summary { cursor: pointer; color: var(--dim); font-size: 12px; }
+  .arm { width: 46px; height: 46px; border-radius: 8px; background: #0b0d10; border: 1px solid var(--line); position: relative; }
+  .arm i { position: absolute; left: 20px; top: 6px; width: 6px; height: 16px; background: #ccc; border-radius: 3px; transform-origin: 3px 3px; transition: transform .3s; }
+  .arm.down i { transform: rotate(-75deg); background: var(--accent); }
+  /* Log */
+  #log { height: 300px; overflow: auto; background: #0b0d10; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: 12px/1.45 Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+  #log .serial { color: #cfd3da; } #log .ble { color: #6fb3ea; } #log .scale { color: #8fdc9f; } #log .bot { color: #f0b072; } #log .machine { color: #e58fd0; } #log .emu { color: #8b919c; }
+  #log .t { color: #565c66; }
+  #serial { flex: 1; width: auto; font-family: Consolas, monospace; }
+  .note { color: var(--dim); font-size: 12px; margin: 4px 0 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Brew by Weight emulator</h1>
+  <span id="fwState" class="pill">starting</span>
+  <span class="facts" id="fwLine"></span>
+  <span style="flex:1"></span>
+  <a id="webLink" href="#" target="_blank">Device web page &#8599;</a>
+  <span id="conn" class="pill bad">emulator offline</span>
+</header>
+
+<main>
+  <div class="col">
+    <section class="card">
+      <h2>T-Display S3 AMOLED Plus <span class="pill" id="boardPill">536 x 240</span></h2>
+      <div class="bench">
+        <div class="board" id="board">
+          <button class="edge top" id="edgeTop"></button>
+          <button class="edge bottom" id="edgeBottom"></button>
+          <div class="usb" title="USB-C"></div>
+          <div class="face">
+            <button class="key" id="key" title="Touch key on the glass (orange circle). The touch controller reports it as a press just past the end of the screen."></button>
+            <div class="glass"><canvas id="lcd" width="536" height="240"></canvas></div>
+          </div>
+        </div>
+      </div>
+      <div class="row facts">
+        <span>Backlight <b id="bright">-</b></span><span>CPU <b id="cpu">-</b></span>
+        <span>Up <b id="uptime">-</b></span><span>Last reset <b id="reason">-</b></span><span>USB-C <b id="usbSide">-</b></span>
+        <span style="flex:1"></span>
+        <label>Zoom <select id="zoom"><option value="1">100 %</option><option value="1.5">150 %</option><option value="2">200 %</option></select></label>
+      </div>
+      <div class="row">
+        <button data-reset="power" title="Unplug and replug USB. RTC memory is lost.">Power cycle</button>
+        <button class="warn" data-reset="crash" title="The firmware stops instantly, as after a panic or watchdog, and restarts. The machine, scale and Bot carry on.">Crash the controller</button>
+        <button class="warn" data-reset="erase" title="Erase settings, pairing and shot history, then power cycle.">Erase flash</button>
+      </div>
+      <p class="note">Click and drag on the screen as you would touch it. The firmware running here is the real one from <code>src/</code>, compiled for the PC.</p>
+    </section>
+
+    <section class="card">
+      <h2>Log
+        <span style="flex:1"></span>
+        <label><input type="checkbox" class="cat" value="serial" checked> serial</label>
+        <label><input type="checkbox" class="cat" value="ble" checked> BLE bytes</label>
+        <label><input type="checkbox" class="cat" value="scale" checked> scale</label>
+        <label><input type="checkbox" class="cat" value="bot" checked> Bot</label>
+        <label><input type="checkbox" class="cat" value="machine" checked> machine</label>
+        <label title="Also log every weight packet, heartbeat and LIVE line"><input type="checkbox" id="periodic"> periodic</label>
+        <button id="clear">Clear</button>
+      </h2>
+      <div id="log"></div>
+      <div class="row">
+        <input type="text" id="serial" placeholder="serial command: status, start, stop, tare, ack, csv, json">
+        <button id="send">Send</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="card">
+      <h2>Breville Dual Boiler <span class="pill" id="pumpPill">idle</span></h2>
+      <div class="row">
+        <div class="readout"><span id="liquid">0.0</span> <small>g in cup</small></div>
+        <div class="facts">Flow <b id="flowNow">0.0</b> g/s<br>Pump time <b id="brewS">0.0</b> s<br>Button presses <b id="mPresses">0</b></div>
+      </div>
+      <div class="row">
+        <button data-dev="machine" data-key="press" title="Press the machine's MANUAL button with your finger">Press MANUAL by hand</button>
+        <button data-dev="machine" data-key="emptyCup">Empty cup</button>
+        <label><input type="checkbox" data-dev="machine" data-key="cupOnScale"> cup on scale</label>
+        <label><input type="checkbox" data-dev="machine" data-key="powered"> machine on</label>
+      </div>
+      <label class="wide">Pre-infusion <input type="range" min="0" max="20" step="0.5" data-dev="machine" data-key="preinfusionS"><span class="out"></span></label>
+      <label class="wide">Flow rate (grind) <input type="range" min="0" max="6" step="0.1" data-dev="machine" data-key="flowGS"><span class="out"></span></label>
+      <label class="wide">Drip after stop <input type="range" min="0" max="6" step="0.1" data-dev="machine" data-key="dripG"><span class="out"></span></label>
+      <label class="wide">Cup weight <input type="range" min="0" max="300" step="0.1" data-dev="machine" data-key="cupG"><span class="out"></span></label>
+      <p class="note">Units: seconds, g/s, g, g. Flow 0 simulates a choked shot; a higher flow a coarser grind.</p>
+    </section>
+
+    <section class="card">
+      <h2>Scale <span class="pill" id="lunarPill">-</span></h2>
+      <div class="row">
+        <div class="readout" id="lunarLcd"><span id="lunarW">0.0</span> <small>g</small></div>
+        <div class="readout" id="lunarTimerBox" style="min-width:110px"><span id="lunarT">0:00</span></div>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" data-dev="lunar" data-key="powered"> power</label>
+        <button data-dev="lunar" data-key="tare" title="The Lunar's own tare button">Tare button</button>
+        <span class="facts" id="lunarFacts"></span>
+      </div>
+      <details>
+        <summary>Scale model, data rate, faults</summary>
+        <div class="row">
+          <label>Model <select data-dev="lunar" data-key="variant">
+            <option value="0">Lunar 2021 (13-byte weight)</option>
+            <option value="1">Lunar 2021, newer firmware (17-byte, with timer)</option>
+            <option value="2">Lunar pre-2021 (2a80, approximate)</option>
+            <option value="3">Felicita Arc (weight, tare, timer; approximate)</option>
+            <option value="4">Decent Scale (weight and tare only; approximate)</option>
+            <option value="5">DiFluid Microbalance (weight and tare only; approximate)</option>
+            <option value="6">AtomHeart Eclair (weight, tare, timer; approximate)</option>
+            <option value="7">Eureka Precisa (weight, tare, timer driven; approximate)</option>
+            <option value="8">MyScale / blackcoffee (weight and tare only; approximate)</option>
+            <option value="9">Varia AKU (weight, tare, timer in whole seconds; approximate)</option>
+            <option value="10">WeighMyBru (weight and tare only; approximate)</option>
+          </select></label>
+        </div>
+        <div class="row">
+          <label>Packets/s <input type="number" min="1" max="50" data-dev="lunar" data-key="rateHz"></label>
+          <label>Noise g <input type="number" min="0" max="2" step="0.1" data-dev="lunar" data-key="noiseG"></label>
+          <label>RSSI <input type="number" min="-100" max="-20" data-dev="lunar" data-key="rssi"></label>
+        </div>
+        <div class="row">
+          <label title="Connected, but no packets: the firmware should raise SCALE_DATA_STALE"><input type="checkbox" data-dev="lunar" data-key="silent"> go silent</label>
+          <label title="The scale ends the session when heartbeats stop"><input type="checkbox" data-dev="lunar" data-key="heartbeatWatchdog"> needs heartbeat</label>
+          <label title="This many tare commands over BLE are ignored">Ignore tares <input type="number" min="0" max="9" data-dev="lunar" data-key="ignoreTares"></label>
+          <button class="warn" data-dev="lunar" data-key="dropLink">Drop connection</button>
+        </div>
+      </details>
+    </section>
+
+    <section class="card">
+      <h2>SwitchBot Bot <span class="pill" id="botPill">-</span></h2>
+      <div class="row">
+        <div class="arm" id="botArm" title="Arm"><i></i></div>
+        <div class="facts">Arm <b id="botArmText">up</b><br>Presses <b id="botPresses">0</b>, commands <b id="botCommands">0</b><br>Last command <b id="botLast">-</b></div>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" data-dev="bot" data-key="inRange"> in range</label>
+        <label title="Arm sits on the machine's MANUAL button"><input type="checkbox" data-dev="bot" data-key="mounted"> on MANUAL button</label>
+        <label>Battery % <input type="number" min="0" max="100" data-dev="bot" data-key="battery"></label>
+      </div>
+      <details>
+        <summary>Mode, password, wake time, faults</summary>
+        <div class="row">
+          <label title="SwitchBot app 'Switch' mode: a press is refused with status 05"><input type="checkbox" data-dev="bot" data-key="switchMode"> switch mode</label>
+          <label>Password <input type="text" data-dev="bot" data-key="password" placeholder="none"></label>
+          <label>Hold s <input type="number" min="0" max="60" data-dev="bot" data-key="holdSeconds"></label>
+        </div>
+        <div class="row">
+          <label title="How long a sleeping Bot takes to accept a connection">Wake s <input type="number" min="0" max="30" step="0.1" data-dev="bot" data-key="wakeS"></label>
+          <label>RSSI <input type="number" min="-100" max="-20" data-dev="bot" data-key="rssi"></label>
+          <label title="Acknowledge when the arm has finished instead of on receipt"><input type="checkbox" data-dev="bot" data-key="ackWhenDone"> ack when done</label>
+        </div>
+        <div class="row">
+          <label title="The Bot acts but this many acknowledgements are lost">Lose acks <input type="number" min="0" max="9" data-dev="bot" data-key="dropAcks"></label>
+          <label title="This many commands never arrive">Lose commands <input type="number" min="0" max="9" data-dev="bot" data-key="ignoreCommands"></label>
+          <label title="Acknowledges, but the arm does not reach the button"><input type="checkbox" data-dev="bot" data-key="armJammed"> arm jammed</label>
+          <button class="warn" data-dev="bot" data-key="dropLink">Drop connection</button>
+        </div>
+        <div class="row">
+          <label title="A second Bot further away (on a light switch). Pairing must not pick it."><input type="checkbox" data-dev="decoy" data-key="inRange"> second Bot nearby (decoy, weaker signal)</label>
+          <span class="facts">decoy presses <b id="decoyPresses">0</b></span>
+          <label title="A second SwitchBot Bot on the machine's POWER button. Pair it as the power bot on the controller's web page."><input type="checkbox" data-dev="powerbot" data-key="inRange"> power bot in range</label>
+          <span class="facts">power presses <b id="powerPresses">0</b></span>
+        </div>
+      </details>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+// One request at a time, so a press never overtakes its release.
+let queue = Promise.resolve();
+const post = (path) => (queue = queue.then(() => fetch(path, {method: 'POST', body: '{}'}).catch(() => {})));
+const set = (device, key, value) =>
+  post(`/set?device=${device}&key=${key}&value=${encodeURIComponent(value)}`);
+
+// ---- display ----
+const lcd = $('lcd'), ctx = lcd.getContext('2d');
+let frame = 0, online = false;
+async function frameLoop() {
+  for (;;) {
+    try {
+      const r = await fetch('/frame?since=' + frame);
+      const [w, h] = (r.headers.get('X-Size') || '536x240').split('x').map(Number);
+      if (r.status === 200) {
+        const data = new Uint8ClampedArray(await r.arrayBuffer());
+        if (lcd.width !== w || lcd.height !== h) { lcd.width = w; lcd.height = h; applyZoom(); }
+        if (data.length === w * h * 4) ctx.putImageData(new ImageData(data, w, h), 0, 0);
+      }
+      frame = Number(r.headers.get('X-Frame') || 0);
+      online = true;
+    } catch (e) { online = false; frame = 0; await new Promise((r) => setTimeout(r, 500)); }
+    await new Promise((r) => setTimeout(r, 40));
+  }
+}
+function applyZoom() {
+  const z = Number($('zoom').value);
+  lcd.style.width = lcd.width * z + 'px';
+  lcd.style.height = lcd.height * z + 'px';
+}
+$('zoom').onchange = applyZoom;
+
+// ---- touch ----
+let touching = false, lastMove = 0;
+function touch(e, down) {
+  const b = lcd.getBoundingClientRect();
+  const x = Math.round((e.clientX - b.left) * lcd.width / b.width);
+  const y = Math.round((e.clientY - b.top) * lcd.height / b.height);
+  post(`/touch?x=${x}&y=${y}&down=${down ? 1 : 0}`);
+}
+lcd.addEventListener('pointerdown', (e) => { touching = true; lcd.setPointerCapture(e.pointerId); touch(e, true); });
+lcd.addEventListener('pointermove', (e) => {
+  if (touching && Date.now() - lastMove > 30) { lastMove = Date.now(); touch(e, true); }
+});
+const release = (e) => { if (touching) { touching = false; touch(e, false); } };
+lcd.addEventListener('pointerup', release);
+lcd.addEventListener('pointercancel', release);
+
+// ---- hardware buttons ----
+// BOOT is on the top edge and RST on the bottom with USB-C on the left;
+// turned the other way round (rotation 0) they swap.
+let usbRight = null;
+function hold(el, path) {
+  el.onpointerdown = () => post(path + '1');
+  el.onpointerup = el.onpointerleave = () => post(path + '0');
+  el.onclick = null;
+}
+function layoutBoard(rotation) {
+  if (usbRight === (rotation === 0)) return;
+  usbRight = rotation === 0;
+  $('board').classList.toggle('usb-right', usbRight);
+  const boot = $(usbRight ? 'edgeBottom' : 'edgeTop'), rst = $(usbRight ? 'edgeTop' : 'edgeBottom');
+  boot.textContent = 'BOOT';
+  boot.title = 'BOOT button (GPIO0). Short press: start / stop / acknowledge. Hold 1.2 s: next recipe.';
+  hold(boot, '/button?down=');
+  rst.textContent = 'RST';
+  rst.title = 'RST button: restart the controller';
+  rst.onpointerdown = rst.onpointerup = rst.onpointerleave = null;
+  rst.onclick = () => post('/reset?kind=power');
+  $('usbSide').textContent = (usbRight ? 'right' : 'left') + ' (rotation ' + rotation + ')';
+}
+layoutBoard(2);
+hold($('key'), '/touchkey?down=');
+document.querySelectorAll('[data-reset]').forEach((b) => {
+  b.onclick = () => {
+    if (b.dataset.reset === 'erase' && !confirm('Erase the emulated flash (settings, pairing, shot history)?')) return;
+    post('/reset?kind=' + b.dataset.reset);
+  };
+});
+
+// ---- device controls ----
+document.querySelectorAll('[data-dev]').forEach((el) => {
+  const send = () => set(el.dataset.dev, el.dataset.key,
+                         el.type === 'checkbox' ? (el.checked ? 1 : 0) : el.tagName === 'BUTTON' ? 1 : el.value);
+  if (el.tagName === 'BUTTON') el.onclick = send;
+  else if (el.type === 'range') el.oninput = () => { showOut(el); send(); };
+  else el.onchange = send;
+});
+function showOut(el) {
+  const out = el.parentElement.querySelector('.out');
+  if (out) out.textContent = Number(el.value).toFixed(1);
+}
+function syncControls(state) {
+  document.querySelectorAll('[data-dev]').forEach((el) => {
+    if (el.tagName === 'BUTTON' || el === document.activeElement) return;
+    const value = (state[el.dataset.dev] || {})[el.dataset.key];
+    if (value === undefined) return;
+    if (el.type === 'checkbox') el.checked = !!value;
+    else { el.value = value; showOut(el); }
+  });
+}
+
+// ---- log ----
+const logEl = $('log');
+let logSeq = 0;
+const cats = () => new Set([...document.querySelectorAll('.cat:checked')].map((c) => c.value).concat('emu'));
+function addLog(lines) {
+  if (!lines.length) return;
+  const stick = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 30;
+  const shown = cats();
+  for (const [ms, cat, text] of lines) {
+    const row = document.createElement('div');
+    row.className = cat;
+    row.hidden = !shown.has(cat);
+    const t = document.createElement('span');
+    t.className = 't';
+    t.textContent = (ms / 1000).toFixed(3).padStart(8) + ' ' + cat.padEnd(8);
+    row.append(t, text);
+    logEl.append(row);
+  }
+  while (logEl.childElementCount > 2500) logEl.firstChild.remove();
+  if (stick) logEl.scrollTop = logEl.scrollHeight;
+}
+document.querySelectorAll('.cat').forEach((c) => c.onchange = () => {
+  const shown = cats();
+  for (const row of logEl.children) row.hidden = !shown.has(row.className);
+});
+$('clear').onclick = () => { logEl.textContent = ''; };
+$('periodic').onchange = (e) => set('emu', 'logPeriodic', e.target.checked ? 1 : 0);
+function sendSerial() {
+  const line = $('serial').value.trim();
+  if (line) post('/serial?line=' + encodeURIComponent(line));
+  $('serial').value = '';
+}
+$('send').onclick = sendSerial;
+$('serial').onkeydown = (e) => { if (e.key === 'Enter') sendSerial(); };
+
+// ---- state ----
+const pill = (el, text, cls) => { el.textContent = text; el.className = 'pill ' + (cls || ''); };
+const clock = (s) => Math.floor(s / 60) + ':' + (s % 60).toFixed(1).padStart(4, '0');
+let lastUptime = 0;
+async function stateLoop() {
+  for (;;) {
+    try {
+      const s = await (await fetch('/state?log=' + logSeq)).json();
+      if (s.board.uptimeS < lastUptime) { logSeq = 0; frame = 0; }  // controller restarted
+      else logSeq = s.logSeq;
+      lastUptime = s.board.uptimeS;
+      if (logSeq) addLog(s.log);
+      pill($('conn'), 'emulator running', 'ok');
+
+      const fw = s.firmware, faulty = /FAILED|DISCONNECTED|STALE|TIMEOUT|INVALID|ERROR/.test(fw.state);
+      pill($('fwState'), fw.state, faulty ? 'bad' : fw.state === 'READY' ? 'ok' : 'busy');
+      $('fwLine').innerHTML = `weight <b>${fw.weightG.toFixed(1)} g</b> &nbsp; target <b>${fw.targetG.toFixed(1)} g</b> &nbsp; shot <b>${fw.shotTimeS.toFixed(1)} s</b>`;
+      $('webLink').href = 'http://localhost:' + s.board.webPort + '/';
+
+      const b = s.board;
+      $('bright').textContent = b.brightness === 0 ? 'off (standby)' : b.brightness + ' / 255';
+      $('cpu').textContent = b.cpuMhz + ' MHz';
+      $('uptime').textContent = clock(b.uptimeS);
+      $('reason').textContent = b.resetReason;
+      layoutBoard(b.rotation);
+      lcd.style.opacity = b.brightness === 0 ? 0 : 0.3 + 0.7 * b.brightness / 255;
+      $('periodic').checked = b.logPeriodic;
+
+      const m = s.machine;
+      pill($('pumpPill'), !m.powered ? 'off' : m.brewing ? (m.flowNowGS > 0.05 ? 'pump on, pouring' : 'pump on, pre-infusion') : m.dripLeftG > 0.02 ? 'dripping' : 'idle',
+           m.brewing ? 'busy' : '');
+      $('liquid').textContent = m.liquidG.toFixed(1);
+      $('flowNow').textContent = m.flowNowGS.toFixed(1);
+      $('brewS').textContent = m.brewS.toFixed(1);
+      $('mPresses').textContent = m.presses;
+
+      const l = s.lunar;
+      pill($('lunarPill'), !l.powered ? 'off' : l.linked ? (l.streaming ? 'connected, streaming' : 'connected') : 'advertising', l.linked ? 'ok' : '');
+      $('lunarLcd').classList.toggle('off', !l.powered);
+      $('lunarTimerBox').classList.toggle('off', !l.powered);
+      $('lunarW').textContent = l.displayG.toFixed(1);
+      $('lunarT').textContent = clock(l.timerS).replace(/\.\d$/, '');
+      $('lunarFacts').innerHTML = `${l.name} &nbsp; <b>${l.packets}</b> packets, <b>${l.heartbeats}</b> heartbeats, <b>${l.tares}</b> tares`;
+
+      const bot = s.bot;
+      pill($('botPill'), !bot.inRange ? 'out of range' : bot.linked ? 'connected' : 'asleep (advertising)', bot.linked ? 'ok' : '');
+      $('botArm').classList.toggle('down', bot.arm !== 'up');
+      $('botArmText').textContent = bot.arm;
+      $('botPresses').textContent = bot.presses;
+      $('botCommands').textContent = bot.commands;
+      $('botLast').textContent = bot.lastCommand || '-';
+      $('decoyPresses').textContent = s.decoy.presses;
+      $('powerPresses').textContent = s.machine.powerPresses;
+      syncControls(s);
+    } catch (e) {
+      pill($('conn'), 'emulator offline', 'bad');
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
+applyZoom();
+frameLoop();
+stateLoop();
+</script>
+</body>
+</html>

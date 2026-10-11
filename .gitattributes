@@ -1,0 +1,8 @@
+# Sources are kept with LF line endings on every platform.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.pdf binary
+*.png binary
+*.jpg binary
+*.bin binary

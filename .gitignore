@@ -1,0 +1,10 @@
+# Build output and local tooling
+.venv/
+.pio/
+.vscode/
+__pycache__/
+*.pyc
+
+# Emulator state: shot history, settings, pairing and device keys of a local run
+emu/data/
+emu/data.backup-*/
