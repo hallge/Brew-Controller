@@ -1703,6 +1703,44 @@ static void testPowerControl() {
   CHECK(config.schedule[2].minuteOfDay == 0 && config.belief == 2 && config.utcOffsetMin == 0);
 }
 
+static void testReadingNewerThanTick() {
+  printf("a reading stamped after the tick's clock was read\n");
+  // Reported from the emulator: "scale went silent" in the middle of shots
+  // whose readings had no gap at all. The BLE task stamps a reading while the
+  // control task, which has already read its clock, is still busy; the
+  // reading is then newer than "now" and its age, unsigned, is enormous.
+  Rig r;
+  r.toReady();
+  r.ctl.requestStart();
+  CHECK(r.runUntil(State::BREWING, 10000));
+  r.run(9000);                                   // pouring
+  CHECK(r.ctl.state() == State::BREWING);
+  for (int k = 0; k < 20 && r.ctl.state() == State::BREWING; ++k) {
+    r.run(90);
+    WeightSample s;
+    s.weightG = static_cast<float>(round((r.sim.trueWeightG - r.sim.tareOffsetG) * 10.0) / 10.0);
+    s.atMs = r.sim.nowMs + 3;                    // stamped 3 ms after the clock was read
+    s.sequence = ++r.sim.sequence;
+    r.ctl.onSample(s);
+    r.ctl.tick(r.sim.nowMs);
+  }
+  CHECK(r.ctl.state() == State::BREWING);
+  CHECK(r.ctl.status(r.sim.nowMs).weightFresh);
+  CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+  ShotRecord shot;
+  CHECK(r.ctl.takeCompletedShot(shot));
+  CHECK(shot.endReason == static_cast<uint8_t>(EndReason::WEIGHT) ||
+        shot.endReason == static_cast<uint8_t>(EndReason::WEIGHT_PREDICTED));
+  // A scale that really stops sending is still caught.
+  Rig quiet;
+  quiet.toReady();
+  quiet.ctl.requestStart();
+  CHECK(quiet.runUntil(State::BREWING, 10000));
+  quiet.run(9000);
+  quiet.sim.scaleSilent = true;
+  CHECK(quiet.runUntil(State::SCALE_DATA_STALE, 15000));
+}
+
 static void testShotDataSet() {
   printf("full data set of a shot\n");
   Rig r;
@@ -2777,6 +2815,35 @@ static void testCupRequired() {
   r.run(2000);
   CHECK(!r.ctl.status(r.sim.nowMs).cupPresent);
 
+  // Reported: cup swapped while the result is still showing. It has to be
+  // known by the time the home screen is back.
+  Rig swap;
+  swap.settings.requireCup = true;
+  swap.toReady();
+  swap.run(1000);
+  swap.sim.trueWeightG += 62.0;
+  swap.run(3000);
+  swap.ctl.requestStart();
+  CHECK(swap.runUntil(State::SHOT_COMPLETE, 60000));
+  swap.run(1500);
+  // The coffee arriving in the cup is not a cup being placed.
+  CHECK(!swap.ctl.status(swap.sim.nowMs).cupPresent);
+  const int taresBefore = swap.sim.tares;
+  swap.sim.trueWeightG -= 62.0 + 36.0;          // full cup off
+  swap.run(2000);
+  CHECK(swap.ctl.state() == State::SHOT_COMPLETE && !swap.ctl.status(swap.sim.nowMs).cupPresent);
+  swap.sim.trueWeightG += 70.0;                 // fresh cup on
+  swap.run(2500);
+  CHECK(swap.ctl.state() == State::SHOT_COMPLETE);   // the screen decides when to leave
+  CHECK(swap.ctl.status(swap.sim.nowMs).cupPresent);
+  CHECK(swap.sim.tares == taresBefore + 1);     // and it has been zeroed
+  swap.ctl.acknowledge();
+  swap.run(500);
+  CHECK(swap.ctl.state() == State::READY && swap.ctl.status(swap.sim.nowMs).cupPresent);
+  swap.ctl.requestStart();                      // straight into the next shot
+  CHECK(swap.runUntil(State::SHOT_COMPLETE, 60000));
+  CHECK(swap.sim.presses == 4);
+
   // The scale's own auto-tare zeroes the cup before the controller's command
   // matters: the fall to zero right after placing is not the cup leaving.
   Rig a;
@@ -3822,6 +3889,7 @@ int main() {
   testPusherDrivers();
   testPowerControl();
   testShotDataSet();
+  testReadingNewerThanTick();
   testSwitchBotProtocol();
   testAlgorithms();
   testSanitize();

@@ -75,8 +75,9 @@ void BrewController::enter(State next, uint32_t nowMs) {
 }
 
 bool BrewController::weightFresh(uint32_t nowMs) const {
+  // Signed: a reading stamped just after nowMs was read is fresh, not ancient.
   return haveSample_ &&
-         static_cast<uint32_t>(nowMs - lastRxMs_) <= settings_.scaleTimeoutMs;
+         static_cast<int32_t>(nowMs - lastRxMs_) <= static_cast<int32_t>(settings_.scaleTimeoutMs);
 }
 
 bool BrewController::scaleUsable(uint32_t nowMs) const {
@@ -181,7 +182,13 @@ void BrewController::onSample(const WeightSample &sample) {
   haveSample_ = true;
   flow_.add(sample.weightG, sample.atMs);
   trackFlow(sample);
-  if (state_ == State::READY) trackCup(sample);
+  // The cup is followed whenever no shot is in hand: on the home screen, and
+  // also while a result or a fault is still showing, so that swapping the cup
+  // there is known by the time the home screen is back.
+  if (state_ == State::READY || state_ == State::SHOT_COMPLETE ||
+      (isFault(state_) && !machineMayBeRunning())) {
+    trackCup(sample);
+  }
   // The data set of a shot runs on past the stop: the drip, and the weight
   // the cup settles at, belong to it.
   if ((state_ == State::STOPPING_SHOT || state_ == State::POST_SHOT_DRIP) &&
@@ -340,6 +347,13 @@ float BrewController::recordSample(const WeightSample &sample) {
 void BrewController::tick(uint32_t nowMs) {
   const Intent intent = intent_;
   intent_ = Intent::NONE;
+
+  // Readings are stamped by the BLE task as they arrive, so one can carry a
+  // time a millisecond or two later than the "now" the caller read before
+  // handing it over. Every age in here is an unsigned difference: a reading
+  // from the future would come out 49 days old and be taken for a scale gone
+  // silent. Time never runs behind the newest reading.
+  if (haveSample_ && static_cast<int32_t>(nowMs - lastRxMs_) < 0) nowMs = lastRxMs_;
 
   if (recoveryUntilMs_ != 0 && static_cast<int32_t>(nowMs - recoveryUntilMs_) >= 0) {
     recoveryUntilMs_ = 0;

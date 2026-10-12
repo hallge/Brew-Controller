@@ -480,7 +480,11 @@ void controlTask(void *) {
       scaleWasConnected = scaleConnected;
       bbw::WeightSample sample;
       while (g_scale.nextSample(sample)) g_controller.onSample(sample);
-      g_controller.tick(now);
+      // The controller's time is read after the readings are taken in, not
+      // before: a reading that arrived while the scale and the Bots were
+      // being serviced above (a heartbeat write takes milliseconds) is
+      // stamped later than `now`.
+      g_controller.tick(millis());
       // Bot battery: connected from Start until the shot is confirmed over,
       // asleep the rest of the time.
       if (g_controller.actuatorNeeded()) g_botHoldUntilMs = now + BOT_LINGER_MS;
