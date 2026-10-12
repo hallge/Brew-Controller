@@ -67,7 +67,8 @@ Panel shown = Panel::HOME;
 bool settingsOpen = false;
 bool recipesOpen = false;
 bool editOpen = false;
-int editField = 0;
+constexpr int EDIT_FIELD_GRIND = 2;  // index in the field list on the edit screen
+int editField = EDIT_FIELD_GRIND;
 bbw::Recipe editRecipe;         // working copy on the edit panel
 // BOOT asks before it stops a running shot: the question stays up this long.
 constexpr uint32_t STOP_CONFIRM_MS = 5000;
@@ -271,7 +272,8 @@ void onManualPress(lv_event_t *) { app::manualPress(); }
 // Recipe quick edit. Works on a copy; SAVE writes it back.
 void onOpenEdit(lv_event_t *) {
   editRecipe = app::activeRecipe();
-  editField = 0;
+  // Opens on the grind: it is what gets changed from one shot to the next.
+  editField = EDIT_FIELD_GRIND;
   editOpen = true;
 }
 void onEditField(lv_event_t *e) {
@@ -1010,6 +1012,8 @@ void refreshBrew(const bbw::LiveStatus &st) {
 
 // The result of a shot. Also used for a shot that ran out of time: the same
 // details, under a heading that says so.
+bool resReviewPending = false;  // the result screen is showing IGNORE / COUNT
+
 void refreshResult(State state) {
   bbw::ShotRecord shot;
   const bool have = app::lastShot(shot);
@@ -1103,6 +1107,7 @@ void refreshResult(State state) {
     if (visible) lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
   };
+  resReviewPending = review;
   showIf(resReview, review);
   showIf(resIgnoreBtn, review);
   showIf(resCountBtn, review);
@@ -1262,6 +1267,10 @@ void refresh() {
       break;
     case State::SHOT_COMPLETE:
       refreshResult(st.state);
+      // The used cup taken off and a fresh one put on: that is "ready for the
+      // next one". Back to the home screen without a tap, unless the result
+      // is still asking whether the shot counts for the grind.
+      if (st.cupPresent && !resReviewPending) app::acknowledge();
       break;
     case State::SHOT_TIMEOUT:
     case State::INVALID_WEIGHT: {
