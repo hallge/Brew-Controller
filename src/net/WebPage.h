@@ -28,6 +28,7 @@ h2{margin:0;font-size:12px;font-weight:600;letter-spacing:.1em;text-transform:up
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 22px;display:flex;flex-direction:column;gap:12px;min-width:0}
 .card.com{background:var(--combg);border-color:var(--comline)}.card.com h2{color:#8cc4ff}
 .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:16px}
+.hstk{display:flex;flex-direction:column;gap:16px;min-width:0}.hstk>.card:last-child{flex:1}.card.tight{gap:8px;padding-top:14px;padding-bottom:14px}.card.tight .num{font-size:24px}.card.tight .head .row{gap:10px}.card.tight>.head{flex-wrap:nowrap;align-items:flex-start}.card.tight>.head>:first-child{min-width:0}.card.tight>.head>a{white-space:nowrap}
 .split{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}.split>.side{flex:1 1 260px;min-width:0}.split>.body{flex:2 1 420px;min-width:0;display:flex;flex-direction:column;gap:16px}
 .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
@@ -174,9 +175,10 @@ main{padding:14px 12px 70px}.big{font-size:38px}.otp{top:62px}.otp.mini{margin-r
 <section class="card"><div class="head"><h2>Brewing now</h2><a class="sm" href="#coffees">Coffees</a></div>
 <label>What the controller will brew<select id="psel" onchange="act('preset_select',+this.value)"></select></label>
 <div class="row" id="pchips"></div><div class="sm dim" id="pinfo"></div></section>
-<section class="card"><div class="head"><h2>Grinder</h2><a class="sm" href="#grinder">Details</a></div>
-<div class="row"><span class="num" id="hg">--</span><span class="dim un">&micro;m</span><span class="pill" id="hgadv"></span></div>
-<div class="sm mid" id="hgwhy"></div><div class="sm dim" id="hgage"></div></section>
+<div class="hstk"><section class="card tight"><div class="head"><div class="row"><h2>Grinder</h2><span><span class="num" id="hg">--</span> <span class="dim un">&micro;m</span></span><span class="pill" id="hgadv"></span></div><a class="sm" href="#grinder">Details</a></div>
+<div class="sm mid"><span id="hgwhy"></span> <span class="dim" id="hgage"></span></div></section>
+<section class="card tight"><div class="head"><h2>Previous grinder recommendation</h2><a class="sm" href="#shots">All shots</a></div>
+<div id="hprev" class="sm mid"><span class="dim">No shot yet.</span></div></section></div>
 </div>
 <section class="card"><div class="head"><h2>Most recent shot</h2><a class="sm" href="#shots">All shots</a></div>
 <div id="hshot" class="dim">No shot yet.</div><canvas id="hchart" width="900" height="200"></canvas>
@@ -597,7 +599,7 @@ else if(n>0)rt=n+' of the 3 shots rated 4 or 5 stars that are needed before rati
 if(G.taste_hint&&G.coffee){const sour=G.taste_hint<0,agrees=(G.action=='finer'&&sour)||(G.action=='coarser'&&!sour);
 rt+=(rt?' ':'')+'The last '+G.taste_shots+' shots at this setting tasted '+(sour?'sour':'bitter')+'. '+(G.action=='hold'?'The time is on target, so try a little '+(sour?'finer':'coarser')+' only if you agree.':agrees?'That agrees with the advice.':'That disagrees with the time, so something other than the grind may be the cause: dose, distribution, temperature, or the age of the coffee.')}
 $('grate').textContent=rt;
-$('gsens').textContent='Sensitivity: '+(G.sensitivity_source==='measured'?'measured, ':G.sensitivity_source==='grinder'?'from this grinder, ':'starting guess, ')+fdf(G.um_per_s)+' '+fdu()+' per second'+(G.between_steps?'; the closer of two steps is kept':'');drawScatter()}
+$('gsens').textContent='Sensitivity: '+(G.sensitivity_source==='measured'?'measured, ':G.sensitivity_source==='grinder'?'from this grinder, ':'starting guess, ')+fdf(G.um_per_s)+' '+fdu()+' per second'+(G.between_steps?'; the closer of two steps is kept':'');drawScatter();drawPrev()}
 const today=()=>{const t=new Date();return t.getFullYear()*10000+(t.getMonth()+1)*100+t.getDate()};
 let GM=[];
 async function loadCommunityGrinders(){try{GM=(await get('/api/community/grinders')).grinders||[]}catch(e){}if(L)drawGrinder()}
@@ -655,7 +657,20 @@ const set=new Set(us);$('gnote').textContent=pts.length+' shot'+(pts.length==1?'
 
 function drawFilter(){const cur=$('fcoffee').value;$('fcoffee').innerHTML='<option value="">All coffees</option>'+[...new Set(SH.map(s=>s.coffee).filter(x=>x))].map(n=>`<option ${n==cur?'selected':''}>${esc(n)}</option>`).join('')}
 async function loadShots(){let a;try{a=await get('/api/shots?limit=500')}catch(e){return}if(!Array.isArray(a))return;SH=a;drawFilter();drawShots();
-if(SH.length){showShot(SH[0].id,'h');if(!SEL||!SH.some(s=>s.id==SEL))SEL=SH[0].id;showShot(SEL,'s')}drawScatter()}
+if(SH.length){showShot(SH[0].id,'h');if(!SEL||!SH.some(s=>s.id==SEL))SEL=SH[0].id;showShot(SEL,'s')}drawScatter();loadPrev()}
+// The grind advice as it stood right after the newest shot: recorded with the shot (its context,
+// /api/contexts), so it stays what was said even once the grinder has been moved.
+let PREV=null,PREVTRY=0;
+async function loadPrev(){const s=SH[0];if(!s){PREV=null;return drawPrev()}let a;try{a=await get('/api/contexts?limit=1')}catch(e){return}
+PREV=Array.isArray(a)&&a[0]&&a[0].shot_id==s.id?a[0]:null;
+if(!PREV&&PREVTRY<3&&s.timestamp&&Date.now()-new Date(s.timestamp)<120000){PREVTRY++;setTimeout(()=>{if(SH[0]&&SH[0].id==s.id)loadPrev()},3000)}else PREVTRY=0;drawPrev()}
+function drawPrev(){const box=$('hprev'),s=SH[0],c=PREV;if(!L)return;
+if(!s){box.innerHTML='<span class="dim">No shot yet. The advice given after your next shot appears here.</span>';return}
+if(!c||c.shot_id!=s.id){box.innerHTML='<span class="dim">No grinder recommendation was recorded for the most recent shot.</span>';return}
+const a=c.advice_action,fin=a=='finer',mv=fin||a=='coarser',p=L.presets[L.activePreset]||{};
+const title=a=='hold'?'Keep '+fs(c.advice_um):mv?`Go ${fin?'finer':'coarser'} ${fdn(c.advice_delta_um)} ${fdu()}, to ${fs(c.advice_um)}${c.advice_refined?' (to your liked time)':''}`:a=='inconsistent'?'Brew times vary: no advice':a=='no_data'?'No advice: the shot did not count':a=='no_grind_set'?'No advice: no grind setting entered':'No advice';
+const now=G&&G.current_um&&s.coffee_id==p.coffeeId&&s.recipe_id==p.recipeId&&G.current_um!=s.grind_um?' The grinder is at '+fs(G.current_um)+' now.':'';
+box.innerHTML=`<div class="row"><span class="pill ${a=='hold'?'ok':mv||a=='inconsistent'?'warn':''}">${esc(title)}</span></div><div>After <b>${esc(s.coffee||'no coffee')}</b>, ${esc(s.recipe)}, ${esc(when(s))}, pulled at ${s.grind_um?esc(fs(s.grind_um)):'no setting recorded'}.${c.advice_shots?' From '+c.advice_shots+' shot'+(c.advice_shots==1?'':'s')+' at that setting.':''}${mv&&c.advice_step_limited?' Limited to the largest single change.':''}${esc(now)}</div>`}
 const when=s=>s.timestamp?new Date(s.timestamp).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'#'+s.id;
 let SHOWN=20,SOPEN=true;
 function pickShot(id){if(SEL==id&&SOPEN)SOPEN=false;else{SEL=id;SOPEN=true;showShot(id,'s')}drawShots()}
