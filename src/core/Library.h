@@ -328,9 +328,27 @@ inline uint16_t findSameCoffee(const Library &lib, const Recipe &r) {
   return 0;
 }
 
+// A unit typed as microns in any of the usual ways ("um", "1um", "1 µm", "μm", "microns") is
+// stored as "um", so that a setting reads "85 um" and not "85 1um", and the controller's
+// font, which has no µ, can show it. Any other unit is kept as typed.
+inline void tidyGrinderUnit(char *unit) {
+  const char *p = unit;
+  while (*p >= '0' && *p <= '9') ++p;
+  while (*p == ' ') ++p;
+  char rest[GRINDER_UNIT_LEN];
+  size_t n = 0;
+  for (; *p && n < sizeof(rest) - 1; ++p) rest[n++] = (*p >= 'A' && *p <= 'Z') ? *p + 32 : *p;
+  rest[n] = '\0';
+  if (strcmp(rest, "um") == 0 || strcmp(rest, "\xC2\xB5m") == 0 || strcmp(rest, "\xCE\xBCm") == 0 ||
+      strcmp(rest, "micron") == 0 || strcmp(rest, "microns") == 0) {
+    copyText(unit, "um", GRINDER_UNIT_LEN);
+  }
+}
+
 inline void sanitizeGrinder(Grinder &g) {
   g.model[GRINDER_NAME_LEN - 1] = g.burrs[GRINDER_BURRS_LEN - 1] = '\0';
   g.unit[GRINDER_UNIT_LEN - 1] = '\0';
+  tidyGrinderUnit(g.unit);
   if (g.unit[0] == '\0') copyText(g.unit, "um", GRINDER_UNIT_LEN);
   g.umPerUnit = clampTo(finiteOr(g.umPerUnit, 0.0f), 0.0f, 1000.0f);
   sanitizeSettingFormat(g);

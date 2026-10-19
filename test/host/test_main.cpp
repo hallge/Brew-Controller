@@ -5788,6 +5788,34 @@ static void testExtraction() {
   CHECK(shotExtractionPct(shotFromV9(old9)) == 0.0f);
 }
 
+static void testGrinderUnitTidy() {
+  printf("grinder unit: microns typed any way read as um\n");
+  for (const char *typed : {"um", "1um", "1 um", "UM", "\xC2\xB5m", "1\xC2\xB5m", "\xCE\xBCm", "microns"}) {
+    Grinder g;
+    copyText(g.unit, typed, GRINDER_UNIT_LEN);
+    sanitizeGrinder(g);
+    CHECK(strcmp(g.unit, "um") == 0);
+  }
+  for (const char *kept : {"steps", "dial", "clicks", "12", "1 step"}) {
+    Grinder g;
+    copyText(g.unit, kept, GRINDER_UNIT_LEN);
+    sanitizeGrinder(g);
+    CHECK(strcmp(g.unit, kept) == 0);
+  }
+  // Saving "1um" over a grinder stored as "um" is not a change of unit: settings are kept.
+  Library lib;
+  Grinder g;
+  copyText(g.model, "Flat 64", GRINDER_NAME_LEN);
+  setGrinder(lib, g, false);
+  lib.presetCount = 1;
+  lib.presets[0].grindUm = 85;
+  const uint16_t calibration = lib.grinder.calibration;
+  copyText(g.unit, "1um", GRINDER_UNIT_LEN);
+  setGrinder(lib, g, false);
+  CHECK(strcmp(lib.grinder.unit, "um") == 0);
+  CHECK(lib.presets[0].grindUm == 85 && lib.grinder.calibration == calibration);
+}
+
 static void testSettingFormat() {
   printf("settings: whole steps, fractions, two rings\n");
   char out[24];
@@ -5984,6 +6012,7 @@ int main() {
   testShotContext();
   testLearnGrinder();
   testSettingFormat();
+  testGrinderUnitTidy();
   printf("\n%d checks, %d failed\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }
