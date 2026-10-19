@@ -6,6 +6,7 @@
 #include <lvgl.h>
 
 #include "App.h"
+#include "core/SettingFormat.h"
 #include "core/SettingsUtil.h"
 #include "Log.h"
 
@@ -36,6 +37,10 @@ constexpr uint32_t COLOR_TRACK = 0x2A2A2A;
 // rotations 0 and 2 are landscape; 0 puts the connector, and the touch key
 // printed beside it, on the right.
 constexpr uint8_t ROTATION_USB_LEFT = 2;
+// Half a turn: the connector and the touch key on the right. The panel
+// library turns the touch coordinates with it, and finds the touch key from
+// the chip's raw reading, so both keep working.
+constexpr uint8_t ROTATION_USB_RIGHT = 0;
 
 constexpr uint8_t BRIGHT_ACTIVE = 220;
 constexpr uint8_t BRIGHT_IDLE = 40;
@@ -97,6 +102,9 @@ lv_obj_t *brewStopLabel;
 // Result
 lv_obj_t *resTop, *resWeight, *resLine1, *resLine2, *resGrind, *resGrindSub;
 lv_obj_t *resReview, *resReadyBtn, *resIgnoreBtn, *resCountBtn;
+// When the grind should change: READY and GRINDER share the key column.
+lv_obj_t *resReadyHalfBtn, *resGrinderBtn;
+bool editPending = false;  // GRINDER tapped: open the edit screen once the controller is READY
 uint32_t resShotId = 0;  // the shot the two ruling keys act on
 // Fault
 lv_obj_t *faultTitle, *faultText, *faultPressBtn;
@@ -270,6 +278,13 @@ void onTare(lv_event_t *) { app::tare(); }
 void onAck(lv_event_t *) { app::acknowledge(); }
 void onManualPress(lv_event_t *) { app::manualPress(); }
 // Recipe quick edit. Works on a copy; SAVE writes it back.
+// From the result screen: the shot is done with, and the grind is next.
+void onGrinder(lv_event_t *) {
+  app::acknowledge();
+  editRecipe = app::activeRecipe();
+  editField = EDIT_FIELD_GRIND;
+  editPending = true;
+}
 void onOpenEdit(lv_event_t *) {
   editRecipe = app::activeRecipe();
   // Opens on the grind: it is what gets changed from one shot to the next.
@@ -357,6 +372,21 @@ void onPairBot(lv_event_t *) {
   setText(setBotLabel, app::pairStrongestBot() ? "Bot: pairing..." : "Bot: none found nearby");
 }
 void onForgetScale(lv_event_t *) { app::pairScale("", 0); }
+// The screen the right way up for how the controller is mounted.
+bool flippedShown = false;
+void applyRotation(bool flipped) {
+  flippedShown = flipped;
+  amoled.setRotation(flipped ? ROTATION_USB_RIGHT : ROTATION_USB_LEFT);
+  lv_obj_invalidate(lv_scr_act());  // redraw everything the new way up
+}
+
+void onRotate(lv_event_t *) {
+  bbw::Settings s = app::settings();
+  s.displayFlipped = !s.displayFlipped;
+  app::applySettings(s);
+  applyRotation(s.displayFlipped);
+}
+
 void onToggleLearning(lv_event_t *) {
   bbw::Settings s = app::settings();
   s.learningEnabled = !s.learningEnabled;
@@ -526,6 +556,10 @@ void buildResult() {
   resReview = makeLine(p, &lv_font_montserrat_16, COLOR_ACCENT, 150);
   lv_label_set_long_mode(resReview, LV_LABEL_LONG_WRAP);
   lv_obj_t *label = nullptr;
+  resReadyHalfBtn = makeButton(p, "READY", &lv_font_montserrat_24, COLOR_PANEL, KEY_W, 104,
+                               LV_ALIGN_TOP_RIGHT, KEY_X, 12, onAck);
+  resGrinderBtn = makeButton(p, "GRINDER", &lv_font_montserrat_22, COLOR_ACCENT, KEY_W, 104,
+                             LV_ALIGN_BOTTOM_RIGHT, KEY_X, -12, onGrinder);
   resIgnoreBtn = makeButton(p, "IGNORE\nSHOT", &lv_font_montserrat_20, COLOR_PANEL, KEY_W, 104,
                             LV_ALIGN_TOP_RIGHT, KEY_X, 12, onVoteIgnore, &label);
   lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
@@ -559,6 +593,8 @@ void buildSettings() {
              12, 146, onForgetScale);
   makeButton(p, "TARE SCALE", &lv_font_montserrat_14, COLOR_PANEL, 150, 44, LV_ALIGN_TOP_LEFT,
              216, 46, onTare);
+  makeButton(p, "ROTATE SCREEN", &lv_font_montserrat_14, COLOR_PANEL, 150, 44, LV_ALIGN_TOP_LEFT,
+             216, 96, onRotate);
   setBotLabel = makeLabel(p, &lv_font_montserrat_14, COLOR_TEXT, LV_ALIGN_TOP_LEFT, 376, 56, "");
   setScaleLabel = makeLabel(p, &lv_font_montserrat_14, COLOR_TEXT, LV_ALIGN_TOP_LEFT, 376, 122, "");
   lv_label_set_long_mode(setBotLabel, LV_LABEL_LONG_WRAP);
@@ -671,6 +707,28 @@ const char *grindUnit() {
   return grinder.unit;
 }
 
+// A setting as this grinder's dial reads (core/SettingFormat.h), in one of a few rotating buffers so
+// that several can go into one line. A change of setting, and what to call it, likewise.
+const char *gs(uint16_t value) {
+  static char buffers[6][12];
+  static uint8_t next;
+  char *out = buffers[next++ % 6];
+  bbw::formatSetting(value, app::grinder(), out, sizeof(buffers[0]));
+  return out;
+}
+const char *gd(int delta) {
+  static char buffers[3][12];
+  static uint8_t next;
+  char *out = buffers[next++ % 3];
+  bbw::formatSettingDelta(delta, app::grinder(), out, sizeof(buffers[0]));
+  return out;
+}
+const char *gdu() {
+  static bbw::Grinder grinder;
+  grinder = app::grinder();
+  return bbw::settingDeltaUnit(grinder);
+}
+
 void describePreinfusion(const bbw::Recipe &r, char *out, size_t size) {
   if (r.preinfusion == bbw::Preinfusion::HOLD) {
     if (r.bloomPauseMs) {
@@ -697,7 +755,7 @@ void refreshRecipes() {
       // what it makes and the grind. A recipe listed by itself has its name
       // on the first line. The roast details are on the home screen.
       char grind[24] = "", text[144];
-      if (r.grindUm) snprintf(grind, sizeof(grind), "   %u %s", r.grindUm, unit);
+      if (r.grindUm) snprintf(grind, sizeof(grind), "   %s %s", gs(r.grindUm), unit);
       if (r.coffee[0]) {
         snprintf(text, sizeof(text), "%s\n%s   %.1f -> %.1f g%s", r.coffee, r.name, r.doseG,
                  r.targetWeightG, grind);
@@ -754,13 +812,13 @@ void describeEditField(const bbw::Recipe &r, int field, char *title, char *value
       break;
     case 2:
       snprintf(title, size, "GRIND");
-      if (r.grindUm) snprintf(value, size, "%u %s", r.grindUm, grindUnit());
+      if (r.grindUm) snprintf(value, size, "%s %s", gs(r.grindUm), grindUnit());
       else snprintf(value, size, "not set");
       {
         const bbw::GrindAdvice g = app::grindAdvice();
         if (g.action == GrindAction::FINER || g.action == GrindAction::COARSER) {
           const char *way = g.action == GrindAction::FINER ? "finer" : "coarser";
-          if (g.learned) snprintf(hint, size, "advice: go %s,\nset %u %s", way, g.suggestedUm, grindUnit());
+          if (bbw::adviceHasNumber(g)) snprintf(hint, size, "advice: go %s,\nset %s %s", way, gs(g.suggestedUm), grindUnit());
           else snprintf(hint, size, "advice: go %s\namount on the web page", way);
         } else {
           snprintf(hint, size, "number on the grinder\ntap 1, hold for 10");
@@ -803,7 +861,7 @@ void refreshHome(const bbw::LiveStatus &st) {
   const bool ready = st.state == State::READY;
   if (!ready) {
     setText(homeStatus, "NO SCALE");
-  } else if (!st.botPaired) {
+  } else if (!st.botPaired && st.machineStyle != static_cast<uint8_t>(bbw::MachineStyle::MANUAL)) {
     setText(homeStatus, "NO BOT");
   } else if (st.cupRequired && !st.cupPresent) {
     setTextF(homeStatus, "NO CUP  %.1f g", st.weightG);
@@ -845,24 +903,31 @@ void refreshHome(const bbw::LiveStatus &st) {
   // Left column: grind, the advisor's verdict, pre-infusion.
   const bbw::GrindAdvice g = app::grindAdvice();
   const char *unit = grindUnit();
-  if (r.grindUm) snprintf(text, sizeof(text), "grind %u %s", r.grindUm, unit);
+  if (r.grindUm) snprintf(text, sizeof(text), "grind %s %s", gs(r.grindUm), unit);
   else snprintf(text, sizeof(text), "grind not set");
   fitSmall(homeGrind, text);
   // As on the result screen, the setting to go to is only shown once the
   // sensitivity has been measured from this grinder's own shots.
   if (r.grindUm && g.action == GrindAction::FINER) {
-    if (g.learned) snprintf(text, sizeof(text), "go finer: %u %s", g.suggestedUm, unit);
+    if (bbw::adviceHasNumber(g)) snprintf(text, sizeof(text), "%sgo finer: %s %s", g.refined ? "liked: " : "", gs(g.suggestedUm), unit);
     else snprintf(text, sizeof(text), "go finer");
   } else if (r.grindUm && g.action == GrindAction::COARSER) {
-    if (g.learned) snprintf(text, sizeof(text), "go coarser: %u %s", g.suggestedUm, unit);
+    if (bbw::adviceHasNumber(g)) snprintf(text, sizeof(text), "%sgo coarser: %s %s", g.refined ? "liked: " : "", gs(g.suggestedUm), unit);
     else snprintf(text, sizeof(text), "go coarser");
   } else if (r.grindUm && g.action == GrindAction::INCONSISTENT) {
     snprintf(text, sizeof(text), "brew times vary");
+  } else if (r.grindUm && g.action == GrindAction::HOLD && g.betweenSteps) {
+    snprintf(text, sizeof(text), "closest step to target");
   } else if (r.grindUm && g.action == GrindAction::HOLD) {
     snprintf(text, sizeof(text), "brew time on target");
   } else if (!r.grindUm && app::communityStartForActive().setting != 0) {
     // No setting entered yet, and the shared library has somewhere to start.
-    snprintf(text, sizeof(text), "community: start %u %s", app::communityStartForActive().setting,
+    snprintf(text, sizeof(text), "community: start %s %s", gs(app::communityStartForActive().setting),
+             unit);
+  } else if (!r.grindUm && r.coffeeId != 0 &&
+             app::similarStart(r.coffeeId, r.recipeId).setting != 0) {
+    // Nothing from the library either: the owner's own most similar coffee (a guess).
+    snprintf(text, sizeof(text), "similar: try %s %s", gs(app::similarStart(r.coffeeId, r.recipeId).setting),
              unit);
   } else {
     text[0] = '\0';
@@ -893,7 +958,7 @@ void refreshHome(const bbw::LiveStatus &st) {
   if (!ready) {
     setText(homeHint, "SWITCH ON THE SCALE");
     setColor(homeHint, COLOR_DIM);
-  } else if (!st.botPaired) {
+  } else if (!st.botPaired && st.machineStyle != static_cast<uint8_t>(bbw::MachineStyle::MANUAL)) {
     setText(homeHint, "PAIR THE BOT IN SETTINGS");
     setColor(homeHint, COLOR_DIM);
   } else if (!st.weightFresh) {
@@ -925,15 +990,17 @@ void refreshBrew(const bbw::LiveStatus &st) {
       stopText = "CANCEL";
       break;
     case State::READY_TO_BREW:
-      phase = st.botConnected ? "TOUCH KEY\nTO BREW" : "WAKING BOT";
+      phase = st.botConnected || st.machineStyle == static_cast<uint8_t>(bbw::MachineStyle::MANUAL)
+                  ? "TOUCH KEY\nTO BREW" : "WAKING BOT";
       stopText = "CANCEL";
       break;
     case State::STARTING_SHOT:
-      phase = st.holdingButton ? "PRE-INFUSION\nHOLDING BUTTON" : "STARTING";
+      phase = st.awaitingDrip ? "PULL THE SHOT\nWAITING FOR COFFEE"
+              : st.holdingButton ? "PRE-INFUSION\nHOLDING BUTTON" : "STARTING";
       running = true;
       break;
     case State::BREWING:
-      phase = st.firstDropSeen ? "BREWING" : "PRE-INFUSION";
+      phase = st.targetCue ? "STOP NOW" : st.firstDropSeen ? "BREWING" : "PRE-INFUSION";
       running = true;
       break;
     case State::BLOOMING: {
@@ -1108,10 +1175,16 @@ void refreshResult(State state) {
     else lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
   };
   resReviewPending = review;
+  // A grind change recommended by this shot: offer the way to the grinder
+  // setting beside READY.
+  const bool grindChange = !review && have && counted && !g.newestIgnored &&
+                           (g.action == GrindAction::FINER || g.action == GrindAction::COARSER);
   showIf(resReview, review);
   showIf(resIgnoreBtn, review);
   showIf(resCountBtn, review);
-  showIf(resReadyBtn, !review);
+  showIf(resReadyBtn, !review && !grindChange);
+  showIf(resReadyHalfBtn, grindChange);
+  showIf(resGrinderBtn, grindChange);
   showIf(resGrind, !review);
   showIf(resGrindSub, !review);
   if (review) {
@@ -1159,16 +1232,16 @@ void refreshResult(State state) {
     fitLine(resGrind, finer ? "BREW FAST   GRIND FINER" : "BREW SLOW   GRIND COARSER");
     // The amount is only shown once it rests on a sensitivity measured from
     // this grinder's own history.
-    if (g.learned) {
-      setTextF(resGrindSub, "%d %s %s  ->  set %u %s", g.deltaUm < 0 ? -g.deltaUm : g.deltaUm,
-               grindUnit(), finer ? "finer" : "coarser", g.suggestedUm, grindUnit());
+    if (bbw::adviceHasNumber(g)) {
+      setTextF(resGrindSub, "%s %s %s  ->  set %s %s", gd(g.deltaUm),
+               gdu(), finer ? "finer" : "coarser", gs(g.suggestedUm), grindUnit());
     } else {
       setText(resGrindSub, "see web page for details");
     }
   } else if (g.action == GrindAction::INCONSISTENT) {
     fitLine(resGrind, "BREW TIMES VARY   NO ADVICE");
-    setTextF(resGrindSub, "%.0f to %.0f s at %u %s. review preparation;\nif the grinder was changed, set it in EDIT",
-             g.minTimeS, g.maxTimeS, g.currentUm, grindUnit());
+    setTextF(resGrindSub, "%.0f to %.0f s at %s %s. review preparation;\nif the grinder was changed, set it in EDIT",
+             g.minTimeS, g.maxTimeS, gs(g.currentUm), grindUnit());
   } else if (g.action == GrindAction::HOLD) {
     fitLine(resGrind, "BREW TIME OK   KEEP GRIND");
     setColor(resGrind, COLOR_OK);
@@ -1232,6 +1305,16 @@ void refresh() {
     return;
   }
 
+  if (editPending) {
+    // GRINDER on the result screen: the edit screen opens once the
+    // acknowledgement has taken the controller back to READY.
+    if (idle) {
+      editPending = false;
+      editOpen = true;
+    } else if (st.state != State::SHOT_COMPLETE) {
+      editPending = false;  // something else happened meanwhile
+    }
+  }
   if (recipesOpen && idle) {
     refreshRecipes();
     return;
@@ -1317,7 +1400,8 @@ bool begin() {
     return false;
   }
   LOGI("ui: board %s", amoled.getName());
-  amoled.setRotation(ROTATION_USB_LEFT);
+  flippedShown = app::settings().displayFlipped;
+  amoled.setRotation(flippedShown ? ROTATION_USB_RIGHT : ROTATION_USB_LEFT);
   amoled.setBrightness(BRIGHT_ACTIVE);
   beginLvglHelper(amoled);
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(COLOR_BG), 0);
@@ -1331,6 +1415,14 @@ bool begin() {
   // The CST816T reports the key on the glass as a touch at a fixed point off
   // the end of the panel; the library turns that into this callback.
   amoled.setHomeButtonCallback(onTouchKey, nullptr);
+#ifndef BBW_EMULATOR
+  // The CST816T touch chip sleeps by itself when left alone. On this board it
+  // then stops reporting touches altogether once it has been touched and left
+  // again (measured: the chip still answers, with zero fingers, while being
+  // tapped), so a dark screen could not be woken a second time. Kept awake,
+  // it costs a few milliamps.
+  amoled.TouchDrvCSTXXX::disableAutoSleep();
+#endif
   started = true;
   show(Panel::HOME);
   return true;
@@ -1360,6 +1452,9 @@ void loop() {
   const uint32_t now = millis();
   if (now - lastRefresh >= 100) {
     lastRefresh = now;
+    // Turned from the web page: follow it here.
+    const bool flipped = app::settings().displayFlipped;
+    if (flipped != flippedShown) applyRotation(flipped);
     refresh();
   }
   lv_timer_handler();

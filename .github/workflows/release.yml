@@ -1,0 +1,48 @@
+name: Release
+
+# Push a tag like v0.3.0 and this builds the firmware with that version in it
+# and publishes it as a GitHub release. firmware.bin is the file to install
+# from the controller's Setup page (Firmware).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host tests
+        run: CXX=g++ bash test/host/run.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            .pio/libdeps
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Build
+        env:
+          PLATFORMIO_BUILD_FLAGS: -DBBW_VERSION='"${{ github.ref_name }}"'
+        run: pio run
+      - name: Collect files
+        run: |
+          mkdir out
+          cp .pio/build/*/firmware.bin out/firmware.bin
+          cp .pio/build/*/bootloader.bin out/bootloader.bin
+          cp .pio/build/*/partitions.bin out/partitions.bin
+          (cd out && sha256sum firmware.bin bootloader.bin partitions.bin > SHA256SUMS.txt)
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" out/firmware.bin out/bootloader.bin out/partitions.bin out/SHA256SUMS.txt \
+            --title "${{ github.ref_name }}" --generate-notes \
+            --notes "Install **firmware.bin** from the controller's web page: Setup, Firmware. bootloader.bin and partitions.bin are only needed for a first flash over USB."

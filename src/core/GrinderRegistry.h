@@ -4,7 +4,8 @@
 // says. This is the copy bundled with the firmware; the shared library will
 // replace it with one that grows (docs/COMMUNITY.md, section 6).
 //
-// Ids are permanent: they go into shared records. Add at the end.
+// Ids are permanent: they go into shared records. Add at the end; an id that
+// has been taken out (2) is not given to another model.
 //
 // Portable; no flash or UI access in here.
 
@@ -23,7 +24,6 @@ struct GrinderModel {
 
 constexpr GrinderModel GRINDER_MODELS[] = {
     {1, "Mahlkonig E64 WS", "64 mm flat", "um", 1.0f},     // display reads burr gap in microns
-    {2, "LUCCA Atom 75", "75 mm flat", "steps", 5.0f},     // position sensor, 5 microns a step
     {3, "DF64", "64 mm flat", "dial", 0.0f},
     {4, "Eureka Mignon Specialita", "55 mm flat", "dial", 0.0f},
     {5, "Niche Zero", "63 mm conical", "dial", 0.0f},

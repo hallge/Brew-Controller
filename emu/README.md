@@ -76,6 +76,11 @@ screen the first press only wakes it.
   web page (Setup, Devices, "Power"), then use "Machine power" there; the
   "machine on" box and the power-press count show what it did. There is no
   emulated Fingerbot or MicroBot.
+- "Stop bot in range", "machine has separate start / stop buttons" and
+  "machine brews while the button is held" (under the Bot's faults): the two
+  other kinds of button machine. Pick the matching machine on the
+  controller's web page (Setup, "Espresso machine"); for separate buttons
+  also pair the stop bot (Setup, Devices, "Stop").
 - Lunar "power" off: after 30 s the screen goes dark; on again wakes it.
 - Lunar "go silent" during a shot: stop is pressed, `SCALE_DATA_STALE`.
 - Bot "in range" off, then START: `SWITCHBOT_DISCONNECTED` after 15 s, nothing pressed.

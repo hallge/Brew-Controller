@@ -44,6 +44,23 @@ struct PusherConfig {
   uint8_t belief = static_cast<uint8_t>(PowerBelief::UNKNOWN);
 };
 
+// The stop bot (a machine with separate start and stop buttons). A record of
+// its own, added later: the one above is stored as it is and cannot grow.
+struct StopBotConfig {
+  char address[18] = {};       // empty: no stop bot
+  uint8_t addressType = 0;
+  PusherSecrets secrets;
+};
+
+inline void sanitizeStopBotConfig(StopBotConfig &c) {
+  c.address[sizeof(c.address) - 1] = '\0';
+  c.secrets.password[sizeof(c.secrets.password) - 1] = '\0';
+  c.secrets.tuyaUuid[sizeof(c.secrets.tuyaUuid) - 1] = '\0';
+  c.secrets.tuyaDeviceId[sizeof(c.secrets.tuyaDeviceId) - 1] = '\0';
+  c.secrets.tuyaLocalKey[sizeof(c.secrets.tuyaLocalKey) - 1] = '\0';
+  if (c.secrets.tuyaVariant > 1) c.secrets.tuyaVariant = 0;
+}
+
 inline void sanitizePusherConfig(PusherConfig &c) {
   c.powerAddress[sizeof(c.powerAddress) - 1] = '\0';
   for (PusherSecrets *s : {&c.brew, &c.power}) {
@@ -72,7 +89,9 @@ class PowerControl {
     NONE, DONE, ALREADY, NO_BOT, NOT_KNOWN, BUSY, BOT_UNREACHABLE, MACHINE_BUSY, PRESS_FAILED
   };
 
-  static constexpr uint32_t CONNECT_TIMEOUT_MS = 45000;  // a sleeping pusher takes its time
+  // A sleeping SwitchBot advertises rarely (measured on the board: the power
+  // bot about once in two minutes) and can only be connected to then.
+  static constexpr uint32_t CONNECT_TIMEOUT_MS = 180000;
   static constexpr uint32_t PRESS_RETRIES = 3;
   static constexpr uint32_t MAX_CATCH_UP_MIN = 3;        // a schedule time missed by more is skipped
 

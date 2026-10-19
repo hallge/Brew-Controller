@@ -16,6 +16,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "Community.h"
+#include "MachineProfile.h"
 #include "GrindAdvisor.h"
 #include "Library.h"
 #include "Sha256.h"
@@ -255,6 +257,9 @@ inline void grinderFields(JsonOut &j, const Grinder &g) {
   j.textIf("burrs", g.burrs);
   j.text("unit", g.unit);
   if (g.umPerUnit > 0.0f) j.number("um_per_unit", g.umPerUnit, 2);
+  // How a stored setting is read (core/SettingFormat.h): only said when it is not whole numbers.
+  if (g.divisor > 1) j.integer("divisor", g.divisor);
+  if (g.subSteps >= 2) j.integer("sub_steps", g.subSteps);
   j.integer("calibration", g.calibration);
   j.close();
 }
@@ -288,6 +293,10 @@ inline size_t buildDialinRecord(const Recipe &preset, const Coffee &coffee, cons
   coffeeFields(j, coffee);
   j.close();
   j.textIf("roast_date", roast);
+  // Days of the bag's age spent in the freezer, which the library does not count.
+  if (const int frozen = frozenDaysAt(coffee.frozenDate, coffee.thawDate, epochS)) {
+    j.integer("frozen_days", frozen);
+  }
   recipeFields(j, preset.doseG, preset.targetWeightG, preset.targetTimeS,
                preset.preinfusion == Preinfusion::HOLD ? preset.preinfusionHoldMs : 0,
                preset.bloomPauseMs);
@@ -306,8 +315,22 @@ inline size_t buildDialinRecord(const Recipe &preset, const Coffee &coffee, cons
 
 // One shot that counts for grind advice. `withTaste`: the owner's rating
 // goes along only if they chose to share it.
+// How a machine is worked, as far as it says something about a shot made on it.
+inline void machineFields(JsonOut &j, const MachineProfile &m) {
+  j.open("machine");
+  j.text("style", machineStyleName(m.style));
+  if (m.startsOnFirstDrip()) j.text("clock_from", "first_drip");  // times are without pre-infusion
+  j.textIf("maker", m.maker);
+  j.textIf("model", m.model);
+  j.textIf("control", m.control);
+  j.textIf("library_id", m.libraryId);
+  j.close();
+}
+
+// machine: the machine the shot was made on; nullptr leaves it out.
 inline size_t buildShotRecord(const ShotRecord &s, const Coffee *coffee, const Grinder &grinder,
-                              bool withTaste, char *out, size_t size) {
+                              bool withTaste, char *out, size_t size,
+                              const MachineProfile *machine = nullptr) {
   char at[21], roast[11];
   timeText(s.epochS, at);
   dateText(s.roastDate, roast);
@@ -329,11 +352,20 @@ inline size_t buildShotRecord(const ShotRecord &s, const Coffee *coffee, const G
     j.close();
   }
   j.textIf("roast_date", roast);
+  // Only for the bag the shot was made from: a coffee since moved on to a new bag has other dates.
+  if (coffee && coffee->roastDate == s.roastDate) {
+    if (const int frozen = frozenDaysAt(coffee->frozenDate, coffee->thawDate, s.epochS)) {
+      j.integer("frozen_days", frozen);
+    }
+  }
   recipeFields(j, s.doseG, s.targetWeightG, s.targetTimeS, s.preinfusionHoldMs, s.bloomPauseMs);
   grinderFields(j, grinder);
+  if (machine) machineFields(j, *machine);
   if (s.grindUm) j.integer("grind", s.grindUm);
   j.open("result");
   j.number("yield_g", s.finalWeightG, 1);
+  // What came out for what went in, as brewed (the recipe's is yield over dose as planned).
+  if (s.doseG > 0.0f) j.number("ratio", s.finalWeightG / s.doseG, 2);
   j.number("time_s", s.shotTimeS, 1);
   if (s.firstDropS > 0.0f) j.number("first_drop_s", s.firstDropS, 1);
   if (s.pourTimeS > 0.0f) {
@@ -562,9 +594,76 @@ inline size_t buildGrinderRecord(const Grinder &g, uint32_t record, uint32_t epo
   j.textIf("burrs", g.burrs);
   j.text("unit", g.unit);
   if (g.umPerUnit > 0.0f) j.number("um_per_unit", g.umPerUnit, 2);
+  if (g.divisor > 1) j.integer("divisor", g.divisor);
+  if (g.subSteps >= 2) j.integer("sub_steps", g.subSteps);
   j.close();
   return j.ok() ? j.length() : 0;
 }
+// Where a machine profile stands, as grinderShareState() for a grinder.
+inline ShareState machineShareState(const MachineProfile &m, uint32_t outboxSent) {
+  const ShareState stored = static_cast<ShareState>(m.shareState);
+  if (stored == ShareState::QUEUED || stored == ShareState::SENT) {
+    return m.shareSeq < outboxSent ? ShareState::SENT : ShareState::QUEUED;
+  }
+  return stored;
+}
+
+// A machine as its owner set it up, for a reviewer: which machine, which
+// control, and the rules for working it.
+inline size_t buildMachineRecord(const MachineProfile &m, uint32_t record, uint32_t epochS, char *out,
+                                 size_t size) {
+  char at[21];
+  timeText(epochS, at);
+  JsonOut j(out, size);
+  j.open();
+  j.text("t", "machine");
+  j.integer("v", 1);
+  j.textIf("at", at);
+  j.integer("record", static_cast<long>(record));
+  j.integer("local_id", 1);
+  j.text("maker", m.maker);
+  j.text("model", m.model);
+  j.text("control", m.control[0] ? m.control : "brew control");
+  j.text("style", machineStyleName(m.style));
+  if (m.machineStyle() == MachineStyle::MANUAL) {
+    j.text("manual_start", m.startsOnFirstDrip() ? "first_drip" : "tap");
+  }
+  j.integer("hold_preinfusion", m.holdPreinfusion);
+  j.integer("tap_preinfusion", m.tapPreinfusion);
+  j.integer("power_toggle", m.powerToggle);
+  if (m.selfStopS) j.integer("self_stop_s", m.selfStopS);
+  j.close();
+  return j.ok() ? j.length() : 0;
+}
+
+// Forgets what has been sent: every coffee and grinder the owner described is
+// "on this controller only" again, and no dial-in counts as sent. For when
+// what was sent never reached the library, or the controller has a new key
+// and the library knows nothing signed with it. What came from the library
+// itself (a coffee or grinder picked from its lists) keeps its entry.
+inline void forgetSharing(Library &lib) {
+  auto forget = [](uint8_t &state, uint32_t &seq, uint32_t &hash, char *note, char *libraryId) {
+    const bool fromLibrary = state == static_cast<uint8_t>(ShareState::PUBLISHED) && seq == 0;
+    if (fromLibrary) return;
+    state = 0;
+    seq = hash = 0;
+    note[0] = libraryId[0] = '\0';
+  };
+  for (uint8_t i = 0; i < lib.coffeeCount; ++i) {
+    Coffee &c = lib.coffees[i];
+    forget(c.shareState, c.shareSeq, c.shareHash, c.reviewNote, c.libraryId);
+  }
+  forget(lib.grinder.shareState, lib.grinder.shareSeq, lib.grinder.shareHash,
+         lib.grinder.reviewNote, lib.grinder.libraryId);
+  if (lib.hasOtherGrinder) {
+    Grinder &g = lib.otherGrinder;
+    forget(g.shareState, g.shareSeq, g.shareHash, g.reviewNote, g.libraryId);
+  }
+  for (uint8_t i = 0; i < lib.presetCount; ++i) {
+    lib.presets[i].sharedGrindUm = lib.presets[i].otherSharedGrindUm = 0;
+  }
+}
+
 // ---------------------------------------------------------------- sealing --
 
 // Signs `body` and wraps it. Returns the envelope's length; 0 if the signer

@@ -45,8 +45,8 @@ let you decide.** Anything that claims more would be guessing.
 | 9 | Grind vs performance | Partly built | Viable; needs a chart, the data is there |
 | 10 | Bean tracking | Built | Coffee stored per shot; grind advice is per coffee and roast date |
 | 11 | Recipe management | Built | Done, except temperature (cannot be read; can be a note) |
-| 12 | Shot history | Built | Summary kept for 500 shots; full curves only for the last shot |
-| 13 | Taste rating | Partly built | Rating is stored; nothing uses it yet |
+| 12 | Shot history | Built | Summary kept for 500 shots, and the whole weight curve of each (8 bytes a reading: about 2.6 kB for a 33 s shot at 10 Hz, so 500 shots are about 2 MB of the 3.9 MB partition); the oldest curves go first if space runs short |
+| 13 | Taste rating | Built (13 Oct) | Shots rated 4-5 stars refine the time advice inside its tolerance; sour/bitter adds a note (`COMMUNITY.md` 8e) |
 | 14 | Maintenance intelligence | Not built | Viable for shot counters; weak for diagnosis |
 | 15 | Maintenance anomalies | Not built | Viable as "slow drift" detection that suppresses grind advice |
 
@@ -79,7 +79,7 @@ would only restate "close to target time and weight". If you rate shots
 
 ### 3. Flow-rate analysis
 **Now:** live flow, peak flow, average flow over the pour. The full
-weight curve exists only for the most recent shot, in memory.
+weight curve is stored for every shot (see 12), as it was not when this was written.
 
 **Next:** compute and store per shot, at the moment it finishes:
 
@@ -195,9 +195,8 @@ recipe reminds you what to set, nothing more.
 
 ### 12. Shot history
 **Done** for the summary: 500 shots in internal flash with every measured
-and entered value, as CSV and JSON. The weight curve is kept only for the
-latest shot. See 3 for the choice between stored curve features and whole
-curves.
+and entered value, as CSV and JSON. The whole weight curve is kept for every shot
+(`storage/Store.cpp`, `saveCurve`); `makeRoomForCurve` removes the oldest first if long shots fill the partition.
 
 ### 13. Taste / result rating
 **Now:** each shot can be given 1 to 5 and sour / balanced / bitter from the

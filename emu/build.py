@@ -28,6 +28,8 @@ ARDUINOJSON = LIBDEPS / "ArduinoJson" / "src"
 
 FIRMWARE = [
     "src/main.cpp",
+    "src/Log.cpp",
+    "src/platform/FirmwareUpdate.cpp",
     "src/ble/Ble.cpp",
     "src/core/BrewController.cpp",
     "src/net/Web.cpp",

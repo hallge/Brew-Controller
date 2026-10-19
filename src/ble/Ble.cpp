@@ -6,13 +6,18 @@
 
 namespace bbw {
 
+RadioTest g_radioTest;
+
 namespace {
 
 
 // 15-30 ms connection interval, 4 s supervision timeout.
 void configureClient(NimBLEClient *client) {
-  client->setConnectionParams(12, 24, 0, 400);
-  client->setConnectTimeout(6);
+  client->setConnectionParams(12, 24, 0, 400, g_radioTest.connectInterval.load(),
+                              g_radioTest.connectWindow.load());
+  // Long enough to span one of a sleeping SwitchBot's advertisements
+  // (every 10-15 s); each restart of the attempt loses time.
+  client->setConnectTimeout(10);
 }
 
 }  // namespace
@@ -217,8 +222,8 @@ bool BlePusher::connectTo(const NimBLEAddress &address) {
   if (!client_) {
     client_ = NimBLEDevice::createClient();
     client_->setClientCallbacks(new ClientCallbacks(*this), false);
-    configureClient(client_);
   }
+  configureClient(client_);
   ready_ = false;
   xSemaphoreTake(mutex_, portMAX_DELAY);
   writeChar_ = nullptr;
@@ -322,11 +327,14 @@ class BleManager::ScanCallbacks : public NimBLEAdvertisedDeviceCallbacks {
 };
 
 bool BleManager::begin(const Pairing &pairing, const char *powerAddress,
-                       uint8_t powerAddressType) {
+                       uint8_t powerAddressType, const char *stopAddress,
+                       uint8_t stopAddressType) {
   mutex_ = xSemaphoreCreateMutex();
   pairing_ = pairing;
   strlcpy(powerAddress_, powerAddress ? powerAddress : "", ADDR_LEN);
   powerAddressType_ = powerAddressType;
+  strlcpy(stopAddress_, stopAddress ? stopAddress : "", ADDR_LEN);
+  stopAddressType_ = stopAddressType;
   NimBLEDevice::init("BrewByWeight");
   if (!NimBLEDevice::getInitialized()) return false;
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
@@ -334,11 +342,29 @@ bool BleManager::begin(const Pairing &pairing, const char *powerAddress,
   scan->setAdvertisedDeviceCallbacks(new ScanCallbacks(*this), true);
   // Active scan: the Bot's device-type byte is in its scan response.
   scan->setActiveScan(true);
-  // 50 ms listen every 100 ms leaves airtime for two connections and Wi-Fi.
+  // 50 ms listen every 100 ms leaves airtime for the connections and Wi-Fi.
+  // Not more: scanning goes on while the Setup page is open, also with the
+  // scale connected, and at full time the scale's readings stopped arriving
+  // (measured on the board: the link dropped after 5 s without a packet).
   scan->setInterval(160);
   scan->setWindow(80);
   scan->setMaxResults(0);
+  // Every advertisement, not only the first per device. The radio's own
+  // filter reports a device once per scan; if that first report comes
+  // without the scan response, a SwitchBot is not yet recognisable as a Bot
+  // (its type byte is in the response) and a scale may have no name yet, and
+  // the device was then never looked at again. Measured on the board: paired
+  // bots missing from the list, and the scale not found, while scanning.
+  scan->setDuplicateFilter(false);
   return true;
+}
+
+void BleManager::resetHeard() {
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  for (size_t i = 0; i < seenCount_; ++i) seen_[i].heard = 0;
+  advertsAtReset_ = advertsHeard_.load();
+  heardSinceMs_ = millis();
+  xSemaphoreGive(mutex_);
 }
 
 void BleManager::remember(const SeenDevice &device) {
@@ -348,13 +374,31 @@ void BleManager::remember(const SeenDevice &device) {
     if (strcmp(seen_[i].address, device.address) == 0) { slot = i; break; }
     if (seen_[i].seenAtMs < seen_[oldest].seenAtMs) oldest = i;
   }
+  uint16_t heard = 1;
   if (slot == seenCount_) {
     if (seenCount_ < MAX_SEEN) ++seenCount_; else slot = oldest;
+  } else {
+    heard = seen_[slot].heard < 0xFFFF ? seen_[slot].heard + 1 : 0xFFFF;
+    // A scan response carries no name: keep the one already known.
+    const bool defaultName = device.name[0] == '\0' || strcmp(device.name, "SwitchBot") == 0 ||
+                             (strcmp(device.name, "SwitchBot Bot") == 0 &&
+                              strcmp(seen_[slot].name, "SwitchBot") != 0);
+    if (defaultName) {
+      if (seen_[slot].name[0] != '\0') {
+        SeenDevice merged = device;
+        strlcpy(merged.name, seen_[slot].name, sizeof(merged.name));
+        merged.heard = heard;
+        seen_[slot] = merged;
+        return;
+      }
+    }
   }
   seen_[slot] = device;
+  seen_[slot].heard = heard;
 }
 
 void BleManager::onAdvertisement(NimBLEAdvertisedDevice *device) {
+  ++advertsHeard_;
   SeenDevice seen;
   strlcpy(seen.address, device->getAddress().toString().c_str(), sizeof(seen.address));
   seen.addressType = device->getAddress().getType();
@@ -383,6 +427,24 @@ void BleManager::onAdvertisement(NimBLEAdvertisedDevice *device) {
       }
     }
   }
+  // Every SwitchBot also puts Woan's manufacturer data in the advertisement
+  // itself: company 0x0969, then its own address. The type byte above is
+  // only in the scan response, which a passive scan never asks for and an
+  // active one here often misses. Captured beside the board from a PC: both
+  // Bots send exactly this, every 2-3 s, while the board listed neither
+  // unless paired. So a SwitchBot is recognised from the advertisement; the
+  // response, once it comes, tells a Bot from the other SwitchBot products.
+  bool switchBotByMaker = false;
+  if (!hasSwitchBotData) {
+    const std::string m = device->getManufacturerData();
+    if (m.size() >= 8 && static_cast<uint8_t>(m[0]) == 0x69 && static_cast<uint8_t>(m[1]) == 0x09) {
+      char own[ADDR_LEN];
+      snprintf(own, sizeof(own), "%02x:%02x:%02x:%02x:%02x:%02x", static_cast<uint8_t>(m[2]),
+               static_cast<uint8_t>(m[3]), static_cast<uint8_t>(m[4]), static_cast<uint8_t>(m[5]),
+               static_cast<uint8_t>(m[6]), static_cast<uint8_t>(m[7]));
+      switchBotByMaker = strcasecmp(own, seen.address) == 0;
+    }
+  }
   // Pre-v3.0 Bot firmware: no service data, just the vendor service UUID.
   if (!isBot && !hasSwitchBotData &&
       device->isAdvertisingService(NimBLEUUID(switchbot::SERVICE_UUID))) {
@@ -392,6 +454,10 @@ void BleManager::onAdvertisement(NimBLEAdvertisedDevice *device) {
   // carries service data a201, a Fingerbot like a lamp: it is listed, and it
   // is up to the owner to pick the right one.
   const char *defaultName = "SwitchBot Bot";
+  if (!isBot && switchBotByMaker) {
+    isBot = true;
+    defaultName = "SwitchBot";  // type not known yet
+  }
   if (!isBot && device->isAdvertisingService(NimBLEUUID(microbot::ADVERTISED_SERVICE_UUID))) {
     isBot = true;
     seen.make = PusherMake::MICROBOT;
@@ -408,7 +474,8 @@ void BleManager::onAdvertisement(NimBLEAdvertisedDevice *device) {
   xSemaphoreTake(mutex_, portMAX_DELAY);
   const bool pairedBot = (pairing_.botAddress[0] != '\0' &&
                           strcmp(pairing_.botAddress, seen.address) == 0) ||
-                         (powerAddress_[0] != '\0' && strcmp(powerAddress_, seen.address) == 0);
+                         (powerAddress_[0] != '\0' && strcmp(powerAddress_, seen.address) == 0) ||
+                         (stopAddress_[0] != '\0' && strcmp(stopAddress_, seen.address) == 0);
   const bool pairedScale = pairing_.scaleAddress[0] != '\0' &&
                            strcmp(pairing_.scaleAddress, seen.address) == 0;
   if (isBot || pairedBot) {
@@ -418,6 +485,7 @@ void BleManager::onAdvertisement(NimBLEAdvertisedDevice *device) {
   } else if (isScale || pairedScale) {
     seen.kind = DeviceKind::SCALE;
     remember(seen);
+    if (pairedScale) scaleHeardAtMs_ = seen.seenAtMs ? seen.seenAtMs : 1;
     if (pairedScale || (pairing_.scaleAddress[0] == '\0' && isScale)) {
       scaleCandidate_ = seen;
       scaleFound_ = true;
@@ -426,9 +494,27 @@ void BleManager::onAdvertisement(NimBLEAdvertisedDevice *device) {
   xSemaphoreGive(mutex_);
 }
 
+namespace {
+void attemptStarted(LinkStats &s) {
+  if (s.runStartMs == 0) s.runStartMs = millis() ? millis() : 1;
+  ++s.attempts;
+}
+void attemptEnded(LinkStats &s, bool ok) {
+  if (!ok) {
+    ++s.failures;
+    return;
+  }
+  ++s.connects;
+  s.lastWaitMs = millis() - s.runStartMs;
+  if (s.lastWaitMs > s.longestWaitMs) s.longestWaitMs = s.lastWaitMs;
+  s.runStartMs = 0;
+}
+}  // namespace
+
 void BleManager::servePusher(BlePusher &pusher, const char *name, const char *address,
-                             uint8_t type, bool wanted, uint8_t &failures, uint32_t &retryAtMs,
-                             NimBLEScan *scan) {
+                             uint8_t type, bool wanted, bool blocked, uint8_t &failures,
+                             uint32_t &retryAtMs, NimBLEScan *scan, LinkStats &stats) {
+  if (!wanted) stats.runStartMs = 0;  // a run of attempts ends when the link is no longer wanted
   const bool paired = address[0] != '\0';
   // No longer needed: let it go back to sleep. Never mid-press, and never
   // while its arm still has to be brought back up.
@@ -437,13 +523,17 @@ void BleManager::servePusher(BlePusher &pusher, const char *name, const char *ad
     pusher.disconnect();
   }
   if (!wanted) pusher.forgive();
-  if (!paired || !wanted || pusher.linkUp() || pusher.gaveUp() ||
+  if (!paired || !wanted || blocked || pusher.linkUp() || pusher.gaveUp() ||
+      g_radioTest.holdConnects.load() ||
       static_cast<int32_t>(millis() - retryAtMs) < 0) {
     return;
   }
   scan->stop();
   LOGI("%s: connecting to %s", name, address);
-  if (pusher.connectTo(NimBLEAddress(address, type))) {
+  attemptStarted(stats);
+  const bool connected = pusher.connectTo(NimBLEAddress(address, type));
+  attemptEnded(stats, connected);
+  if (connected) {
     failures = 0;
   } else {
     // A press is waiting on this link: retry fast, back off to 2 s at most.
@@ -454,13 +544,26 @@ void BleManager::servePusher(BlePusher &pusher, const char *name, const char *ad
 
 void BleManager::run() {
   NimBLEScan *scan = NimBLEDevice::getScan();
+  uint32_t testGeneration = 0;
   for (;;) {
     const uint32_t now = millis();
+    if (g_radioTest.generation.load() != testGeneration) {
+      testGeneration = g_radioTest.generation.load();
+      if (scan->isScanning()) scan->stop();
+      scan->setInterval(g_radioTest.scanInterval.load());
+      scan->setWindow(g_radioTest.scanWindow.load());
+      LOGI("radio test: scan %u/%u, connect scan %u/%u, active %d, always scan %d, hold connects %d",
+           g_radioTest.scanWindow.load(), g_radioTest.scanInterval.load(),
+           g_radioTest.connectWindow.load(), g_radioTest.connectInterval.load(),
+           g_radioTest.active.load(), g_radioTest.alwaysScan.load(), g_radioTest.holdConnects.load());
+    }
     xSemaphoreTake(mutex_, portMAX_DELAY);
     const Pairing paired = pairing_;
-    char powerAddress[ADDR_LEN];
+    char powerAddress[ADDR_LEN], stopAddress[ADDR_LEN];
     strlcpy(powerAddress, powerAddress_, ADDR_LEN);
     const uint8_t powerType = powerAddressType_;
+    strlcpy(stopAddress, stopAddress_, ADDR_LEN);
+    const uint8_t stopType = stopAddressType_;
     const bool botPaired = paired.botAddress[0] != '\0';
     const bool wantScale = !scale_.linkUp();
     const bool connectScale = wantScale && scaleFound_ &&
@@ -469,16 +572,31 @@ void BleManager::run() {
     if (connectScale) scaleFound_ = false;
     xSemaphoreGive(mutex_);
 
-    // The brew bot first: it is the only way to stop the machine.
-    servePusher(bot_, "bot", paired.botAddress, paired.botAddressType, botWanted_, botFailures_,
-                botRetryAtMs_, scan);
-    servePusher(power_, "power", powerAddress, powerType, powerWanted_, powerFailures_,
-                powerRetryAtMs_, scan);
+    // The bots a shot needs first: they are the only way to stop the machine.
+    servePusher(bot_, "bot", paired.botAddress, paired.botAddressType, botWanted_, false,
+                botFailures_, botRetryAtMs_, scan, botStats_);
+    // Three links at most: the scale, the brew bot, and one of these two.
+    // Whichever is up keeps its place until it has been let go (the
+    // application decides which is wanted when; a press in progress is
+    // never cut off), and only then is the other connected.
+    servePusher(stop_, "stop", stopAddress, stopType, stopWanted_, power_.linkUp(), stopFailures_,
+                stopRetryAtMs_, scan, stopStats_);
+    // Kept while the scale is off: not connected, and not heard for 30 s
+    // (a scale switched on advertises until it is connected).
+    const uint32_t scaleHeardAt = scaleHeardAtMs_.load();
+    const bool scaleOff = !scale_.linkUp() &&
+                          (scaleHeardAt == 0 || static_cast<int32_t>(now - scaleHeardAt) > 30000);
+    const bool powerWanted = powerWanted_.load() || (powerKept_.load() && scaleOff);
+    servePusher(power_, "power", powerAddress, powerType, powerWanted, stop_.linkUp(),
+                powerFailures_, powerRetryAtMs_, scan, powerStats_);
     if (connectScale) {
       scan->stop();
       LOGI("scale: connecting to %s (%s)", scaleTarget.address, scaleTarget.name);
       scale_.setName(scaleTarget.name);  // some makes are only told apart by it
-      if (scale_.connectTo(NimBLEAddress(scaleTarget.address, scaleTarget.addressType))) {
+      attemptStarted(scaleStats_);
+      const bool scaleConnected = scale_.connectTo(NimBLEAddress(scaleTarget.address, scaleTarget.addressType));
+      attemptEnded(scaleStats_, scaleConnected);
+      if (scaleConnected) {
         scaleFailures_ = 0;
         xSemaphoreTake(mutex_, portMAX_DELAY);
         if (pairing_.scaleAddress[0] == '\0') {
@@ -498,8 +616,26 @@ void BleManager::run() {
     // Scan while the scale is missing, while no Bot is paired, and while the
     // user is looking at the pairing list. A paired Bot needs no scan.
     const bool discovering = static_cast<int32_t>(millis() - discoveryUntilMs_.load()) < 0;
-    const bool needScan = !scale_.linkUp() || !botPaired || discovering;
+    const bool needScan = !scale_.linkUp() || !botPaired || discovering || g_radioTest.alwaysScan.load();
+    // Active scanning (asking each device for its scan response) only while
+    // something has to be recognised that is not paired yet: a SwitchBot's
+    // type byte and often a scale's name are in the response. Otherwise
+    // passive. The BLE library reports an advertisement of a device that
+    // offers a scan response only once that response has arrived too, and
+    // the response is easily lost: measured on the board, a paired bot was
+    // then "heard" once in minutes. Paired devices are known by address.
+    // SwitchBots are known by the advertisement itself now (above), so a
+    // passive scan finds them too. Active is left for a scale not paired yet
+    // (its name may be in the response), and then in 3 s turns with passive:
+    // while active, the library holds back each advertisement until its
+    // response arrives, and every restart drops those it still holds.
+    const bool needActive = discovering || paired.scaleAddress[0] == '\0';
+    const int8_t forced = g_radioTest.active.load();
+    const bool wantActive = forced >= 0 ? forced == 1 : needActive && (millis() / 3000) % 2 == 0;
+    if (scan->isScanning() && wantActive != activeScan_) scan->stop();
     if (needScan && !scan->isScanning()) {
+      scan->setActiveScan(wantActive);
+      activeScan_ = wantActive;
       scan->start(0, nullptr, false);
     } else if (!needScan && scan->isScanning()) {
       scan->stop();
@@ -550,6 +686,20 @@ void BleManager::setPower(const char *address, uint8_t type) {
   power_.disconnect();
 }
 
+void BleManager::setStop(const char *address, uint8_t type) {
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  strlcpy(stopAddress_, address ? address : "", ADDR_LEN);
+  stopAddressType_ = type;
+  xSemaphoreGive(mutex_);
+  stop_.disconnect();
+}
+
+void BleManager::stopAddress(char out[ADDR_LEN]) {
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  strlcpy(out, stopAddress_, ADDR_LEN);
+  xSemaphoreGive(mutex_);
+}
+
 void BleManager::powerAddress(char out[ADDR_LEN]) {
   xSemaphoreTake(mutex_, portMAX_DELAY);
   strlcpy(out, powerAddress_, ADDR_LEN);
@@ -565,7 +715,7 @@ bool BleManager::pairStrongestBot(uint32_t withinMs) {
     const SeenDevice &d = seen_[i];
     // Not the power bot, and not a Tuya device: that could as well be a lamp.
     if (d.kind == DeviceKind::BOT && d.make != PusherMake::TUYA &&
-        strcmp(d.address, powerAddress_) != 0 &&
+        strcmp(d.address, powerAddress_) != 0 && strcmp(d.address, stopAddress_) != 0 &&
         static_cast<uint32_t>(now - d.seenAtMs) <= withinMs && (!found || d.rssi > best.rssi)) {
       best = d;
       found = true;

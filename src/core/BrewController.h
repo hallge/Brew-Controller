@@ -5,6 +5,7 @@
 
 #include "BbwAlgorithms.h"
 #include "Library.h"
+#include "MachineProfile.h"
 #include "ShotData.h"
 #include "Types.h"
 
@@ -18,6 +19,8 @@ class IScale {
   virtual bool startTimer() = 0;
   virtual bool stopTimer() = 0;
   virtual bool resetTimer() = 0;
+  // A sound from the scale, for a scale that can be told to make one. False: it cannot.
+  virtual bool beep() { return false; }
 };
 
 // A momentary button press: the actuator pushes the machine's button and
@@ -40,6 +43,15 @@ class IActuator {
   virtual PressResult result() const = 0;
   virtual uint32_t pressSentAtMs() const = 0;
   virtual void clearResult() = 0;
+  // For a machine whose button brews for as long as it is held.
+  // beginHold: push down and stay. false: busy, not connected, or this
+  // actuator cannot hold. result() stays BUSY while the button is held.
+  virtual bool beginHold() { return false; }
+  // The arm is down and holding.
+  virtual bool holding() const { return false; }
+  // Let go. Also brings up an arm nothing is known about (after a restart).
+  // result() then reports how that went. false: nothing left the radio.
+  virtual bool release() { return false; }
 };
 
 constexpr size_t MAX_CURVE_POINTS = 2048;
@@ -55,6 +67,17 @@ struct ShotCurve {
   size_t count = 0;
 };
 
+// What was last known to be on the scale, kept across a restart of the
+// controller (and a dropped scale link). Weight alone cannot tell a tared cup
+// at 0 g from an empty scale at 0 g: the scale zeroes itself when it is
+// switched on. The scale's own timer can: it keeps its value for as long as
+// the scale stays on and is 0 after the scale has been switched on again.
+struct CupMemory {
+  bool present = false;
+  float levelG = 0.0f;        // the still reading at the time
+  int32_t scaleTimerMs = -1;  // the scale's timer at the time; -1 if it reports none
+};
+
 class BrewController {
  public:
   BrewController(IScale &scale, IActuator &actuator, Settings &settings, Library &library)
@@ -62,6 +85,20 @@ class BrewController {
 
   void tick(uint32_t nowMs);
   void onSample(const WeightSample &sample);
+
+  // How this machine is worked (core/MachineProfile.h). Not set: the Breville
+  // Dual Boiler's MANUAL button, which is what all of this was written for.
+  // Change it only while no shot is in hand.
+  void setMachine(const MachineProfile *machine) { machine_ = machine; }
+  // The bot on the stop button of a machine with separate start and stop
+  // buttons. Used for the stop only where the machine's profile says so.
+  void setStopActuator(IActuator *stop) { stopActuator_ = stop; }
+  // The stop bot is part of this machine: it has to be there before a shot starts.
+  bool stopActuatorNeeded() const { return machine().separateStop() && actuatorNeeded(); }
+  const MachineProfile &machine() const {
+    static const MachineProfile breville;
+    return machine_ ? *machine_ : breville;
+  }
 
   // User intents. All are safe to call in any state; the ones that do not
   // apply are ignored.
@@ -78,6 +115,17 @@ class BrewController {
   State state() const { return state_; }
   LiveStatus status(uint32_t nowMs) const;
   const ShotCurve &curve() const { return curve_; }
+  // The cup as last seen still on the scale, to keep for after a restart, and
+  // what to start from. A remembered cup is believed again only if the scale
+  // shows the same reading and the same non-zero timer: the scale stayed on
+  // and nothing was put on or taken off.
+  const CupMemory &cupMemory() const { return cupMemory_; }
+  bool cupPresent() const { return cupPresent_; }
+  // The scale has been seen zeroing itself after a cup went on or came off
+  // (an auto-tare mode). It can then zero a cup coming off before reporting
+  // it at all, and no reading shows the cup is gone.
+  bool scaleZeroesItself() const { return scaleZeroesItself_; }
+  void restoreCupMemory(const CupMemory &memory) { cupMemory_ = memory; }
   const ShotRecord &lastShot() const { return lastShot_; }
   bool hasLastShot() const { return hasLastShot_; }
   void setLastShotGrindVote(uint32_t id, uint8_t vote) {
@@ -109,6 +157,11 @@ class BrewController {
   void finalizeShot(uint32_t nowMs, State nextState);
   void endWithoutPress(uint32_t nowMs, EndReason reason = EndReason::MACHINE_STOPPED,
                        State next = State::SHOT_TIMEOUT);
+  // The shot has to end now: by a press where the bot stops this machine,
+  // otherwise by closing the record (the owner has the machine in hand).
+  void stopOrEnd(EndReason reason, uint32_t nowMs);
+  // The pour stopped with nothing pressed here.
+  void endAtMachine(uint32_t nowMs);
   void trackCup(const WeightSample &sample);
 
   void acceptBrewSample(const WeightSample &sample);
@@ -129,6 +182,22 @@ class BrewController {
   IActuator &actuator_;
   Settings &settings_;
   Library &library_;
+  const MachineProfile *machine_ = nullptr;
+  IActuator *stopActuator_ = nullptr;
+  // What stops this machine: the stop bot where it has its own stop button,
+  // otherwise the brew bot.
+  IActuator &stopper() const {
+    return machine().separateStop() && stopActuator_ ? *stopActuator_ : actuator_;
+  }
+  // The stop itself: letting go of a held button, otherwise a press.
+  bool stopPress() { return machine().holdsForShot() ? actuator_.release() : stopper().beginPress(); }
+  // The machine as it was when this shot began.
+  bool shotStarts_ = true;       // the bot started it
+  bool shotStops_ = true;        // the bot stops it at the target
+  bool cueGiven_ = false;        // the owner has been told the target is reached
+  bool awaitingDrip_ = false;    // worked by hand, clock starts with the first coffee
+  uint32_t dripAtMs_ = 0, dripSampleMs_ = 0;
+  uint8_t dripConfirm_ = 0;
 
   State state_ = State::BOOT;
   uint32_t stateSinceMs_ = 0;
@@ -165,6 +234,12 @@ class BrewController {
   float runRefG_ = 0.0f;
   uint8_t runCount_ = 0;
   uint32_t cupPlacedAtMs_ = 0;
+  uint32_t cupRemovedAtMs_ = 0;
+  bool haveRemoved_ = false;
+  bool scaleZeroesItself_ = false;
+  float excursionMaxG_ = 0.0f, excursionMinG_ = 0.0f;  // since the last still reading
+  uint32_t excursionMaxAtMs_ = 0, excursionMinAtMs_ = 0;
+  CupMemory cupMemory_;
 
   // Shot
   ShotCurve curve_;
@@ -192,6 +267,7 @@ class BrewController {
   uint32_t firstStopSentMs_ = 0;  // the press that defines the shot time
   uint32_t unconfirmedSinceMs_ = 0;
   float stopWeightG_ = 0.0f;
+  float stopFlowGS_ = 0.0f;  // flow at the moment the stop was asked for
   float shotTimeS_ = 0.0f;
   bool stopConfirmed_ = false;
   uint16_t stopLatencyMs_ = 0;

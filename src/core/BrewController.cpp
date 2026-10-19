@@ -19,12 +19,23 @@ constexpr uint32_t CUP_STABLE_MIN_MS = 300;
 constexpr uint32_t PREPARATION_TIMEOUT_MS = 120000;
 constexpr uint32_t START_ACK_TIMEOUT_MS = 8000;
 // The Bot link is only brought up for a shot; this is how long Start waits for it.
-constexpr uint32_t BOT_CONNECT_TIMEOUT_MS = 15000;
+// A SwitchBot Bot that is not connected advertises only every 10-15 s
+// (measured on the bench), and it can only be connected to when it does.
+constexpr uint32_t BOT_CONNECT_TIMEOUT_MS = 40000;
 constexpr uint32_t MANUAL_WARN_MS = 1500;
 constexpr uint32_t STOP_GIVE_UP_MS = 30000;
 constexpr uint32_t UNCONFIRMED_DECIDE_MS = 1500;
 constexpr uint32_t UNCONFIRMED_ACCEPT_MS = 4000;
-constexpr uint32_t STOP_RETRY_AFTER_MS = 2500;
+// A stop is only pressed again when the pump is plainly still running. On the
+// Breville, measured on the board: full flow goes on for about 1.7 s after
+// the Bot has pressed, then tapers off over another second. A second press
+// on that tail would start the pump again.
+constexpr uint32_t STOP_RETRY_AFTER_MS = 4000;
+// Stop-offset warm-up: the first shots of a recipe and coffee learn this
+// share of the error (hundredths), then the usual factor takes over.
+constexpr uint8_t WARMUP_SHOTS = 4;
+constexpr uint8_t WARMUP_ALPHA = 70;
+constexpr float STOP_RETRY_FLOW_SHARE = 0.5f;  // still at least half the flow of the moment of the stop
 constexpr float STOP_RETRY_MIN_GAIN_G = 3.0f;
 constexpr uint8_t MAX_STOP_RETRIES = 2;
 constexpr uint32_t DRIP_EXTRA_WAIT_MS = 3000;
@@ -108,6 +119,8 @@ bool BrewController::machineMayBeRunning() const {
 }
 
 bool BrewController::actuatorNeeded() const {
+  // A machine worked by hand has no bot on its brew control.
+  if (!machine().controllerStarts()) return false;
   switch (state_) {
     case State::TARING:
     case State::WAITING_FOR_CUP:
@@ -223,6 +236,14 @@ void BrewController::onSample(const WeightSample &sample) {
 }
 
 void BrewController::trackCup(const WeightSample &sample) {
+  // The furthest the reading went up and down since it was last still. A
+  // scale with auto-tare (the Lunar's espresso modes) zeroes itself within a
+  // second or two of a cup going on or coming off, so the reading may never
+  // be still anywhere but 0: the jump is what shows the cup.
+  if (haveStable_) {
+    if (sample.weightG > excursionMaxG_) { excursionMaxG_ = sample.weightG; excursionMaxAtMs_ = sample.atMs; }
+    if (sample.weightG < excursionMinG_) { excursionMinG_ = sample.weightG; excursionMinAtMs_ = sample.atMs; }
+  }
   if (runCount_ == 0 || fabsf(sample.weightG - runRefG_) > CUP_STILL_BAND_G) {
     runRefG_ = sample.weightG;
     runCount_ = 1;
@@ -239,23 +260,69 @@ void BrewController::trackCup(const WeightSample &sample) {
     // Zero it, unless the scale's own auto-tare already has.
     if (fabsf(level) > CUP_ZERO_BAND_G) scale_.tare();
   };
+  auto remember = [&]() {
+    cupMemory_.present = cupPresent_;
+    cupMemory_.levelG = level;
+    cupMemory_.scaleTimerMs = sample.scaleTimerMs;
+  };
   if (!haveStable_) {
     haveStable_ = true;
     stableLevelG_ = level;
-    // Scale just connected with a cup's weight showing: a cup is on it.
-    if (cupInitPending_ && level >= cupG) placed();
+    if (cupInitPending_ && level >= cupG) {
+      // Scale just connected with a cup's weight showing: a cup is on it.
+      placed();
+    } else if (cupInitPending_ && cupMemory_.present && cupMemory_.scaleTimerMs > 0 &&
+               sample.scaleTimerMs == cupMemory_.scaleTimerMs &&
+               fabsf(level - cupMemory_.levelG) <= CUP_STILL_BAND_G) {
+      // The cup that was there before the controller restarted (or the link
+      // dropped): same reading, and the scale's timer has not moved, so the
+      // scale was not switched off and on, and nothing changed on it.
+      cupPresent_ = true;
+      cupPlacedAtMs_ = sample.atMs - CUP_TARE_WINDOW_MS - 1;  // not a fresh placement
+    }
     cupInitPending_ = false;
+    excursionMaxG_ = excursionMinG_ = level;
+    remember();
     return;
   }
-  const float step = level - stableLevelG_;
+  const float base = stableLevelG_;
+  const float step = level - base;
+  const float rise = excursionMaxG_ - base;
+  const float fall = base - excursionMinG_;
+  const bool riseLast = excursionMaxAtMs_ >= excursionMinAtMs_;
   stableLevelG_ = level;
+  excursionMaxG_ = excursionMinG_ = level;
+  const bool nearZero = fabsf(level) <= CUP_ZERO_BAND_G;
+  const auto sincePlaced = static_cast<uint32_t>(sample.atMs - cupPlacedAtMs_);
+  const auto sinceRemoved = static_cast<uint32_t>(sample.atMs - cupRemovedAtMs_);
+  auto removed = [&]() {
+    cupPresent_ = false;
+    cupRemovedAtMs_ = sample.atMs;
+  };
   if (step >= cupG) {
-    placed();
+    // Settled higher by a cup's weight. Straight after a cup came off, a
+    // climb back to 0 is the scale zeroing itself, not a cup.
+    if (!(nearZero && haveRemoved_ && sinceRemoved <= CUP_TARE_WINDOW_MS)) placed();
   } else if (step <= -cupG) {
-    const bool tare = cupPresent_ && fabsf(level) <= CUP_ZERO_BAND_G &&
-                      static_cast<uint32_t>(sample.atMs - cupPlacedAtMs_) <= CUP_TARE_WINDOW_MS;
-    if (!tare) cupPresent_ = false;  // the cup has been taken off
+    // Settled lower. Straight after a cup went on, a fall to 0 is its tare
+    // (ours, or the scale's own).
+    const bool tare = cupPresent_ && nearZero && sincePlaced <= CUP_TARE_WINDOW_MS;
+    if (!tare) removed();
+  } else if (nearZero && rise >= cupG && (fall < cupG || riseLast)) {
+    // Back at 0 after a jump up: a cup went on and the scale tared it by
+    // itself. Only at 0: a scale that zeroes itself comes back to 0, and a
+    // jump that comes back anywhere else is a cup put down for a moment and
+    // lifted again (seen on the first real shot: back at -268 g, read as a
+    // cup placed, and an empty scale was tared as if it held one).
+    placed();
+    scaleZeroesItself_ = true;
+  } else if (nearZero && fall >= cupG) {
+    // Back at 0 after a drop: a cup came off and the scale zeroed itself.
+    removed();
+    scaleZeroesItself_ = true;
   }
+  if (cupRemovedAtMs_ == sample.atMs) haveRemoved_ = true;
+  remember();
 }
 
 void BrewController::acceptBrewSample(const WeightSample &sample) {
@@ -395,7 +462,7 @@ void BrewController::tick(uint32_t nowMs) {
           recoveryUntilMs_ = 0;
         } else if (weightFresh(nowMs) && flowHighSinceMs_ != 0 &&
                    static_cast<uint32_t>(nowMs - flowHighSinceMs_) >= FLOW_HOLD_MS &&
-                   last_.weightG >= RUNNING_MIN_WEIGHT_G && actuator_.connected()) {
+                   last_.weightG >= RUNNING_MIN_WEIGHT_G && stopper().connected()) {
           recoveryUntilMs_ = 0;
           runningConfirmed_ = true;  // the flow just seen is the evidence
           shotRecipe_ = recipe();
@@ -511,7 +578,7 @@ void BrewController::tickPreparation(uint32_t nowMs, Intent intent) {
   }
 
   // READY_TO_BREW
-  if (!actuator_.connected()) {
+  if (machine().controllerStarts() && (!actuator_.connected() || !stopper().connected())) {
     if (static_cast<uint32_t>(nowMs - startRequestedMs_) >= BOT_CONNECT_TIMEOUT_MS) {
       enter(State::SWITCHBOT_DISCONNECTED, nowMs);
     } else if (intent == Intent::START) {
@@ -529,6 +596,16 @@ void BrewController::tickPreparation(uint32_t nowMs, Intent intent) {
 void BrewController::beginShot(uint32_t nowMs) {
   shotRecipeIndex_ = activePreset();
   shotRecipe_ = resolvePreset(library_, shotRecipeIndex_);
+  shotStarts_ = machine().controllerStarts();
+  shotStops_ = machine().controllerStops();
+  cueGiven_ = false;
+  awaitingDrip_ = false;
+  // Holding the button for pre-infusion, and the bloom built on it, are for a
+  // machine whose button does that.
+  if (!machine().holdPreinfusion) {
+    shotRecipe_.preinfusion = Preinfusion::MACHINE;
+    shotRecipe_.bloomPauseMs = 0;
+  }
   // With the machine's own time-out in charge, the controller's only limit
   // is the absolute ceiling.
   controllerTimeLimit_ = shotRecipe_.timeLimit == TimeLimit::CONTROLLER;
@@ -546,6 +623,7 @@ void BrewController::beginShot(uint32_t nowMs) {
   directConfirm_ = lowWeightConfirm_ = rejectedSamples_ = 0;
   // This cup is now in use; the next shot needs to see a cup placed again.
   cupPresent_ = false;
+  cupMemory_.present = false;  // this cup is in use: after a restart it is not a fresh one
   haveStable_ = false;
   runCount_ = 0;
   cupGoneConfirm_ = 0;
@@ -560,16 +638,32 @@ void BrewController::beginShot(uint32_t nowMs) {
   manualStopNeeded_ = false;
   shotTimeS_ = 0.0f;
 
+  const bool onDrip = machine().startsOnFirstDrip();
   if (settings_.scaleTimer) {
     scale_.resetTimer();
-    scale_.startTimer();
+    if (!onDrip) scale_.startTimer();
   }
   stopWanted_ = false;
   stopUnverified_ = false;
   stopStartedPump_ = false;
   startHoldMs_ = shotRecipe_.preinfusion == Preinfusion::HOLD ? shotRecipe_.preinfusionHoldMs : 0;
+  if (!shotStarts_) {
+    // Worked by hand: nothing is pressed. The clock runs from this tap, or
+    // waits for the first coffee on the scale.
+    startHoldMs_ = 0;
+    if (onDrip) {
+      awaitingDrip_ = true;
+      dripConfirm_ = 0;
+      dripSampleMs_ = haveSample_ ? last_.atMs : 0;
+      enter(State::STARTING_SHOT, nowMs);
+    } else {
+      enter(State::BREWING, nowMs);
+    }
+    return;
+  }
   actuator_.clearResult();
-  if (!actuator_.beginPress(startHoldMs_)) {
+  // A button that brews while it is held: down, and stay down.
+  if (!(machine().holdsForShot() ? actuator_.beginHold() : actuator_.beginPress(startHoldMs_))) {
     enter(State::START_COMMAND_FAILED, nowMs);
     return;
   }
@@ -579,7 +673,57 @@ void BrewController::beginShot(uint32_t nowMs) {
 void BrewController::tickStarting(uint32_t nowMs, Intent intent) {
   // The press (and a pre-infusion hold) cannot be interrupted half way; a
   // STOP during it is carried out as soon as the button has been released.
+  if (awaitingDrip_) {
+    // Armed, the machine in the owner's hand: the shot begins with the first
+    // coffee to land, at the time of the reading that showed it.
+    if (intent == Intent::STOP) {
+      awaitingDrip_ = false;
+      enter(State::READY, nowMs);
+    } else if (!scaleUsable(nowMs)) {
+      awaitingDrip_ = false;
+      enter(scaleFaultState(nowMs), nowMs);
+    } else {
+      if (haveSample_ && last_.atMs != dripSampleMs_) {
+        dripSampleMs_ = last_.atMs;
+        if (last_.weightG >= FIRST_DROP_THRESHOLD_G) {
+          if (dripConfirm_++ == 0) dripAtMs_ = last_.atMs;
+        } else {
+          dripConfirm_ = 0;
+        }
+      }
+      if (dripConfirm_ >= 2) {
+        awaitingDrip_ = false;
+        shotStartMs_ = brewPhaseStartMs_ = dripAtMs_;
+        if (settings_.scaleTimer) scale_.startTimer();
+        enter(State::BREWING, nowMs);
+      } else if (static_cast<uint32_t>(nowMs - stateSinceMs_) >= PREPARATION_TIMEOUT_MS) {
+        awaitingDrip_ = false;
+        enter(State::READY, nowMs);
+      }
+    }
+    return;
+  }
   if (intent == Intent::STOP || intent == Intent::START) stopWanted_ = true;
+  if (machine().holdsForShot()) {
+    // The shot runs from the moment the arm is down. Until then the result
+    // stays BUSY; anything else means the arm never got there.
+    if (actuator_.holding()) {
+      shotStartMs_ = brewPhaseStartMs_ = actuator_.pressSentAtMs();
+      enter(State::BREWING, nowMs);
+      if (stopWanted_) {
+        stopWanted_ = false;
+        faultAfterStop_ = State::SHOT_COMPLETE;
+        stopOrEnd(EndReason::USER, nowMs);
+      }
+    } else if (actuator_.result() != PressResult::BUSY) {
+      actuator_.clearResult();
+      enter(State::START_COMMAND_FAILED, nowMs);
+    } else if (static_cast<uint32_t>(nowMs - stateSinceMs_) >= START_ACK_TIMEOUT_MS) {
+      actuator_.release();  // whatever it is doing, the button must not stay down
+      enter(State::START_COMMAND_FAILED, nowMs);
+    }
+    return;
+  }
   switch (actuator_.result()) {
     case PressResult::OK:
     case PressResult::UNCONFIRMED:
@@ -599,7 +743,7 @@ void BrewController::tickStarting(uint32_t nowMs, Intent intent) {
       if (stopWanted_) {
         stopWanted_ = false;
         faultAfterStop_ = State::SHOT_COMPLETE;
-        beginStop(EndReason::USER, nowMs);
+        stopOrEnd(EndReason::USER, nowMs);
       }
       break;
     case PressResult::NOT_SENT:
@@ -620,48 +764,62 @@ void BrewController::tickBrewing(uint32_t nowMs, Intent intent) {
   if (maxMs == 0 || maxMs > HARD_MAX_SHOT_MS) maxMs = HARD_MAX_SHOT_MS;
 
   faultAfterStop_ = State::SHOT_COMPLETE;
-  if (intent == Intent::STOP || intent == Intent::START) {
-    beginStop(EndReason::USER, nowMs);
+  // Where the bot does not stop this machine, reaching the target is a cue to
+  // the owner (and a sound from the scale, if it has one), given once. The
+  // shot then ends when the pour does.
+  if (!shotStops_ && !cueGiven_ && elapsedMs >= settings_.minShotTimeMs &&
+      (directConfirm_ >= DIRECT_STOP_CONFIRMATION_SAMPLES ||
+       (expectedEndS_ < shotRecipe_.maxShotTimeS && shotSeconds(nowMs) >= expectedEndS_))) {
+    cueGiven_ = true;
+    scale_.beep();
+  }
+  if (machine().holdsForShot() && actuator_.result() != PressResult::BUSY) {
+    // The bot holding the button has gone quiet. Its arm may still be down:
+    // the stop sequence lets go as soon as the bot can be reached again.
+    faultAfterStop_ = State::STOP_COMMAND_FAILED;
+    beginStop(EndReason::BOT_LOST, nowMs);
+  } else if (intent == Intent::STOP || intent == Intent::START) {
+    stopOrEnd(EndReason::USER, nowMs);
   } else if (!scale_.connected()) {
     faultAfterStop_ = State::SCALE_DISCONNECTED;
-    beginStop(EndReason::SCALE_LOST, nowMs);
+    stopOrEnd(EndReason::SCALE_LOST, nowMs);
   } else if (!weightFresh(nowMs)) {
     faultAfterStop_ = State::SCALE_DATA_STALE;
-    beginStop(EndReason::SCALE_LOST, nowMs);
+    stopOrEnd(EndReason::SCALE_LOST, nowMs);
   } else if (cupGoneConfirm_ >= CUP_GONE_CONFIRM_SAMPLES ||
              lowWeightConfirm_ >= LOW_WEIGHT_CONFIRM_SAMPLES) {
     // The cup has been lifted off the scale.
     if (runningConfirmed_ && pourRateGS_ < STILL_POURING_G_PER_S) {
       // Coffee had been flowing and had already stopped before the cup went:
       // the shot was ended at the machine. Nothing to press.
-      endWithoutPress(nowMs);
+      endAtMachine(nowMs);
     } else {
       faultAfterStop_ = State::INVALID_WEIGHT;
-      beginStop(EndReason::CUP_REMOVED, nowMs);
+      stopOrEnd(EndReason::CUP_REMOVED, nowMs);
     }
   } else if (rejectedSamples_ >= MAX_REJECTED_SAMPLES) {
     faultAfterStop_ = State::INVALID_WEIGHT;
-    beginStop(EndReason::INVALID_WEIGHT, nowMs);
-  } else if (elapsedMs >= settings_.minShotTimeMs &&
+    stopOrEnd(EndReason::INVALID_WEIGHT, nowMs);
+  } else if (shotStops_ && elapsedMs >= settings_.minShotTimeMs &&
              directConfirm_ >= DIRECT_STOP_CONFIRMATION_SAMPLES) {
     beginStop(EndReason::WEIGHT, nowMs);
-  } else if (elapsedMs >= settings_.minShotTimeMs &&
+  } else if (shotStops_ && elapsedMs >= settings_.minShotTimeMs &&
              expectedEndS_ < shotRecipe_.maxShotTimeS &&
              shotSeconds(nowMs) >= expectedEndS_) {
     beginStop(EndReason::WEIGHT_PREDICTED, nowMs);
   } else if (runningConfirmed_ && flowLowSinceMs_ != 0 &&
              static_cast<uint32_t>(nowMs - flowLowSinceMs_) >= MACHINE_STOPPED_MS) {
     // The pour has stopped short of the target with nothing pressed.
-    endWithoutPress(nowMs);
+    endAtMachine(nowMs);
   } else if (elapsedMs >= maxMs) {
     const bool pouring = flowHighSinceMs_ != 0;
     if (controllerTimeLimit_ || pouring) {
       // The recipe asks for a stop at this time, or the absolute ceiling has
       // been reached with coffee still pouring: the machine is running.
       faultAfterStop_ = State::SHOT_TIMEOUT;
-      beginStop(EndReason::TIMEOUT, nowMs);
+      stopOrEnd(EndReason::TIMEOUT, nowMs);
     } else {
-      endWithoutPress(nowMs);
+      endAtMachine(nowMs);
     }
   } else if (!runningConfirmed_ &&
              static_cast<uint32_t>(nowMs - brewPhaseStartMs_) >=
@@ -671,7 +829,28 @@ void BrewController::tickBrewing(uint32_t nowMs, Intent intent) {
     // pulse a start that was not confirmed: a press now could start the pump.
     endReason_ = EndReason::NO_FLOW;
     if (settings_.scaleTimer) scale_.stopTimer();
-    enter(State::START_COMMAND_FAILED, nowMs);
+    // Worked by hand and nothing came: the lever was not pulled. Not a fault.
+    enter(shotStarts_ ? State::START_COMMAND_FAILED : State::READY, nowMs);
+  }
+}
+
+void BrewController::stopOrEnd(EndReason reason, uint32_t nowMs) {
+  if (shotStops_) {
+    beginStop(reason, nowMs);
+  } else {
+    endWithoutPress(nowMs, reason, faultAfterStop_);
+  }
+}
+
+void BrewController::endAtMachine(uint32_t nowMs) {
+  if (shotStops_) {
+    endWithoutPress(nowMs);
+  } else {
+    // The owner, or the machine by itself, ended it: that is how a shot on
+    // this machine ends. After the cue it counts as a cut at the target, so
+    // the offset learns how early the cue has to come.
+    endWithoutPress(nowMs, cueGiven_ ? EndReason::WEIGHT : EndReason::MACHINE_STOPPED,
+                    State::SHOT_COMPLETE);
   }
 }
 
@@ -851,6 +1030,7 @@ void BrewController::beginStop(EndReason reason, uint32_t nowMs, bool pressAlrea
   endReason_ = reason;
   stopRequestedMs_ = nowMs;
   stopWeightG_ = haveSample_ ? last_.weightG : 0.0f;
+  stopFlowGS_ = flow_.flowGS();
   stopRetries_ = 0;
   retryInFlight_ = false;
   stopConfirmed_ = false;
@@ -866,7 +1046,7 @@ void BrewController::beginStop(EndReason reason, uint32_t nowMs, bool pressAlrea
   stopUnverified_ = !runningConfirmed_ && (!firstDropSeen_ || bloomed_);
   stopStartedPump_ = false;
   shotTimeS_ = shotSeconds(nowMs);
-  if (!pressAlreadySent) actuator_.clearResult();
+  if (!pressAlreadySent) stopper().clearResult();
   enter(State::STOPPING_SHOT, nowMs);
   tickStopping(nowMs);  // send in this very tick, not 10 ms later
 }
@@ -876,10 +1056,10 @@ void BrewController::tickStopping(uint32_t nowMs) {
   if (waited >= MANUAL_WARN_MS) manualStopNeeded_ = true;
 
   auto delivered = [&]() {
-    stopSentMs_ = actuator_.pressSentAtMs();
+    stopSentMs_ = stopper().pressSentAtMs();
     firstStopSentMs_ = stopSentMs_;
     shotTimeS_ = static_cast<uint32_t>(stopSentMs_ - shotStartMs_) / 1000.0f;
-    actuator_.clearResult();
+    stopper().clearResult();
     if (settings_.scaleTimer) scale_.stopTimer();
     manualStopNeeded_ = false;
     flowLowSinceMs_ = 0;  // stop confirmation must come from post-stop samples
@@ -887,7 +1067,7 @@ void BrewController::tickStopping(uint32_t nowMs) {
   };
 
   if (stopPressPending_) {
-    if (actuator_.beginPress()) {
+    if (stopPress()) {
       stopPressPending_ = false;
       if (haveSample_ && weightFresh(nowMs)) stopWeightG_ = last_.weightG;
     } else if (waited >= STOP_GIVE_UP_MS) {
@@ -896,12 +1076,12 @@ void BrewController::tickStopping(uint32_t nowMs) {
     return;
   }
 
-  switch (actuator_.result()) {
+  switch (stopper().result()) {
     case PressResult::OK:
       delivered();
       break;
     case PressResult::NOT_SENT:
-      actuator_.clearResult();
+      stopper().clearResult();
       stopPressPending_ = true;
       break;
     case PressResult::UNCONFIRMED: {
@@ -917,7 +1097,7 @@ void BrewController::tickStopping(uint32_t nowMs) {
                  static_cast<uint32_t>(nowMs - flowLowSinceMs_) >= FLOW_HOLD_MS) {
         delivered();
       } else if (since >= UNCONFIRMED_DECIDE_MS && flow_.flowGS() >= FLOW_ON_G_S) {
-        actuator_.clearResult();
+        stopper().clearResult();
         unconfirmedSinceMs_ = 0;
         stopPressPending_ = true;
       } else if (since >= UNCONFIRMED_ACCEPT_MS) {
@@ -935,9 +1115,9 @@ void BrewController::tickStopping(uint32_t nowMs) {
 
 void BrewController::tickDrip(uint32_t nowMs) {
   if (retryInFlight_) {
-    if (actuator_.result() == PressResult::BUSY) return;
+    if (stopper().result() == PressResult::BUSY) return;
     retryInFlight_ = false;
-    actuator_.clearResult();
+    stopper().clearResult();
     stopSentMs_ = nowMs;  // observe a full drip period after the retry
     flowLowSinceMs_ = 0;
     return;
@@ -958,7 +1138,7 @@ void BrewController::tickDrip(uint32_t nowMs) {
     if (pumping) {
       // Coffee is arriving after the "stop": that press started the pump.
       // It is running for certain now, so this press does stop it.
-      if (actuator_.beginPress()) {
+      if (stopPress()) {
         stopUnverified_ = false;
         stopStartedPump_ = true;
         retryInFlight_ = true;
@@ -977,14 +1157,17 @@ void BrewController::tickDrip(uint32_t nowMs) {
     stopLatencyMs_ = latency > 65535 ? 65535 : static_cast<uint16_t>(latency);
   }
 
-  // Still pouring like espresso well after the press: the button was missed.
+  // Still pouring like espresso well after the press, not tailing off: the
+  // button was missed.
+  const float retryFlow = stopFlowGS_ * STOP_RETRY_FLOW_SHARE > FLOW_ON_G_S
+                              ? stopFlowGS_ * STOP_RETRY_FLOW_SHARE : FLOW_ON_G_S;
   if (!stopConfirmed_ && fresh && since >= STOP_RETRY_AFTER_MS &&
-      flow_.flowGS() >= FLOW_ON_G_S &&
+      flow_.flowGS() >= retryFlow &&
       last_.weightG - stopWeightG_ >= STOP_RETRY_MIN_GAIN_G) {
     if (stopRetries_ >= MAX_STOP_RETRIES) {
       manualStopNeeded_ = true;
       finalizeShot(nowMs, State::STOP_COMMAND_FAILED);
-    } else if (actuator_.beginPress()) {
+    } else if (stopPress()) {
       ++stopRetries_;
       retryInFlight_ = true;
     }
@@ -1030,6 +1213,7 @@ void BrewController::finalizeShot(uint32_t nowMs, State nextState) {
   memcpy(record.varietal, shotRecipe_.varietal, ORIGIN_LEN);
   record.region[ORIGIN_LEN - 1] = record.varietal[ORIGIN_LEN - 1] = '\0';
   record.roastDate = shotRecipe_.roastDate;
+  record.bagId = shotRecipe_.bagId;
   record.roastLevel = shotRecipe_.roastLevel;
   record.coffeeId = shotRecipe_.coffeeId;
   record.recipeId = shotRecipe_.recipeId;
@@ -1074,14 +1258,24 @@ void BrewController::finalizeShot(uint32_t nowMs, State nextState) {
     if (settings_.adaptiveLearning && validAlpha(shotRecipe_.learnedAlpha)) {
       alpha = shotRecipe_.learnedAlpha;
     }
-    record.alphaUsed = record.alphaNext = alpha;
+    // Warm-up: a new pair starts from a guessed offset, and the machine's
+    // real one can be twice that (the Breville goes on at full flow for
+    // 1.5 s after the stop: 3.6-3.8 g on the first real shots, against the
+    // 1.5 g seed). At the usual 30% a step, that is 4-5 shots each over by a
+    // gram or more. So the first shots take most of the error. The adaptive
+    // selector still sees the usual factor: warm-up steps are not its.
+    uint8_t stepAlpha = alpha;
+    if (live.learnedShots < WARMUP_SHOTS && stepAlpha < WARMUP_ALPHA) stepAlpha = WARMUP_ALPHA;
+    record.alphaUsed = stepAlpha;
+    record.alphaNext = alpha;
     // Skip when the preset was edited, or became another, while the shot ran.
     if (now.recipeId == shotRecipe_.recipeId && now.coffeeId == shotRecipe_.coffeeId &&
         now.targetWeightG == shotRecipe_.targetWeightG &&
         live.stopOffsetG == shotRecipe_.stopOffsetG &&
         learnStopOffset(shotRecipe_.stopOffsetG, record.finalWeightG,
-                        shotRecipe_.targetWeightG, alpha / 100.0f, updated)) {
+                        shotRecipe_.targetWeightG, stepAlpha / 100.0f, updated)) {
       live.stopOffsetG = updated;
+      if (live.learnedShots < 255) ++live.learnedShots;
       record.nextStopOffsetG = updated;
       record.flags |= SHOT_FLAG_LEARNED;
       settingsDirty_ = true;
@@ -1107,9 +1301,9 @@ void BrewController::finalizeShot(uint32_t nowMs, State nextState) {
 }
 
 void BrewController::tickFault(uint32_t nowMs, Intent intent) {
-  if (manualPressInFlight_ && actuator_.result() != PressResult::BUSY) {
+  if (manualPressInFlight_ && stopper().result() != PressResult::BUSY) {
     manualPressInFlight_ = false;
-    actuator_.clearResult();
+    stopper().clearResult();
   }
 
   // A start that looked failed but the scale now shows espresso: take the
@@ -1127,8 +1321,8 @@ void BrewController::tickFault(uint32_t nowMs, Intent intent) {
   }
 
   if (intent == Intent::MANUAL_PRESS && isFault(state_) && !manualPressInFlight_) {
-    actuator_.clearResult();
-    manualPressInFlight_ = actuator_.beginPress();
+    stopper().clearResult();
+    manualPressInFlight_ = stopPress();
     return;
   }
   if (intent == Intent::ACK || intent == Intent::START || intent == Intent::STOP) {
@@ -1167,6 +1361,9 @@ LiveStatus BrewController::status(uint32_t nowMs) const {
     s.bloomLeftS = gone < shotRecipe_.bloomPauseMs ? (shotRecipe_.bloomPauseMs - gone) / 1000.0f : 0.0f;
   }
   s.stopStartedPump = stopStartedPump_;
+  s.machineStyle = machine().style;
+  s.targetCue = state_ == State::BREWING && cueGiven_;
+  s.awaitingDrip = state_ == State::STARTING_SHOT && awaitingDrip_;
   s.cupPresent = cupPresent_;
   s.cupRequired = settings_.requireCup;
   s.useRatio = r.useRatio;

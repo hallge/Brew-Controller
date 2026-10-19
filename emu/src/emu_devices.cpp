@@ -46,6 +46,31 @@ struct Machine {
   double liquidG = 0.0;
   int presses = 0;
 
+  // Other machines than the Breville: a start button that only starts, with
+  // the stop on a button of its own; and a button that brews while it is held.
+  bool separateButtons = false;
+  bool holdToBrew = false;
+  int stopPresses = 0;
+  void stopPump(const char *how, const char *who) {
+    if (!brewing) return;
+    brewing = false;
+    dripLeftG = flowGS > 0 ? dripG * clampD(flowNowGS / flowGS, 0.0, 1.0) : 0.0;
+    dripTauS = flowNowGS > 0 ? clampD(dripLeftG / flowNowGS, 0.15, 2.0) : 0.45;
+    log("machine", "%s by %s: pump OFF after %.1f s, %.1f g in the cup", how, who, brewS, liquidG);
+  }
+  void pressStop(const char *who) {
+    ++stopPresses;
+    if (!powered || !brewing) {
+      log("machine", "STOP pressed by %s: nothing is running", who);
+      return;
+    }
+    stopPump("STOP pressed", who);
+  }
+  // The arm coming back up lets go of the button.
+  void releaseButton(const char *who) {
+    if (holdToBrew) stopPump("button released", who);
+  }
+
   int powerPresses = 0;
   // The power button: a toggle, like the real one.
   void pressPower(const char *who) {
@@ -59,6 +84,10 @@ struct Machine {
     ++presses;
     if (!powered) {
       log("machine", "MANUAL pressed by %s: machine is off, nothing happens", who);
+      return;
+    }
+    if ((separateButtons || holdToBrew) && brewing) {
+      log("machine", "start button pressed by %s: already brewing, nothing changes", who);
       return;
     }
     brewing = !brewing;
@@ -585,6 +614,7 @@ class Bot : public Peripheral {
   bool inRange = true;
   bool mounted = true;        // on the machine's MANUAL button
   bool onPowerButton = false; // the power bot: its arm is on the POWER button instead
+  bool onStopButton = false;  // the stop bot: its arm is on a separate STOP button
   int battery = 87;
   bool switchMode = false;    // "Switch" mode in the SwitchBot app; "Press" is needed
   int holdSeconds = 0;
@@ -736,6 +766,8 @@ class Bot : public Peripheral {
           log("bot", "%s: arm jammed, button not reached (fault injection)", label.c_str());
         } else if (mounted && onPowerButton) {
           g_machine.pressPower(label.c_str());
+        } else if (mounted && onStopButton) {
+          g_machine.pressStop(label.c_str());
         } else if (mounted) {
           g_machine.pressButton(label.c_str());
         } else {
@@ -755,6 +787,7 @@ class Bot : public Peripheral {
         if (armS < travelS) break;
         arm = ARM_UP;
         fullPress = false;
+        if (mounted && !onPowerButton && !onStopButton && !armJammed) g_machine.releaseButton(label.c_str());
         finishAck();
         break;
     }
@@ -776,6 +809,7 @@ class Bot : public Peripheral {
 Bot g_bot("Bot", "e5:8a:3c:11:9d:40");
 Bot g_decoy("Decoy Bot", "f1:22:7b:5e:01:c8");
 Bot g_powerBot("Power Bot", "d3:41:9a:07:c2:15");
+Bot g_stopBot("Stop Bot", "c7:5e:20:b4:66:0a");
 
 // --------------------------------------------------------- state, settings --
 
@@ -871,6 +905,10 @@ void fillState(JsonDocument &doc) {
   botState(g_bot, doc["bot"].to<JsonObject>());
   botState(g_decoy, doc["decoy"].to<JsonObject>());
   botState(g_powerBot, doc["powerbot"].to<JsonObject>());
+  botState(g_stopBot, doc["stopbot"].to<JsonObject>());
+  doc["machine"]["stopPresses"] = g_machine.stopPresses;
+  doc["machine"]["separateButtons"] = g_machine.separateButtons;
+  doc["machine"]["holdToBrew"] = g_machine.holdToBrew;
   doc["machine"]["powerPresses"] = g_machine.powerPresses;
 }
 
@@ -893,6 +931,7 @@ bool worldSet(const std::string &device, const std::string &key, const std::stri
   if (device == "bot") return botSet(g_bot, key, value);
   if (device == "decoy") return botSet(g_decoy, key, value);
   if (device == "powerbot") return botSet(g_powerBot, key, value);
+  if (device == "stopbot") return botSet(g_stopBot, key, value);
   if (device == "machine") {
     Machine &m = g_machine;
     if (key == "powered") {
@@ -910,6 +949,9 @@ bool worldSet(const std::string &device, const std::string &key, const std::stri
       m.liquidG = 0.0;
       log("machine", "cup emptied");
     } else if (key == "press") m.pressButton("hand");
+    else if (key == "separateButtons") m.separateButtons = truthy(value);
+    else if (key == "holdToBrew") m.holdToBrew = truthy(value);
+    else if (key == "pressStop") m.pressStop("hand");
     else return false;
     return true;
   }
@@ -955,6 +997,10 @@ void worldBegin(bool restoreSnapshot) {
   g_decoy.mounted = false;
   g_decoy.rssi = -84;
   g_decoy.battery = 64;
+  g_stopBot.onStopButton = true;
+  g_stopBot.rssi = -63;
+  g_stopBot.battery = 81;
+  g_stopBot.inRange = false;  // off until switched on from the page
   g_powerBot.onPowerButton = true;
   g_powerBot.rssi = -61;
   g_powerBot.battery = 92;
@@ -965,7 +1011,7 @@ void worldBegin(bool restoreSnapshot) {
   if (restoreSnapshot && in && !deserializeJson(doc, in)) {
     in.close();
     remove(snapshotPath().c_str());
-    static const char *const devices[] = {"machine", "lunar", "bot", "decoy", "powerbot"};
+    static const char *const devices[] = {"machine", "lunar", "bot", "decoy", "powerbot", "stopbot"};
     for (const char *device : devices) {
       for (JsonPair kv : doc[device].as<JsonObject>()) {
         const std::string key = kv.key().c_str();
@@ -1024,6 +1070,7 @@ void worldBegin(bool restoreSnapshot) {
   radioAdd(&g_bot);
   radioAdd(&g_decoy);
   radioAdd(&g_powerBot);
+  radioAdd(&g_stopBot);
 }
 
 }  // namespace emu

@@ -360,6 +360,122 @@ reported as "stopped at the machine".
 A recipe edited while a shot is running does not affect that shot: the shot
 uses the values it started with.
 
+### Logs
+
+The web page has a **Logs** section (below Setup). Everything the controller
+prints on the serial port is also kept there, so a problem can be looked at
+without a cable:
+
+- **Live** shows the log as it is written, with a filter box.
+- **Download the whole log** gives one text file: what is on flash plus what
+  is still in memory.
+- **Detail**: errors only, warnings, normal (every event: state changes, scale
+  and bot connections, every command sent), or debug.
+- **Keep on flash**: on by default. Up to 512 kB is kept in two files; when
+  the current one is full it becomes the previous one and the oldest goes.
+  Lines are written to flash in batches and only between shots, because a
+  flash write holds both processor cores up for a few milliseconds.
+
+Lines worth knowing:
+
+| Line | Meaning |
+| --- | --- |
+| `boot: firmware v0.3.0 (built ...), reset reason: ...` | first line after every start. `CRASH`, `WATCHDOG` or `BROWNOUT` here is the thing to report, with the lines before it |
+| `health: chip RAM ... stack left: loop ..., control ..., ble ...` | every ten minutes, and whenever free memory reaches a new low. A stack figure under about 1000, or chip RAM "lowest" under 30000, is too little |
+| `state A -> B` | every step of a shot |
+| `update: ...` | firmware installs, and whether a new firmware was kept |
+
+Endpoints: `GET /api/log?from=N` (text; the next position is in the
+`X-Log-Next` header), `GET /log.txt`, `GET`/`POST /api/log/config`,
+`POST /api/log/clear`.
+
+### Firmware updates
+
+The flash holds three firmware slots of 3.5 MB each (`partitions.csv`):
+
+| Slot | Holds |
+| --- | --- |
+| `factory` | the firmware flashed over USB. Updates never write here: it is the safe version to fall back on |
+| `app0`, `app1` | updates go into whichever is not running, so the version before stays in the other |
+
+A new firmware is on trial for its first 45 seconds. If it crashes or hangs in
+that time, the bootloader starts the previous one again and the log says so.
+Setup, **Firmware** can also go back on purpose: **Go back to the previous
+version**, or **Start the safe (factory) version**.
+
+**From GitHub** (the board on a network with internet, under Network):
+
+1. **Check for an update** asks GitHub for the latest release (it also looks
+   once a day by itself; it never installs by itself).
+2. **Install vX.Y.Z** downloads the release's `firmware.bin`, checks it against
+   the release's `SHA256SUMS.txt`, writes it to the spare slot and restarts
+   into it. Only from the home screen with no shot in hand; Start is refused
+   while it runs. Settings, recipes, pairing and shot history are kept.
+
+Only GitHub's own certificate authorities are trusted for this
+(`src/platform/GithubRoots.h`, `ReleaseRoots.h`). While the repository is
+private the controller needs a token: a fine-grained GitHub token with
+**Contents: read-only** on this repository and nothing else, entered once in
+Setup, Firmware. It is stored on the controller and never shown again. A
+public repository needs none.
+
+**From a file**: download `firmware.bin` from the releases page and choose it
+under "From a file". No internet needed.
+
+The same is in the API: `GET /api/update`, `POST /api/update/check`,
+`/api/update/install`, `/api/update/boot?slot=factory|previous`,
+`/api/update/config` (docs/API.md).
+
+A release is made by pushing a tag: `git tag v0.3.0 && git push origin v0.3.0`.
+`.github/workflows/release.yml` runs the host tests, builds the firmware with
+that version in it, and publishes `firmware.bin`, the bootloader and partition
+table (for a first flash over USB), and `SHA256SUMS.txt`.
+
+Changing `partitions.csv` itself needs a USB flash: it cannot be done over the
+air. Settings, recipes and pairing survive such a flash (NVS stays where it
+is); shot history and logs do not if the filesystem moves.
+
+### Remote analysis
+
+Once deployed the controller is reached on the home network at
+`http://brewbyweight.local` (or its address, shown in Setup). Everything
+needed to analyse it remotely is in the API (docs/API.md):
+
+- shots: `/api/shots`, `/shots.csv`, each shot's readings `/api/shot/data?id=`
+  and `/shot.csv?id=`, the circumstances of each shot `/api/contexts`, grind
+  advice `/api/grind`;
+- the controller itself: `/api/diagnostics` (firmware and slot, restart reason
+  and boot count, memory and stacks, Wi-Fi, each Bluetooth link with its
+  connection attempts and failures, storage, update state);
+- the log: `/api/log` (live) and `/log.txt` (everything kept, across restarts).
+
+Outside the home network it needs a way in (a VPN to the home network); the
+controller has no login of its own and should not be exposed to the internet.
+
+### Memory
+
+| | Size | Used for |
+| --- | --- | --- |
+| RAM inside the chip | 512 kB, about 320 kB usable for data | 103 kB fixed (the brew controller and its shot buffer, the recipe library, Wi-Fi/BLE stacks' own data), task stacks (loop 16 kB, control 8 kB, BLE 8 kB), and the heap Wi-Fi, Bluetooth and the web server draw on |
+| PSRAM | 8 MB | TLS (HTTPS connections), the screen (LVGL and its frame buffer), every large working buffer (shot readings on their way to flash or the browser, library copies, shared-library text), the 48 kB log ring |
+| Flash | 16 MB | three firmware slots of 3.5 MB (factory + two for updates; firmware is about 2.4 MB), 5.4 MB for shot history, per-shot readings and logs, 64 kB for a crash dump |
+
+Stopping a shot never depends on PSRAM: the brew controller and the library
+it brews from are inside the chip. The Setup page shows free memory now and
+at its lowest; the log records it every ten minutes.
+
+The microSD slot is not used.
+
+### Finding which pusher is which
+
+Two pushers of the same make look identical in the device list. Setup,
+Devices has **Test press: brew bot** and **Test press: power bot**: one press
+of that pusher, so you can see which button it is on, and **Swap brew and
+power bots** if they are the wrong way round. A test press is a real press:
+the brew bot starts the pump if the machine is on (press again to stop), the
+power bot switches the machine. Web page only, and only while no shot is in
+hand.
+
 ## 6. What happens when something goes wrong
 
 One press toggles the machine, and the Bot cannot tell the controller whether
@@ -437,6 +553,17 @@ None of this could be tested here.
 9. **Power bot.** One press of the power button should switch the machine
    each way; check the belief on the page against the machine after a few
    scheduled days.
+10. **Three Bluetooth links.** The controller never holds more than three:
+   the scale, the brew bot, and either the power bot or the stop bot. On a
+   machine with a stop bot, watch the serial log around a shot: `stop:
+   connecting` should follow Start within a second or two and the shot should
+   begin once it is connected; if the stop bot regularly takes long to wake,
+   the start is simply later.
+11. **Another machine.** Only the Breville profile is the behaviour that was
+   there before; the others have run on the simulated machine only. On a
+   machine worked by hand, check that the shot ends about five seconds after
+   the pour stops and that the time and final weight in the history are what
+   you saw.
 
 ## 8. Supported scales
 
@@ -498,9 +625,11 @@ reading and counter must be identical.
 
 ## 9. Button pushers: brew bot and power bot
 
-The controller works two button pushers. The **brew bot** sits on the brew
-button and is what it always was: it starts and stops the shot. The **power
-bot** is optional and sits on the machine's power button.
+The controller works up to three button pushers. The **brew bot** sits on the
+brew button and is what it always was: it starts and stops the shot. The
+**power bot** is optional and sits on the machine's power button. The **stop
+bot** is only for a machine with separate start and stop buttons (section
+10).
 
 | Pusher | Protocol | Press | Down / up (timed hold) | Says whether it acted | Battery | Needs |
 |---|---|---|---|---|---|---|
@@ -572,7 +701,79 @@ timing and every result must be identical. The Tuya driver is tested against
 a device model written from the same protocol description, and its MD5, AES
 and CRC against the published test vectors.
 
-## 10. Layout
+## 10. Espresso machines
+
+The brew logic was written for the Breville Dual Boiler's MANUAL button.
+That is now one machine profile among others, the default, and with it the
+logic does exactly what it did. A profile says how a shot is started and
+stopped on a machine, by one particular button, lever or knob:
+
+| How a shot is run | The brew bot | At the target weight | The shot ends |
+|---|---|---|---|
+| One button: a press starts, a press stops (`toggle_button`) | starts and stops | the bot presses stop | as before |
+| A button starts, the machine stops itself (`start_button`) | starts | cue: STOP NOW on the screen | when the pour stops |
+| By hand: lever, knob, wheel, paddle (`manual`) | not used, none needed | cue: STOP NOW on the screen | when the pour stops |
+| Two buttons: one starts, another stops (`start_stop_buttons`) | starts; the **stop bot** stops | the stop bot presses stop | as on the Breville |
+| One button, held down for the whole shot (`hold_button`) | pushes down, holds, lets go | the brew bot lets go | as on the Breville |
+
+**Separate start and stop buttons.** A third pusher, the stop bot, sits on the
+stop button. It is paired like the others (Setup, Devices, "Stop") and left
+asleep on any other machine. A shot is not started until both bots have
+connected: without the stop bot it could not be stopped.
+
+With Wi-Fi running the controller keeps to three Bluetooth links: the scale,
+the brew bot, and one more. That one is the stop bot from Start (it is woken
+during the tare) until the shot is known to be over, and the power bot the
+rest of the time: nothing needs stopping that was not started, and the
+machine is not switched off under a shot. A power request made during a
+shot waits for the shot to end, and is dropped if that takes more than 45
+seconds; a scheduled time that falls in a shot is treated the same way. Whichever of the two is
+connected is let go before the other is taken up, and a press in progress is
+never cut off for it.
+
+**A button held for the whole shot.** The brew bot pushes down and stays
+down; the shot's clock runs from the moment the arm is down, and the stop is
+the arm coming back up. This needs a pusher with separate down and up
+commands: of the three makes supported, only the SwitchBot Bot has them, and
+a Fingerbot or MicroBot refuses the start on such a machine. An arm that is
+down is never forgotten: if the bot stops answering while holding, the shot
+goes to its stop sequence, the owner is told, and the arm is brought up as
+soon as the bot is reachable again, before anything else; after a restart of
+the controller in mid-shot the stop sends the "up" without knowing where the
+arm is.
+
+Per profile, also: whether holding the button holds pre-infusion (a recipe's
+held pre-infusion and bloom are only used where it does; on the Breville it
+does), and for a machine worked by hand, what starts the shot's clock: the
+tap on Start, or the first coffee on the scale (the time is then without
+pre-infusion, and shared shots say so).
+
+Where the bot does not stop the machine, everything else is as on any shot:
+tare, cup, the readings, flow, history, grind advice, sharing. The stop offset
+keeps learning per recipe; it then measures how early the cue has to come for
+the owner's hand and the drip, not the bot's lag. With the cue the scale is
+asked to sound; none of the scale protocols supported so far has a command
+for that, so today the cue is on the screen only.
+
+Setup, "Espresso machine": pick one that comes with the firmware (the
+Breville, and three general ones), one from the shared library, or describe
+your own and send it, so the next owner of that machine picks it from the
+list. The same machine by another button (the Dual Boiler's 2 CUP button,
+say) is another entry, set up once by whoever first wants it.
+
+A profile you send is reviewed like a coffee or a grinder, and the page says
+where it stands: on this controller only, waiting to be sent, sent, with a
+reviewer, in the shared library (and under which name), or not accepted, with
+the reviewer's note. Changed after it was sent, it can be sent again.
+
+`src/core/MachineProfile.h` is the profile; `BrewController` asks it in a
+handful of places (is a bot needed, is the start a press or a hold, which bot
+stops and how, may the button be held for pre-infusion, what starts the
+clock). The host tests run the same held
+pre-infusion shot with and without the Breville profile set and require the
+presses, their timing and the record to be identical.
+
+## 11. Layout
 
 ```
 src/core/     portable brew logic, no Arduino dependencies (host tested)
@@ -585,6 +786,7 @@ src/core/     portable brew logic, no Arduino dependencies (host tested)
   ShotData         the stored readings of a shot and what is derived from them
   GrindAdvisor     grind recommendation from brew time history
   SwitchBotProtocol  Bot command encode / decode
+  MachineProfile   how the espresso machine's shot is started and stopped
   PusherDriver     what a button pusher driver is; capabilities
   PusherLink       one pusher connection without the radio, all drivers
   PowerControl     the power bot: belief, on / off, schedule
@@ -592,13 +794,14 @@ src/ble/      NimBLE: scale link, SwitchBot link, scanner / reconnect
 src/ui/       LVGL touch UI
 src/net/      Wi-Fi, web page, JSON / CSV
 src/storage/  NVS settings, LittleFS shot history and per-shot readings
+src/Log.*     the log: serial, RAM ring for the Logs page, files on flash
 lib/EspressoScaleProtocol/  scale protocol tables from Open Brew by Weight
 docs/RESEARCH.md  protocol findings, scale wake investigation, sources
 docs/FEATURES.md  barista-assistant features: what is viable, what is not
 emu/              PC emulator of the board, scale, Bot and machine
 ```
 
-## 11. Licence
+## 12. Licence
 
 AGPL-3.0-or-later. `lib/EspressoScaleProtocol` contains unmodified files from
 Open Brew by Weight (Felipe Urzua and contributors, AGPL-3.0), and the cut

@@ -4,6 +4,7 @@
 #include <Preferences.h>
 
 #include "Log.h"
+#include "platform/FsUtil.h"
 #include "core/SettingsUtil.h"
 #include "platform/BigMem.h"
 
@@ -15,15 +16,18 @@ constexpr const char *NVS_NAMESPACE = "bbw";
 constexpr const char *HISTORY_PATH = "/shots.bin";
 constexpr const char *HISTORY_TMP_PATH = "/shots.new";
 constexpr const char *HISTORY_V8_BACKUP_PATH = "/shots.v8.bak";
+constexpr const char *HISTORY_V9_BACKUP_PATH = "/shots.v9.bak";
 constexpr const char *LIBRARY_PATH = "/library.bin";
 constexpr const char *LIBRARY_TMP_PATH = "/library.new";
 constexpr const char *OUTBOX_PATH = "/outbox.bin";
 constexpr uint32_t OUTBOX_MAGIC = 0x4F574242;   // "BBWO"
 constexpr uint32_t HISTORY_MAGIC = 0x53574242;  // "BBWS"
-constexpr uint16_t HISTORY_VERSION = 9;         // 9: coffee, recipe and grinder ids added
+constexpr uint16_t HISTORY_VERSION = 10;        // 10: the bag and the measured TDS added
+constexpr uint16_t HISTORY_VERSION_V9 = 9;      // 9: coffee, recipe and grinder ids added
 constexpr uint16_t HISTORY_VERSION_V8 = 8;
 constexpr uint32_t CURVE_MAGIC = 0x43574242;    // "BBWC"
 constexpr uint16_t CURVE_VERSION = 1;
+constexpr uint32_t CONTEXT_MAGIC = 0x58574242;   // "BBWX"
 // Flash kept free so the history file and settings can always be written.
 constexpr size_t CURVE_RESERVE_BYTES = 96 * 1024;
 
@@ -32,6 +36,17 @@ struct CurveHeader {
   uint16_t version;
   uint16_t count;
   uint32_t shotId;
+};
+
+// Shot contexts live in one ring file beside the history, one fixed slot per shot (id modulo the
+// history's capacity): one file instead of one per shot keeps the directory small and every
+// read or write a single seek. A slot is only believed when the shot id in it matches.
+constexpr const char *CONTEXT_PATH = "/contexts.bin";
+struct ContextHeader {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t recordSize;  // sizeof(ShotContext) when the file was made
+  uint32_t capacity;
 };
 
 void curvePath(uint32_t id, char *out, size_t size) {
@@ -70,7 +85,7 @@ size_t loadSettingsV7() {
   if (!prefs.begin(NVS_NAMESPACE, true)) return 0;
   memset(&(*g_storedV7), 0, sizeof(StoredV7));
   const size_t header = offsetof(StoredV7, value);
-  const size_t length = prefs.getBytesLength(SETTINGS_KEY_V7);
+  const size_t length = prefs.isKey(SETTINGS_KEY_V7) ? prefs.getBytesLength(SETTINGS_KEY_V7) : 0;
   const bool ok = length > header && length <= sizeof(StoredV7) &&
                   prefs.getBytes(SETTINGS_KEY_V7, &(*g_storedV7), length) == length &&
                   (*g_storedV7).version == SETTINGS_VERSION_V7;
@@ -89,7 +104,7 @@ bool loadBlob(const char *key, uint16_t version, T &out) {
   Stored stored;
   stored.version = 0;
   stored.value = out;
-  const size_t length = prefs.getBytesLength(key);
+  const size_t length = prefs.isKey(key) ? prefs.getBytesLength(key) : 0;
   const bool ok = length > sizeof(uint16_t) && length <= sizeof(Stored) &&
                   prefs.getBytes(key, &stored, length) == length && stored.version == version;
   prefs.end();
@@ -121,7 +136,7 @@ void saveBlob(const char *key, uint16_t version, const T &value) {
 // none there, one is made from the recipes an earlier build kept in its
 // settings, or from the defaults.
 void Store::prepareLibrary() {
-  if (LittleFS.exists(LIBRARY_PATH)) return;
+  if (bbw::fileExists(LIBRARY_PATH)) return;
   if (loadSettingsV7() != 0) {
     libraryFromV7((*g_storedV7).value, (*g_scratchLibrary));
     LOGI("store: %u recipes from the earlier settings are now %u presets, %u coffees",
@@ -223,7 +238,7 @@ bool Store::convertHistoryV8() {
     LOGW("store: shot history could not be converted");
     return false;
   }
-  if (LittleFS.exists(HISTORY_V8_BACKUP_PATH)) LittleFS.remove(HISTORY_V8_BACKUP_PATH);
+  if (bbw::fileExists(HISTORY_V8_BACKUP_PATH)) LittleFS.remove(HISTORY_V8_BACKUP_PATH);
   if (!LittleFS.rename(HISTORY_PATH, HISTORY_V8_BACKUP_PATH)) {
     LittleFS.remove(HISTORY_TMP_PATH);
     return false;
@@ -237,16 +252,83 @@ bool Store::convertHistoryV8() {
   return true;
 }
 
+// Rewrites a version 9 history as version 10 (two fields added at the end of each shot), shot for shot, and keeps the
+// version 8 file as a backup. The new file is complete before the old one is
+// moved, so a reset part-way leaves the old history in place to try again.
+// false: nothing was changed.
+bool Store::convertHistoryV9() {
+  struct HeaderV9 {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t recordSize;
+    uint32_t head;
+    uint32_t count;
+    uint32_t nextId;
+  };
+  File in = LittleFS.open(HISTORY_PATH, "r");
+  HeaderV9 old = {};
+  if (!in || in.read(reinterpret_cast<uint8_t *>(&old), sizeof(old)) != sizeof(old) ||
+      old.magic != HISTORY_MAGIC || old.version != HISTORY_VERSION_V9 ||
+      old.recordSize != sizeof(legacy::ShotRecordV9) || old.head >= HISTORY_CAPACITY ||
+      old.count > HISTORY_CAPACITY) {
+    if (in) in.close();
+    return false;
+  }
+  File out = LittleFS.open(HISTORY_TMP_PATH, "w");
+  if (!out) {
+    in.close();
+    return false;
+  }
+  Header fresh = {HISTORY_MAGIC, HISTORY_VERSION, static_cast<uint16_t>(sizeof(ShotRecord)),
+                  old.head, old.count, old.nextId};
+  bool ok = out.write(reinterpret_cast<const uint8_t *>(&fresh), sizeof(fresh)) == sizeof(fresh);
+  // A ring that has not wrapped holds its shots in slots 0 .. count-1; one
+  // that has is full. Either way the slots in use are the first `count`.
+  static legacy::ShotRecordV9 before;
+  static ShotRecord after;
+  for (uint32_t slot = 0; ok && slot < old.count; ++slot) {
+    ok = in.seek(sizeof(old) + static_cast<size_t>(slot) * sizeof(before)) &&
+         in.read(reinterpret_cast<uint8_t *>(&before), sizeof(before)) == sizeof(before);
+    if (!ok) break;
+    before.recipe[RECIPE_NAME_LEN - 1] = '\0';
+    before.coffee[COFFEE_NAME_LEN - 1] = '\0';
+    before.region[ORIGIN_LEN - 1] = before.varietal[ORIGIN_LEN - 1] = '\0';
+    after = shotFromV9(before);
+    ok = out.write(reinterpret_cast<const uint8_t *>(&after), sizeof(after)) == sizeof(after);
+  }
+  in.close();
+  out.close();
+  if (!ok) {
+    LittleFS.remove(HISTORY_TMP_PATH);
+    LOGW("store: shot history could not be converted");
+    return false;
+  }
+  if (bbw::fileExists(HISTORY_V9_BACKUP_PATH)) LittleFS.remove(HISTORY_V9_BACKUP_PATH);
+  if (!LittleFS.rename(HISTORY_PATH, HISTORY_V9_BACKUP_PATH)) {
+    LittleFS.remove(HISTORY_TMP_PATH);
+    return false;
+  }
+  if (!LittleFS.rename(HISTORY_TMP_PATH, HISTORY_PATH)) {
+    LittleFS.rename(HISTORY_V9_BACKUP_PATH, HISTORY_PATH);  // put it back
+    return false;
+  }
+  LOGI("store: %u shots converted to the new history format",
+       static_cast<unsigned>(old.count));
+  return true;
+}
+
 bool Store::begin() {
   allocateStoreBuffers();
-  fsOk_ = LittleFS.begin(true);
+  // By label: partitions.csv calls it "littlefs", and LittleFS.begin() would
+  // otherwise look for one called "spiffs" and find nothing.
+  fsOk_ = LittleFS.begin(true, "/littlefs", 10, "littlefs");
   if (!fsOk_) {
     LOGW("store: LittleFS mount failed, shot history disabled");
     return false;
   }
   prepareLibrary();
   {
-    File state = LittleFS.open(OUTBOX_PATH, "r");
+    File state = fileExists(OUTBOX_PATH) ? LittleFS.open(OUTBOX_PATH, "r") : File();
     OutboxState read = {};
     if (state && state.read(reinterpret_cast<uint8_t *>(&read), sizeof(read)) == sizeof(read) &&
         read.magic == OUTBOX_MAGIC && read.sent <= read.next) {
@@ -257,11 +339,15 @@ bool Store::begin() {
   }
   // A reset between the two renames of a conversion: the backup is the
   // history. Put it back and convert again.
-  if (!LittleFS.exists(HISTORY_PATH) && LittleFS.exists(HISTORY_V8_BACKUP_PATH)) {
+  if (!bbw::fileExists(HISTORY_PATH) && bbw::fileExists(HISTORY_V9_BACKUP_PATH)) {
+    LittleFS.rename(HISTORY_V9_BACKUP_PATH, HISTORY_PATH);
+  }
+  if (!bbw::fileExists(HISTORY_PATH) && bbw::fileExists(HISTORY_V8_BACKUP_PATH)) {
     LittleFS.rename(HISTORY_V8_BACKUP_PATH, HISTORY_PATH);
   }
-  if (LittleFS.exists(HISTORY_TMP_PATH)) LittleFS.remove(HISTORY_TMP_PATH);
-  convertHistoryV8();
+  if (bbw::fileExists(HISTORY_TMP_PATH)) LittleFS.remove(HISTORY_TMP_PATH);
+  convertHistoryV8();   // a version 8 history becomes version 10 in one step
+  convertHistoryV9();
   File file = LittleFS.open(HISTORY_PATH, "r");
   const bool valid = file && file.read(reinterpret_cast<uint8_t *>(&header_), sizeof(header_)) ==
                                  sizeof(header_) &&
@@ -271,8 +357,8 @@ bool Store::begin() {
   if (file) file.close();
   if (!valid) {
     // Never throw away a history this build cannot read: set it aside.
-    if (LittleFS.exists(HISTORY_PATH)) {
-      if (LittleFS.exists("/shots.unread")) LittleFS.remove("/shots.unread");
+    if (bbw::fileExists(HISTORY_PATH)) {
+      if (bbw::fileExists("/shots.unread")) LittleFS.remove("/shots.unread");
       LittleFS.rename(HISTORY_PATH, "/shots.unread");
       LOGW("store: shot history not readable, kept as /shots.unread");
     }
@@ -327,14 +413,79 @@ bool Store::appendShot(const ShotRecord &record) {
 void Store::removeCurve(uint32_t id) {
   char path[20];
   curvePath(id, path, sizeof(path));
-  if (LittleFS.exists(path)) LittleFS.remove(path);
+  if (bbw::fileExists(path)) LittleFS.remove(path);
+}
+
+bool Store::prepareContexts() {
+  if (!fsOk_) return false;
+  if (bbw::fileExists(CONTEXT_PATH)) {
+    File file = LittleFS.open(CONTEXT_PATH, "r");
+    ContextHeader header = {};
+    const bool ok = file && file.read(reinterpret_cast<uint8_t *>(&header), sizeof(header)) == sizeof(header) &&
+                    header.magic == CONTEXT_MAGIC && header.version == SHOT_CONTEXT_VERSION &&
+                    header.recordSize == sizeof(ShotContext) && header.capacity == HISTORY_CAPACITY &&
+                    file.size() == sizeof(header) + HISTORY_CAPACITY * sizeof(ShotContext);
+    if (file) file.close();
+    if (ok) return true;
+    LittleFS.remove(CONTEXT_PATH);  // another layout: start again (only recorded data is lost)
+  }
+  File file = LittleFS.open(CONTEXT_PATH, "w");
+  if (!file) return false;
+  const ContextHeader header = {CONTEXT_MAGIC, SHOT_CONTEXT_VERSION,
+                                static_cast<uint16_t>(sizeof(ShotContext)), HISTORY_CAPACITY};
+  bool ok = file.write(reinterpret_cast<const uint8_t *>(&header), sizeof(header)) == sizeof(header);
+  const ShotContext blank;  // shot id 0: an empty slot
+  for (uint32_t i = 0; ok && i < HISTORY_CAPACITY; ++i) {
+    ok = file.write(reinterpret_cast<const uint8_t *>(&blank), sizeof(blank)) == sizeof(blank);
+  }
+  file.close();
+  if (!ok) LittleFS.remove(CONTEXT_PATH);
+  return ok;
+}
+
+bool Store::saveContext(const ShotContext &context) {
+  if (context.shotId == 0 || !prepareContexts()) return false;
+  File file = LittleFS.open(CONTEXT_PATH, "r+");
+  if (!file) return false;
+  const size_t offset = sizeof(ContextHeader) + (context.shotId % HISTORY_CAPACITY) * sizeof(ShotContext);
+  const bool ok = file.seek(offset) &&
+                  file.write(reinterpret_cast<const uint8_t *>(&context), sizeof(context)) == sizeof(context);
+  file.close();
+  return ok;
+}
+
+bool Store::setShotPrep(uint32_t id, uint16_t doseDg, bool purged, bool uneven) {
+  if (!fsOk_ || id == 0 || id >= header_.nextId) return false;
+  if (header_.nextId > HISTORY_CAPACITY && id < header_.nextId - HISTORY_CAPACITY) return false;  // left the history
+  ShotContext context;
+  if (!loadContext(id, context)) {
+    context = ShotContext();
+    context.shotId = id;
+    context.engineVersion = 0;   // made afterwards: nothing but the owner's entries is known
+  }
+  if (!applyShotPrep(context, doseDg, purged, uneven)) return false;
+  return saveContext(context);
+}
+
+bool Store::loadContext(uint32_t id, ShotContext &out) {
+  if (!fsOk_ || id == 0 || !bbw::fileExists(CONTEXT_PATH)) return false;
+  File file = LittleFS.open(CONTEXT_PATH, "r");
+  if (!file) return false;
+  ContextHeader header = {};
+  bool ok = file.read(reinterpret_cast<uint8_t *>(&header), sizeof(header)) == sizeof(header) &&
+            header.magic == CONTEXT_MAGIC && header.version == SHOT_CONTEXT_VERSION &&
+            header.recordSize == sizeof(ShotContext) && header.capacity == HISTORY_CAPACITY;
+  const size_t offset = sizeof(ContextHeader) + (id % HISTORY_CAPACITY) * sizeof(ShotContext);
+  if (ok) ok = file.seek(offset) && file.read(reinterpret_cast<uint8_t *>(&out), sizeof(out)) == sizeof(out);
+  file.close();
+  return ok && out.shotId == id;   // a slot still holding an older shot is not this one
 }
 
 bool Store::hasCurve(uint32_t id) {
   if (!fsOk_) return false;
   char path[20];
   curvePath(id, path, sizeof(path));
-  return LittleFS.exists(path);
+  return bbw::fileExists(path);
 }
 
 void Store::makeRoomForCurve(size_t bytes) {
@@ -451,17 +602,22 @@ bool Store::setShotRating(uint32_t id, uint8_t rating, uint8_t taste) {
   }, values);
 }
 
+bool Store::setShotTds(uint32_t id, uint16_t tdsX100) {
+  return editShot(id, [](ShotRecord &r, void *c) { r.tdsX100 = *static_cast<uint16_t *>(c); }, &tdsX100);
+}
+
 void Store::clearShots() {
   if (!fsOk_) return;
   const uint32_t first = header_.nextId > HISTORY_CAPACITY + 1 ? header_.nextId - HISTORY_CAPACITY - 1 : 1;
   for (uint32_t id = first; id < header_.nextId; ++id) removeCurve(id);
+  if (bbw::fileExists(CONTEXT_PATH)) LittleFS.remove(CONTEXT_PATH);
   resetHistory();
 }
 
 size_t Store::readText(const char *path, char *out, size_t size) {
   if (size == 0) return 0;
   out[0] = '\0';
-  if (!fsOk_ || !LittleFS.exists(path)) return 0;
+  if (!fsOk_ || !bbw::fileExists(path)) return 0;
   File file = LittleFS.open(path, "r");
   if (!file) return 0;
   const size_t length = file.read(reinterpret_cast<uint8_t *>(out), size - 1);
@@ -476,7 +632,7 @@ bool Store::writeTextIfChanged(const char *path, const char *text) {
   if (!fsOk_) return false;
   const size_t length = strlen(text);
   bool same = false;
-  if (LittleFS.exists(path)) {
+  if (bbw::fileExists(path)) {
     File existing = LittleFS.open(path, "r");
     if (existing) {
       // Compared a piece at a time: no second copy of the file in memory.
@@ -518,6 +674,11 @@ void Store::saveOutboxState() {
   if (!file) return;
   file.write(reinterpret_cast<const uint8_t *>(&outbox_), sizeof(outbox_));
   file.close();
+}
+
+void Store::outboxForgetKey() {
+  outbox_.keyQueued = 0;
+  saveOutboxState();
 }
 
 bool Store::outboxAdd(const char *path, const char *text) {
@@ -595,6 +756,15 @@ void Store::saveSettings(const Settings &settings) {
   saveBlob(SETTINGS_KEY, SETTINGS_VERSION, settings);
 }
 
+Maintenance Store::loadMaintenance() {
+  Maintenance m;
+  loadBlob("maint", 1, m);
+  sanitizeMaintenance(m);
+  return m;
+}
+
+void Store::saveMaintenance(const Maintenance &m) { saveBlob("maint", 1, m); }
+
 Pairing Store::loadPairing() {
   Pairing pairing;
   loadBlob("pairing", 1, pairing);
@@ -605,6 +775,25 @@ Pairing Store::loadPairing() {
 
 void Store::savePairing(const Pairing &pairing) { saveBlob("pairing", 1, pairing); }
 
+UpdateConfig Store::loadUpdateConfig() {
+  UpdateConfig config;
+  if (!loadBlob("otacfg", 1, config)) config = UpdateConfig();
+  config.repo[sizeof(config.repo) - 1] = '\0';
+  config.token[sizeof(config.token) - 1] = '\0';
+  if (config.repo[0] == '\0') strlcpy(config.repo, DEFAULT_RELEASE_REPO, sizeof(config.repo));
+  return config;
+}
+
+void Store::saveUpdateConfig(const UpdateConfig &config) { saveBlob("otacfg", 1, config); }
+
+CupMemory Store::loadCupMemory() {
+  CupMemory memory;
+  if (!loadBlob("cupmem", 1, memory)) memory = CupMemory();
+  return memory;
+}
+
+void Store::saveCupMemory(const CupMemory &memory) { saveBlob("cupmem", 1, memory); }
+
 NetConfig Store::loadNet() {
   NetConfig net;
   loadBlob("net", 1, net);
@@ -612,6 +801,8 @@ NetConfig Store::loadNet() {
   net.staPassword[sizeof(net.staPassword) - 1] = '\0';
   net.apPassword[sizeof(net.apPassword) - 1] = '\0';
   net.botPassword[sizeof(net.botPassword) - 1] = '\0';
+  net.libraryRepo[sizeof(net.libraryRepo) - 1] = '\0';
+  net.libraryToken[sizeof(net.libraryToken) - 1] = '\0';
   if (strlen(net.apPassword) < 8) strlcpy(net.apPassword, "brewbyweight", sizeof(net.apPassword));
   return net;
 }
@@ -626,5 +817,23 @@ PusherConfig Store::loadPushers() {
 }
 
 void Store::savePushers(const PusherConfig &config) { saveBlob("pushers", 1, config); }
+
+StopBotConfig Store::loadStopBot() {
+  StopBotConfig config;
+  loadBlob("stopbot", 1, config);
+  sanitizeStopBotConfig(config);
+  return config;
+}
+
+void Store::saveStopBot(const StopBotConfig &config) { saveBlob("stopbot", 1, config); }
+
+MachineProfile Store::loadMachine() {
+  MachineProfile machine;
+  if (!loadBlob("machine", 1, machine)) machine = MachineProfile();
+  sanitizeMachine(machine);
+  return machine;
+}
+
+void Store::saveMachine(const MachineProfile &machine) { saveBlob("machine", 1, machine); }
 
 }  // namespace bbw

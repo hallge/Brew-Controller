@@ -137,7 +137,10 @@ void handleState(const HttpRequest &request, HttpResponse &response) {
   board["apSsid"] = g_board.apSsid;
   board["webPort"] = g_options.webPort;
   board["logPeriodic"] = g_logPeriodic.load();
-  const bbw::LiveStatus st = app::status();
+  // The page polls this from the moment the process starts. Until setup()
+  // has finished, the firmware's locks and links do not exist yet: asking it
+  // for its status then crashed the emulator now and again at start-up.
+  const bbw::LiveStatus st = g_firmwareReady.load() ? app::status() : bbw::LiveStatus();
   JsonObject fw = doc["firmware"].to<JsonObject>();
   fw["state"] = bbw::stateName(st.state);
   fw["scaleConnected"] = st.scaleConnected;

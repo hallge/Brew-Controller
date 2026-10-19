@@ -32,6 +32,7 @@ struct LogLine {
   std::string category, text;
 };
 std::vector<LogLine> logSince(uint64_t seq, size_t max);
+extern std::atomic<bool> g_firmwareReady;  // setup() has finished
 extern std::atomic<bool> g_logPeriodic;  // also log heartbeats and weight packets
 
 // The board itself.

@@ -30,7 +30,7 @@ constexpr size_t RECIPE_NAME_LEN = 24;
 
 // Limits carried over from Open Brew by Weight (ShotStopperBrewTypes.h,
 // ShotStopperScaleTypes.h, ShotStopperMachineMomentaryOnlyState.h).
-constexpr float MAX_OFFSET_G = 5.0f;
+constexpr float MAX_OFFSET_G = 10.0f;  // was 5 (Open Brew); the Bot and the Breville take ~1.7 s to stop: ~5 g at 2.5 g/s
 constexpr float MIN_TARGET_G = 5.0f;
 constexpr float MAX_TARGET_G = 200.0f;
 constexpr float MIN_DOSE_G = 5.0f;
@@ -121,6 +121,7 @@ enum class EndReason : uint8_t {
   CUP_REMOVED,      // the cup was lifted off the scale mid-pour; stop was pressed
   RECOVERED,        // stopped after the controller restarted in the middle of a shot
   BLOOM_FAILED,     // a press of the bloom sequence could not be made or confirmed
+  BOT_LOST,         // the bot holding the button for the shot stopped answering
 };
 
 inline const char *endReasonName(EndReason r) {
@@ -137,6 +138,7 @@ inline const char *endReasonName(EndReason r) {
     case EndReason::CUP_REMOVED: return "cup_removed";
     case EndReason::RECOVERED: return "recovered";
     case EndReason::BLOOM_FAILED: return "bloom_failed";
+    case EndReason::BOT_LOST: return "bot_lost";
   }
   return "unknown";
 }
@@ -204,6 +206,15 @@ struct Coffee {
   uint32_t shareHash = 0;                // of the description that record carried
   char reviewNote[NOTES_LEN] = {};       // the reviewer's words, if there were any
   char libraryId[LIBRARY_ID_LEN] = {};   // its name in the library once published
+  // The bag in use went into the freezer on frozenDate and came out on
+  // thawDate (YYYYMMDD; 0 = not frozen / still frozen). Frozen time does not
+  // age the coffee (core/Community.h effectiveAgeDays). Added at the end of
+  // the record: libraries saved before it read it as 0.
+  uint32_t frozenDate = 0;
+  uint32_t thawDate = 0;
+  // The Bag in use (Library::bags). roastDate, frozenDate and thawDate above mirror that bag, so
+  // everything that only needs the coffee in use reads them from here. 0: no bag yet.
+  uint16_t bagId = 0;
 };
 
 struct RecipeDef {
@@ -233,6 +244,10 @@ struct Preset {
   // in use (swapGrinders).
   uint16_t otherGrindUm = 0;
   uint16_t otherSharedGrindUm = 0;
+  // Shots the stop offset has learned from since this pair was made (or its
+  // offset reset): the first few learn in bigger steps (warm-up). Appended
+  // last: an older stored library reads as 0, so its pairs warm up too.
+  uint8_t learnedShots = 0;
 };
 
 // A grinder its owner has. A controller keeps the one in use and, at most,
@@ -258,6 +273,24 @@ struct Grinder {
   uint32_t shareHash = 0;
   char reviewNote[NOTES_LEN] = {};
   char libraryId[LIBRARY_ID_LEN] = {};     // its entry in the library's list of grinders
+  // How a setting is read (core/SettingFormat.h), added at the end of the record. Settings are
+  // always stored as whole steps; these say what a step looks like on the dial.
+  uint8_t divisor = 1;                     // steps per displayed unit: 1, 2, 4, 5, 10, 20, 25, 50 or 100
+  uint8_t subSteps = 0;                    // 0: one scale; 2 to 99: a second, inner ring with this many steps
+};
+
+// One bag of a coffee: what was bought, when it was roasted, whether it spent time in the freezer.
+// A coffee keeps every bag it has had so that a new bag starts a fresh run of shots for grind advice
+// and an earlier one can be put back in use. A shot remembers the bag it was made from.
+constexpr size_t MAX_BAGS = 48;
+struct Bag {
+  uint16_t id = 0;             // never reused
+  uint16_t coffeeId = 0;
+  uint32_t roastDate = 0;      // YYYYMMDD, 0 = not entered
+  uint32_t openedDate = 0;     // when the bag was opened, 0 = not entered
+  uint32_t frozenDate = 0;     // went into the freezer; 0 = never
+  uint32_t thawDate = 0;       // came out; 0 with a frozenDate = still frozen
+  uint16_t weightG = 0;        // what the bag held, 0 = not entered
 };
 
 struct Library {
@@ -275,6 +308,9 @@ struct Library {
   bool hasOtherGrinder = false;
   uint16_t nextCalibration = 1;
   uint16_t nextGrinderId = 1;
+  Bag bags[MAX_BAGS];
+  uint8_t bagCount = 0;
+  uint16_t nextBagId = 1;
 };
 
 // One preset with its recipe and coffee filled in: what the brew controller,
@@ -314,6 +350,7 @@ struct Recipe {
   // start the brew. Needs Preinfusion::HOLD: with the machine's own
   // pre-infusion there is no telling when to switch off.
   uint16_t bloomPauseMs = 0;
+  uint16_t bagId = 0;          // the bag of the coffee in use, 0 = none
 };
 
 enum class CupMode : uint8_t {
@@ -362,6 +399,25 @@ struct Settings {
   bool shareDialIns = true;          // where a coffee and recipe settled
   bool shareShots = false;           // every shot that counts for grind advice
   bool shareRatings = false;         // taste ratings, with those shots
+  // Grind advice steers by the time of the owner's best-rated shots of this
+  // coffee and recipe, once there are enough (core/GrindAdvisor.h ratedTarget),
+  // instead of the recipe's fixed target time.
+  bool grindRatedTarget = true;
+  // Retired 17 Oct 2026: "learn the grinder" was a switch for two days and is now part of the grind
+  // advice itself (core/GrindAdvisor.h grindConfigForGrinder). Nothing reads these two bytes; they stay
+  // so that settings saved by those builds are not longer than this record (a longer blob is refused).
+  bool retiredLearnGrinder = true;
+  uint8_t retiredLearnGrinderFlag = 0;
+  // Keep the power bot connected while the scale is off, so the power
+  // button presses at once (waking a sleeping SwitchBot from here took from
+  // seconds to minutes). It is let go as soon as the scale is heard: measured
+  // on the board, with the power bot held the scale's connection broke off
+  // during its setup every time, and came up at the first try once the power
+  // bot was let go. Costs the bot battery.
+  bool keepPowerBotConnected = true;
+  // The controller's screen turned half a turn: for a mounting with the
+  // USB-C connector (and the touch key) on the right instead of the left.
+  bool displayFlipped = false;
 };
 
 struct WeightSample {
@@ -424,7 +480,25 @@ struct ShotRecord {
   uint16_t recipeId = 0;
   uint16_t grinderId = 0;          // Grinder::calibration the shot was made under
   uint16_t bloomPauseMs = 0;       // bloom pause of the recipe, 0 = none
+  // History version 10: the bag it was made from (0 = before bags: matched by roastDate), and the
+  // extraction the owner measured, TDS in hundredths of a percent (0 = not measured).
+  uint16_t bagId = 0;
+  uint16_t tdsX100 = 0;
 };
+
+// Extraction yield, percent of the dose that ended up in the cup: TDS x beverage mass / dose. 0 when
+// there is no measured TDS or no dose.
+inline float shotExtractionPct(const ShotRecord &s) {
+  if (s.tdsX100 == 0 || !(s.doseG > 0.0f) || !(s.finalWeightG > 0.0f)) return 0.0f;
+  return (s.tdsX100 / 100.0f) * s.finalWeightG / s.doseG;
+}
+
+// Two shots (or a shot and the recipe now in use) are of the same bag if their bag ids agree; one
+// made before bags existed has none and is matched by the roast date it copied.
+inline bool sameBag(uint16_t shotBagId, uint32_t shotRoastDate, uint16_t bagId, uint32_t roastDate) {
+  if (shotBagId != 0 && bagId != 0) return shotBagId == bagId;
+  return shotRoastDate == roastDate;
+}
 
 // Whether a shot is used for grind advice.
 enum class GrindVote : uint8_t {
@@ -477,6 +551,10 @@ struct LiveStatus {
   bool verifyingStop = false;    // watching that a blind stop press did not start the pump
   bool holdingButton = false;    // start press is being held for pre-infusion
   bool stopStartedPump = false;  // the last stop press turned out to start the pump
+  // Machine profile (core/MachineProfile.h).
+  uint8_t machineStyle = 0;      // MachineStyle
+  bool targetCue = false;        // the shot is at its target and it is for the owner to stop it
+  bool awaitingDrip = false;     // armed: the shot's clock starts with the first coffee
   bool cupPresent = false;       // a cup has been seen placed on the scale and is still there
   bool cupRequired = false;      // Start is held back until cupPresent
   uint8_t activeRecipe = 0;

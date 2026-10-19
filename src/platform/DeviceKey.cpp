@@ -89,7 +89,7 @@ class MbedSigner : public ISigner {
   static bool load(StoredKey &out) {
     Preferences prefs;
     if (!prefs.begin(NVS_NAMESPACE, true)) return false;
-    const bool ok = prefs.getBytesLength(NVS_KEY) == sizeof(out) &&
+    const bool ok = prefs.isKey(NVS_KEY) && prefs.getBytesLength(NVS_KEY) == sizeof(out) &&
                     prefs.getBytes(NVS_KEY, &out, sizeof(out)) == sizeof(out) &&
                     out.version == KEY_VERSION;
     prefs.end();

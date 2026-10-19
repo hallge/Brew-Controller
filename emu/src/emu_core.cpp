@@ -26,6 +26,7 @@ namespace emu {
 Options g_options;
 Board g_board;
 std::recursive_mutex g_world;
+std::atomic<bool> g_firmwareReady{false};
 std::atomic<bool> g_logPeriodic{false};
 
 namespace {
@@ -313,6 +314,11 @@ bool Preferences::begin(const char *name, bool readOnly) {
   return readOnly ? fs::exists(dir_, error) : !error;
 }
 
+bool Preferences::isKey(const char *key) {
+  std::error_code error;
+  return fs::exists(dir_ + "/" + key + ".bin", error);
+}
+
 size_t Preferences::getBytesLength(const char *key) {
   std::error_code error;
   const auto size = fs::file_size(dir_ + "/" + key + ".bin", error);
@@ -337,7 +343,7 @@ size_t Preferences::putBytes(const char *key, const void *value, size_t length) 
 
 LittleFSClass LittleFS;
 
-bool LittleFSClass::begin(bool) {
+bool LittleFSClass::begin(bool, const char *, uint8_t, const char *) {
   std::error_code error;
   fs::create_directories(emu::g_options.dataDir + "/fs", error);
   return !error;
@@ -445,6 +451,7 @@ int runController(emu::Reset reason) {
   }).detach();
 
   setup();
+  emu::g_firmwareReady = true;
   for (;;) loop();
 }
 

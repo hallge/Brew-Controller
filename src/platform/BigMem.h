@@ -53,6 +53,14 @@ inline T *bigNew() {
   return new (bigAlloc(sizeof(T))) T();
 }
 
+// TLS (every HTTPS connection: firmware updates, the shared library) in
+// PSRAM. This Arduino core is built to give mbedTLS memory inside the chip
+// only, about 40-50 kB per connection, which is half of what is left there
+// once Wi-Fi and Bluetooth are running. Measured on the board: one update
+// check took the chip down to 22 kB and the watchdog reset it. Call once from
+// setup(), before any connection is opened.
+void tlsUseExternalMemory();
+
 // For the Setup page and the serial log: is there room to spare?
 struct MemoryReport {
   bool known = false;            // false in the emulator

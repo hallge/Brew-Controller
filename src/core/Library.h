@@ -13,6 +13,7 @@
 
 #include "GrinderRegistry.h"
 #include "Legacy.h"
+#include "SettingFormat.h"
 #include "SettingsUtil.h"
 #include "Types.h"
 
@@ -44,6 +45,141 @@ inline RecipeDef *findRecipe(Library &lib, uint16_t id) {
 
 // Copies and always terminates; the rest of the field is zeroed so that equal
 // text gives equal bytes on flash.
+// ------------------------------------------------------------------ bags --
+inline const Bag *findBag(const Library &lib, uint16_t id) {
+  if (id == 0) return nullptr;
+  for (uint8_t i = 0; i < lib.bagCount && i < MAX_BAGS; ++i) {
+    if (lib.bags[i].id == id) return &lib.bags[i];
+  }
+  return nullptr;
+}
+
+inline Bag *findBag(Library &lib, uint16_t id) {
+  return const_cast<Bag *>(findBag(static_cast<const Library &>(lib), id));
+}
+
+// The coffee in use mirrors its bag's dates, so code that only needs "the coffee" reads them there.
+inline void mirrorBag(Coffee &c, const Bag &b) {
+  c.bagId = b.id;
+  c.roastDate = b.roastDate;
+  c.frozenDate = b.frozenDate;
+  c.thawDate = b.thawDate;
+}
+
+inline bool bagInUse(const Library &lib, uint16_t id) {
+  for (uint8_t i = 0; i < lib.coffeeCount; ++i) if (lib.coffees[i].bagId == id) return true;
+  return false;
+}
+
+// Makes room for one more: forgets the oldest bag that no coffee has in use. false if there is none.
+inline bool dropOldestBag(Library &lib) {
+  int oldest = -1;
+  for (uint8_t i = 0; i < lib.bagCount; ++i) {
+    if (bagInUse(lib, lib.bags[i].id)) continue;
+    if (oldest < 0 || lib.bags[i].id < lib.bags[oldest].id) oldest = i;
+  }
+  if (oldest < 0) return false;
+  for (uint8_t i = static_cast<uint8_t>(oldest); i + 1 < lib.bagCount; ++i) lib.bags[i] = lib.bags[i + 1];
+  --lib.bagCount;
+  return true;
+}
+
+// A new bag record; 0 if the list is full of bags in use.
+inline uint16_t addBag(Library &lib, uint16_t coffeeId, uint32_t roastDate, uint32_t openedDate,
+                       uint32_t frozenDate, uint32_t thawDate, uint16_t weightG) {
+  if (lib.bagCount >= MAX_BAGS && !dropOldestBag(lib)) return 0;
+  Bag &b = lib.bags[lib.bagCount++];
+  b = Bag{};
+  b.id = lib.nextBagId++;
+  if (lib.nextBagId == 0) lib.nextBagId = 1;
+  b.coffeeId = coffeeId;
+  b.roastDate = validRoastDate(roastDate) ? roastDate : 0;
+  b.openedDate = validRoastDate(openedDate) ? openedDate : 0;
+  b.frozenDate = validRoastDate(frozenDate) ? frozenDate : 0;
+  b.thawDate = validRoastDate(thawDate) ? thawDate : 0;
+  b.weightG = weightG;
+  return b.id;
+}
+
+// A coffee's record was edited, or made: the bag in use follows what it now says (a correction of the
+// same bag, not a new one), or is made from it if the coffee had none. A coffee with no dates at all
+// has no bag until it has something to put in one.
+inline void syncBagFromCoffee(Library &lib, Coffee &c) {
+  Bag *b = c.bagId ? findBag(lib, c.bagId) : nullptr;
+  if (b && b->coffeeId != c.id) b = nullptr;
+  if (!b) {
+    if (c.roastDate == 0 && c.frozenDate == 0 && c.thawDate == 0) {
+      c.bagId = 0;
+      return;
+    }
+    c.bagId = addBag(lib, c.id, c.roastDate, 0, c.frozenDate, c.thawDate, 0);
+    return;
+  }
+  b->roastDate = c.roastDate;
+  b->frozenDate = c.frozenDate;
+  b->thawDate = c.thawDate;
+}
+
+// A new bag of a coffee, in use from now: the dates of the last one stay with it, the coffee's
+// mirror starts fresh (not frozen). Returns the new bag's id, 0 if the coffee is not there or the
+// list is full of bags in use.
+inline uint16_t startBag(Library &lib, uint16_t coffeeId, uint32_t roastDate, uint32_t openedDate = 0,
+                         uint16_t weightG = 0) {
+  Coffee *c = nullptr;
+  for (uint8_t i = 0; i < lib.coffeeCount; ++i) if (lib.coffees[i].id == coffeeId) c = &lib.coffees[i];
+  if (!c) return 0;
+  // Keep the bag it had: a coffee edited without ever having had a bag gets one first.
+  syncBagFromCoffee(lib, *c);
+  const uint16_t id = addBag(lib, coffeeId, roastDate, openedDate, 0, 0, weightG);
+  if (id == 0) return 0;
+  mirrorBag(*c, *findBag(lib, id));
+  return id;
+}
+
+// Puts an earlier bag of the coffee back in use.
+inline bool useBag(Library &lib, uint16_t coffeeId, uint16_t bagId) {
+  Bag *b = findBag(lib, bagId);
+  if (!b || b->coffeeId != coffeeId) return false;
+  for (uint8_t i = 0; i < lib.coffeeCount; ++i) {
+    if (lib.coffees[i].id == coffeeId) {
+      mirrorBag(lib.coffees[i], *b);
+      return true;
+    }
+  }
+  return false;
+}
+
+// Forgets a bag that is not in use. Its shots stay in the history, matched by their roast date.
+inline bool removeBag(Library &lib, uint16_t bagId) {
+  if (bagInUse(lib, bagId)) return false;
+  for (uint8_t i = 0; i < lib.bagCount; ++i) {
+    if (lib.bags[i].id != bagId) continue;
+    for (uint8_t j = i; j + 1 < lib.bagCount; ++j) lib.bags[j] = lib.bags[j + 1];
+    --lib.bagCount;
+    return true;
+  }
+  return false;
+}
+
+// The bag record in use of a coffee, edited in place: dates, weight. false if there is none.
+inline bool editBag(Library &lib, uint16_t bagId, uint32_t roastDate, uint32_t openedDate,
+                    uint32_t frozenDate, uint32_t thawDate, uint16_t weightG) {
+  Bag *b = findBag(lib, bagId);
+  if (!b) return false;
+  b->roastDate = validRoastDate(roastDate) ? roastDate : 0;
+  b->openedDate = validRoastDate(openedDate) ? openedDate : 0;
+  b->frozenDate = validRoastDate(frozenDate) ? frozenDate : 0;
+  b->thawDate = validRoastDate(thawDate) ? thawDate : 0;
+  if (b->frozenDate != 0 && b->roastDate != 0 && b->frozenDate < b->roastDate) b->frozenDate = 0;
+  if (b->frozenDate == 0) b->thawDate = 0;
+  if (b->thawDate != 0 && b->thawDate < b->frozenDate) b->thawDate = 0;
+  b->weightG = weightG;
+  for (uint8_t i = 0; i < lib.coffeeCount; ++i) {
+    if (lib.coffees[i].bagId == bagId) mirrorBag(lib.coffees[i], *b);
+  }
+  return true;
+}
+
 inline void copyText(char *to, const char *from, size_t size) {
   strncpy(to, from, size - 1);
   to[size - 1] = '\0';
@@ -106,6 +242,7 @@ inline Recipe resolvePreset(const Library &lib, uint8_t index) {
     r.roastLevel = c->roastLevel;
     r.roastDate = c->roastDate;
     r.coffeeId = c->id;
+    r.bagId = c->bagId;
   }
   r.grindUm = p.grindUm;
   r.stopOffsetG = p.stopOffsetG;
@@ -142,6 +279,12 @@ inline void sanitizeCoffee(Coffee &c) {
   if (c.altitudeM > 4000) c.altitudeM = 0;
   if (c.roastLevel > static_cast<uint8_t>(RoastLevel::DARK)) c.roastLevel = 0;
   if (!validRoastDate(c.roastDate)) c.roastDate = 0;
+  // Frozen and thawed dates only mean something in order, and after the roast.
+  if (!validRoastDate(c.frozenDate)) c.frozenDate = 0;
+  if (!validRoastDate(c.thawDate)) c.thawDate = 0;
+  if (c.frozenDate != 0 && c.roastDate != 0 && c.frozenDate < c.roastDate) c.frozenDate = 0;
+  if (c.frozenDate == 0) c.thawDate = 0;
+  if (c.thawDate != 0 && c.thawDate < c.frozenDate) c.thawDate = 0;
   c.reviewNote[NOTES_LEN - 1] = c.libraryId[LIBRARY_ID_LEN - 1] = '\0';
   if (c.shareState > 5) c.shareState = 0;  // ShareState::DECLINED
 }
@@ -168,6 +311,7 @@ inline uint16_t addCoffee(Library &lib, const Recipe &from) {
   c = Coffee{};
   flatToCoffee(from, c);
   c.id = lib.nextCoffeeId++;
+  syncBagFromCoffee(lib, c);
   return c.id;
 }
 
@@ -189,6 +333,7 @@ inline void sanitizeGrinder(Grinder &g) {
   g.unit[GRINDER_UNIT_LEN - 1] = '\0';
   if (g.unit[0] == '\0') copyText(g.unit, "um", GRINDER_UNIT_LEN);
   g.umPerUnit = clampTo(finiteOr(g.umPerUnit, 0.0f), 0.0f, 1000.0f);
+  sanitizeSettingFormat(g);
   if (!validRoastDate(g.zeroDate)) g.zeroDate = 0;
   g.reviewNote[NOTES_LEN - 1] = g.libraryId[LIBRARY_ID_LEN - 1] = '\0';
   if (g.shareState > 5) g.shareState = 0;
@@ -224,14 +369,16 @@ inline void setGrinder(Library &lib, Grinder in, bool rezeroed) {
   normalizeGrinder(in);
   const Grinder &was = lib.grinder;
   const bool firstNaming = was.model[0] == '\0' && was.modelId == 0;
-  const bool changed = strcmp(in.model, was.model) != 0 || strcmp(in.burrs, was.burrs) != 0 ||
-                       strcmp(in.unit, was.unit) != 0;
+  // A different divisor or ring count changes what every stored number means, as another unit does.
+  const bool unitChanged = strcmp(in.unit, was.unit) != 0 || in.divisor != was.divisor ||
+                           in.subSteps != was.subSteps;
+  const bool changed = strcmp(in.model, was.model) != 0 || strcmp(in.burrs, was.burrs) != 0 || unitChanged;
   in.id = was.id;
   in.calibration = was.calibration;
   if (rezeroed || (changed && !firstNaming)) in.calibration = lib.nextCalibration++;
   else if (in.zeroDate == 0) in.zeroDate = was.zeroDate;
   // Read in another unit, the numbers entered so far mean nothing.
-  if (!firstNaming && strcmp(in.unit, was.unit) != 0) {
+  if (!firstNaming && unitChanged) {
     for (uint8_t i = 0; i < lib.presetCount; ++i) lib.presets[i].grindUm = 0;
   }
   // The same grinder keeps its standing with the library; another model is
@@ -326,6 +473,38 @@ inline void sanitizeLibrary(Library &lib) {
     bool taken = d.id == 0;
     for (uint8_t j = 0; j < i && !taken; ++j) taken = lib.recipes[j].id == d.id;
     if (taken) d.id = lib.nextRecipeId++;
+  }
+  // Bags: every id unique and non-zero, each one of a coffee that is there; each coffee's bag in use is
+  // one of its own, its dates mirrored from it, or made from them (a library saved before bags).
+  if (lib.bagCount > MAX_BAGS) lib.bagCount = MAX_BAGS;
+  if (lib.nextBagId == 0) lib.nextBagId = 1;
+  for (uint8_t i = 0; i < lib.bagCount; ++i) {
+    if (lib.bags[i].id >= lib.nextBagId) lib.nextBagId = lib.bags[i].id + 1;
+  }
+  {
+    uint8_t keep = 0;
+    for (uint8_t i = 0; i < lib.bagCount; ++i) {
+      Bag b = lib.bags[i];
+      bool taken = b.id == 0 || !findCoffee(lib, b.coffeeId);
+      for (uint8_t j = 0; j < keep && !taken; ++j) taken = lib.bags[j].id == b.id;
+      if (taken) continue;
+      if (!validRoastDate(b.roastDate)) b.roastDate = 0;
+      if (!validRoastDate(b.openedDate)) b.openedDate = 0;
+      if (!validRoastDate(b.frozenDate)) b.frozenDate = 0;
+      if (!validRoastDate(b.thawDate)) b.thawDate = 0;
+      if (b.frozenDate == 0) b.thawDate = 0;
+      lib.bags[keep++] = b;
+    }
+    lib.bagCount = keep;
+  }
+  for (uint8_t i = 0; i < lib.coffeeCount; ++i) {
+    Coffee &c = lib.coffees[i];
+    const Bag *b = findBag(lib, c.bagId);
+    if (b && b->coffeeId == c.id) mirrorBag(c, *b);
+    else {
+      c.bagId = 0;
+      syncBagFromCoffee(lib, c);
+    }
   }
   uint8_t kept = 0;
   for (uint8_t i = 0; i < lib.presetCount; ++i) {
@@ -431,7 +610,10 @@ inline bool placePreset(Library &lib, const Library &before, uint8_t slot, Recip
       if (out.coffeeId == 0) out.coffeeId = addCoffee(lib, flat);
       if (out.coffeeId == 0) return false;
     } else if (flatCoffeeDiffers(old, flat)) {
-      if (Coffee *coffee = findCoffee(lib, was.coffeeId)) flatToCoffee(flat, *coffee);
+      if (Coffee *coffee = findCoffee(lib, was.coffeeId)) {
+        flatToCoffee(flat, *coffee);
+        syncBagFromCoffee(lib, *coffee);
+      }
     }
     out.grindUm = flat.grindUm;
     return true;
@@ -481,7 +663,10 @@ inline uint16_t saveCoffee(Library &lib, Coffee coffee) {
     coffee.shareHash = existing->shareHash;
     memcpy(coffee.reviewNote, existing->reviewNote, NOTES_LEN);
     memcpy(coffee.libraryId, existing->libraryId, LIBRARY_ID_LEN);
+    // The bag in use stays; what is typed here corrects it (a new bag is startBag).
+    coffee.bagId = existing->bagId;
     *existing = coffee;
+    syncBagFromCoffee(lib, *existing);
     return coffee.id;
   }
   if (lib.coffeeCount >= MAX_COFFEES) return 0;
@@ -489,7 +674,9 @@ inline uint16_t saveCoffee(Library &lib, Coffee coffee) {
   coffee.shareState = 0;  // new here, whatever was sent in
   coffee.shareSeq = coffee.shareHash = 0;
   coffee.reviewNote[0] = coffee.libraryId[0] = '\0';
+  coffee.bagId = 0;
   lib.coffees[lib.coffeeCount++] = coffee;
+  syncBagFromCoffee(lib, lib.coffees[lib.coffeeCount - 1]);
   return coffee.id;
 }
 
@@ -515,6 +702,11 @@ inline bool removeCoffee(Library &lib, uint16_t id) {
     if (lib.coffees[i].id != id) continue;
     for (uint8_t j = i + 1; j < lib.coffeeCount; ++j) lib.coffees[j - 1] = lib.coffees[j];
     --lib.coffeeCount;
+    for (uint8_t b = 0; b < lib.bagCount;) {   // its bags go too (the shots keep their roast date)
+      if (lib.bags[b].coffeeId != id) { ++b; continue; }
+      for (uint8_t j = b; j + 1 < lib.bagCount; ++j) lib.bags[j] = lib.bags[j + 1];
+      --lib.bagCount;
+    }
     return true;
   }
   return false;
@@ -710,6 +902,16 @@ inline Settings settingsFromV7(const legacy::SettingsV7 &old, size_t storedBytes
 // The ids are looked up by the names the shot carries: the recipe by name,
 // the coffee by name and bag (roast date), then by name and origin, then by
 // name alone. A shot of something no longer in the library gets 0.
+// Version 10 is version 9 with two fields at the end: the layout up to there is the same.
+inline ShotRecord shotFromV9(const legacy::ShotRecordV9 &o) {
+  ShotRecord s;
+  static_assert(sizeof(legacy::ShotRecordV9) <= sizeof(ShotRecord), "version 10 only adds");
+  memcpy(&s, &o, sizeof(o));
+  s.bagId = 0;
+  s.tdsX100 = 0;
+  return s;
+}
+
 inline ShotRecord shotFromV8(const legacy::ShotRecordV8 &o, const Library &lib) {
   ShotRecord s;
   s.id = o.id;
@@ -776,7 +978,8 @@ inline ShotRecord shotFromV8(const legacy::ShotRecordV8 &o, const Library &lib) 
 // defaults; nothing else about a record may change.
 
 constexpr uint32_t LIBRARY_MAGIC = 0x4C574242;  // "BBWL"
-constexpr uint16_t LIBRARY_VERSION = 2;      // 2: the grinder follows the tables
+constexpr uint16_t LIBRARY_VERSION = 3;      // 3: the bags follow the grinders
+constexpr uint16_t LIBRARY_VERSION_V2 = 2;   // 2: the grinder follows the tables
 constexpr uint16_t LIBRARY_VERSION_V1 = 1;
 
 struct LibraryFileHeader {
@@ -800,10 +1003,19 @@ struct LibraryFileHeaderV2 {
   uint16_t otherGrinders;
 };
 
+// Version 3 adds, straight after the grinders: the bag record's length, how many follow and the next id.
+struct LibraryFileHeaderV3 {
+  uint16_t bagSize;
+  uint16_t bagCount;
+  uint16_t nextBagId;
+  uint16_t reserved;
+};
+
 constexpr size_t LIBRARY_MAX_BYTES = sizeof(LibraryFileHeader) + sizeof(LibraryFileHeaderV2) +
                                      MAX_COFFEES * sizeof(Coffee) +
                                      MAX_RECIPES * sizeof(RecipeDef) +
-                                     MAX_PRESETS * sizeof(Preset) + 2 * sizeof(Grinder);
+                                     MAX_PRESETS * sizeof(Preset) + 2 * sizeof(Grinder) +
+                                     sizeof(LibraryFileHeaderV3) + MAX_BAGS * sizeof(Bag);
 
 // Returns the number of bytes written, 0 if `size` is too small.
 inline size_t encodeLibrary(const Library &lib, uint8_t *out, size_t size) {
@@ -821,9 +1033,11 @@ inline size_t encodeLibrary(const Library &lib, uint8_t *out, size_t size) {
   h.nextRecipeId = lib.nextRecipeId;
   const uint16_t others = lib.hasOtherGrinder ? 1 : 0;
   const LibraryFileHeaderV2 h2 = {static_cast<uint16_t>(sizeof(Grinder)), others};
+  const uint8_t bags = lib.bagCount < MAX_BAGS ? lib.bagCount : MAX_BAGS;
+  const LibraryFileHeaderV3 h3 = {static_cast<uint16_t>(sizeof(Bag)), bags, lib.nextBagId, 0};
   const size_t need = sizeof(h) + sizeof(h2) + h.coffeeCount * sizeof(Coffee) +
                       h.recipeCount * sizeof(RecipeDef) + h.presetCount * sizeof(Preset) +
-                      (1 + others) * sizeof(Grinder);
+                      (1 + others) * sizeof(Grinder) + sizeof(h3) + bags * sizeof(Bag);
   if (!out || size < need) return 0;
   uint8_t *at = out;
   memcpy(at, &h, sizeof(h));
@@ -838,7 +1052,13 @@ inline size_t encodeLibrary(const Library &lib, uint8_t *out, size_t size) {
   at += h.presetCount * sizeof(Preset);
   memcpy(at, &lib.grinder, sizeof(Grinder));
   at += sizeof(Grinder);
-  if (others) memcpy(at, &lib.otherGrinder, sizeof(Grinder));
+  if (others) {
+    memcpy(at, &lib.otherGrinder, sizeof(Grinder));
+    at += sizeof(Grinder);
+  }
+  memcpy(at, &h3, sizeof(h3));
+  at += sizeof(h3);
+  memcpy(at, lib.bags, bags * sizeof(Bag));
   return need;
 }
 
@@ -848,12 +1068,12 @@ inline bool decodeLibrary(const uint8_t *in, size_t size, Library &out) {
   if (!in || size < sizeof(h)) return false;
   memcpy(&h, in, sizeof(h));
   if (h.magic != LIBRARY_MAGIC ||
-      (h.version != LIBRARY_VERSION && h.version != LIBRARY_VERSION_V1)) {
+      (h.version != LIBRARY_VERSION && h.version != LIBRARY_VERSION_V2 && h.version != LIBRARY_VERSION_V1)) {
     return false;
   }
   LibraryFileHeaderV2 h2 = {0, 0};  // version 1 had no grinder
   size_t headers = sizeof(h);
-  if (h.version == LIBRARY_VERSION) {
+  if (h.version >= LIBRARY_VERSION_V2) {
     if (size < sizeof(h) + sizeof(h2)) return false;
     memcpy(&h2, in + sizeof(h), sizeof(h2));
     headers += sizeof(h2);
@@ -868,6 +1088,17 @@ inline bool decodeLibrary(const uint8_t *in, size_t size, Library &out) {
                       static_cast<size_t>(h.presetCount) * h.presetSize +
                       static_cast<size_t>(1 + h2.otherGrinders) * h2.grinderSize;
   if (size < need) return false;
+  LibraryFileHeaderV3 h3 = {0, 0, 1, 0};   // versions 1 and 2 had no bags
+  bool haveBags = false;
+  if (h.version >= LIBRARY_VERSION && size >= need + sizeof(h3)) {
+    // A file cut short before its bags is read without them (they are rebuilt from the coffees).
+    memcpy(&h3, in + need, sizeof(h3));
+    if (h3.bagSize == 0 || h3.bagCount > MAX_BAGS ||
+        size < need + sizeof(h3) + static_cast<size_t>(h3.bagCount) * h3.bagSize) {
+      return false;
+    }
+    haveBags = true;
+  }
   resetLibrary(out);
   Library &lib = out;
   const uint8_t *at = in + headers;
@@ -888,6 +1119,14 @@ inline bool decodeLibrary(const uint8_t *in, size_t size, Library &out) {
       memcpy(&lib.otherGrinder, at + h2.grinderSize, take);
       lib.hasOtherGrinder = true;
     }
+  }
+  if (haveBags) {
+    const uint8_t *bagAt = in + need + sizeof(h3);
+    for (uint16_t i = 0; i < h3.bagCount; ++i, bagAt += h3.bagSize) {
+      memcpy(&lib.bags[i], bagAt, h3.bagSize < sizeof(Bag) ? h3.bagSize : sizeof(Bag));
+    }
+    lib.bagCount = static_cast<uint8_t>(h3.bagCount);
+    lib.nextBagId = h3.nextBagId;
   }
   lib.coffeeCount = h.coffeeCount;
   lib.recipeCount = h.recipeCount;

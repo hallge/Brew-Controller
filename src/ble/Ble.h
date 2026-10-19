@@ -7,8 +7,12 @@
 //   BlePusher    - a button pusher link, whatever the make (SwitchBot Bot,
 //                  Tuya Fingerbot, MicroBot Push). The make, its bytes and
 //                  the press sequence are in core/PusherLink.h. There are
-//                  two: the brew bot and the power bot.
-//   BleManager   - one scanner, keeps the links up at the same time.
+//                  three: the brew bot, the power bot, and the stop bot of
+//                  a machine with separate start and stop buttons.
+//   BleManager   - one scanner, keeps the links up at the same time. Never more
+//                  than three: the scale, the brew bot, and either the power
+//                  bot or the stop bot (three is what the ESP32-S3 is good
+//                  for with Wi-Fi running).
 //
 // Threading: BleManager::run() (its own task) does the blocking scan/connect
 // work. Commands and tick()/service() are called from the control task.
@@ -73,7 +77,8 @@ class BleScale : public IScale {
 
 class BlePusher : public IActuator, private PusherWriter {
  public:
-  // name: "bot" (brew button) or "power" (power button); it leads the log lines.
+  // name: "bot" (brew button), "power" (power button) or "stop" (stop
+  // button); it leads the log lines.
   void begin(const char *name, const Settings *settings, const PusherSecrets &secrets);
   // Takes effect at the next connection. Control task (or with its lock held).
   void setSecrets(const PusherSecrets &secrets);
@@ -83,6 +88,9 @@ class BlePusher : public IActuator, private PusherWriter {
   PressResult result() const override { return link_.result(); }
   uint32_t pressSentAtMs() const override { return link_.pressSentAtMs(); }
   void clearResult() override { link_.clearResult(); }
+  bool beginHold() override { return link_.beginHold(millis(), ready_); }
+  bool holding() const override { return link_.holding(); }
+  bool release() override { return link_.release(millis(), ready_); }
   void tick(uint32_t nowMs);
   // BLE task
   bool connectTo(const NimBLEAddress &address);
@@ -128,6 +136,17 @@ enum class PusherMake : uint8_t { SWITCHBOT, TUYA, MICROBOT };
 
 enum class DeviceKind : uint8_t { SCALE, BOT };
 
+// How hard a link has been to bring up, since start-up. For remote analysis:
+// a SwitchBot that is slow to wake shows as attempts well above connects.
+struct LinkStats {
+  uint32_t attempts = 0;       // connection attempts
+  uint32_t failures = 0;
+  uint32_t connects = 0;
+  uint32_t lastWaitMs = 0;     // from the first attempt of the last run to connected
+  uint32_t longestWaitMs = 0;
+  uint32_t runStartMs = 0;     // 0: not trying now
+};
+
 struct SeenDevice {
   DeviceKind kind = DeviceKind::SCALE;
   char address[ADDR_LEN] = {};
@@ -136,7 +155,23 @@ struct SeenDevice {
   int8_t rssi = 0;
   uint32_t seenAtMs = 0;
   PusherMake make = PusherMake::SWITCHBOT;  // kind BOT only
+  uint16_t heard = 0;                       // advertisements received from it
 };
+
+// The radio test switch: scan and connect timing changed at run time, to
+// measure on a deployed board which settings hear the bots best. Kept in RAM
+// only, so a restart always comes back to the defaults below.
+struct RadioTest {
+  std::atomic<uint16_t> scanInterval{160};    // 0.625 ms units
+  std::atomic<uint16_t> scanWindow{80};
+  std::atomic<uint16_t> connectInterval{16};  // the scan while connecting
+  std::atomic<uint16_t> connectWindow{16};
+  std::atomic<int8_t> active{-1};             // -1 automatic, 0 passive, 1 active
+  std::atomic<bool> alwaysScan{false};        // scan even when nothing needs it
+  std::atomic<bool> holdConnects{false};      // start no new bot connections
+  std::atomic<uint32_t> generation{0};        // bumped on every change
+};
+extern RadioTest g_radioTest;
 
 // Which peripherals this controller is bound to. Persisted by the app.
 struct Pairing {
@@ -150,9 +185,10 @@ class BleManager {
  public:
   static constexpr size_t MAX_SEEN = 10;
 
-  BleManager(BleScale &scale, BlePusher &bot, BlePusher &power)
-      : scale_(scale), bot_(bot), power_(power) {}
-  bool begin(const Pairing &pairing, const char *powerAddress, uint8_t powerAddressType);
+  BleManager(BleScale &scale, BlePusher &bot, BlePusher &power, BlePusher &stop)
+      : scale_(scale), bot_(bot), power_(power), stop_(stop) {}
+  bool begin(const Pairing &pairing, const char *powerAddress, uint8_t powerAddressType,
+             const char *stopAddress, uint8_t stopAddressType);
   void run();  // never returns; call from a dedicated task
 
   // Thread-safe accessors for the UI / web layer.
@@ -163,6 +199,9 @@ class BleManager {
   // The power bot is not in Pairing (an older stored record): the app keeps its address.
   void setPower(const char *address, uint8_t type);  // "" forgets the power bot
   void powerAddress(char out[ADDR_LEN]);
+  // Likewise the stop bot.
+  void setStop(const char *address, uint8_t type);   // "" forgets the stop bot
+  void stopAddress(char out[ADDR_LEN]);
   bool pairStrongestBot(uint32_t withinMs = 15000);  // hold the controller next to it
   bool takePairingDirty();
   // The Bot link is held only while wanted (around a shot). Otherwise the Bot
@@ -171,6 +210,12 @@ class BleManager {
   bool botWanted() const { return botWanted_.load(); }
   // The power bot's link is held only while a press of the power button is due.
   void setPowerWanted(bool wanted) { powerWanted_ = wanted; }
+  // Keep the power bot's link while the scale is off, so a press is instant.
+  // Let go the moment the scale is heard: the scale's connection setup fails
+  // with the power bot held.
+  void setPowerKept(bool kept) { powerKept_ = kept; }
+  // The stop bot's link is held around a shot, like the brew bot's.
+  void setStopWanted(bool wanted) { stopWanted_ = wanted; }
   // Keep scanning for a while so the pairing list fills in.
   void requestDiscovery(uint32_t forMs = 30000) { discoveryUntilMs_ = millis() + forMs; }
 
@@ -182,9 +227,12 @@ class BleManager {
   BleScale &scale_;
   BlePusher &bot_;
   BlePusher &power_;
-  // Keeps one pusher's link up while it is wanted. BLE task.
+  BlePusher &stop_;
+  // Keeps one pusher's link up while it is wanted. blocked: wanted or not,
+  // it is not connected now (the link it would be is in use). BLE task.
   void servePusher(BlePusher &pusher, const char *name, const char *address, uint8_t type,
-                   bool wanted, uint8_t &failures, uint32_t &retryAtMs, NimBLEScan *scan);
+                   bool wanted, bool blocked, uint8_t &failures, uint32_t &retryAtMs,
+                   NimBLEScan *scan, LinkStats &stats);
   SemaphoreHandle_t mutex_ = nullptr;
   Pairing pairing_;
   bool pairingDirty_ = false;
@@ -193,10 +241,17 @@ class BleManager {
 
   std::atomic<bool> botWanted_{false};
   std::atomic<bool> powerWanted_{false};
+  std::atomic<bool> powerKept_{false};
+  std::atomic<uint32_t> scaleHeardAtMs_{0};  // 0: not heard since start-up
   char powerAddress_[ADDR_LEN] = {};
   uint8_t powerAddressType_ = 0;
   uint8_t powerFailures_ = 0;
   uint32_t powerRetryAtMs_ = 0;
+  std::atomic<bool> stopWanted_{false};
+  char stopAddress_[ADDR_LEN] = {};
+  uint8_t stopAddressType_ = 0;
+  uint8_t stopFailures_ = 0;
+  uint32_t stopRetryAtMs_ = 0;
   std::atomic<uint32_t> discoveryUntilMs_{0};
 
   // Scale candidate found by the scanner, consumed by run(). The Bot is
@@ -205,6 +260,27 @@ class BleManager {
   SeenDevice scaleCandidate_;
   uint8_t scaleFailures_ = 0, botFailures_ = 0;
   uint32_t scaleRetryAtMs_ = 0, botRetryAtMs_ = 0;
+  // Written by the BLE task only; a reading one update behind is fine.
+  LinkStats scaleStats_, botStats_, powerStats_, stopStats_;
+  std::atomic<uint32_t> advertsHeard_{0};    // every advertisement from any device
+  std::atomic<uint32_t> advertsAtReset_{0};
+  std::atomic<uint32_t> heardSinceMs_{0};
+  bool activeScan_ = true;                   // BLE task only
+
+ public:
+  // How much the scanner receives at all: advertisements from every device.
+  uint32_t advertsHeard() const { return advertsHeard_.load(); }
+  // Zeroes the heard counts, to measure from now on.
+  void resetHeard();
+  uint32_t heardSinceMs() const { return heardSinceMs_.load(); }
+  uint32_t advertsSinceReset() const { return advertsHeard_.load() - advertsAtReset_.load(); }
+  // "scale", "bot", "power" or "stop".
+  LinkStats linkStats(const char *which) const {
+    if (!strcmp(which, "scale")) return scaleStats_;
+    if (!strcmp(which, "power")) return powerStats_;
+    if (!strcmp(which, "stop")) return stopStats_;
+    return botStats_;
+  }
 };
 
 }  // namespace bbw

@@ -16,6 +16,7 @@
 #include <atomic>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "BrewController.h"
 #include "MicroBotDriver.h"
@@ -31,12 +32,20 @@ class PusherLink : private PusherEvents {
   static constexpr uint32_t ACK_TIMEOUT_MS = 3000;
   static constexpr uint32_t STEP_ACK_TIMEOUT_MS = 1500;
   static constexpr uint32_t UP_RETRY_MS = 300;
+  // How long an up the pusher refuses (busy: its arm still travelling down)
+  // is asked for again before the arm is left to the retries after settling.
+  static constexpr uint32_t UP_GIVE_UP_MS = 6000;
   static constexpr uint32_t INFO_PERIOD_MS = 120000;
   static constexpr uint32_t SESSION_TIMEOUT_MS = 8000;
+  static constexpr uint32_t HOLD_UNTIL_RELEASED = 0xFFFFFFFFu;
 
   // name: "bot" for the brew bot, "power" for the power bot; it leads the log lines.
   void begin(const char *name, const Settings *settings, PusherWriter *writer) {
     name_ = name;
+    // Only the brew button is ever held (pre-infusion) or pressed down and up
+    // separately. The power and stop buttons get the pusher's own complete
+    // press: down and straight back up.
+    plainPressOnly_ = strcmp(name, "bot") != 0;
     settings_ = settings;
     writer_ = writer;
   }
@@ -101,7 +110,8 @@ class PusherLink : private PusherEvents {
     // the pusher's own press only holds in whole seconds set in its memory.
     // A pusher without them presses its own way, whatever was asked.
     const bool atomic = !d->has(PUSHER_CAP_DOWN_UP) ||
-                        (holdMs == 0 && settings_->actuationMode == ActuationMode::ATOMIC_PRESS);
+                        (holdMs == 0 && (plainPressOnly_ ||
+                                         settings_->actuationMode == ActuationMode::ATOMIC_PRESS));
     if (holdMs != 0 && atomic) logf("%s: this pusher cannot hold the button, plain press", name_);
     atomic_ = atomic;
     holdMs_ = holdMs != 0 ? holdMs : settings_->pressDurationMs;
@@ -118,6 +128,54 @@ class PusherLink : private PusherEvents {
     // A pusher that never says whether it acted: the command went out, and
     // that is all that is known.
     if (!d->has(PUSHER_CAP_ACK)) finish(PressResult::UNCONFIRMED, nowMs);
+    return true;
+  }
+
+  // Down, and stay down until release(): for a button that brews while it is
+  // held. false: busy, not ready, or this pusher has no separate down and up.
+  bool beginHold(uint32_t nowMs, bool up) {
+    PusherDriver *d = driver();
+    if (!ready(up) || phase_ != Phase::IDLE || needUp_ || !d->has(PUSHER_CAP_DOWN_UP)) return false;
+    atomic_ = false;
+    holdMs_ = HOLD_UNTIL_RELEASED;
+    result_ = PressResult::BUSY;
+    downAcked_ = false;
+    sentAtMs_ = nowMs;
+    phaseSinceMs_ = nowMs;
+    if (!sendAction(PusherOp::DOWN)) {
+      result_ = PressResult::NOT_SENT;
+      return true;
+    }
+    needUp_ = true;
+    phase_ = Phase::WAIT_DOWN_ACK;
+    return true;
+  }
+  // The arm is down and held (the down was acknowledged, or its answer was lost).
+  bool holding() const { return phase_ == Phase::HOLD && holdMs_ == HOLD_UNTIL_RELEASED; }
+  // Let go of a held button. With nothing held, the arm is told to come up
+  // all the same: after a restart nothing is known about where it is.
+  bool release(uint32_t nowMs, bool up) {
+    if (holdMs_ == HOLD_UNTIL_RELEASED && (phase_ == Phase::HOLD || phase_ == Phase::WAIT_DOWN_ACK)) {
+      holdMs_ = 0;  // the hold is over: the next tick sends the up
+      sentAtMs_ = nowMs;  // this is the command the shot's end is timed by
+      return true;
+    }
+    PusherDriver *d = driver();
+    if (!ready(up) || phase_ != Phase::IDLE || !d->has(PUSHER_CAP_DOWN_UP)) return false;
+    atomic_ = false;
+    result_ = PressResult::BUSY;
+    sentAtMs_ = nowMs;
+    phaseSinceMs_ = nowMs;
+    lastUpTryMs_ = nowMs;
+    if (!sendAction(PusherOp::UP)) {
+      result_ = PressResult::NOT_SENT;
+      return false;
+    }
+    needUp_ = false;
+    downAcked_ = true;  // only the up is in question
+    upFirstMs_ = nowMs;
+    upRetrying_ = false;
+    phase_ = Phase::WAIT_UP_ACK;
     return true;
   }
 
@@ -218,10 +276,19 @@ class PusherLink : private PusherEvents {
         break;
 
       case Phase::HOLD:
-        if (static_cast<uint32_t>(nowMs - phaseSinceMs_) >= holdMs_) {
+        if (holdMs_ == HOLD_UNTIL_RELEASED) {
+          // Held for a shot. The link going down leaves the arm where it is:
+          // say so, and bring it up as soon as the pusher is back.
+          if (!ready) {
+            finish(PressResult::UNCONFIRMED, nowMs);
+            phase_ = Phase::IDLE;
+          }
+        } else if (static_cast<uint32_t>(nowMs - phaseSinceMs_) >= holdMs_) {
           lastUpTryMs_ = nowMs;
           if (ready && sendAction(PusherOp::UP)) {
             needUp_ = false;
+            upFirstMs_ = nowMs;
+            upRetrying_ = false;
             phase_ = Phase::WAIT_UP_ACK;
             phaseSinceMs_ = nowMs;
           } else {
@@ -232,11 +299,36 @@ class PusherLink : private PusherEvents {
         break;
 
       case Phase::WAIT_UP_ACK:
+        // The up must be done, not just sent: a SwitchBot still moving its
+        // arm down answers busy and ignores the up, and the arm then stays on
+        // the button (measured on the board: up sent 0.43 s after the down,
+        // status 0x03, button held). So a refused up is asked for again, and
+        // an up not known to be done is sent once more after settling.
         if (ackPending_.exchange(false)) {
-          const bool upOk = ack_ == PusherAck::ACCEPTED;
-          finish(downAcked_ && upOk ? PressResult::OK : PressResult::UNCONFIRMED, nowMs);
+          const PusherAck ack = ack_;
+          if (ack == PusherAck::REFUSED &&
+              static_cast<uint32_t>(nowMs - upFirstMs_) < UP_GIVE_UP_MS) {
+            upRetrying_ = true;
+            upRetryAtMs_ = nowMs + UP_RETRY_MS;
+          } else {
+            if (ack == PusherAck::REFUSED) needUp_ = true;
+            finish(downAcked_ && ack == PusherAck::ACCEPTED ? PressResult::OK
+                                                            : PressResult::UNCONFIRMED, nowMs);
+          }
+        } else if (upRetrying_) {
+          if (static_cast<int32_t>(nowMs - upRetryAtMs_) >= 0) {
+            upRetrying_ = false;
+            lastUpTryMs_ = nowMs;
+            if (ready && sendAction(PusherOp::UP)) {
+              phaseSinceMs_ = nowMs;
+            } else {
+              needUp_ = true;
+              finish(PressResult::UNCONFIRMED, nowMs);
+            }
+          }
         } else if (!ready ||
                    static_cast<uint32_t>(nowMs - phaseSinceMs_) >= STEP_ACK_TIMEOUT_MS) {
+          needUp_ = true;
           finish(PressResult::UNCONFIRMED, nowMs);
         }
         break;
@@ -249,6 +341,11 @@ class PusherLink : private PusherEvents {
 
  private:
   enum class Phase : uint8_t { IDLE, WAIT_ACK, WAIT_DOWN_ACK, HOLD, WAIT_UP_ACK, SETTLE };
+
+  uint32_t upFirstMs_ = 0;    // the first up of this press
+  uint32_t upRetryAtMs_ = 0;  // when a refused up is sent again
+  bool upRetrying_ = false;
+  bool plainPressOnly_ = false;
 
   void onPusherAck(PusherAck ack, uint8_t raw) override {
     (void)raw;

@@ -12,12 +12,20 @@
 //   loop    (core 1, prio 1) : display, web server, serial, flash writes.
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
+#include <LittleFS.h>
+#include <Preferences.h>
 #include <atomic>
 #include <esp_task_wdt.h>
 #include <sys/time.h>
+#ifndef BBW_EMULATOR
+#include <WiFi.h>
+#include <esp_ota_ops.h>
+#endif
 
 #include "App.h"
 #include "Log.h"
+#include "Version.h"
 #include "ble/Ble.h"
 #include "core/BrewController.h"
 #include "core/SettingsUtil.h"
@@ -25,19 +33,14 @@
 #include "net/Web.h"
 #include "platform/BigMem.h"
 #include "platform/DeviceKey.h"
+#include "platform/FirmwareUpdate.h"
+#include "platform/LibraryLink.h"
 #include "storage/Store.h"
 #include "ui/Ui.h"
 
 using bbw::State;
 
-#ifdef BBW_EMULATOR
-// Where the emulator "sends" records: a folder beside its data (emu/src).
-bool emuPublish(const char *path, const char *text);
-// What the "library" says back: published/status/<key id>.json, if someone put it there.
-bool emuFetchStatus(const char *kid, char *out, size_t size);
-// Any file of the "library": published/<path>.
-bool emuFetchFile(const char *path, char *out, size_t size);
-#endif
+
 
 namespace {
 
@@ -69,18 +72,42 @@ bbw::Store g_store;
 bbw::BleScale g_scale;
 bbw::BlePusher g_bot;    // brew button
 bbw::BlePusher g_power;  // power button
+bbw::BlePusher g_stop;   // stop button, on a machine with separate start and stop buttons
+bbw::StopBotConfig g_stopBot;
+std::atomic<bool> g_stopBotDirty{false};
 bbw::PusherConfig g_pushers;
+bbw::MachineProfile g_machine;  // guarded by g_lock, like the settings
+std::atomic<bool> g_machineDirty{false};
 bbw::PowerControl g_powerControl;
 std::atomic<bool> g_pushersDirty{false};
 std::atomic<uint32_t> g_powerHoldUntilMs{0};  // keep the power bot's link up until then
-bbw::BleManager g_ble(g_scale, g_bot, g_power);
+std::atomic<uint32_t> g_stopHoldUntilMs{0};   // and the stop bot's (pairing check, new key)
+bbw::BleManager g_ble(g_scale, g_bot, g_power, g_stop);
 bbw::BrewController g_controller(g_scale, g_bot, g_settings, g_library);
 
 SemaphoreHandle_t g_lock;  // guards g_controller, g_settings and g_library
+uint32_t g_bootCount = 0;  // starts of this controller, kept in NVS
+
+// ---- test press (Setup page): which pusher is on which button -------------
+// Asked for by the page, done by the control task once the brew bot's link is
+// up, and only while nothing is brewing or being set up.
+enum : uint8_t { TEST_NONE, TEST_WAITING, TEST_PRESSED, TEST_FAILED };
+constexpr uint32_t TEST_PRESS_PATIENCE_MS = 40000;  // a sleeping SwitchBot advertises only every 10-15 s
+std::atomic<uint8_t> g_testPress{TEST_NONE};
+std::atomic<uint32_t> g_testPressUntilMs{0};
+bool g_testPressTidy = false;  // control task: clear the press result once the arm is back
+
+#ifndef BBW_EMULATOR
+TaskHandle_t g_controlTask = nullptr, g_bleTask = nullptr;
+#endif
 bool g_settingsDirty = false;
 bool g_libraryDirty = false;
+bbw::Maintenance g_maintenance;     // guarded by Lock
+bool g_maintenanceDirty = false;
 bool g_grindAdviceStale = true;  // loop task only
+bbw::GrinderElasticity g_grinderElasticity;  // with grindAdvice(): what the grinder's other coffees showed
 bbw::GrindAdvice g_grindAdvice;
+uint32_t g_lastCountedEpochS = 0;  // newest shot behind g_grindAdvice; loop task only
 std::atomic<uint32_t> g_botHoldUntilMs{0};  // keep the Bot link up until then
 uint32_t g_settingsDirtyAtMs = 0;
 
@@ -111,16 +138,9 @@ bool editable() {  // call with the lock held
 // arise, and sent from there one at a time while the controller is idle.
 // All of it runs on the loop task.
 
-#ifdef BBW_EMULATOR
-constexpr bool CAN_PUBLISH = true;
-constexpr const char *PUBLISHES_TO = "a folder beside the emulator's data (published/)";
-bool publishRecord(const char *path, const char *text) { return emuPublish(path, text); }
-#else
-// No repository yet: records wait in the outbox.
-constexpr bool CAN_PUBLISH = false;
-constexpr const char *PUBLISHES_TO = "nowhere yet: records wait on the controller";
-bool publishRecord(const char *, const char *) { return false; }
-#endif
+// Where records go and the index comes from: platform/LibraryLink.h. On the
+// board, the library's repository over HTTPS; in the emulator, a folder.
+bool publishRecord(const char *path, const char *text) { return bbw::libraryPut(path, text); }
 
 constexpr uint32_t SHARE_SEND_PERIOD_MS = 1000;
 constexpr size_t LIBRARY_TEXT_SIZE = 16384;
@@ -260,17 +280,24 @@ bool queueGrinder(uint16_t id) {
 
 // What the library says about this controller's coffees: in review,
 // published, declined. Asked for now and then while idle.
-#ifdef BBW_EMULATOR
-bool fetchStatus(const char *kid, char *out, size_t size) { return emuFetchStatus(kid, out, size); }
-#else
-bool fetchStatus(const char *, char *, size_t) { return false; }  // no repository yet
-#endif
+bool fetchStatus(const char *kid, char *out, size_t size) {
+  char path[48];
+  snprintf(path, sizeof(path), "status/%s.json", kid);
+  return bbw::libraryGet(path, out, size);
+}
 
+// Asking is a request to GitHub on the board: often enough to notice a
+// reviewer's decision the same day, not so often as to keep the radio busy.
+#ifdef BBW_EMULATOR
 constexpr uint32_t SHARE_STATUS_PERIOD_MS = 15000;
+#else
+constexpr uint32_t SHARE_STATUS_PERIOD_MS = 600000;
+#endif
 
 void shareReadStatus(bool idle) {
   static uint32_t lastMs = 0;
-  if (!idle || !bbw::deviceSigner().ready() || millis() - lastMs < SHARE_STATUS_PERIOD_MS) return;
+  if (!idle || !bbw::deviceSigner().ready() || !bbw::libraryLinkReady()) return;
+  if (lastMs != 0 && millis() - lastMs < SHARE_STATUS_PERIOD_MS) return;
   lastMs = millis();
   if (!app::settings().shareEnabled) return;
   char kid[bbw::KEY_ID_LEN];
@@ -303,6 +330,25 @@ void shareReadStatus(bool idle) {
     }
     return any;  // nothing new: leave the library unsaved
   }, nullptr);
+  // And about the machine profile, which is not part of the library record.
+  for (JsonObjectConst entry : doc["machines"].as<JsonArrayConst>()) {
+    const char *name = entry["state"] | "";
+    const bbw::ShareState state = !strcmp(name, "review") ? bbw::ShareState::IN_REVIEW
+                                  : !strcmp(name, "published") ? bbw::ShareState::PUBLISHED
+                                  : !strcmp(name, "declined") ? bbw::ShareState::DECLINED
+                                  : bbw::ShareState::LOCAL;
+    if ((entry["local_id"] | 0) != 1) continue;
+    bool news = false;
+    {
+      Lock lock;
+      news = bbw::applyReviewTo(&g_machine, entry["record"] | 0u, state, entry["note"] | "",
+                                entry["library_id"] | "");
+    }
+    if (news) {
+      g_machineDirty = true;
+      LOGI("share: the library on the machine profile: %s", name);
+    }
+  }
   doc.clear();
   if (changed) {
     LOGI("share: the library's verdicts on this controller's coffees have changed");
@@ -322,8 +368,9 @@ void shareAfterShot(const bbw::ShotRecord &shot) {
 
   if (!ensureKeyQueued()) return;
   if (s.shareShots && bbw::grindShotValid(shot, s.grindTimeBasis)) {
+    const bbw::MachineProfile machine = app::machineProfile();
     if (bbw::buildShotRecord(shot, haveCoffee ? &g_shareCoffee : nullptr, grinder, s.shareRatings,
-                             g_shareBody, bbw::SHARE_BODY_MAX) != 0) {
+                             g_shareBody, bbw::SHARE_BODY_MAX, &machine) != 0) {
       snprintf(g_sharePath, sizeof(g_sharePath), "shots/%s/%s-%u.json", month, kid,
                static_cast<unsigned>(shot.id));
       if (!shareQueue(g_sharePath)) LOGW("share: shot %u not queued", static_cast<unsigned>(shot.id));
@@ -333,7 +380,9 @@ void shareAfterShot(const bbw::ShotRecord &shot) {
   if (!s.shareDialIns || !haveCoffee) return;
   const bbw::GrindAdvice advice = app::grindAdvice();
   const bbw::Recipe preset = app::activeRecipe();
-  if (advice.action != bbw::GrindAction::HOLD || advice.shotsUsed < s.grindWindow ||
+  // Settled means the base verdict (inside the tolerance): a refinement by ratings is personal taste
+  // and does not hold a dial-in back from the library.
+  if (advice.baseAction != bbw::GrindAction::HOLD || advice.shotsUsed < s.grindWindow ||
       preset.recipeId != shot.recipeId || preset.coffeeId != shot.coffeeId) {
     return;
   }
@@ -367,7 +416,7 @@ void shareAfterShot(const bbw::ShotRecord &shot) {
 // One record a second, and never while a shot needs the radio.
 void shareSendOne(bool idle) {
   static uint32_t lastMs = 0;
-  if (!CAN_PUBLISH || !idle || g_store.outboxWaiting() == 0) return;
+  if (!idle || g_store.outboxWaiting() == 0 || !bbw::libraryLinkReady()) return;
   if (millis() - lastMs < SHARE_SEND_PERIOD_MS) return;
   lastMs = millis();
   if (!g_store.outboxPeek(g_sharePath, sizeof(g_sharePath), g_shareEnvelope,
@@ -385,20 +434,21 @@ void shareSendOne(bool idle) {
 // so what it said is still there with no network. Loop task only.
 
 #ifdef BBW_EMULATOR
-constexpr bool CAN_FETCH = true;
 constexpr uint32_t LIBRARY_REFRESH_MS = 60000;
-bool fetchLibraryFile(const char *path, char *out, size_t size) { return emuFetchFile(path, out, size); }
 #else
-constexpr bool CAN_FETCH = false;  // no repository yet
 constexpr uint32_t LIBRARY_REFRESH_MS = 3600000;
-bool fetchLibraryFile(const char *, char *, size_t) { return false; }
 #endif
+bool fetchLibraryFile(const char *path, char *out, size_t size) {
+  return bbw::libraryGet(path, out, size);
+}
 
 constexpr uint32_t LIBRARY_STEP_MS = 2000;
 constexpr const char *FIT_CACHE = "/lfit.json";
 constexpr const char *COFFEES_CACHE = "/lcoffees.json";
 constexpr const char *GRINDERS_CACHE = "/lgrinders.json";
-constexpr uint8_t LIBRARY_FIXED_STEPS = 3;  // fit, coffees, grinders; then a dial-in per coffee
+constexpr const char *MACHINES_CACHE = "/lmachines.json";
+constexpr const char *AGE_CACHE = "/lage.json";
+constexpr uint8_t LIBRARY_FIXED_STEPS = 5;  // fit, coffees, grinders, ageing rate, machines; then a dial-in per coffee
 uint32_t g_communityStamp = 1;  // goes up when anything cached changes
 
 void dialinCache(uint16_t coffeeId, char *out, size_t size) {
@@ -411,7 +461,7 @@ void libraryRefresh(bool idle) {
   static uint16_t ids[bbw::MAX_COFFEES];
   static char libraryIds[bbw::MAX_COFFEES][bbw::LIBRARY_ID_LEN];
   static uint8_t count = 0;
-  if (!CAN_FETCH || !idle) return;
+  if (!idle || !bbw::libraryLinkReady()) return;
   const uint32_t now = millis();
   if (step == 0 && passStartedMs != 0 && !g_libraryReadSoon &&
       now - passStartedMs < LIBRARY_REFRESH_MS) {
@@ -449,6 +499,15 @@ void libraryRefresh(bool idle) {
     if (fetchLibraryFile("index/grinders.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
       g_store.writeTextIfChanged(GRINDERS_CACHE, g_libraryText);
     }
+  } else if (step == 3) {
+    if (fetchLibraryFile("index/age.json", g_libraryText, LIBRARY_TEXT_SIZE) &&
+        g_store.writeTextIfChanged(AGE_CACHE, g_libraryText)) {
+      ++g_communityStamp;
+    }
+  } else if (step == 4) {
+    if (fetchLibraryFile("index/machines.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
+      g_store.writeTextIfChanged(MACHINES_CACHE, g_libraryText);
+    }
   } else if (step - LIBRARY_FIXED_STEPS < count) {
     char file[bbw::LIBRARY_ID_LEN * 2], cache[20];
     if (bbw::libraryIdToFile(libraryIds[step - LIBRARY_FIXED_STEPS], file, sizeof(file))) {
@@ -474,10 +533,37 @@ void controlTask(void *) {
       g_scale.service(now);
       g_bot.tick(now);
       g_power.tick(now);
+      g_stop.tick(now);
       static bool scaleWasConnected = false;
       const bool scaleConnected = g_scale.connected();
       if (scaleConnected && !scaleWasConnected) g_botHoldUntilMs = now + BOT_PREWAKE_MS;
+      // The brew bot stays connected for as long as the scale is on (the
+      // owner's choice): a sleeping SwitchBot advertises only every 20-30 s,
+      // so waking it at Start could keep a shot waiting that long.
+      if (scaleConnected) {
+        const uint32_t until = now + BOT_LINGER_MS;
+        if (static_cast<int32_t>(until - g_botHoldUntilMs.load()) > 0) g_botHoldUntilMs = until;
+      }
       scaleWasConnected = scaleConnected;
+      // A cup going on the scale means a shot is coming: wake the brew bot
+      // now, it takes a sleeping SwitchBot several seconds to answer.
+      static bool cupWasPresent = false;
+      const bool cupPresent = g_controller.cupPresent();
+      if (cupPresent && !cupWasPresent) {
+        const uint32_t until = now + BOT_PREWAKE_MS;
+        if (static_cast<int32_t>(until - g_botHoldUntilMs.load()) > 0) g_botHoldUntilMs = until;
+      }
+      if (cupPresent != cupWasPresent) {
+        LOGI("cup: %s (reading %.1f g)", cupPresent ? "on the scale" : "taken off",
+             static_cast<double>(g_controller.status(now).weightG));
+      }
+      cupWasPresent = cupPresent;
+      static bool zeroWarned = false;
+      if (!zeroWarned && g_controller.scaleZeroesItself()) {
+        zeroWarned = true;
+        LOGW("scale: it tares itself (auto-tare mode). A cup taken off can then go unseen: "
+             "set the scale to a mode without auto-tare");
+      }
       bbw::WeightSample sample;
       while (g_scale.nextSample(sample)) g_controller.onSample(sample);
       // The controller's time is read after the readings are taken in, not
@@ -488,16 +574,42 @@ void controlTask(void *) {
       // Bot battery: connected from Start until the shot is confirmed over,
       // asleep the rest of the time.
       if (g_controller.actuatorNeeded()) g_botHoldUntilMs = now + BOT_LINGER_MS;
-      g_ble.setBotWanted(static_cast<int32_t>(now - g_botHoldUntilMs.load()) < 0);
+      const bool botWanted = static_cast<int32_t>(now - g_botHoldUntilMs.load()) < 0;
+      g_ble.setBotWanted(botWanted);
+      // Three Bluetooth links at most with Wi-Fi running: the scale, the brew
+      // bot, and one more. On a machine with its own stop button that one is
+      // the stop bot from Start until the shot is known to be over (nothing
+      // is stopped that was not started), and the power bot the rest of the
+      // time (the machine is not switched off under a shot). The stop bot is
+      // taken up at Start, during the tare, so that it is there before the
+      // brew button is pressed.
+      const bool shotPhase = g_controller.stopActuatorNeeded();
+      g_ble.setStopWanted(shotPhase || static_cast<int32_t>(now - g_stopHoldUntilMs.load()) < 0);
       // The power button is only pressed while no shot is running or being set up.
       const bbw::State state = g_controller.state();
       const bool idle = !g_controller.machineMayBeRunning() &&
                         (state == State::READY || state == State::CONNECTING_SCALE);
       g_powerControl.tick(now, static_cast<uint32_t>(time(nullptr)), idle, g_power);
       if (g_powerControl.takeDirty()) g_pushersDirty = true;
-      g_ble.setPowerWanted(g_powerControl.wantsLink() ||
-                           static_cast<int32_t>(now - g_powerHoldUntilMs.load()) < 0);
+      g_ble.setPowerKept(g_settings.keepPowerBotConnected);
+      g_ble.setPowerWanted(!shotPhase &&
+                           (g_powerControl.wantsLink() ||
+                            static_cast<int32_t>(now - g_powerHoldUntilMs.load()) < 0));
       g_shotInProgress = g_controller.machineMayBeRunning() ? SHOT_IN_PROGRESS_MAGIC : 0;
+      if (g_testPress.load() == TEST_WAITING) {
+        if (!idle || static_cast<int32_t>(now - g_testPressUntilMs.load()) >= 0) {
+          g_testPress = TEST_FAILED;
+          LOGW("bot: test press not made (%s)", idle ? "the bot did not connect" : "a shot is in hand");
+        } else if (g_bot.connected() && !g_bot.busy() && g_bot.beginPress()) {
+          g_testPress = TEST_PRESSED;
+          g_testPressTidy = true;
+          LOGI("bot: test press sent");
+        }
+      }
+      if (g_testPressTidy && idle && !g_bot.busy()) {
+        g_bot.clearResult();  // the brew logic must not find a result it did not ask for
+        g_testPressTidy = false;
+      }
     }
     esp_task_wdt_reset();
     vTaskDelayUntil(&wake, pdMS_TO_TICKS(CONTROL_PERIOD_MS));
@@ -505,6 +617,76 @@ void controlTask(void *) {
 }
 
 void bleTask(void *) { g_ble.run(); }
+
+// ------------------------------------------------------------ diagnostics --
+
+const char *resetReasonText() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "power on";
+    case ESP_RST_EXT: return "reset pin";
+    case ESP_RST_SW: return "restart requested";
+    case ESP_RST_PANIC: return "CRASH (exception)";
+    case ESP_RST_INT_WDT: return "WATCHDOG (interrupt)";
+    case ESP_RST_TASK_WDT: return "WATCHDOG (a task stopped responding)";
+#ifndef BBW_EMULATOR
+    case ESP_RST_WDT: return "WATCHDOG (other)";
+    case ESP_RST_BROWNOUT: return "BROWNOUT (supply voltage dropped)";
+    case ESP_RST_DEEPSLEEP: return "wake from deep sleep";
+#endif
+    default: {
+      // e.g. a reset from the USB port, which this core has no name for
+      static char text[24];
+      snprintf(text, sizeof(text), "other (%d)", static_cast<int>(esp_reset_reason()));
+      return text;
+    }
+  }
+}
+
+// A new firmware is on trial until it has run for a while: if it crashes or
+// hangs before then, the bootloader goes back to the one before it.
+void confirmFirmware() {
+#ifndef BBW_EMULATOR
+  constexpr uint32_t TRIAL_MS = 45000;
+  static bool done = false;
+  if (done || millis() < TRIAL_MS) return;
+  done = true;
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  esp_ota_img_states_t state;
+  if (running && esp_ota_get_state_partition(running, &state) == ESP_OK &&
+      state == ESP_OTA_IMG_PENDING_VERIFY) {
+    esp_ota_mark_app_valid_cancel_rollback();
+    LOGI("update: new firmware %s has run for %u s, kept", BBW_VERSION,
+         static_cast<unsigned>(TRIAL_MS / 1000));
+  }
+#endif
+}
+
+// Every ten minutes, and whenever the least free memory seen gets lower: what
+// the controller has left. On the real board this is the line that shows a
+// leak or a stack running out before it becomes a crash.
+void logHealth() {
+#ifndef BBW_EMULATOR
+  constexpr uint32_t PERIOD_MS = 10UL * 60UL * 1000UL;
+  static uint32_t lastMs = 0, lastLowest = 0xFFFFFFFF;
+  const bbw::MemoryReport memory = bbw::memoryReport();
+  const bool lower = memory.internalLowest + 4096 < lastLowest;
+  if (lastMs != 0 && !lower && millis() - lastMs < PERIOD_MS) return;
+  lastMs = millis() ? millis() : 1;
+  lastLowest = memory.internalLowest;
+  const bbw::ScaleDiag scale = g_scale.diag();
+  LOGI("health: chip RAM %u free, %u lowest, %u largest; PSRAM %u free; stack left: loop %u, "
+       "control %u, ble %u; wifi %d dBm; scale frames %u, bad %u",
+       static_cast<unsigned>(memory.internalFree), static_cast<unsigned>(memory.internalLowest),
+       static_cast<unsigned>(memory.internalLargest), static_cast<unsigned>(memory.psramFree),
+       static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
+       static_cast<unsigned>(g_controlTask ? uxTaskGetStackHighWaterMark(g_controlTask) : 0),
+       static_cast<unsigned>(g_bleTask ? uxTaskGetStackHighWaterMark(g_bleTask) : 0),
+       WiFi.status() == WL_CONNECTED ? static_cast<int>(WiFi.RSSI()) : 0,
+       static_cast<unsigned>(scale.frames), static_cast<unsigned>(scale.badFrames));
+  if (memory.internalLowest < 30000) LOGW("health: chip RAM has been down to %u bytes",
+                                          static_cast<unsigned>(memory.internalLowest));
+#endif
+}
 
 // ------------------------------------------------------------ serial log --
 
@@ -564,8 +746,54 @@ void handleSerial() {
                     bbw::stateName(st.state), st.scaleConnected, dev.scaleName,
                     dev.scaleProtocol, st.botConnected, st.weightG, st.flowGS,
                     st.samplePeriodMs, st.targetWeightG, st.stopOffsetG, st.recipe);
+#ifndef BBW_EMULATOR
+    } else if (!strcmp(buffer, "wifi off")) {
+      // Diagnostics: does Wi-Fi crowd out Bluetooth on the shared radio?
+      WiFi.mode(WIFI_OFF);
+      Serial.println("wifi: off (until 'wifi on' or a restart)");
+    } else if (!strcmp(buffer, "wifi on")) {
+      Serial.println("wifi: restarting the controller to bring the network back");
+      app::restartSoon();
+#endif
+    } else if (!strcmp(buffer, "update") || !strcmp(buffer, "update check")) {
+      if (!strcmp(buffer, "update check")) bbw::updateCheck();
+      bbw::SlotInfo slots[4];
+      const size_t n = bbw::updateSlots(slots, 4);
+      for (size_t i = 0; i < n; ++i) {
+        Serial.printf("slot %-8s %-10s %-9s %u kB%s%s\n", slots[i].label,
+                      slots[i].version[0] ? slots[i].version : "?", slots[i].state,
+                      static_cast<unsigned>(slots[i].bytes / 1024), slots[i].running ? "  running" : "",
+                      slots[i].bootNext && !slots[i].running ? "  starts next" : "");
+      }
+      const bbw::UpdateStatus u = bbw::updateStatus();
+      Serial.printf("update: %s %u%% %s\n", bbw::updatePhaseName(u.phase),
+                    static_cast<unsigned>(u.percent), u.message);
+    } else if (!strcmp(buffer, "devices")) {
+      // Field check: what is paired, and what the radio has heard lately.
+      const bbw::Pairing pairing = g_ble.pairing();
+      char power[bbw::ADDR_LEN], stop[bbw::ADDR_LEN];
+      g_ble.powerAddress(power);
+      g_ble.stopAddress(stop);
+      Serial.printf("paired: scale %s, brew bot %s, power bot %s, stop bot %s\n",
+                    pairing.scaleAddress[0] ? pairing.scaleAddress : "-",
+                    pairing.botAddress[0] ? pairing.botAddress : "-", power[0] ? power : "-",
+                    stop[0] ? stop : "-");
+      // A pusher that is connected does not advertise, so it is not "heard".
+      Serial.printf("links: scale %s, brew bot %s, power bot %s, stop bot %s\n",
+                    g_scale.connected() ? "up" : "down", g_bot.linkUp() ? "up" : "down",
+                    g_power.linkUp() ? "up" : "down", g_stop.linkUp() ? "up" : "down");
+      bbw::SeenDevice seen[bbw::BleManager::MAX_SEEN];
+      const size_t n = g_ble.seen(seen, bbw::BleManager::MAX_SEEN);
+      const uint32_t now = millis();
+      for (size_t i = 0; i < n; ++i) {
+        Serial.printf("heard: %-5s %s  %-20s %4d dBm  %u times, last %lu s ago\n",
+                      seen[i].kind == bbw::DeviceKind::BOT ? "bot" : "scale", seen[i].address,
+                      seen[i].name, seen[i].rssi, static_cast<unsigned>(seen[i].heard),
+                      static_cast<unsigned long>((now - seen[i].seenAtMs) / 1000));
+      }
+      if (n == 0) Serial.println("heard: nothing");
     } else {
-      Serial.println("commands: status start stop tare ack csv json");
+      Serial.println("commands: status devices update [check] start stop tare ack csv json");
     }
   }
 }
@@ -586,6 +814,14 @@ void logLoop() {
     lastLiveMs = now;
     Serial.printf("LIVE,%.2f,%.2f,%.2f,%s\n", st.shotTimeS, st.weightG, st.flowGS,
                   bbw::stateName(st.state));
+  }
+  // Debug level: the shot as it runs, once a second, in the kept log too.
+  static uint32_t lastDebugMs = 0;
+  if (live && now - lastDebugMs >= 1000) {
+    lastDebugMs = now;
+    LOGD("shot: %.1f s  %.1f g  %.2f g/s  %s%s", static_cast<double>(st.shotTimeS),
+         static_cast<double>(st.weightG), static_cast<double>(st.flowGS),
+         bbw::stateName(st.state), st.weightFresh ? "" : "  (no fresh reading)");
   }
 }
 
@@ -658,7 +894,14 @@ size_t lastCurve(float *timeS, float *weightG, size_t max) {
   return n;
 }
 
-void start() { Lock lock; g_controller.requestStart(); }
+void start() {
+  if (bbw::updateBusy()) {  // a firmware is being downloaded or installed
+    LOGW("start refused: a firmware update is in progress");
+    return;
+  }
+  Lock lock;
+  g_controller.requestStart();
+}
 void stop() { Lock lock; g_controller.requestStop(); }
 void tare() { Lock lock; g_controller.requestTare(); }
 void acknowledge() { Lock lock; g_controller.acknowledge(); }
@@ -780,6 +1023,7 @@ void resetLearnedOffset(uint8_t presetIndex) {
   bbw::Preset &preset = g_library.presets[presetIndex];
   preset.stopOffsetG = bbw::resolvePreset(g_library, presetIndex).baselineOffsetG;
   preset.learnedAlpha = 0;  // back to the baseline learning factor
+  preset.learnedShots = 0;  // and a fresh warm-up
   markLibraryDirty();
 }
 
@@ -795,6 +1039,11 @@ bbw::Grinder grinder() {
   return g_library.grinder;
 }
 
+bbw::GrinderElasticity grinderElasticity() {
+  grindAdvice();
+  return g_grinderElasticity;
+}
+
 bbw::GrindAdvice grindAdvice() {
   if (!g_grindAdviceStale) return g_grindAdvice;
   constexpr uint32_t SCAN_SHOTS = 150;  // how far back to look
@@ -802,8 +1051,17 @@ bbw::GrindAdvice grindAdvice() {
     bbw::Recipe recipe;
     bbw::GrindTimeBasis basis = bbw::GrindTimeBasis::TOTAL;
     uint16_t calibration = 0;
+    uint32_t newestEpochS = 0;  // of the shots below
     bbw::GrindShot shots[40];
     size_t count = 0;
+    // Every valid shot on this grinder as now calibrated, of any other coffee, bag or recipe, for
+    // learning the grinder (bbw::pooledGrindElasticity).
+    bbw::GrinderShot others[150];
+    size_t otherCount = 0;
+    // The newest shot of this coffee, bag and recipe, counted or not (adviseOutOfRange).
+    bool newestSeen = false;
+    bbw::GrindUse newestUse = bbw::GrindUse::COUNTED;
+    uint16_t newestSetting = 0;
   };
   static Scan scan;
   const bbw::Settings s = settings();
@@ -811,6 +1069,9 @@ bbw::GrindAdvice grindAdvice() {
   scan.basis = s.grindTimeBasis;
   scan.calibration = grinder().calibration;
   scan.count = 0;
+  scan.otherCount = 0;
+  scan.newestSeen = false;
+  scan.newestEpochS = 0;
   g_store.scanShots(SCAN_SHOTS, [](const bbw::ShotRecord &record, void *context) {
     Scan &sc = *static_cast<Scan *>(context);
     // Same recipe, same coffee (and bag: roast date), same yield and dose:
@@ -818,19 +1079,37 @@ bbw::GrindAdvice grindAdvice() {
     // By id, so renaming either does not.
     // And the grinder as it is now calibrated: a setting from before it was
     // zeroed again is another setting.
-    if (record.recipeId == sc.recipe.recipeId && record.coffeeId == sc.recipe.coffeeId &&
-        record.grinderId == sc.calibration &&
-        record.roastDate == sc.recipe.roastDate &&
-        fabsf(record.targetWeightG - sc.recipe.targetWeightG) <= 0.05f &&
-        fabsf(record.doseG - sc.recipe.doseG) <= 0.05f &&
-        bbw::grindShotValid(record, sc.basis)) {
+    const bool valid = record.grinderId == sc.calibration && bbw::grindShotValid(record, sc.basis);
+    const bool same = record.recipeId == sc.recipe.recipeId && record.coffeeId == sc.recipe.coffeeId &&
+                      bbw::sameBag(record.bagId, record.roastDate, sc.recipe.bagId, sc.recipe.roastDate) &&
+                      fabsf(record.targetWeightG - sc.recipe.targetWeightG) <= 0.05f &&
+                      fabsf(record.doseG - sc.recipe.doseG) <= 0.05f;
+    if (same && record.grinderId == sc.calibration && !sc.newestSeen) {
+      sc.newestSeen = true;
+      sc.newestUse = bbw::grindShotUse(record, sc.basis);
+      sc.newestSetting = record.grindUm;
+    }
+    if (valid && !same && sc.otherCount < sizeof(sc.others) / sizeof(sc.others[0])) {
+      // A group per coffee, bag and recipe; a collision only merges two groups, which weakens the
+      // pooled figure a little and never biases it.
+      const uint32_t bag = record.bagId ? record.bagId : record.roastDate;
+      sc.others[sc.otherCount].timeS = bbw::grindShotTime(record, sc.basis);
+      sc.others[sc.otherCount].setting = record.grindUm;
+      sc.others[sc.otherCount].group =
+          static_cast<uint16_t>((record.recipeId * 977u + record.coffeeId * 131u + bag * 7u) & 0xFFFF);
+      ++sc.otherCount;
+    }
+    if (valid && same && sc.count < sizeof(sc.shots) / sizeof(sc.shots[0])) {
+      if (sc.count == 0) sc.newestEpochS = record.epochS;  // newest first
       sc.shots[sc.count].timeS = bbw::grindShotTime(record, sc.basis);
       sc.shots[sc.count].grindUm = record.grindUm;
       sc.shots[sc.count].forced =
           record.grindVote == static_cast<uint8_t>(bbw::GrindVote::COUNT);
+      sc.shots[sc.count].rating = record.rating;
+      sc.shots[sc.count].taste = record.taste;
       ++sc.count;
     }
-    return sc.count < sizeof(sc.shots) / sizeof(sc.shots[0]);
+    return true;   // SCAN_SHOTS bounds the pass
   }, &scan);
   const bbw::Recipe &recipe = scan.recipe;
   const bbw::GrindShot *shots = scan.shots;
@@ -840,9 +1119,86 @@ bbw::GrindAdvice grindAdvice() {
   config.defaultUmPerS = s.grindUmPerS;
   config.window = s.grindWindow;
   config.maxStepUm = s.grindMaxStepUm;
-  g_grindAdvice = bbw::adviseGrind(shots, count, recipe.grindUm, recipe.targetTimeS, config);
+  // Limits in this grinder's own unit, and the sensitivity it has shown on its other coffees.
+  const bbw::Grinder grinderNow = grinder();
+  g_grinderElasticity = bbw::pooledGrindElasticity(scan.others, scan.otherCount);
+  config = bbw::grindConfigForGrinder(config, grinderNow.umPerUnit, recipe.grindUm, recipe.targetTimeS,
+                                      g_grinderElasticity);
+  g_grindAdvice = bbw::adviseGrindRated(shots, count, recipe.grindUm, recipe.targetTimeS, config,
+                                        s.grindRatedTarget);
+  if (scan.newestSeen && scan.newestSetting == recipe.grindUm) {
+    bbw::adviseOutOfRange(g_grindAdvice, scan.newestUse, recipe.grindUm, config);
+  }
+  g_lastCountedEpochS = scan.newestEpochS;
   g_grindAdviceStale = false;
   return g_grindAdvice;
+}
+
+// The library's measured ageing rate, from its copy on flash.
+bbw::AgeModel ageModel() {
+  bbw::AgeModel model;
+  static JsonDocument doc;
+  if (g_store.readText(AGE_CACHE, g_libraryText, LIBRARY_TEXT_SIZE) != 0 &&
+      !deserializeJson(doc, g_libraryText) && doc["v"] == 1 && doc["um_per_day"].is<float>()) {
+    const float rate = doc["um_per_day"];
+    // Outside this it is not a rate anyone has measured on espresso.
+    if (isfinite(rate) && rate >= -5.0f && rate <= 5.0f) {
+      model.known = true;
+      model.umPerDay = rate;
+    }
+  }
+  doc.clear();
+  return model;
+}
+
+// When the bag in use of a coffee was roasted, and its time in the freezer.
+struct FreezerDates {
+  uint32_t roast = 0, frozen = 0, thaw = 0;
+};
+
+FreezerDates freezerDates(uint16_t coffeeId) {
+  static FreezerDates out;
+  static uint16_t want;
+  want = coffeeId;
+  out = FreezerDates{};
+  if (coffeeId == 0) return out;
+  readLibrary([](const bbw::Library &lib, void *) {
+    if (const bbw::Coffee *c = bbw::findCoffee(lib, want)) {
+      out.roast = c->roastDate;
+      out.frozen = c->frozenDate;
+      out.thaw = c->thawDate;
+    }
+  }, nullptr);
+  return out;
+}
+
+BeanAge beanAge() {
+  BeanAge result;
+  grindAdvice();  // brings g_lastCountedEpochS up to date
+  const bbw::Recipe active = activeRecipe();
+  const uint32_t now = epochNow();
+  // Days in the freezer are not days of ageing (bbw::effectiveAgeDays).
+  const FreezerDates fz = freezerDates(active.coffeeId);
+  const uint32_t roast = active.coffeeId != 0 ? fz.roast : active.roastDate;
+  result.ageDays = bbw::effectiveAgeDays(roast, fz.frozen, fz.thaw, now);
+  result.frozenNow = bbw::frozenAt(fz.frozen, fz.thaw, now);
+  result.frozenDays = bbw::frozenDaysAt(fz.frozen, fz.thaw, now);
+  if (now != 0 && g_lastCountedEpochS != 0 && now >= g_lastCountedEpochS) {
+    result.daysSinceBrewed = static_cast<int>((now - g_lastCountedEpochS) / 86400);
+  }
+  const bbw::AgeModel model = ageModel();
+  result.rateKnown = model.known;
+  if (model.known && result.ageDays >= 0 && result.daysSinceBrewed > 0 && active.coffeeId != 0) {
+    const CommunityView view = community(active.coffeeId, active.recipeId);
+    // Age then and now, both without the freezer, so a bag put away and taken out again has
+    // aged only by the days it spent out.
+    const int ageThen = bbw::effectiveAgeDays(roast, fz.frozen, fz.thaw, g_lastCountedEpochS);
+    const float units = bbw::grinderUnitsPerUm(view.fit, grinder()) *
+                        bbw::ageShiftUm(model, ageThen >= 0 ? ageThen : result.ageDays - result.daysSinceBrewed,
+                                        result.ageDays);
+    result.shift = static_cast<int>(units < 0 ? units - 0.5f : units + 0.5f);
+  }
+  return result;
 }
 
 void setGrind(uint16_t grindUm) {
@@ -861,7 +1217,31 @@ bool setShotGrindVote(uint32_t shotId, uint8_t vote) {
   return true;
 }
 
+bbw::Maintenance maintenance() {
+  Lock lock;
+  return g_maintenance;
+}
+
+void upkeepDone(bbw::Upkeep job) {
+  {
+    Lock lock;
+    bbw::markUpkeepDone(g_maintenance, job, epochNow());
+    g_maintenanceDirty = true;
+  }
+}
+
+void upkeepEvery(bbw::Upkeep job, uint32_t everyShots) {
+  Lock lock;
+  bbw::setUpkeepEvery(g_maintenance, job, everyShots);
+  g_maintenanceDirty = true;
+}
+
+bool setShotTds(uint32_t shotId, uint16_t tdsX100) {
+  return g_store.setShotTds(shotId, tdsX100 > 2500 ? 0 : tdsX100);
+}
+
 bool setShotRating(uint32_t shotId, uint8_t rating, uint8_t taste) {
+  g_grindAdviceStale = true;  // ratings steer the advice (bbw::ratedTarget)
   return g_store.setShotRating(shotId, rating > 5 ? 0 : rating, taste > 3 ? 0 : taste);
 }
 
@@ -877,6 +1257,7 @@ CommunityView community(uint16_t coffeeId, uint16_t recipeId) {
   static bbw::Grinder grinder;
   static uint16_t wantCoffee, wantRecipe;
   static bool have;
+  static uint32_t roastDate, frozenDate, thawDate;
   wantCoffee = coffeeId;
   wantRecipe = recipeId;
   have = false;
@@ -886,6 +1267,9 @@ CommunityView community(uint16_t coffeeId, uint16_t recipeId) {
     grinder = lib.grinder;
     if (d && c && c->libraryId[0]) {
       def = *d;
+      roastDate = c->roastDate;
+      frozenDate = c->frozenDate;
+      thawDate = c->thawDate;
       have = true;
     }
   }, nullptr);
@@ -895,29 +1279,50 @@ CommunityView community(uint16_t coffeeId, uint16_t recipeId) {
   dialinCache(coffeeId, cache, sizeof(cache));
   if (g_store.readText(cache, g_libraryText, LIBRARY_TEXT_SIZE) != 0 &&
       !deserializeJson(doc, g_libraryText) && doc["v"] == 1) {
-    for (JsonObjectConst r : doc["recipes"].as<JsonArrayConst>()) {
-      if (!bbw::sameRecipeClass(def.doseG, def.targetWeightG, r["dose_g"] | 0.0f,
-                                r["yield_g"] | 0.0f)) {
-        continue;
+    // The same recipe class if the library has it, else the nearest within reach
+    // (bbw::recipeDistance); of two equally near, the one more people settled.
+    JsonObjectConst r;
+    float bestDistance = -1.0f;
+    for (JsonObjectConst c : doc["recipes"].as<JsonArrayConst>()) {
+      const float d = bbw::recipeDistance(def.doseG, def.targetWeightG, c["dose_g"] | 0.0f,
+                                          c["yield_g"] | 0.0f);
+      if (d < 0.0f) continue;
+      if (bestDistance < 0.0f || d < bestDistance ||
+          (d == bestDistance && (c["contributors"] | 0) > (r["contributors"] | 0))) {
+        r = c;
+        bestDistance = d;
       }
+    }
+    if (bestDistance >= 0.0f) {
+      view.dialin.recipeDistance = bestDistance;
+      view.dialin.theirDoseG = r["dose_g"] | 0.0f;
+      view.dialin.theirYieldG = r["yield_g"] | 0.0f;
       view.dialin.found = true;
       view.dialin.contributors = r["contributors"] | 0;
       view.dialin.dialins = r["dialins"] | 0;
       view.dialin.timeS = r["time_s"] | 0.0f;
       view.dialin.finenessUm = r["fineness_um"] | 0.0f;
       view.dialin.spreadUm = r["spread_um"] | 0.0f;
+      view.dialin.ageDays = r["age_days"] | -1;
+      view.dialin.axis = r["axis"] | 0UL;
+      view.dialin.flowGs = r["flow_gs"] | 0.0f;
+      view.dialin.kappa = r["kappa"] | 0.0f;
+      view.dialin.flowBasis = strcmp(r["flow_basis"] | "", "pour") == 0 ? 1
+                              : strcmp(r["flow_basis"] | "", "total") == 0 ? 0 : 255;
       for (JsonObjectConst m : r["models"].as<JsonArrayConst>()) {
         // The same model: by the firmware's own number for it, or by its
         // entry in the library's list.
         const bool byNumber = grinder.modelId != 0 && (m["model_id"] | 0) == grinder.modelId;
         const bool byEntry = grinder.libraryId[0] != '\0' &&
                              strcmp(m["library_id"] | "", grinder.libraryId) == 0;
-        if ((byNumber || byEntry) && strcmp(m["unit"] | "", grinder.unit) == 0) {
+        char unitKey[24];
+        bbw::grinderUnitKey(grinder, unitKey, sizeof(unitKey));   // "dial/d10": how it is read, too
+        if ((byNumber || byEntry) && strcmp(m["unit"] | "", unitKey) == 0) {
           view.dialin.modelMedian = m["median"] | 0.0f;
           view.dialin.modelCount = m["n"] | 0;
+          view.dialin.modelSpread = m["spread"] | 0.0f;
         }
       }
-      break;
     }
   }
   if (g_store.readText(FIT_CACHE, g_libraryText, LIBRARY_TEXT_SIZE) != 0 &&
@@ -928,11 +1333,17 @@ CommunityView community(uint16_t coffeeId, uint16_t recipeId) {
       view.fit.scale = g["scale"] | 0.0f;
       view.fit.offset = g["offset"] | 0.0f;
       view.fit.coffeesInCommon = g["coffees_in_common"] | 0;
+      view.fit.axis = g["axis"] | 0UL;
       break;
     }
   }
   doc.clear();
-  view.start = bbw::communityStart(view.dialin, view.fit, grinder);
+  view.age = ageModel();
+  view.myAgeDays = bbw::effectiveAgeDays(roastDate, frozenDate, thawDate, epochNow());
+  // The flow this recipe aims for, on the time basis it is steered by.
+  const float myFlow = def.targetTimeS > 0.0f ? def.targetWeightG / def.targetTimeS : 0.0f;
+  const uint8_t myBasis = settings().grindTimeBasis == bbw::GrindTimeBasis::POUR ? 1 : 0;
+  view.start = bbw::communityStart(view.dialin, view.fit, grinder, view.age, view.myAgeDays, myFlow, myBasis);
   return view;
 }
 
@@ -956,10 +1367,87 @@ bbw::CommunityStart communityStartForActive() {
   return memo;
 }
 
+// Where to start a coffee with no setting of its own, from the owner's most similar coffee
+// (bbw::similarStart). Reads only the shelf, so it needs neither the shared library nor a clock.
+bbw::SimilarStart similarStart(uint16_t coffeeId, uint16_t recipeId) {
+  static bbw::SimilarStart out;
+  static uint16_t wantCoffee, wantRecipe;
+  wantCoffee = coffeeId;
+  wantRecipe = recipeId;
+  out = bbw::SimilarStart{};
+  readLibrary([](const bbw::Library &lib, void *) {
+    const bbw::Coffee *target = bbw::findCoffee(lib, wantCoffee);
+    const bbw::RecipeDef *def = bbw::findRecipe(lib, wantRecipe);
+    if (!target || !def) return;
+    bbw::SimilarCandidate candidates[bbw::MAX_PRESETS];
+    size_t n = 0;
+    for (uint8_t i = 0; i < lib.presetCount && n < bbw::MAX_PRESETS; ++i) {
+      const bbw::Preset &p = lib.presets[i];
+      const bbw::Coffee *c = p.coffeeId != 0 ? bbw::findCoffee(lib, p.coffeeId) : nullptr;
+      const bbw::RecipeDef *r = bbw::findRecipe(lib, p.recipeId);
+      if (!c || !r || c->id == target->id || p.grindUm == 0) continue;
+      candidates[n].coffee = c;
+      candidates[n].grindUm = p.grindUm;
+      candidates[n].doseG = r->doseG;
+      candidates[n].yieldG = r->targetWeightG;
+      candidates[n].settled = p.sharedGrindUm != 0 && p.sharedGrindUm == p.grindUm;
+      ++n;
+    }
+    out = bbw::similarStart(*target, def->doseG, def->targetWeightG, candidates, n, lib.grinder);
+  }, nullptr);
+  return out;
+}
+
 // Good until the next call that reads the library's cache.
 const char *communityCoffees() {
   g_store.readText(COFFEES_CACHE, g_libraryText, LIBRARY_TEXT_SIZE);
   return g_libraryText;
+}
+
+const char *communityMachines() {
+  g_store.readText(MACHINES_CACHE, g_libraryText, LIBRARY_TEXT_SIZE);
+  return g_libraryText;
+}
+
+bbw::MachineProfile machineProfile() {
+  Lock lock;
+  return g_machine;
+}
+
+bool applyMachine(const bbw::MachineProfile &machine) {
+  {
+    Lock lock;
+    if (!editable()) return false;
+    g_machine = machine;
+    bbw::sanitizeMachine(g_machine);
+  }
+  g_machineDirty = true;
+  return true;
+}
+
+bool shareMachine() {
+  if (!settings().shareEnabled) return false;
+  bbw::MachineProfile machine = machineProfile();
+  if (!bbw::machineCanBeShared(machine) || !ensureKeyQueued()) return false;
+  char kid[bbw::KEY_ID_LEN];
+  bbw::keyId(bbw::deviceSigner().publicKey(), kid);
+  const uint32_t seq = g_store.outboxNext();
+  if (bbw::buildMachineRecord(machine, seq, wallClock(), g_shareBody, bbw::SHARE_BODY_MAX) == 0) {
+    return false;
+  }
+  snprintf(g_sharePath, sizeof(g_sharePath), "machines/%s/m1-%u.json", kid, static_cast<unsigned>(seq));
+  if (!shareQueue(g_sharePath)) return false;
+  {
+    Lock lock;
+    bbw::markMachineQueued(g_machine, seq);
+  }
+  g_machineDirty = true;
+  return true;
+}
+
+bbw::ShareState machineShareState() {
+  Lock lock;
+  return bbw::machineShareState(g_machine, g_store.outboxSent());
 }
 
 const char *communityGrinders() {
@@ -967,7 +1455,7 @@ const char *communityGrinders() {
   return g_libraryText;
 }
 
-bool libraryReachable() { return CAN_FETCH; }
+bool libraryReachable() { return bbw::libraryLinkReady(); }
 void readLibrarySoon() { g_libraryReadSoon = true; }
 
 ShareStatus shareStatus() {
@@ -978,11 +1466,43 @@ ShareStatus shareStatus() {
     bbw::keyId(signer.publicKey(), st.keyId);
     strlcpy(st.algorithm, signer.algorithm(), sizeof(st.algorithm));
   }
-  st.canSend = CAN_PUBLISH;
-  st.sendsTo = PUBLISHES_TO;
+  st.link = bbw::libraryLinkStatus();
+  st.canSend = st.link.ready;
+  st.tokenSet = g_net.libraryToken[0] != '\0';
   st.waiting = g_store.outboxWaiting();
   st.sent = g_store.outboxSent();
   return st;
+}
+
+void setLibraryLink(const char *repo, const char *token) {
+  strlcpy(g_net.libraryRepo, repo ? repo : "", sizeof(g_net.libraryRepo));
+  if (token && token[0]) strlcpy(g_net.libraryToken, token, sizeof(g_net.libraryToken));
+  if (!g_net.libraryRepo[0]) g_net.libraryToken[0] = '\0';  // no repository: nothing to keep a token for
+  g_store.saveNet(g_net);
+  bbw::libraryLinkConfigure(g_net.libraryRepo, g_net.libraryToken);
+  g_libraryReadSoon = true;
+}
+
+// Everything the owner has described is put up again from scratch.
+uint8_t shareEverythingAgain() {
+  if (!settings().shareEnabled) return 0;
+  if (!editLibrary([](bbw::Library &lib, void *) {
+        bbw::forgetSharing(lib);
+        return true;
+      }, nullptr)) {
+    return 0;
+  }
+  g_store.outboxForgetKey();
+  uint8_t queued = shareAllCoffees();
+  const bbw::Grinder inUse = grinder();
+  if (queueGrinder(inUse.id)) ++queued;
+  static uint16_t otherId;
+  otherId = 0;
+  readLibrary([](const bbw::Library &lib, void *) {
+    if (lib.hasOtherGrinder) otherId = lib.otherGrinder.id;
+  }, nullptr);
+  if (otherId && queueGrinder(otherId)) ++queued;
+  return queued;
 }
 
 bool shareCoffee(uint16_t coffeeId, bool asked) {
@@ -1028,6 +1548,12 @@ Devices devices() {
   strlcpy(d.powerLabel, g_power.protocolLabel(), sizeof(d.powerLabel));
   d.powerCaps = g_power.caps();
   d.powerProblem = g_power.problem();
+  d.stopConnected = g_stop.connected();
+  g_ble.stopAddress(d.stopAddress);
+  d.stop = g_stop.info();
+  strlcpy(d.stopProtocol, g_stop.protocolId(), sizeof(d.stopProtocol));
+  strlcpy(d.stopLabel, g_stop.protocolLabel(), sizeof(d.stopLabel));
+  d.stopProblem = g_stop.problem();
   d.pairing = g_ble.pairing();
   d.scale = g_scale.diag();
   return d;
@@ -1050,6 +1576,17 @@ bool pairStrongestBot() {
   return found;
 }
 
+// The power bot and the stop bot share one Bluetooth link, so a first
+// connection asked for one of them (after pairing, or a new key) waits its
+// turn behind one already asked for the other, instead of running out while
+// it is kept waiting.
+static void holdForCheck(std::atomic<uint32_t> &mine, const std::atomic<uint32_t> &other) {
+  const uint32_t now = millis();
+  const uint32_t otherUntil = other.load();
+  const uint32_t from = static_cast<int32_t>(otherUntil - now) > 0 ? otherUntil : now;
+  mine = from + BOT_PAIR_CHECK_MS;
+}
+
 void pairPower(const char *address, uint8_t type) {
   {
     Lock lock;
@@ -1059,28 +1596,101 @@ void pairPower(const char *address, uint8_t type) {
   g_pushersDirty = true;
   g_ble.setPower(address, type);
   // Connect once now so the owner sees it work and the battery level is read.
-  if (address && address[0]) g_powerHoldUntilMs = millis() + BOT_PAIR_CHECK_MS;
+  if (address && address[0]) holdForCheck(g_powerHoldUntilMs, g_stopHoldUntilMs);
 }
 
-bbw::PusherSecrets pusherSecrets(bool power) {
-  Lock lock;
-  return power ? g_pushers.power : g_pushers.brew;
-}
-
-void applyPusherSecrets(bool power, const bbw::PusherSecrets &secrets) {
+void pairStop(const char *address, uint8_t type) {
   {
     Lock lock;
-    bbw::PusherSecrets &stored = power ? g_pushers.power : g_pushers.brew;
+    strlcpy(g_stopBot.address, address ? address : "", sizeof(g_stopBot.address));
+    g_stopBot.addressType = type;
+  }
+  g_stopBotDirty = true;
+  g_ble.setStop(address, type);
+  if (address && address[0]) holdForCheck(g_stopHoldUntilMs, g_powerHoldUntilMs);
+}
+
+bbw::PusherSecrets pusherSecrets(BotRole role) {
+  Lock lock;
+  return role == BotRole::POWER ? g_pushers.power : role == BotRole::STOP ? g_stopBot.secrets : g_pushers.brew;
+}
+
+void applyPusherSecrets(BotRole role, const bbw::PusherSecrets &secrets) {
+  {
+    Lock lock;
+    bbw::PusherSecrets &stored = role == BotRole::POWER ? g_pushers.power
+                                 : role == BotRole::STOP ? g_stopBot.secrets : g_pushers.brew;
     stored = secrets;
     bbw::sanitizePusherConfig(g_pushers);
+    bbw::sanitizeStopBotConfig(g_stopBot);
     bbw::PusherSecrets use = stored;
     // The brew Bot's SwitchBot password stays where it always was, in the network record.
-    if (!power) strlcpy(use.password, g_net.botPassword, sizeof(use.password));
-    (power ? g_power : g_bot).setSecrets(use);
+    if (role == BotRole::BREW) strlcpy(use.password, g_net.botPassword, sizeof(use.password));
+    (role == BotRole::POWER ? g_power : role == BotRole::STOP ? g_stop : g_bot).setSecrets(use);
   }
-  g_pushersDirty = true;
+  (role == BotRole::STOP ? g_stopBotDirty : g_pushersDirty) = true;
   // Try the new key at once.
-  (power ? g_powerHoldUntilMs : g_botHoldUntilMs) = millis() + BOT_PAIR_CHECK_MS;
+  if (role == BotRole::POWER) holdForCheck(g_powerHoldUntilMs, g_stopHoldUntilMs);
+  else if (role == BotRole::STOP) holdForCheck(g_stopHoldUntilMs, g_powerHoldUntilMs);
+  else g_botHoldUntilMs = millis() + BOT_PAIR_CHECK_MS;
+}
+
+// Connect a bot without pressing anything, so it reports its battery and
+// firmware: up to three minutes, a sleeping SwitchBot advertises rarely.
+bool wakeBot(BotRole role) {
+  constexpr uint32_t WAKE_MS = 180000;
+  const uint32_t until = millis() + WAKE_MS;
+  if (role == BotRole::POWER) {
+    if (g_pushers.powerAddress[0] == '\0') return false;
+    g_powerHoldUntilMs = until;
+  } else if (role == BotRole::STOP) {
+    if (g_stopBot.address[0] == '\0') return false;
+    g_stopHoldUntilMs = until;
+  } else {
+    if (g_ble.pairing().botAddress[0] == '\0') return false;
+    g_botHoldUntilMs = until;
+  }
+  LOGI("%s bot: woken to read its status", role == BotRole::POWER ? "power" : role == BotRole::STOP ? "stop" : "brew");
+  return true;
+}
+
+void resetHeard() { g_ble.resetHeard(); }
+
+// What was heard since the counts were reset, per minute, and how the bot
+// links are doing: the measure for the radio test switch.
+void radioTestReport(JsonObject out) {
+  const uint32_t since = g_ble.heardSinceMs();
+  const float minutes = (millis() - since) / 60000.0f;
+  out["measuring_s"] = (millis() - since) / 1000;
+  out["adverts"] = g_ble.advertsSinceReset();
+  if (minutes > 0.01f) out["adverts_per_s"] = g_ble.advertsSinceReset() / (minutes * 60.0f);
+  bbw::SeenDevice seen[bbw::BleManager::MAX_SEEN];
+  const size_t n = g_ble.seen(seen, bbw::BleManager::MAX_SEEN);
+  JsonArray hl = out["heard"].to<JsonArray>();
+  for (size_t i = 0; i < n; ++i) {
+    JsonObject o = hl.add<JsonObject>();
+    o["address"] = seen[i].address;
+    o["name"] = seen[i].name;
+    o["rssi"] = seen[i].rssi;
+    o["times"] = seen[i].heard;
+    if (minutes > 0.01f) o["per_min"] = seen[i].heard / minutes;
+    o["last_s_ago"] = (millis() - seen[i].seenAtMs) / 1000;
+  }
+  JsonObject links = out["links"].to<JsonObject>();
+  const struct { const char *name; const char *which; } list[] = {
+      {"scale", "scale"}, {"brew_bot", "bot"}, {"power_bot", "power"}};
+  for (const auto &l : list) {
+    const bbw::LinkStats s = g_ble.linkStats(l.which);
+    JsonObject o = links[l.name].to<JsonObject>();
+    o["attempts"] = s.attempts;
+    o["failures"] = s.failures;
+    o["connects"] = s.connects;
+    o["last_wait_ms"] = s.lastWaitMs;
+    o["longest_wait_ms"] = s.longestWaitMs;
+  }
+  out["scale_connected"] = g_scale.connected();
+  out["brew_bot_connected"] = g_bot.linkUp();
+  out["power_bot_connected"] = g_power.linkUp();
 }
 
 PowerView powerView() {
@@ -1099,6 +1709,154 @@ PowerView powerView() {
 bool powerRequest(bool on) {
   Lock lock;
   return g_powerControl.request(on, millis());
+}
+
+// Everything about how the controller itself is doing, in one place, for
+// remote analysis of a deployed board (GET /api/diagnostics).
+void diagnostics(JsonObject out) {
+  JsonObject fw = out["firmware"].to<JsonObject>();
+  fw["version"] = BBW_VERSION;
+  fw["built"] = BBW_BUILT;
+  fw["reset_reason"] = resetReasonText();
+  fw["boot_count"] = g_bootCount;
+  fw["uptime_s"] = millis() / 1000;
+  bbw::SlotInfo slots[4];
+  const size_t n = bbw::updateSlots(slots, 4);
+  for (size_t i = 0; i < n; ++i) {
+    if (slots[i].running) fw["running_slot"] = slots[i].label;
+  }
+  const bbw::UpdateStatus u = bbw::updateStatus();
+  fw["update_state"] = bbw::updatePhaseName(u.phase);
+  fw["update_message"] = u.message;
+  if (u.latest.valid) fw["latest_release"] = u.latest.tag;
+
+  const bbw::MemoryReport memory = bbw::memoryReport();
+  JsonObject mem = out["memory"].to<JsonObject>();
+  mem["internal_free"] = memory.internalFree;
+  mem["internal_lowest"] = memory.internalLowest;
+  mem["internal_largest"] = memory.internalLargest;
+  mem["psram_total"] = memory.psramTotal;
+  mem["psram_free"] = memory.psramFree;
+#ifndef BBW_EMULATOR
+  JsonObject stacks = out["stack_left"].to<JsonObject>();
+  stacks["loop"] = uxTaskGetStackHighWaterMark(nullptr);
+  if (g_controlTask) stacks["control"] = uxTaskGetStackHighWaterMark(g_controlTask);
+  if (g_bleTask) stacks["ble"] = uxTaskGetStackHighWaterMark(g_bleTask);
+#endif
+
+  JsonObject wifi = out["wifi"].to<JsonObject>();
+  wifi["station_ssid"] = g_net.staSsid;
+#ifndef BBW_EMULATOR
+  wifi["station_connected"] = WiFi.status() == WL_CONNECTED;
+  if (WiFi.status() == WL_CONNECTED) {
+    wifi["rssi_dbm"] = WiFi.RSSI();
+    wifi["ip"] = WiFi.localIP().toString();
+  }
+#endif
+  const time_t now = time(nullptr);
+  out["clock_set"] = now > 1700000000;
+  if (now > 1700000000) out["epoch"] = static_cast<uint32_t>(now);
+
+  JsonObject ble = out["ble"].to<JsonObject>();
+  const bbw::Pairing pairing = g_ble.pairing();
+  char power[bbw::ADDR_LEN], stop[bbw::ADDR_LEN];
+  g_ble.powerAddress(power);
+  g_ble.stopAddress(stop);
+  struct Link { const char *key; const char *which; const char *address; bool up; };
+  const Link links[] = {
+      {"scale", "scale", pairing.scaleAddress, g_scale.connected()},
+      {"brew_bot", "bot", pairing.botAddress, g_bot.linkUp()},
+      {"power_bot", "power", power, g_power.linkUp()},
+      {"stop_bot", "stop", stop, g_stop.linkUp()},
+  };
+  for (const Link &l : links) {
+    JsonObject o = ble[l.key].to<JsonObject>();
+    o["paired"] = l.address;
+    o["connected"] = l.up;
+    const bbw::LinkStats s = g_ble.linkStats(l.which);
+    o["attempts"] = s.attempts;
+    o["failures"] = s.failures;
+    o["connects"] = s.connects;
+    o["last_wait_ms"] = s.lastWaitMs;
+    o["longest_wait_ms"] = s.longestWaitMs;
+  }
+  const bbw::ScaleDiag scale = g_scale.diag();
+  JsonObject sd = ble["scale_data"].to<JsonObject>();
+  sd["frames"] = scale.frames;
+  sd["weight_frames"] = scale.weightFrames;
+  sd["timer_frames"] = scale.timerFrames;
+  sd["bad_frames"] = scale.badFrames;
+  sd["split_frames"] = scale.splitFrames;
+  sd["dropped"] = scale.dropped;
+  if (scale.batteryPercent >= 0) sd["battery"] = scale.batteryPercent;
+  bbw::SeenDevice seen[bbw::BleManager::MAX_SEEN];
+  const size_t heard = g_ble.seen(seen, bbw::BleManager::MAX_SEEN);
+  ble["adverts_heard_total"] = g_ble.advertsHeard();
+  JsonArray hl = ble["heard"].to<JsonArray>();
+  for (size_t i = 0; i < heard; ++i) {
+    JsonObject o = hl.add<JsonObject>();
+    o["address"] = seen[i].address;
+    o["name"] = seen[i].name;
+    o["rssi"] = seen[i].rssi;
+    o["times"] = seen[i].heard;
+    o["last_s_ago"] = (millis() - seen[i].seenAtMs) / 1000;
+  }
+
+  JsonObject st = out["storage"].to<JsonObject>();
+  st["ok"] = g_store.historyOk();
+  st["fs_total"] = LittleFS.totalBytes();
+  st["fs_used"] = LittleFS.usedBytes();
+  st["shots"] = g_store.shotCount();
+  st["next_shot_id"] = g_store.nextShotId();
+  st["log_flash_bytes"] = bbw::logFlashBytes();
+
+  const bbw::LiveStatus live = status();
+  JsonObject c = out["controller"].to<JsonObject>();
+  c["state"] = bbw::stateName(live.state);
+  c["cup_present"] = live.cupPresent;
+  c["sample_period_ms"] = live.samplePeriodMs;
+  {
+    Lock lock;
+    c["scale_zeroes_itself"] = g_controller.scaleZeroesItself();
+  }
+}
+
+bool scaleZeroesItself() {
+  Lock lock;
+  return g_controller.scaleZeroesItself();
+}
+
+bool testPressBrew() {
+  {
+    Lock lock;
+    const State state = g_controller.state();
+    if (g_controller.machineMayBeRunning() ||
+        (state != State::READY && state != State::CONNECTING_SCALE)) {
+      return false;
+    }
+  }
+  if (g_ble.pairing().botAddress[0] == '\0') return false;
+  const uint32_t now = millis();
+  g_botHoldUntilMs = now + TEST_PRESS_PATIENCE_MS + BOT_LINGER_MS;  // wake the bot
+  g_testPressUntilMs = now + TEST_PRESS_PATIENCE_MS;
+  g_testPress = TEST_WAITING;
+  return true;
+}
+
+const char *testPressState() {
+  switch (g_testPress.load()) {
+    case TEST_WAITING: return "waiting";
+    case TEST_PRESSED: return "pressed";
+    case TEST_FAILED: return "failed";
+    default: return "none";
+  }
+}
+
+void restartSoon() {
+  LOGI("restarting");
+  bbw::logFlush();
+  delay(300);
+  ESP.restart();
 }
 
 bool powerPressAnyway() {
@@ -1148,8 +1906,13 @@ void setEpoch(uint32_t epochS) {
 
 void setup() {
   Serial.begin(115200);
-  // USB CDC with no host listening must never stall a task that logs.
-  Serial.setTxTimeoutMs(0);
+  // USB serial with a PC attached but nothing reading the port must never
+  // stall a task that logs. Not 0: in this core (HWCDC::write) a timeout of 0
+  // makes the retry count wrap around and the write waits ~49 days for the
+  // port to be read (seen on the board: start-up stuck for 250 s, the screen
+  // dark, until the port was opened). After 10 ms without progress the core
+  // marks the port as not listening and drops output until it is read again.
+  Serial.setTxTimeoutMs(10);
   pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
 
   const bool resumedMidShot = esp_reset_reason() != ESP_RST_POWERON &&
@@ -1157,30 +1920,81 @@ void setup() {
   g_shotInProgress = 0;
 
   g_lock = xSemaphoreCreateMutex();
+  bbw::tlsUseExternalMemory();  // before any HTTPS connection
   allocateBuffers();  // before anything that uses them; PSRAM is up by now
-  g_store.begin();
+  const bool filesystemOk = g_store.begin();
+  bbw::logBegin(filesystemOk);
+  {
+    Preferences prefs;
+    if (prefs.begin("bbw", false)) {
+      uint32_t boots = 0;
+      if (prefs.isKey("boots") && prefs.getBytesLength("boots") == sizeof(boots)) {
+        prefs.getBytes("boots", &boots, sizeof(boots));
+      }
+      g_bootCount = boots + 1;
+      prefs.putBytes("boots", &g_bootCount, sizeof(g_bootCount));
+      prefs.end();
+    }
+  }
+  // The first line kept: what is running, and why it started. After a crash
+  // or a watchdog reset this is the line to look for in the Logs page.
+  LOGI("boot: firmware %s (built %s), reset reason: %s", BBW_VERSION, BBW_BUILT, resetReasonText());
+
   g_settings = g_store.loadSettings();
   g_store.loadLibrary(g_library);
-  bbw::beginDeviceKey();
+  LOGI("start-up: library loaded");
+  if (bbw::beginDeviceKey()) {
+    char kid[bbw::KEY_ID_LEN], last[bbw::KEY_ID_LEN + 2];
+    bbw::keyId(bbw::deviceSigner().publicKey(), kid);
+    const bool had = g_store.readText("/sharekey.txt", last, sizeof(last)) != 0;
+    if (!had || strcmp(last, kid) != 0) {
+      if (had || g_store.outboxSent() != 0 || g_store.outboxKeyQueued()) {
+        // A different key from the one records were signed with before: the
+        // library knows nothing under this one. Start the sharing over.
+        bbw::forgetSharing(g_library);
+        g_store.saveLibrary(g_library);
+        g_store.outboxForgetKey();
+        LOGW("share: this controller's key has changed; what was sent before is forgotten");
+      }
+      g_store.writeTextIfChanged("/sharekey.txt", kid);
+    }
+  }
+  LOGI("start-up: device key ready");
   g_net = g_store.loadNet();
+  g_maintenance = g_store.loadMaintenance();
+  bbw::libraryLinkConfigure(g_net.libraryRepo, g_net.libraryToken);
   const bbw::Pairing pairing = g_store.loadPairing();
+  g_controller.restoreCupMemory(g_store.loadCupMemory());
 
+  LOGI("start-up: settings read, starting the display");
   ui::begin();
+  LOGI("start-up: display ready");
 
   g_controller.setNextShotId(g_store.nextShotId() ? g_store.nextShotId() : 1);
   g_controller.epochNow = app::epochNow;
   g_scale.begin();
+  g_machine = g_store.loadMachine();
+  g_controller.setMachine(&g_machine);
   g_pushers = g_store.loadPushers();
   g_powerControl.begin(&g_pushers);
   bbw::PusherSecrets brewSecrets = g_pushers.brew;
   strlcpy(brewSecrets.password, g_net.botPassword, sizeof(brewSecrets.password));
   g_bot.begin("bot", &g_settings, brewSecrets);
   g_power.begin("power", &g_settings, g_pushers.power);
-  if (!g_ble.begin(pairing, g_pushers.powerAddress, g_pushers.powerAddressType)) {
+  g_stopBot = g_store.loadStopBot();
+  g_stop.begin("stop", &g_settings, g_stopBot.secrets);
+  g_controller.setStopActuator(&g_stop);
+  LOGI("start-up: starting Bluetooth");
+  if (!g_ble.begin(pairing, g_pushers.powerAddress, g_pushers.powerAddressType, g_stopBot.address,
+                   g_stopBot.addressType)) {
     LOGW("ble: init failed");
     g_controller.raiseBleError();
   } else {
+#ifdef BBW_EMULATOR
     xTaskCreatePinnedToCore(bleTask, "ble", 8192, nullptr, 2, nullptr, 0);
+#else
+    xTaskCreatePinnedToCore(bleTask, "ble", 8192, nullptr, 2, &g_bleTask, 0);
+#endif
   }
   if (resumedMidShot) {
     LOGW("restarted while a shot was running: will stop it if the scale still shows flow");
@@ -1188,9 +2002,16 @@ void setup() {
   }
 
   esp_task_wdt_init(5, true);  // a stuck control task resets the controller
+#ifdef BBW_EMULATOR
   xTaskCreatePinnedToCore(controlTask, "control", 8192, nullptr, 5, nullptr, 1);
+#else
+  xTaskCreatePinnedToCore(controlTask, "control", 8192, nullptr, 5, &g_controlTask, 1);
+#endif
 
+  LOGI("start-up: starting Wi-Fi and the web server");
   web::begin();
+  bbw::updateBegin(g_store.loadUpdateConfig());
+  LOGI("start-up: done in %u ms", static_cast<unsigned>(millis()));
   if (g_net.staSsid[0]) configTime(0, 0, "pool.ntp.org");  // optional; the browser also sets the clock
   const bbw::MemoryReport memory = bbw::memoryReport();
   if (memory.known) {
@@ -1209,9 +2030,12 @@ void loop() {
   handleButton();
   handleSerial();
   logLoop();
+  confirmFirmware();
+  logHealth();
 
   // Persistence happens here, never in the control task.
   bbw::ShotRecord shot;
+  bbw::CupMemory cupNow;
   size_t curvePoints = 0;
   bool haveShot = false, learned = false;
   bool idle = false, saveSettings = false, saveLibrary = false;
@@ -1231,6 +2055,7 @@ void loop() {
     }
     learned = g_controller.takeSettingsDirty();
     idle = !g_controller.machineMayBeRunning();
+    cupNow = g_controller.cupMemory();
     if (learned) markLibraryDirty();  // the learned offset belongs to the preset
     if (idle && (learned || millis() - g_settingsDirtyAtMs >= SETTINGS_SAVE_DELAY_MS)) {
       saveSettings = g_settingsDirty;
@@ -1242,6 +2067,17 @@ void loop() {
   }
   if (haveShot) {
     printShot(shot);
+    if (bbw::upkeepCountsShot(shot)) {
+      Lock lock;
+      bbw::countUpkeepShot(g_maintenance);
+      g_maintenanceDirty = true;
+    }
+    // The shot before this one, for the time between them (read before this one is appended).
+    uint32_t previousEpochS = 0;
+    {
+      bbw::ShotRecord previous;
+      if (g_store.readShot(0, previous)) previousEpochS = previous.epochS;
+    }
     if (!g_store.appendShot(shot)) LOGW("store: shot %u not saved", static_cast<unsigned>(shot.id));
     if (g_store.saveCurve(shot.id, g_curveOut, curvePoints)) {
       LOGI("store: shot %u data, %u readings", static_cast<unsigned>(shot.id),
@@ -1250,7 +2086,67 @@ void loop() {
       LOGW("store: shot %u data not saved", static_cast<unsigned>(shot.id));
     }
     g_grindAdviceStale = true;
+    // What surrounded the shot, kept for the learning work (core/ShotContext.h). Recorded only: nothing
+    // reads it back to steer a shot.
+    {
+      static bbw::ShotContextInputs in;
+      in = bbw::ShotContextInputs();
+      in.shot = &shot;
+      in.previousEpochS = previousEpochS;
+      // The bag as the coffee entry holds it now, which is the bag the shot was just made from.
+      static uint16_t wantCoffee;
+      static uint32_t roastDate, frozenDate, thawDate;
+      wantCoffee = shot.coffeeId;
+      roastDate = shot.roastDate;
+      frozenDate = thawDate = 0;
+      app::readLibrary([](const bbw::Library &lib, void *) {
+        const bbw::Coffee *c = bbw::findCoffee(lib, wantCoffee);
+        if (c) {
+          roastDate = c->roastDate;
+          frozenDate = c->frozenDate;
+          thawDate = c->thawDate;
+        }
+      }, nullptr);
+      in.roastDate = roastDate;
+      in.frozenDate = frozenDate;
+      in.thawDate = thawDate;
+      if (app::activeRecipe().coffeeId == shot.coffeeId && app::activeRecipe().recipeId == shot.recipeId) {
+        in.start = app::communityStartForActive();
+      }
+      in.similar = app::similarStart(shot.coffeeId, shot.recipeId);
+      {
+        Lock lock;
+        in.grinderCleanShots = bbw::shotsSince(g_maintenance, bbw::Upkeep::GRINDER_CLEAN);
+      }
+      in.advice = app::grindAdvice();
+      const bbw::Settings st = app::settings();
+      in.toleranceS = st.grindToleranceS;
+      in.window = st.grindWindow;
+      in.maxStepUm = st.grindMaxStepUm;
+      in.defaultUmPerS = st.grindUmPerS;
+      in.ratedTarget = st.grindRatedTarget;
+      in.learnGrinder = true;   // always since 17 Oct 2026; records from 16-17 Oct may say otherwise
+      in.curve = g_curveOut;
+      in.curvePoints = curvePoints;
+      if (!g_store.saveContext(bbw::buildShotContext(in))) {
+        LOGW("store: shot %u context not saved", static_cast<unsigned>(shot.id));
+      }
+    }
     shareAfterShot(shot);
+  }
+  if (idle && g_maintenanceDirty) {
+    static bbw::Maintenance snapshot;
+    {
+      Lock lock;
+      snapshot = g_maintenance;
+      g_maintenanceDirty = false;
+    }
+    g_store.saveMaintenance(snapshot);
+  }
+  bbw::logService(idle);
+  bbw::updateService(idle, true);
+  if (bbw::updateStatus().phase == bbw::UpdatePhase::INSTALLED) {
+    // the update task restarts the controller itself in a moment
   }
   shareSendOne(idle);
   shareReadStatus(idle);
@@ -1258,6 +2154,30 @@ void loop() {
   if (saveSettings) g_store.saveSettings(snapshot);
   if (saveLibrary && !g_store.saveLibrary((*g_librarySaving))) LOGW("store: library not saved");
   if (g_ble.takePairingDirty()) g_store.savePairing(g_ble.pairing());
+  {
+    // The cup on the scale, for after a restart. Written only when it
+    // changes (a cup on or off, a tare, the scale's timer), and between shots.
+    static bbw::CupMemory saved;
+    static bool loaded = false;
+    if (!loaded) {
+      saved = g_store.loadCupMemory();
+      loaded = true;
+    }
+    if (idle && (cupNow.present != saved.present || cupNow.scaleTimerMs != saved.scaleTimerMs ||
+                 fabsf(cupNow.levelG - saved.levelG) > 0.2f)) {
+      g_store.saveCupMemory(cupNow);
+      saved = cupNow;
+    }
+  }
+  if (g_machineDirty.exchange(false)) g_store.saveMachine(app::machineProfile());
+  if (g_stopBotDirty.exchange(false)) {
+    bbw::StopBotConfig copy;
+    {
+      Lock lock;
+      copy = g_stopBot;
+    }
+    g_store.saveStopBot(copy);
+  }
   if (g_pushersDirty.exchange(false)) {
     bbw::PusherConfig copy;
     {
@@ -1270,3 +2190,15 @@ void loop() {
   // the touch panel to look after, so it can idle most of the time.
   delay(ui::isOff() ? 25 : 2);
 }
+
+#ifndef BBW_EMULATOR
+// The loop task serves the web pages, parses the library's JSON and takes
+// firmware uploads: twice the Arduino default of 8 kB (measured on the board:
+// about 5.4 kB used at the default). This must be at global scope: inside a
+// namespace the core does not see it and silently keeps 8 kB.
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+
+// Arduino would otherwise mark a new firmware as good the moment it starts.
+// confirmFirmware() does that once it has run for a while instead.
+extern "C" bool verifyRollbackLater() { return true; }
+#endif

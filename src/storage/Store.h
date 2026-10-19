@@ -11,10 +11,14 @@
 
 #include <Arduino.h>
 
+#include "core/MachineProfile.h"
 #include "core/PowerControl.h"
 #include "ble/Ble.h"
 #include "core/Library.h"
 #include "core/ShotData.h"
+#include "platform/FirmwareUpdate.h"
+#include "core/Maintenance.h"
+#include "core/ShotContext.h"
 #include "core/Types.h"
 
 namespace bbw {
@@ -25,6 +29,11 @@ struct NetConfig {
   char apPassword[33] = "brewbyweight";  // WPA2, change it in the web UI
   bool webStartEnabled = false;          // allow starting a shot from the browser
   char botPassword[24] = {};             // only if one was set in the SwitchBot app
+  // The shared library (platform/LibraryLink.h): the repository, and a token
+  // good for that repository alone. Added at the end: a blob saved before
+  // they existed still loads.
+  char libraryRepo[64] = {};             // "owner/name"
+  char libraryToken[128] = {};           // never sent back to the web page
 };
 
 class Store {
@@ -39,11 +48,23 @@ class Store {
   bool saveLibrary(const Library &library);
   Pairing loadPairing();
   void savePairing(const Pairing &pairing);
+  UpdateConfig loadUpdateConfig();
+  void saveUpdateConfig(const UpdateConfig &config);
+  CupMemory loadCupMemory();
+  void saveCupMemory(const CupMemory &memory);
+  Maintenance loadMaintenance();
+  void saveMaintenance(const Maintenance &m);
   NetConfig loadNet();
   void saveNet(const NetConfig &net);
   // Power bot, pusher keys and the power schedule (core/PowerControl.h).
   PusherConfig loadPushers();
   void savePushers(const PusherConfig &config);
+  // The espresso machine's profile (core/MachineProfile.h). The Breville
+  // Dual Boiler's MANUAL button if none was ever stored.
+  StopBotConfig loadStopBot();
+  void saveStopBot(const StopBotConfig &config);
+  MachineProfile loadMachine();
+  void saveMachine(const MachineProfile &machine);
 
   bool appendShot(const ShotRecord &record);
   uint32_t shotCount() const { return header_.count; }
@@ -54,12 +75,22 @@ class Store {
   uint32_t nextShotId() const { return header_.nextId; }
   bool setShotGrind(uint32_t id, uint16_t grindUm);  // correct a shot after the fact
   bool setShotRating(uint32_t id, uint8_t rating, uint8_t taste);
+  // The strength the owner measured with a refractometer, in hundredths of a percent TDS; 0 clears it.
+  bool setShotTds(uint32_t id, uint16_t tdsX100);
   bool setShotGrindVote(uint32_t id, uint8_t vote);
   void clearShots();
   // The shot's full data set. Kept for as long as the shot is in the history.
   bool saveCurve(uint32_t id, const CurvePoint *points, size_t count);
   size_t loadCurve(uint32_t id, CurvePoint *out, size_t max);  // 0: none stored
   bool hasCurve(uint32_t id);
+  // The circumstances of the shot (core/ShotContext.h): one fixed slot per shot in a ring file
+  // beside the history (/contexts.bin, 500 x 64 bytes). Only recorded, never read by the advice.
+  bool saveContext(const ShotContext &context);
+  bool loadContext(uint32_t id, ShotContext &out);  // false: none stored, or another version
+  // The owner's entries for a shot still in the history (core/ShotContext.h applyShotPrep). A shot
+  // from before contexts were kept gets a context holding only these. false: no such shot, or a dose
+  // outside 5..40 g.
+  bool setShotPrep(uint32_t id, uint16_t doseDg, bool purged, bool uneven);
   bool historyOk() const { return fsOk_; }
 
   // Small text files: what was last read from the shared library, kept for
@@ -77,6 +108,7 @@ class Store {
   uint32_t outboxSent() const { return outbox_.sent; }
   uint32_t outboxNext() const { return outbox_.next; }
   bool outboxKeyQueued() const { return outbox_.keyQueued != 0; }
+  void outboxForgetKey();  // the public key is to be sent again, ahead of the next record
 
  private:
   struct Header {
@@ -92,7 +124,9 @@ class Store {
   void resetHistory();
   void prepareLibrary();
   bool convertHistoryV8();
+  bool convertHistoryV9();
   void removeCurve(uint32_t id);
+  bool prepareContexts();
   void makeRoomForCurve(size_t bytes);
 
   struct OutboxState {

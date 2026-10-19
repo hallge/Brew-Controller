@@ -90,7 +90,7 @@ class NimBLEClientCallbacks {
 
 class NimBLEClient {
  public:
-  void setConnectionParams(uint16_t, uint16_t, uint16_t, uint16_t) {}
+  void setConnectionParams(uint16_t, uint16_t, uint16_t, uint16_t, uint16_t = 16, uint16_t = 16) {}
   void setConnectTimeout(uint8_t seconds) { connectTimeoutS_ = seconds; }
   void setClientCallbacks(NimBLEClientCallbacks *callbacks, bool deleteCallbacks = true) {
     (void)deleteCallbacks;
@@ -121,10 +121,12 @@ class NimBLEAdvertisedDevice {
   NimBLEUUID getServiceDataUUID(uint8_t index) const { return serviceData_[index].first; }
   std::string getServiceData(uint8_t index) const { return serviceData_[index].second; }
   bool isAdvertisingService(const NimBLEUUID &uuid) const;
+  std::string getManufacturerData(uint8_t = 0) const { return manufacturerData_; }
 
  private:
   friend class emu::Radio;
   NimBLEAddress address_;
+  std::string manufacturerData_;
   std::string name_;
   int rssi_ = 0;
   std::vector<std::pair<NimBLEUUID, std::string>> serviceData_;
@@ -145,6 +147,7 @@ class NimBLEScan {
   void setInterval(uint16_t) {}
   void setWindow(uint16_t) {}
   void setMaxResults(uint8_t) {}
+  void setDuplicateFilter(bool) {}  // every advertisement is delivered anyway
   bool start(uint32_t duration, void (*completed)(void *) = nullptr, bool isContinue = false);
   bool stop();
   bool isScanning();

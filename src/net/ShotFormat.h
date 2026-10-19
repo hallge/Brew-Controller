@@ -6,6 +6,9 @@
 #include <ArduinoJson.h>
 #include <time.h>
 
+#include "core/Community.h"
+#include "core/GrindAdvisor.h"
+#include "core/ShotContext.h"
 #include "core/Types.h"
 
 namespace bbw {
@@ -29,18 +32,20 @@ inline const char *shotCsvHeader() {
          "pour_time_s,pour_flow_g_s,time_basis,"
          "coffee,roast_level,roast_date,preinfusion_hold_s,rating,taste,"
          "flow_25_g_s,flow_50_g_s,flow_75_g_s,flow_acceleration,flow_roughness_g_s,"
-         "region,varietal,grind_vote,coffee_id,recipe_id,bloom_pause_s,grinder_calibration\n";
+         "region,varietal,grind_vote,coffee_id,recipe_id,bloom_pause_s,grinder_calibration,tds_pct,extraction_pct\n";
 }
 
 inline size_t shotCsvLine(const ShotRecord &s, char *out, size_t size) {
-  char stamp[24];
+  char stamp[24], tds[12] = "", ey[12] = "";
   isoTimestamp(s.epochS, stamp, sizeof(stamp));
+  if (s.tdsX100) snprintf(tds, sizeof(tds), "%.2f", s.tdsX100 / 100.0f);
+  if (shotExtractionPct(s) > 0.0f) snprintf(ey, sizeof(ey), "%.2f", shotExtractionPct(s));
   // Text fields are quoted: region and varietal contain commas. Double
   // quotes are removed from them when they are entered (web layer).
   return snprintf(out, size,
                   "%u,%s,\"%s\",%.1f,%.2f,%.2f,%.2f,%.3f,%.3f,%.2f,%.2f,%.2f,%.2f,%u,%s,%d,%d,%d,%d,"
                   "%.2f,%.2f,%u,%.1f,%.1f,%.2f,%.3f,%s,\"%s\",%s,%u,%.1f,%u,%s,"
-                  "%.2f,%.2f,%.2f,%.2f,%.3f,\"%s\",\"%s\",%s,%u,%u,%.1f,%u\n",
+                  "%.2f,%.2f,%.2f,%.2f,%.3f,\"%s\",\"%s\",%s,%u,%u,%.1f,%u,%s,%s\n",
                   static_cast<unsigned>(s.id), stamp, s.recipe, s.targetWeightG, s.stopWeightG,
                   s.finalWeightG, s.shotTimeS, s.averageFlowGS, s.peakFlowGS, s.dripWeightG,
                   s.stopOffsetG, s.nextStopOffsetG, s.firstDropS,
@@ -56,7 +61,7 @@ inline size_t shotCsvLine(const ShotRecord &s, char *out, size_t size) {
                   tasteName(s.taste), s.flow25GS, s.flow50GS, s.flow75GS, s.flowAcceleration,
                   s.flowRoughnessGS, s.region, s.varietal, grindVoteName(s.grindVote),
                   static_cast<unsigned>(s.coffeeId), static_cast<unsigned>(s.recipeId),
-                  s.bloomPauseMs / 1000.0f, static_cast<unsigned>(s.grinderId));
+                  s.bloomPauseMs / 1000.0f, static_cast<unsigned>(s.grinderId), tds, ey);
 }
 
 inline float round2(float v) { return roundf(v * 100.0f) / 100.0f; }
@@ -99,6 +104,8 @@ inline void shotToJson(const ShotRecord &s, JsonObject o) {
   o["preinfusion_hold_s"] = s.preinfusionHoldMs / 1000.0f;
   o["rating"] = s.rating;
   o["taste"] = tasteName(s.taste);
+  if (s.tdsX100) o["tds_pct"] = round2(s.tdsX100 / 100.0f);
+  if (shotExtractionPct(s) > 0.0f) o["extraction_pct"] = round2(shotExtractionPct(s));
   o["grind_vote"] = grindVoteName(s.grindVote);
   o["coffee_id"] = s.coffeeId;
   o["recipe_id"] = s.recipeId;
@@ -110,6 +117,49 @@ inline void shotToJson(const ShotRecord &s, JsonObject o) {
   o["flow_75_g_s"] = round2(s.flow75GS);
   o["flow_acceleration"] = round2(s.flowAcceleration);
   o["flow_roughness_g_s"] = round2(s.flowRoughnessGS);
+}
+
+// The circumstances of a shot (core/ShotContext.h), for the learning work. Zero / -1 mean "not known".
+inline void shotContextToJson(const ShotContext &c, JsonObject o) {
+  o["shot_id"] = c.shotId;
+  o["engine_version"] = c.engineVersion;
+  o["age_days"] = c.ageDays;                 // effective: frozen time weighted
+  o["calendar_days"] = c.calendarDays;       // since roast, frozen time counted in full
+  o["frozen_days"] = c.frozenDays;
+  o["bean_frozen"] = (c.beanFlags & CTX_BEAN_FROZEN) != 0;
+  o["since_last_shot_s"] = c.sinceLastShotS;
+  o["machine_on_s"] = c.machineOnS;
+  o["grinder_clean_shots"] = c.grinderCleanShots;
+  o["start_setting"] = c.startSetting;
+  o["start_range"] = c.startRange;
+  o["start_basis"] = startBasisName(static_cast<StartBasis>(c.startBasis));
+  o["similar_setting"] = c.similarSetting;
+  o["similar_range"] = c.similarRange;
+  o["similar_fitted"] = c.similarFitted != 0;
+  o["similar_samples"] = c.similarSamples;
+  o["advice_um"] = c.adviceUm;
+  o["advice_delta_um"] = c.adviceDeltaUm;
+  o["advice_um_per_s"] = c.adviceUmPerSx100 / 100.0f;
+  o["advice_action"] = grindActionName(static_cast<GrindAction>(c.adviceAction));
+  o["advice_base_action"] = grindActionName(static_cast<GrindAction>(c.adviceBaseAction));
+  o["advice_shots"] = c.adviceShots;
+  o["advice_learn_shots"] = c.adviceLearnShots;
+  o["advice_learned"] = (c.adviceFlags & 1) != 0;
+  o["advice_step_limited"] = (c.adviceFlags & 2) != 0;
+  o["advice_refined"] = (c.adviceFlags & 4) != 0;
+  o["sample_interval_ms"] = c.sampleIntervalMs;
+  o["curve_points"] = c.curvePoints;
+  o["weight_step_g"] = c.weightStepCg / 100.0f;
+  o["tolerance_s"] = c.toleranceDs / 10.0f;
+  o["window"] = c.window;
+  o["max_step_um"] = c.maxStepUm;
+  o["default_um_per_s"] = c.defaultUmPerSx100 / 100.0f;
+  o["rated_target"] = c.ratedTarget != 0;
+  o["learn_grinder"] = c.learnGrinder != 0;
+  o["dose_actual_g"] = c.doseActualDg / 10.0f;
+  o["prep_flags"] = c.prepFlags;
+  o["purged"] = (c.prepFlags & CTX_PREP_PURGED) != 0;
+  o["uneven"] = (c.prepFlags & CTX_PREP_UNEVEN) != 0;
 }
 
 }  // namespace bbw

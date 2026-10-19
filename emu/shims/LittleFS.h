@@ -12,6 +12,14 @@ class File {
     return handle_ ? fwrite(buffer, 1, length, handle_) : 0;
   }
   bool seek(size_t position) { return handle_ && fseek(handle_, static_cast<long>(position), SEEK_SET) == 0; }
+  size_t size() {
+    if (!handle_) return 0;
+    const long at = ftell(handle_);
+    fseek(handle_, 0, SEEK_END);
+    const long end = ftell(handle_);
+    fseek(handle_, at, SEEK_SET);
+    return end < 0 ? 0 : static_cast<size_t>(end);
+  }
   void close() {
     if (handle_) fclose(handle_);
     handle_ = nullptr;
@@ -23,7 +31,8 @@ class File {
 
 class LittleFSClass {
  public:
-  bool begin(bool formatOnFail = false);
+  bool begin(bool formatOnFail = false, const char *basePath = "/littlefs", uint8_t maxOpenFiles = 10,
+             const char *partitionLabel = "spiffs");
   File open(const char *path, const char *mode = "r");
   bool exists(const char *path);
   bool remove(const char *path);

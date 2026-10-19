@@ -3,6 +3,7 @@
 // same shot is run over the wire format of every supported scale.
 // Build and run: see test/host/run.sh
 
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -16,11 +17,15 @@
 #include "core/FlowFeatures.h"
 #include "core/GrindAdvisor.h"
 #include "core/Library.h"
+#include "core/Maintenance.h"
 #include "core/PowerControl.h"
 #include "core/PusherLink.h"
 #include "core/ScaleLink.h"
+#include "core/SettingFormat.h"
 #include "core/SettingsUtil.h"
 #include "core/Share.h"
+#include "core/SimilarCoffee.h"
+#include "core/ShotContext.h"
 #include "core/ShotData.h"
 #include "core/SwitchBotProtocol.h"
 
@@ -55,6 +60,7 @@ struct Sim {
   uint32_t preinfusionMs = 6000;
   uint32_t machineTimeoutMs = 0;   // the machine's own time-out; 0 = none
   double dripGS = 1.2;        // decays to zero over dripMs after a stop
+  uint32_t stopDelayMs = 0;   // full flow goes on this long after a stop press
   uint32_t dripMs = 1200;
   // Fault injection
   bool scaleLink = true;
@@ -84,6 +90,12 @@ struct Sim {
   uint32_t lastHoldMs = 0;
   std::vector<uint32_t> holds, pressTimes;   // of the presses that were made
   int tares = 0;
+  int beeps = 0;              // times the scale was asked to make a sound
+  // Other machines: a start button that only starts (the stop is elsewhere),
+  // and a button that brews while the arm holds it down.
+  bool startOnlyButton = false;
+  bool armDown = false;
+  int holdsBegun = 0, releases = 0, stopPresses = 0;
   uint32_t pressAtMs = 0;
   bool pressBusy = false;
   PressResult pressResult = PressResult::IDLE;
@@ -120,6 +132,11 @@ struct Sim {
     pressUnconfirmed = false;
     if (ignorePresses > 0) {
       --ignorePresses;
+    } else if (startOnlyButton) {
+      if (!machineRunning) {
+        machineRunning = true;
+        machineStartedMs = nowMs;
+      }
     } else {
       machineRunning = !machineRunning;
       if (machineRunning) machineStartedMs = nowMs; else machineStoppedMs = nowMs;
@@ -138,9 +155,12 @@ struct Sim {
     if (machineRunning) {
       return nowMs - machineStartedMs >= preinfusionMs ? flowGS : 0.0;
     }
-    if (machineStoppedMs != 0 && nowMs - machineStoppedMs < dripMs &&
-        machineStoppedMs - machineStartedMs >= preinfusionMs) {
-      return dripGS * (1.0 - static_cast<double>(nowMs - machineStoppedMs) / dripMs);
+    if (machineStoppedMs != 0 && machineStoppedMs - machineStartedMs >= preinfusionMs) {
+      const uint32_t after = nowMs - machineStoppedMs;
+      if (after < stopDelayMs) return flowGS;  // the pump has not stopped yet
+      if (after - stopDelayMs < dripMs) {
+        return dripGS * (1.0 - static_cast<double>(after - stopDelayMs) / dripMs);
+      }
     }
     return 0.0;
   }
@@ -152,6 +172,10 @@ struct ScalePort : IScale {
   explicit ScalePort(Sim &s) : sim(s) {}
   bool connected() const override { return sim.scaleLink; }
   bool tare() override { return sim.wireHas(ScaleOp::Tare) && sim.tare(); }
+  bool beep() override {
+    ++sim.beeps;
+    return true;
+  }
   bool startTimer() override {
     if (!sim.wireHas(ScaleOp::StartTimer)) return false;
     sim.timerRunning = true;
@@ -179,6 +203,64 @@ struct BotPort : IActuator {
   PressResult result() const override { return sim.result(); }
   uint32_t pressSentAtMs() const override { return sim.pressSentAtMs(); }
   void clearResult() override { sim.clearResult(); }
+  // A button that brews while it is held: the machine runs while the arm is down.
+  bool beginHold() override {
+    if (!sim.botLink || sim.pressBusy || sim.armDown) return false;
+    ++sim.holdsBegun;
+    sim.pressAtMs = sim.nowMs;
+    sim.armDown = true;
+    sim.pressResult = PressResult::BUSY;
+    sim.machineRunning = true;
+    sim.machineStartedMs = sim.nowMs;
+    return true;
+  }
+  bool holding() const override { return sim.armDown && sim.nowMs - sim.pressAtMs >= sim.ackDelayMs; }
+  bool release() override {
+    if (!sim.botLink) return false;
+    ++sim.releases;
+    if (sim.armDown && sim.machineRunning) {
+      sim.machineRunning = false;
+      sim.machineStoppedMs = sim.nowMs;
+    }
+    sim.armDown = false;
+    sim.pressAtMs = sim.nowMs;
+    sim.pressBusy = true;            // the step loop reports OK after the acknowledgement delay
+    sim.pressResult = PressResult::BUSY;
+    sim.pressUnconfirmed = false;
+    return true;
+  }
+};
+// The bot on a separate stop button: it only ever stops the machine.
+struct StopPort : IActuator {
+  Sim &sim;
+  BrewController *ctl = nullptr;
+  uint32_t neededSinceMs = 0, sentAtMs = 0;
+  PressResult now = PressResult::IDLE;
+  explicit StopPort(Sim &s) : sim(s) {}
+  // Asleep until wanted, like the brew bot.
+  void step() {
+    if (ctl && ctl->stopActuatorNeeded()) {
+      if (neededSinceMs == 0) neededSinceMs = sim.nowMs;
+    } else {
+      neededSinceMs = 0;
+    }
+    if (now == PressResult::BUSY && sim.nowMs - sentAtMs >= sim.ackDelayMs) now = PressResult::OK;
+  }
+  bool connected() const override { return neededSinceMs != 0 && sim.nowMs - neededSinceMs >= 1500; }
+  bool beginPress(uint32_t = 0) override {
+    if (!connected() || now == PressResult::BUSY) return false;
+    ++sim.stopPresses;
+    sentAtMs = sim.nowMs;
+    now = PressResult::BUSY;
+    if (sim.machineRunning) {
+      sim.machineRunning = false;
+      sim.machineStoppedMs = sim.nowMs;
+    }
+    return true;
+  }
+  PressResult result() const override { return now; }
+  uint32_t pressSentAtMs() const override { return sentAtMs; }
+  void clearResult() override { if (now != PressResult::BUSY) now = PressResult::IDLE; }
 };
 
 struct Rig {
@@ -1086,6 +1168,8 @@ struct OldSwitchBot {
   uint32_t holdMs = 0;
   bool needUp = false;
   uint32_t lastUpTryMs = 0;
+  uint32_t upFirstMs = 0, upRetryAtMs = 0;
+  bool upRetrying = false;
   Expect expect = Expect::NONE;
   bool ackPending = false;
   uint8_t ackStatus = 0, lastStatus = 0;
@@ -1209,6 +1293,8 @@ struct OldSwitchBot {
           lastUpTryMs = nowMs;
           if (ready && sendAction(switchbot::Action::UP)) {
             needUp = false;
+            upFirstMs = nowMs;
+            upRetrying = false;
             phase = Phase::WAIT_UP_ACK;
             phaseSinceMs = nowMs;
           } else {
@@ -1220,8 +1306,27 @@ struct OldSwitchBot {
       case Phase::WAIT_UP_ACK:
         if (takeAck()) {
           const bool upOk = switchbot::actionAccepted(ackStatus);
-          finish(downAcked && upOk ? PressResult::OK : PressResult::UNCONFIRMED, nowMs);
+          const bool refused = !upOk && ackStatus != static_cast<uint8_t>(switchbot::Status::UNSUPPORTED);
+          if (refused && static_cast<uint32_t>(nowMs - upFirstMs) < 6000) {
+            upRetrying = true;
+            upRetryAtMs = nowMs + 300;
+          } else {
+            if (refused) needUp = true;
+            finish(downAcked && upOk ? PressResult::OK : PressResult::UNCONFIRMED, nowMs);
+          }
+        } else if (upRetrying) {
+          if (static_cast<int32_t>(nowMs - upRetryAtMs) >= 0) {
+            upRetrying = false;
+            lastUpTryMs = nowMs;
+            if (ready && sendAction(switchbot::Action::UP)) {
+              phaseSinceMs = nowMs;
+            } else {
+              needUp = true;
+              finish(PressResult::UNCONFIRMED, nowMs);
+            }
+          }
         } else if (!ready || static_cast<uint32_t>(nowMs - phaseSinceMs) >= 1500) {
+          needUp = true;
           finish(PressResult::UNCONFIRMED, nowMs);
         }
         break;
@@ -1585,6 +1690,154 @@ static void testPusherDrivers() {
   }
 }
 
+// The down / up press with a Bot still moving its arm down: it answers the
+// up "busy" (0x03) and ignores it. Seen on the board: the up went out 0.43 s
+// after the down, was refused, and the arm stayed on the button. The up is
+// asked for again until it is done. And the power bot always gets the Bot's
+// own complete press, whatever the press style.
+static void testUpRefusedWhileMoving() {
+  printf("pusher link: an up refused while the arm moves is sent again\n");
+  Settings settings = defaultSettings();
+  settings.actuationMode = ActuationMode::DOWN_UP;
+  settings.pressDurationMs = 300;
+  const uint8_t down[3] = {0x57, 0x01, 0x03}, up[3] = {0x57, 0x01, 0x04}, press[3] = {0x57, 0x01, 0x00};
+  const uint8_t ok = 0x01, busy = 0x03;
+  auto ups = [&](const WriteLog &log, size_t from) {
+    size_t n = 0;
+    for (size_t i = from; i < log.writes.size(); ++i) {
+      n += log.writes[i].size() == 3 && memcmp(log.writes[i].data(), up, 3) == 0;
+    }
+    return n;
+  };
+  PusherLink link;
+  WriteLog out;
+  link.begin("bot", &settings, &out);
+  link.connected(link.driverAt(0));
+  uint32_t now = 1000;
+  link.tick(now, true);
+  link.onNotify(&ok, 1);  // (answer to the info request)
+  const size_t base = out.writes.size();
+  CHECK(link.beginPress(0, now += 10, true));
+  CHECK(memcmp(out.writes.back().data(), down, 3) == 0);
+  link.onNotify(&ok, 1);
+  for (int i = 0; i < 31; ++i) link.tick(now += 10, true);  // the 300 ms hold
+  CHECK(ups(out, base) == 1);
+  // Busy twice: still moving. Each refusal brings another up.
+  link.onNotify(&busy, 1);
+  for (int i = 0; i < 31; ++i) link.tick(now += 10, true);
+  CHECK(ups(out, base) == 2 && link.busy());
+  link.onNotify(&busy, 1);
+  for (int i = 0; i < 31; ++i) link.tick(now += 10, true);
+  CHECK(ups(out, base) == 3 && link.busy());
+  link.onNotify(&ok, 1);
+  link.tick(now += 10, true);
+  CHECK(link.result() == PressResult::OK);
+  for (int i = 0; i < 300; ++i) link.tick(now += 10, true);
+  CHECK(!link.busy() && ups(out, base) == 3);
+
+  // An up with no answer at all is sent once more after settling.
+  const size_t base2 = out.writes.size();
+  link.clearResult();
+  CHECK(link.beginPress(0, now += 10, true));
+  link.onNotify(&ok, 1);
+  for (int i = 0; i < 31; ++i) link.tick(now += 10, true);
+  CHECK(ups(out, base2) == 1);
+  for (int i = 0; i < 400; ++i) link.tick(now += 10, true);  // no answer
+  CHECK(ups(out, base2) == 2);
+
+  // The power bot: one complete press, never a down left for an up.
+  PusherLink power;
+  WriteLog outP;
+  power.begin("power", &settings, &outP);
+  power.connected(power.driverAt(0));
+  power.tick(1000, true);
+  power.onNotify(&ok, 1);
+  CHECK(power.beginPress(0, 1010, true) && memcmp(outP.writes.back().data(), press, 3) == 0);
+  CHECK(ups(outP, 0) == 0);
+}
+
+// Holding a button down for a whole shot, on the SwitchBot's own bytes.
+static void testPusherHold() {
+  printf("pusher link: hold for the shot, release, and an arm left down\n");
+  Settings settings = defaultSettings();
+  const uint8_t down[3] = {0x57, 0x01, 0x03}, up[3] = {0x57, 0x01, 0x04};
+  const uint8_t ok = 0x01;
+  PusherLink link;
+  WriteLog out;
+  link.begin("bot", &settings, &out);
+  link.connected(link.driverAt(0));
+  uint32_t now = 1000;
+  link.tick(now, true);                               // session up; asks for the Bot's info
+  const size_t base = out.writes.size();
+  CHECK(link.beginHold(now += 10, true) && link.result() == PressResult::BUSY && !link.holding());
+  CHECK(out.writes.size() == base + 1 && out.writes.back().size() == 3 &&
+        memcmp(out.writes.back().data(), down, 3) == 0);
+  const uint32_t downAt = now;
+  link.onNotify(&ok, 1);
+  link.tick(now += 10, true);
+  CHECK(link.holding() && link.busy() && link.pressSentAtMs() == downAt);
+  // It stays down: no up by itself, however long, and no other press meanwhile.
+  for (int i = 0; i < 6000; ++i) link.tick(now += 10, true);
+  CHECK(link.holding() && link.result() == PressResult::BUSY && out.writes.size() == base + 1);
+  CHECK(!link.beginPress(0, now, true) && !link.beginHold(now, true));
+  // Release: the up goes out on the next tick, and its answer ends the hold.
+  CHECK(link.release(now += 10, true));
+  const uint32_t releasedAt = now;
+  link.tick(now += 10, true);
+  CHECK(out.writes.size() == base + 2 && memcmp(out.writes.back().data(), up, 3) == 0 && !link.holding());
+  link.onNotify(&ok, 1);
+  link.tick(now += 10, true);
+  CHECK(link.result() == PressResult::OK && link.pressSentAtMs() == releasedAt);
+  now += 5000;
+  link.tick(now, true);
+  link.clearResult();
+  CHECK(!link.busy());
+
+  // The link drops while holding: reported at once, and the arm is brought
+  // up as soon as the Bot is back, before anything else.
+  CHECK(link.beginHold(now += 10, true));
+  link.onNotify(&ok, 1);
+  link.tick(now += 10, true);
+  CHECK(link.holding());
+  link.tick(now += 10, false);
+  CHECK(link.result() == PressResult::UNCONFIRMED && !link.holding() && link.busy());
+  const size_t before = out.writes.size();
+  link.connected(link.driverAt(0));
+  for (int i = 0; i < 40; ++i) link.tick(now += 10, true);
+  bool upSent = false;
+  for (size_t i = before; i < out.writes.size(); ++i) {
+    upSent = upSent || (out.writes[i].size() == 3 && memcmp(out.writes[i].data(), up, 3) == 0);
+  }
+  CHECK(upSent);
+  for (int i = 0; i < 400; ++i) link.tick(now += 10, true);
+  link.clearResult();
+  CHECK(!link.busy());
+
+  // After a restart nothing is known about the arm: release sends an up all the same.
+  PusherLink fresh;
+  WriteLog out2;
+  fresh.begin("bot", &settings, &out2);
+  fresh.connected(fresh.driverAt(0));
+  fresh.tick(1000, true);
+  CHECK(fresh.release(1010, true) && memcmp(out2.writes.back().data(), up, 3) == 0);
+  fresh.onNotify(&ok, 1);
+  fresh.tick(1020, true);
+  CHECK(fresh.result() == PressResult::OK);
+
+  // A pusher without separate down and up cannot hold: it says so, and nothing is sent.
+  PusherLink micro;
+  WriteLog out3;
+  PusherSecrets secrets;
+  secrets.microbotTokenSet = true;
+  micro.begin("bot", &settings, &out3);
+  micro.setSecrets(secrets);
+  micro.connected(micro.driverAt(2));
+  micro.tick(1000, true);
+  const size_t sent = out3.writes.size();
+  CHECK(micro.ready(true) && !micro.beginHold(1010, true) && !micro.release(1020, true) &&
+        out3.writes.size() == sent);
+}
+
 struct FakeBot : IActuator {
   bool up = false;
   int presses = 0;
@@ -1739,6 +1992,486 @@ static void testReadingNewerThanTick() {
   quiet.run(9000);
   quiet.sim.scaleSilent = true;
   CHECK(quiet.runUntil(State::SCALE_DATA_STALE, 15000));
+}
+
+// -------------------------------------------------------- machine profiles --
+
+// The owner works the machine: lever on, and off again a moment after the cue.
+// Returns true if the cue came. reactionMs: how long the owner takes.
+static bool pullByHand(Rig &r, uint32_t reactionMs, float stopAtG = 0.0f) {
+  r.sim.machineRunning = true;
+  r.sim.machineStartedMs = r.sim.nowMs;
+  bool cue = false;
+  for (uint32_t t = 0; t < 90000; t += 10) {
+    r.step();
+    const LiveStatus st = r.ctl.status(r.sim.nowMs);
+    if (st.targetCue) {
+      cue = true;
+      break;
+    }
+    if (stopAtG > 0.0f && st.weightG >= stopAtG) break;
+    if (r.ctl.state() != State::BREWING && r.ctl.state() != State::STARTING_SHOT) break;
+  }
+  if (cue) r.run(reactionMs);
+  r.sim.machineRunning = false;
+  r.sim.machineStoppedMs = r.sim.nowMs;
+  return cue;
+}
+
+static void testMachineProfiles() {
+  printf("machine profiles: Breville unchanged, generic button, dose button, by hand\n");
+  {
+    // The default is the Breville Dual Boiler's MANUAL button, and saying so
+    // changes nothing: the same shot, press for press.
+    const MachineProfile breville = machineBuiltin(0);
+    CHECK(breville.controllerStarts() && breville.controllerStops() && breville.holdPreinfusion &&
+          strcmp(breville.maker, "Breville") == 0 && strcmp(breville.control, "MANUAL button") == 0);
+    Rig a, b;
+    b.ctl.setMachine(&breville);
+    ShotRecord shot[2];
+    Rig *rigs[2] = {&a, &b};
+    for (int i = 0; i < 2; ++i) {
+      rigs[i]->library.recipes[0].preinfusion = Preinfusion::HOLD;
+      rigs[i]->library.recipes[0].preinfusionHoldMs = 4000;
+      rigs[i]->sim.ackDelayMs = 4150;
+      rigs[i]->toReady();
+      rigs[i]->ctl.requestStart();
+      CHECK(rigs[i]->runUntil(State::SHOT_COMPLETE, 60000));
+      CHECK(rigs[i]->ctl.takeCompletedShot(shot[i]));
+    }
+    CHECK(a.sim.pressTimes == b.sim.pressTimes && a.sim.holds == b.sim.holds && a.trail == b.trail);
+    CHECK(a.sim.presses == 2 && a.sim.holds[0] == 4000 && a.sim.beeps == 0 && b.sim.beeps == 0);
+    CHECK(shot[0].finalWeightG == shot[1].finalWeightG && shot[0].stopWeightG == shot[1].stopWeightG &&
+          shot[0].shotTimeS == shot[1].shotTimeS && shot[0].flags == shot[1].flags &&
+          shot[0].endReason == shot[1].endReason && shot[0].nextStopOffsetG == shot[1].nextStopOffsetG &&
+          shot[0].preinfusionHoldMs == 4000 && shot[1].preinfusionHoldMs == 4000);
+    CHECK(!a.ctl.status(a.sim.nowMs).targetCue && a.ctl.status(a.sim.nowMs).machineStyle == 0);
+  }
+  {
+    // Another one-button machine: the bot starts and stops it, but its button
+    // does not hold pre-infusion, so a recipe's hold is not used on it.
+    const MachineProfile button = machineBuiltin(1);
+    Rig r;
+    r.ctl.setMachine(&button);
+    r.library.recipes[0].preinfusion = Preinfusion::HOLD;
+    r.library.recipes[0].preinfusionHoldMs = 4000;
+    r.toReady();
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+    ShotRecord shot;
+    CHECK(r.ctl.takeCompletedShot(shot));
+    CHECK(r.sim.presses == 2 && r.sim.holds[0] == 0 && shot.preinfusionHoldMs == 0);
+    CHECK((shot.flags & SHOT_FLAG_FINAL_VALID) && (shot.flags & SHOT_FLAG_STOP_CONFIRMED));
+    CHECK_NEAR(shot.finalWeightG, 36.0, 1.5);
+  }
+  {
+    // A dose button: the bot starts the shot, the machine ends it by itself.
+    // The target is a cue and nothing is pressed for it.
+    const MachineProfile dose = machineBuiltin(2);
+    CHECK(dose.controllerStarts() && !dose.controllerStops());
+    Rig r;
+    r.ctl.setMachine(&dose);
+    r.sim.machineTimeoutMs = 29500;
+    r.toReady();
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::BREWING, 20000));
+    CHECK(r.sim.presses == 1);
+    bool cue = false;
+    for (uint32_t t = 0; t < 60000 && r.ctl.state() == State::BREWING; t += 10) {
+      r.step();
+      cue = cue || r.ctl.status(r.sim.nowMs).targetCue;
+    }
+    CHECK(cue && r.ctl.state() == State::SHOT_COMPLETE && r.sim.presses == 1 && r.sim.beeps == 1);
+    ShotRecord shot;
+    CHECK(r.ctl.takeCompletedShot(shot));
+    CHECK(shot.endReason == static_cast<uint8_t>(EndReason::WEIGHT) && (shot.flags & SHOT_FLAG_FINAL_VALID));
+    // STOP on the controller ends the record; it does not press.
+    r.nextShot();
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::BREWING, 20000));
+    r.run(12000);
+    r.ctl.requestStop();
+    r.run(200);
+    CHECK(r.ctl.state() == State::SHOT_COMPLETE && r.sim.presses == 2 && r.sim.machineRunning);
+  }
+  {
+    // By hand, the clock from the tap. No bot is asked for, nothing is pressed.
+    const MachineProfile lever = machineBuiltin(3);
+    CHECK(!lever.controllerStarts() && !lever.controllerStops() && !lever.startsOnFirstDrip());
+    Rig r;
+    r.ctl.setMachine(&lever);
+    r.sim.preinfusionMs = 4000;
+    r.sim.botAvailable = false;            // there is no bot at all
+    r.toReady();
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::BREWING, 10000));
+    CHECK(!r.ctl.actuatorNeeded() && r.sim.presses == 0 && r.sim.tares == 1 && r.sim.timerRunning);
+    const uint32_t tappedAt = r.sim.nowMs;
+    r.run(800);
+    const float offset = r.ctl.status(r.sim.nowMs).stopOffsetG;
+    CHECK(pullByHand(r, 700));
+    CHECK(r.sim.beeps == 1);               // the scale was asked to sound, once
+    CHECK(r.runUntil(State::SHOT_COMPLETE, 15000));
+    ShotRecord shot;
+    CHECK(r.ctl.takeCompletedShot(shot));
+    CHECK(r.sim.presses == 0 && r.sim.botConnects == 0 && r.sim.beeps == 1);
+    CHECK(shot.endReason == static_cast<uint8_t>(EndReason::WEIGHT));
+    CHECK((shot.flags & SHOT_FLAG_FINAL_VALID) && (shot.flags & SHOT_FLAG_LEARNED));
+    // The cue came at target minus offset; what the owner's hand and the drip
+    // added on top is what the offset now learns.
+    CHECK(shot.finalWeightG > 36.0f && shot.finalWeightG < 39.0f && shot.nextStopOffsetG > offset);
+    CHECK(shot.shotTimeS > 20 && shot.shotTimeS < (r.sim.nowMs - tappedAt) / 1000.0f);
+    CHECK(shot.firstDropS > 4.0f);         // tap, then lever, then pre-infusion
+    // The next shot's cue comes earlier, and the cup ends nearer the target.
+    r.nextShot();
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::BREWING, 10000));
+    r.run(800);
+    CHECK(pullByHand(r, 700));
+    CHECK(r.runUntil(State::SHOT_COMPLETE, 15000));
+    ShotRecord second;
+    CHECK(r.ctl.takeCompletedShot(second));
+    CHECK(fabsf(second.finalWeightG - 36.0f) < fabsf(shot.finalWeightG - 36.0f));
+
+    // Stopped short by the owner: a shot like any other, and no lesson for the offset.
+    r.nextShot();
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::BREWING, 10000));
+    CHECK(!pullByHand(r, 0, 15.0f));
+    CHECK(r.runUntil(State::SHOT_COMPLETE, 15000));
+    ShotRecord shortShot;
+    CHECK(r.ctl.takeCompletedShot(shortShot));
+    CHECK(shortShot.endReason == static_cast<uint8_t>(EndReason::MACHINE_STOPPED) &&
+          !(shortShot.flags & SHOT_FLAG_LEARNED) && shortShot.finalWeightG < 20.0f);
+
+    // Tapped, lever never pulled: back to the home screen, not a fault.
+    r.nextShot();
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::BREWING, 10000));
+    CHECK(r.runUntil(State::READY, static_cast<uint32_t>(r.settings.noFlowTimeoutS) * 1000u + 2000));
+    CHECK(!r.ctl.takeCompletedShot(shortShot) && r.sim.presses == 0);
+  }
+  {
+    // By hand, the clock from the first coffee: armed until it lands, and the
+    // time is then the pour without the pre-infusion.
+    MachineProfile lever = machineBuiltin(3);
+    lever.manualStart = static_cast<uint8_t>(ManualStart::FIRST_DRIP);
+    lever.builtin = 0;
+    CHECK(lever.startsOnFirstDrip());
+    Rig r;
+    r.ctl.setMachine(&lever);
+    r.sim.preinfusionMs = 5000;
+    r.toReady();
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::STARTING_SHOT, 10000));
+    r.run(3000);
+    CHECK(r.ctl.state() == State::STARTING_SHOT && r.ctl.status(r.sim.nowMs).awaitingDrip);
+    CHECK(!r.sim.timerRunning && r.sim.presses == 0);
+    const uint32_t leverAt = r.sim.nowMs;
+    CHECK(pullByHand(r, 700));
+    CHECK(r.sim.timerRunning);             // the scale's timer started with the coffee
+    const uint32_t leverOffAt = r.sim.nowMs;
+    CHECK(r.runUntil(State::SHOT_COMPLETE, 15000));
+    ShotRecord shot;
+    CHECK(r.ctl.takeCompletedShot(shot));
+    const float leverS = (leverOffAt - leverAt) / 1000.0f;
+    CHECK(shot.shotTimeS > leverS - 5.0f - 0.8f && shot.shotTimeS < leverS - 5.0f + 2.5f);
+    CHECK(shot.firstDropS < 0.5f && r.sim.presses == 0);
+    CHECK(shot.endReason == static_cast<uint8_t>(EndReason::WEIGHT));
+    // Armed, then cancelled.
+    r.nextShot();
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::STARTING_SHOT, 10000));
+    r.ctl.requestStop();
+    r.run(100);
+    CHECK(r.ctl.state() == State::READY);
+  }
+
+  {
+    // Separate start and stop buttons: the brew bot starts, the stop bot
+    // stops, and the shot does not begin until both are there.
+    const MachineProfile two = machineBuiltin(4);
+    CHECK(two.controllerStarts() && two.controllerStops() && two.separateStop() && !two.holdsForShot());
+    Rig r;
+    StopPort stop(r.sim);
+    stop.ctl = &r.ctl;
+    r.ctl.setMachine(&two);
+    r.ctl.setStopActuator(&stop);
+    r.sim.startOnlyButton = true;
+    r.toReady();
+    r.ctl.requestStart();
+    bool done = false;
+    for (uint32_t t = 0; t < 60000 && !done; t += 10) {
+      stop.step();
+      r.step();
+      done = r.ctl.state() == State::SHOT_COMPLETE;
+    }
+    CHECK(done && r.sim.presses == 1 && r.sim.stopPresses == 1 && !r.sim.machineRunning);
+    ShotRecord shot;
+    CHECK(r.ctl.takeCompletedShot(shot));
+    CHECK((shot.flags & SHOT_FLAG_FINAL_VALID) && (shot.flags & SHOT_FLAG_STOP_CONFIRMED) &&
+          (shot.flags & SHOT_FLAG_LEARNED));
+    CHECK_NEAR(shot.finalWeightG, 36.0, 1.5);
+    CHECK(shot.endReason == static_cast<uint8_t>(EndReason::WEIGHT) ||
+          shot.endReason == static_cast<uint8_t>(EndReason::WEIGHT_PREDICTED));
+    for (uint32_t t = 0; t < 12000; t += 10) { stop.step(); r.step(); }
+    CHECK(!r.ctl.stopActuatorNeeded() && !stop.connected());   // asleep again after the shot
+
+    // No stop bot within reach: the shot is not started at all.
+    Rig alone;
+    StopPort absent(alone.sim);   // never asked for, so never there
+    alone.ctl.setMachine(&two);
+    alone.ctl.setStopActuator(&absent);
+    alone.sim.startOnlyButton = true;
+    alone.toReady();
+    alone.ctl.requestStart();
+    alone.run(45000);                   // the controller waits up to 40 s for a bot
+    CHECK(alone.sim.presses == 0 && alone.ctl.state() == State::SWITCHBOT_DISCONNECTED);
+    // On the Breville the stop bot is not part of the machine, set or not.
+    Rig breville;
+    breville.ctl.setStopActuator(&absent);
+    breville.toReady();
+    breville.ctl.requestStart();
+    CHECK(breville.runUntil(State::SHOT_COMPLETE, 60000) && breville.sim.presses == 2 &&
+          !breville.ctl.stopActuatorNeeded());
+  }
+  {
+    // A button that brews while it is held: down for the shot, up to stop.
+    const MachineProfile held = machineBuiltin(5);
+    CHECK(held.controllerStarts() && held.controllerStops() && held.holdsForShot() && !held.separateStop());
+    Rig r;
+    r.ctl.setMachine(&held);
+    r.toReady();
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::BREWING, 20000));
+    CHECK(r.sim.holdsBegun == 1 && r.sim.armDown && r.sim.machineRunning && r.sim.presses == 0);
+    r.run(10000);
+    CHECK(r.ctl.state() == State::BREWING && r.sim.armDown && r.sim.releases == 0);   // still held
+    CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+    CHECK(r.sim.releases == 1 && !r.sim.armDown && !r.sim.machineRunning && r.sim.presses == 0);
+    ShotRecord shot;
+    CHECK(r.ctl.takeCompletedShot(shot));
+    CHECK((shot.flags & SHOT_FLAG_FINAL_VALID) && (shot.flags & SHOT_FLAG_STOP_CONFIRMED) &&
+          (shot.flags & SHOT_FLAG_LEARNED));
+    CHECK_NEAR(shot.finalWeightG, 36.0, 1.5);
+    CHECK(shot.shotTimeS > 20 && shot.shotTimeS < 35);
+    // STOP while it is held: let go at once.
+    r.nextShot();
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::BREWING, 20000));
+    r.run(9000);
+    r.ctl.requestStop();
+    r.run(300);
+    CHECK(r.sim.releases == 2 && !r.sim.armDown && !r.sim.machineRunning);
+    CHECK(r.runUntil(State::SHOT_COMPLETE, 20000));
+    // The bot goes quiet while holding: the stop sequence takes over and
+    // lets go as soon as it can be reached; until then the owner is told.
+    r.nextShot();
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::BREWING, 20000));
+    r.run(8000);
+    r.sim.pressResult = PressResult::UNCONFIRMED;    // the link's word for "lost while holding"
+    r.run(100);
+    CHECK(r.ctl.state() != State::BREWING && r.sim.releases == 3 && !r.sim.machineRunning);
+  }
+
+  // What is stored and sent.
+  MachineProfile mine = machineBuiltin(0);
+  CHECK(!machineCanBeShared(mine));        // came with the firmware
+  strcpy(mine.control, "2 CUP button");
+  mine.style = static_cast<uint8_t>(MachineStyle::START_ONLY);
+  mine.builtin = 0;
+  sanitizeMachine(mine);
+  CHECK(mine.holdPreinfusion == 0);        // only a button the bot holds can be held
+  CHECK(machineCanBeShared(mine) && machineHash(mine) != machineHash(machineBuiltin(0)));
+  char body[SHARE_BODY_MAX];
+  CHECK(buildMachineRecord(mine, 7, 0, body, sizeof(body)) != 0);
+  CHECK(strstr(body, "\"t\":\"machine\",\"v\":1") && strstr(body, "\"maker\":\"Breville\"") &&
+        strstr(body, "\"control\":\"2 CUP button\"") && strstr(body, "\"style\":\"start_button\"") &&
+        strstr(body, "\"hold_preinfusion\":0") && !strstr(body, "manual_start"));
+  markMachineQueued(mine, 7);
+  CHECK(!machineCanBeShared(mine));        // this version was sent
+  // What the library says about it reaches it the way it does a coffee or a grinder.
+  CHECK(!applyReviewTo(&mine, 6, ShareState::IN_REVIEW, "", ""));      // about an older record
+  CHECK(applyReviewTo(&mine, 7, ShareState::IN_REVIEW, "", ""));
+  CHECK(mine.shareState == static_cast<uint8_t>(ShareState::IN_REVIEW));
+  CHECK(applyReviewTo(&mine, 7, ShareState::DECLINED, "The 2 CUP button is volumetric", ""));
+  CHECK(strcmp(mine.reviewNote, "The 2 CUP button is volumetric") == 0 && !machineCanBeShared(mine));
+  CHECK(applyReviewTo(&mine, 7, ShareState::PUBLISHED, "", "breville-dual-boiler-2-cup-button"));
+  CHECK(!applyReviewTo(&mine, 7, ShareState::PUBLISHED, "", "breville-dual-boiler-2-cup-button"));  // no news
+  CHECK(strcmp(mine.libraryId, "breville-dual-boiler-2-cup-button") == 0 && mine.reviewNote[0] == '\0');
+  CHECK(machineShareState(mine, 8) == ShareState::PUBLISHED && !machineCanBeShared(mine));
+  mine.selfStopS = 30;
+  CHECK(machineCanBeShared(mine));         // changed since: it can be sent again
+  markMachineQueued(mine, 9);
+  CHECK(machineShareState(mine, 9) == ShareState::QUEUED && machineShareState(mine, 10) == ShareState::SENT);
+  MachineProfile picked = machineBuiltin(3);
+  picked.builtin = 0;
+  markMachineFromLibrary(picked, "la-pavoni-europiccola-lever");
+  CHECK(!machineCanBeShared(picked) && machineShareState(picked, 0) == ShareState::PUBLISHED);
+  CHECK(machineStyleFromName("manual") == 2 && machineStyleFromName("nonsense") == 0 &&
+        machineStyleFromName("start_stop_buttons") == 3 && machineStyleFromName("hold_button") == 4);
+  mine.style = 9;
+  sanitizeMachine(mine);
+  CHECK(mine.style == 0 && strcmp(mine.control, "MANUAL button") == 0);  // unusable: the default
+
+  // A shared shot says what it was made on, and its ratio as brewed.
+  ShotRecord shot;
+  shot.id = 61;
+  shot.doseG = 18.0f;
+  shot.targetWeightG = 36.0f;
+  shot.finalWeightG = 37.8f;
+  shot.shotTimeS = 29.0f;
+  Grinder grinder;
+  MachineProfile lever = machineBuiltin(3);
+  lever.manualStart = static_cast<uint8_t>(ManualStart::FIRST_DRIP);
+  CHECK(buildShotRecord(shot, nullptr, grinder, false, body, sizeof(body), &lever) != 0);
+  CHECK(strstr(body, "\"machine\":{\"style\":\"manual\",\"clock_from\":\"first_drip\"") &&
+        strstr(body, "\"yield_g\":37.8,\"ratio\":2.1"));
+  CHECK(buildShotRecord(shot, nullptr, grinder, false, body, sizeof(body)) != 0);
+  CHECK(!strstr(body, "\"machine\"") && strstr(body, "\"ratio\":2.1"));
+}
+
+static void testCupAutoTareScale() {
+  printf("cup on a scale that tares itself (Lunar auto-tare)\n");
+  // Measured on a real Lunar: the cup's weight shows for a second or two,
+  // then the scale is back at 0; lifting it shows the negative weight
+  // briefly, then 0 again. Both brief (never still) and longer transients.
+  for (uint32_t showMs : {300u, 1500u}) {
+    Rig r;
+    r.settings.requireCup = true;
+    r.toReady();
+    r.run(1000);
+    CHECK(!r.ctl.status(r.sim.nowMs).cupPresent);
+    r.sim.trueWeightG += 233.7;                 // cup on...
+    r.run(showMs);
+    r.sim.tareOffsetG = r.sim.trueWeightG;      // ...and the scale zeroes itself
+    r.run(2000);
+    CHECK(r.ctl.status(r.sim.nowMs).cupPresent);
+    r.run(8000);
+    r.sim.trueWeightG -= 233.7;                 // cup off...
+    r.run(showMs);
+    r.sim.tareOffsetG = r.sim.trueWeightG;      // ...and it zeroes again
+    r.run(2000);
+    CHECK(!r.ctl.status(r.sim.nowMs).cupPresent);
+    r.run(8000);
+    CHECK(!r.ctl.status(r.sim.nowMs).cupPresent);  // the zeroing was not a cup
+    r.sim.trueWeightG += 233.7;                 // and back on
+    r.run(showMs);
+    r.sim.tareOffsetG = r.sim.trueWeightG;
+    r.run(2000);
+    CHECK(r.ctl.status(r.sim.nowMs).cupPresent);
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+  }
+}
+
+// The first real shot (19 Oct 2026): on the result screen the full cup was
+// lifted, put down again for a moment and lifted (the reading went back to
+// -268 g, not to 0), and that was taken for a cup going on with the scale
+// zeroing itself: the scale was tared empty and a cup believed on it, so the
+// next Start would not have asked for one. A scale that zeroes itself comes
+// back to 0; a jump that comes back anywhere else is not a cup.
+static void testCupPutBackBriefly() {
+  printf("cup lifted, put back for a moment and lifted again: no cup\n");
+  for (uint32_t backMs : {400u, 900u, 1500u}) {
+    Rig r;
+    r.settings.requireCup = true;
+    r.toReady();
+    r.run(1000);
+    const double empty = r.sim.trueWeightG;
+    r.sim.trueWeightG += 233.7;
+    r.run(3000);
+    CHECK(r.ctl.status(r.sim.nowMs).cupPresent);
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+    r.run(3000);
+    const double full = r.sim.trueWeightG;
+    r.sim.trueWeightG = empty;                  // lifted
+    r.run(3000);
+    CHECK(!r.ctl.status(r.sim.nowMs).cupPresent);
+    r.sim.trueWeightG = full;                   // down again for a moment
+    r.run(backMs);
+    r.sim.trueWeightG = empty;                  // and lifted
+    r.run(4000);
+    CHECK(!r.ctl.status(r.sim.nowMs).cupPresent);
+    CHECK(r.ctl.state() == State::SHOT_COMPLETE);
+    r.run(10000);
+    CHECK(!r.ctl.status(r.sim.nowMs).cupPresent);
+  }
+}
+
+static void testCupRemembered() {
+  printf("cup remembered across a controller restart\n");
+  // A shot, then a fresh cup put on and tared. The scale's timer now holds
+  // the shot's time.
+  Rig a;
+  a.settings.requireCup = true;
+  a.toReady();
+  a.run(1000);
+  a.sim.trueWeightG += 62.0;
+  a.run(3000);
+  a.ctl.requestStart();
+  CHECK(a.runUntil(State::SHOT_COMPLETE, 60000));
+  a.ctl.acknowledge();
+  a.run(500);
+  a.sim.trueWeightG -= 62.0 + 36.0;
+  a.run(2000);
+  a.sim.trueWeightG += 70.0;                    // fresh cup
+  a.run(3000);
+  CHECK(a.ctl.status(a.sim.nowMs).cupPresent);
+  const CupMemory kept = a.ctl.cupMemory();
+  CHECK(kept.present && kept.scaleTimerMs > 0);
+  CHECK_NEAR(kept.levelG, 0.0, 0.2);            // tared
+
+  // The controller restarts; the scale stays on with the cup, as it was.
+  Rig b;
+  b.settings.requireCup = true;
+  b.sim.trueWeightG = a.sim.trueWeightG;
+  b.sim.tareOffsetG = a.sim.tareOffsetG;
+  b.sim.timerHeldMs = a.sim.timerMs();
+  b.ctl.restoreCupMemory(kept);
+  b.toReady();
+  b.run(2000);
+  CHECK(b.ctl.status(b.sim.nowMs).cupPresent);
+  CHECK(b.sim.tares == 0);                      // nothing new: not tared again
+  b.ctl.requestStart();
+  CHECK(b.runUntil(State::SHOT_COMPLETE, 60000));
+
+  // The scale was switched off and on meanwhile: it zeroed itself and its
+  // timer is back at 0. The same 0 g could be an empty scale: not believed.
+  Rig c;
+  c.settings.requireCup = true;
+  c.sim.trueWeightG = a.sim.trueWeightG;
+  c.sim.tareOffsetG = a.sim.trueWeightG;        // zeroed at power-up
+  c.sim.timerHeldMs = 0;
+  c.ctl.restoreCupMemory(kept);
+  c.toReady();
+  c.run(2000);
+  CHECK(!c.ctl.status(c.sim.nowMs).cupPresent);
+
+  // The cup was taken off while the controller was off: the reading differs.
+  Rig d;
+  d.settings.requireCup = true;
+  d.sim.trueWeightG = a.sim.trueWeightG - 70.0;
+  d.sim.tareOffsetG = a.sim.tareOffsetG;
+  d.sim.timerHeldMs = a.sim.timerMs();
+  d.ctl.restoreCupMemory(kept);
+  d.toReady();
+  d.run(2000);
+  CHECK(!d.ctl.status(d.sim.nowMs).cupPresent);
+
+  // A used cup is not remembered as a fresh one.
+  Rig e;
+  e.settings.requireCup = true;
+  e.toReady();
+  e.run(1000);
+  e.sim.trueWeightG += 62.0;
+  e.run(3000);
+  e.ctl.requestStart();
+  CHECK(e.runUntil(State::SHOT_COMPLETE, 60000));
+  e.run(2000);
+  CHECK(!e.ctl.cupMemory().present);
 }
 
 static void testShotDataSet() {
@@ -2161,6 +2894,81 @@ static void testStopPressMissed() {
   CHECK_NEAR(r.library.presets[0].stopOffsetG, 1.5, 0.0001);
 }
 
+// The first real shots (19 Oct 2026): the Breville went on at full flow for
+// about 1.5 s after the stop, 3.6-3.8 g needed against the 1.5 g seed. At
+// 30% a step the stop point took 4-5 shots to get there, each a gram or
+// more over. With the warm-up the first shots take most of the error.
+static void testStopOffsetWarmUp() {
+  printf("stop offset warm-up: a new recipe gets close in two or three shots\n");
+  Rig r;
+  r.sim.flowGS = 1.7;
+  r.sim.stopDelayMs = 1500;
+  r.sim.dripGS = 0.6;
+  r.sim.dripMs = 800;
+  r.toReady();
+  float errors[6] = {};
+  uint8_t used[6] = {};
+  for (int k = 0; k < 6; ++k) {
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::SHOT_COMPLETE, 90000));
+    ShotRecord shot;
+    CHECK(r.ctl.takeCompletedShot(shot));
+    CHECK(shot.flags & SHOT_FLAG_LEARNED);
+    errors[k] = shot.finalWeightG - shot.targetWeightG;
+    used[k] = shot.alphaUsed;
+    r.nextShot();
+  }
+  printf("  over target: %.2f %.2f %.2f %.2f %.2f %.2f g\n", errors[0], errors[1], errors[2],
+         errors[3], errors[4], errors[5]);
+  CHECK(errors[0] > 1.0f);                    // the seed is well short
+  CHECK(fabsf(errors[2]) < 0.6f);             // close by the third shot
+  CHECK(fabsf(errors[5]) < 0.4f);
+  CHECK(used[0] == 70 && used[3] == 70 && used[4] == 30);  // four warm-up steps, then the usual
+  CHECK(r.library.presets[0].learnedShots == 6);
+}
+
+static void testSlowStopIsNotPressedAgain() {
+  printf("a stop that takes the machine 1.7 s is not pressed again\n");
+  // Measured on the Breville with an empty basket: 7-8 g/s goes on for about
+  // 1.7 s after the stop press, then tails off. The old rule pressed again
+  // 2.5 s after the stop, on the tail, which starts the pump again.
+  Rig r;
+  r.sim.flowGS = 7.5;
+  r.sim.stopDelayMs = 1700;
+  r.sim.dripGS = 3.0;
+  r.sim.dripMs = 1500;
+  {
+    // Water at 7.5 g/s: about 15 g over, more than any coffee shot. Not pressed
+    // again, and not learned from (it would teach a coffee recipe nonsense).
+    Rig w;
+    w.sim.flowGS = 7.5;
+    w.sim.stopDelayMs = 1700;
+    w.sim.dripGS = 3.0;
+    w.sim.dripMs = 1500;
+    w.toReady();
+    w.ctl.requestStart();
+    CHECK(w.runUntil(State::SHOT_COMPLETE, 60000));
+    CHECK(w.sim.presses == 2 && !w.sim.machineRunning);
+    ShotRecord water;
+    CHECK(w.ctl.takeCompletedShot(water));
+    CHECK(!(water.flags & SHOT_FLAG_STOP_RETRIED) && !(water.flags & SHOT_FLAG_LEARNED));
+  }
+  // Coffee at 2.5 g/s with the same slow stop: about 5 g over, learned from.
+  r.sim.flowGS = 2.5;
+  r.sim.dripGS = 1.0;
+  r.toReady();
+  r.ctl.requestStart();
+  CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+  CHECK(r.sim.presses == 2);                  // start and stop, nothing more
+  CHECK(!r.sim.machineRunning);
+  ShotRecord shot;
+  CHECK(r.ctl.takeCompletedShot(shot));
+  CHECK(!(shot.flags & SHOT_FLAG_STOP_RETRIED));
+  CHECK(shot.flags & SHOT_FLAG_LEARNED);      // and the overshoot is learned from
+  CHECK(r.library.presets[0].stopOffsetG > 2.0f);
+  CHECK(shot.finalWeightG - shot.stopWeightG > 4.0f);
+}
+
 static void testStopNeverWorks() {
   printf("stop never takes effect\n");
   Rig r;
@@ -2246,7 +3054,7 @@ static void testPreconditions() {
   r.toReady();
   r.ctl.requestStart();
   CHECK(r.runUntil(State::READY_TO_BREW, 5000));   // tare does not wait for the Bot
-  CHECK(r.runUntil(State::SWITCHBOT_DISCONNECTED, 20000));
+  CHECK(r.runUntil(State::SWITCHBOT_DISCONNECTED, 45000));  // waits up to 40 s
   CHECK(r.sim.presses == 0);
   CHECK(!r.ctl.actuatorNeeded());              // gives the link up again
   r.ctl.acknowledge();
@@ -2359,7 +3167,7 @@ static void testAdaptiveLearningFactor() {
   CHECK(fixed.runUntil(State::SHOT_COMPLETE, 60000));
   ShotRecord shot;
   CHECK(fixed.ctl.takeCompletedShot(shot));
-  CHECK(shot.alphaUsed == 30 && shot.alphaNext == 30);
+  CHECK(shot.alphaUsed == 70 && shot.alphaNext == 30);  // a warm-up step, then the usual
   CHECK(fixed.library.presets[0].learnedAlpha == 0);
 
   // ...adaptive mode starts from the baseline and records what it uses.
@@ -2372,7 +3180,8 @@ static void testAdaptiveLearningFactor() {
     a.ctl.requestStart();
     CHECK(a.runUntil(State::SHOT_COMPLETE, 60000));
     CHECK(a.ctl.takeCompletedShot(shot));
-    if (k == 0) CHECK(shot.alphaUsed == 10);
+    if (k == 0) CHECK(shot.alphaUsed == 70 && shot.alphaNext == 10);  // warm-up
+    if (k == 4) CHECK(shot.alphaUsed == 10);
     a.nextShot();
   }
   CHECK(validAlpha(a.library.presets[0].learnedAlpha));
@@ -3173,8 +3982,10 @@ static void testLibrary() {
   setGrinder(gl, g, false);                                   // other burrs
   CHECK(gl.grinder.calibration == 2 && strcmp(gl.grinder.burrs, "64 mm SSP") == 0);
   gl.presets[0].grindUm = 246;
-  g = Grinder{};
-  g.modelId = 2;                                              // another grinder
+  g = Grinder{};                                              // another grinder, typed in
+  copyText(g.model, "Stepped grinder", GRINDER_NAME_LEN);
+  copyText(g.unit, "steps", GRINDER_UNIT_LEN);
+  g.umPerUnit = 5.0f;
   setGrinder(gl, g, false);
   CHECK(gl.presets[0].grindUm == 0);                          // 246 um is not 246 steps
   CHECK(gl.grinder.calibration == 3 && strcmp(gl.grinder.unit, "steps") == 0);
@@ -3636,28 +4447,213 @@ static void testCommunity() {
   d.spreadUm = 9.0f;
   CHECK(communityStart(d, fit, e64).range == 9);             // contributors disagree: wider
   d.spreadUm = 3.0f;
-  // A grinder read in steps of 5 microns.
-  Grinder lucca;
-  lucca.modelId = 2;
-  lucca.umPerUnit = 5.0f;
+  // A grinder read in steps of 5 microns (not a listed model).
+  Grinder stepped;
+  stepped.umPerUnit = 5.0f;
   CommunityFit steps;
   steps.known = true;
   steps.scale = 0.2f;
   steps.offset = 2.0f;
   steps.coffeesInCommon = 2;
-  s = communityStart(d, steps, lucca);
+  s = communityStart(d, steps, stepped);
   CHECK(s.setting == 49 && s.range == 1);                    // 0.2 x 236 + 2
   d.modelCount = 0;
-  CHECK(communityStart(d, CommunityFit{}, lucca).setting == 47);   // 236 / 5, unfitted
+  CHECK(communityStart(d, CommunityFit{}, stepped).setting == 47);   // 236 / 5, unfitted
   // An unmarked dial with no fit and nobody on the same model: no suggestion.
   Grinder dial;
   dial.umPerUnit = 0.0f;
   CHECK(communityStart(d, CommunityFit{}, dial).basis == StartBasis::NONE);
   // A fit that gives nonsense is not passed on.
   steps.offset = -500.0f;
-  CHECK(communityStart(d, steps, lucca).setting == 0);
+  CHECK(communityStart(d, steps, stepped).setting == 0);
+
+  // A library with no grinder marked in microns near this coffee: its fineness is on a
+  // relative axis, and means something only to a fit on that same axis.
+  {
+    CommunityDialin rel;
+    rel.found = true;
+    rel.contributors = 3;
+    rel.finenessUm = 236.0f;
+    rel.spreadUm = 3.0f;
+    rel.axis = 4711;
+    rel.ageDays = 10;
+    AgeModel rate;
+    rate.known = true;
+    rate.umPerDay = -0.8f;
+    CommunityFit onAxis;
+    onAxis.known = true;
+    onAxis.scale = 0.2f;
+    onAxis.offset = 2.0f;
+    onAxis.coffeesInCommon = 1;
+    onAxis.axis = 4711;
+    CommunityStart r = communityStart(rel, onAxis, dial, rate, 31);
+    CHECK(r.basis == StartBasis::FITTED && r.setting == 49);   // 0.2 x 236 + 2
+    CHECK(r.ageShift == 0);                                    // the rate is in microns: not applied here
+    // The same fit on another axis, or on microns, is not used...
+    CommunityFit other = onAxis;
+    other.axis = 99;
+    CHECK(communityStart(rel, other, dial).basis == StartBasis::NONE);
+    other.axis = 0;
+    CHECK(communityStart(rel, other, dial).basis == StartBasis::NONE);
+    // ...and a number that is not microns is never read as microns.
+    CHECK(communityStart(rel, CommunityFit{}, stepped).basis == StartBasis::NONE);
+    // Owners of the same model still help, on any axis.
+    rel.modelMedian = 41.0f;
+    rel.modelCount = 2;
+    CommunityStart m = communityStart(rel, other, dial);
+    CHECK(m.basis == StartBasis::SAME_MODEL && m.setting == 41);
+    // A coffee nothing could place (no fineness) but with a same-model median.
+    CommunityDialin unplaced;
+    unplaced.found = true;
+    unplaced.contributors = 2;
+    unplaced.modelMedian = 17.0f;
+    unplaced.modelCount = 2;
+    CHECK(communityStart(unplaced, CommunityFit{}, dial).basis == StartBasis::SAME_MODEL);
+    CHECK(communityStart(unplaced, onAxis, dial).basis == StartBasis::SAME_MODEL);
+    // A fit on a relative axis does not turn a micron shift into dial units.
+    CHECK(grinderUnitsPerUm(onAxis, dial) == 0.0f && grinderUnitsPerUm(onAxis, stepped) == 0.2f);
+  }
+
+  // How wide a same-model suggestion is: measured where the library can say, a sixth of the
+  // setting for an unmarked dial it cannot, and never the old 1-unit claim.
+  {
+    CommunityDialin sm;
+    sm.found = true;
+    sm.contributors = 3;
+    sm.modelMedian = 30.0f;
+    sm.modelCount = 3;
+    Grinder niche;
+    niche.umPerUnit = 0.0f;
+    CommunityStart w = communityStart(sm, CommunityFit{}, niche);
+    CHECK(w.basis == StartBasis::SAME_MODEL && w.setting == 30 && w.range == 5);   // 30 / 6
+    sm.modelSpread = 2.0f;
+    CHECK(communityStart(sm, CommunityFit{}, niche).range == 3);                   // 1.5 x 2
+    sm.modelSpread = 0.2f;
+    CHECK(communityStart(sm, CommunityFit{}, niche).range == 1);                   // never under one unit
+    sm.modelSpread = 4.0f;
+    CHECK(communityStart(sm, CommunityFit{}, e64).range == 6);                     // measured, in its unit
+    sm.modelSpread = 0.0f;
+    CHECK(communityStart(sm, CommunityFit{}, e64).range == 15);                    // as before
+  }
+
+  // Flow. Their dial-ins were settled at 1.1 g/s; this recipe aims for a faster 1.4.
+  {
+    CommunityDialin fl;
+    fl.found = true;
+    fl.contributors = 3;
+    fl.finenessUm = 240.0f;
+    fl.spreadUm = 3.0f;
+    fl.flowGs = 1.1f;
+    fl.flowBasis = 0;
+    fl.kappa = 70.0f;
+    CommunityStart same = communityStart(fl, CommunityFit{}, e64, AgeModel{}, -1, 1.1f, 0);
+    CHECK(same.setting == 240 && same.flowShift == 0);                  // the same flow: no move
+    CommunityStart fast = communityStart(fl, CommunityFit{}, e64, AgeModel{}, -1, 1.4f, 0);
+    CHECK(fast.setting == 257 && fast.flowShift == 17);                 // 70 x ln(1.4 / 1.1), coarser
+    CommunityStart slow = communityStart(fl, CommunityFit{}, e64, AgeModel{}, -1, 0.9f, 0);
+    CHECK(slow.flowShift == -14 && slow.setting == 226);
+    CHECK(communityStart(fl, CommunityFit{}, e64, AgeModel{}, -1, 1.4f, 1).flowShift == 0);   // other basis
+    CHECK(communityStart(fl, CommunityFit{}, e64, AgeModel{}, -1, 0.0f, 0).flowShift == 0);   // no target
+    CommunityDialin noKappa = fl;
+    noKappa.kappa = 0.0f;
+    CHECK(communityStart(noKappa, CommunityFit{}, e64, AgeModel{}, -1, 1.4f, 0).flowShift == 0);
+    CHECK(communityStart(fl, CommunityFit{}, e64, AgeModel{}, -1, 9.0f, 0).flowShift == 35);  // capped: ln 1.65
+    // In steps of 5 microns, through the grinder's own fit: 17 microns is 3 steps.
+    CommunityFit lf;
+    lf.known = true;
+    lf.scale = 0.2f;
+    lf.offset = 2.0f;
+    lf.coffeesInCommon = 2;
+    Grinder st;
+    st.umPerUnit = 5.0f;
+    CommunityStart sn = communityStart(fl, lf, st, AgeModel{}, -1, 1.4f, 0);
+    CHECK(sn.setting == 53 && sn.flowShift == 3);                       // 0.2 x 240 + 2 = 50, plus 3.4
+    // On a relative axis the shift is in that axis' steps, through the fit on the same axis.
+    fl.axis = 4711;
+    lf.axis = 4711;
+    fl.kappa = 20.0f;                                                   // units of the axis, not microns
+    CHECK(communityStart(fl, lf, st, AgeModel{}, -1, 1.4f, 0).flowShift == 1);
+    CHECK(communityStart(fl, CommunityFit{}, st, AgeModel{}, -1, 1.4f, 0).basis == StartBasis::NONE);
+  }
 
   CHECK(sameRecipeClass(18.0f, 36.0f, 18.5f, 37.5f) && !sameRecipeClass(18.0f, 36.0f, 18.0f, 27.0f));
+
+  // A recipe the library does not have exactly: the nearest one within reach.
+  CHECK(recipeDistance(18.0f, 36.0f, 18.5f, 37.5f) == 0.0f);                    // the same class
+  CHECK(recipeDistance(18.0f, 40.0f, 18.0f, 36.0f) > 0.0f);                     // 40 g out from 36 g out: near
+  CHECK_NEAR(recipeDistance(18.0f, 40.0f, 18.0f, 36.0f), 0.351, 0.01);         // ln(40/36) / 0.3
+  CHECK_NEAR(recipeDistance(19.0f, 36.0f, 18.0f, 36.0f), 0.5, 0.001);           // 1 g of 2 g
+  CHECK(recipeDistance(18.0f, 54.0f, 18.0f, 36.0f) < 0.0f);                     // a 1:3 against a 1:2: too far
+  CHECK(recipeDistance(21.0f, 36.0f, 18.0f, 36.0f) < 0.0f);                     // 3 g more dose
+  CHECK(recipeDistance(0.0f, 36.0f, 18.0f, 36.0f) < 0.0f);                      // not set
+  {
+    CommunityDialin exact, near;
+    exact.found = near.found = true;
+    exact.contributors = near.contributors = 3;
+    exact.finenessUm = near.finenessUm = 236.0f;
+    exact.spreadUm = near.spreadUm = 3.0f;
+    near.recipeDistance = 1.0f;
+    CommunityFit f;
+    f.known = true;
+    f.scale = 1.0f;
+    f.offset = -4.0f;
+    f.coffeesInCommon = 3;
+    Grinder g;
+    g.umPerUnit = 1.0f;
+    CommunityStart a = communityStart(exact, f, g), b = communityStart(near, f, g);
+    CHECK(a.setting == 232 && a.range == 5 && !a.nearRecipe);
+    CHECK(b.setting == 232 && b.range == 12 && b.nearRecipe);                    // 5 + 3% of 232
+  }
+
+  // Bean age. Dates first: the bag in the history was 221 days off roast on 10 Oct 2026.
+  CHECK(daysFromDate(19700101) == 0 && daysFromDate(20000229) == 11016 && daysFromDate(20261010) == 20736);
+  CHECK(beanAgeDays(20260303, 1791672710) == 221);
+  CHECK(beanAgeDays(20261010, 1791672710) == 0 && beanAgeDays(20261011, 1791672710) == -1);   // not roasted yet
+  CHECK(beanAgeDays(0, 1791672710) == -1 && beanAgeDays(20260303, 0) == -1);
+  AgeModel none, aging;
+  aging.known = true;
+  aging.umPerDay = -0.8f;                                    // finer as it ages
+  CHECK(ageShiftUm(none, 10, 30) == 0.0f);                   // no rate measured: no allowance
+  CHECK_NEAR(ageShiftUm(aging, 10, 30), -16.0, 0.001);
+  CHECK_NEAR(ageShiftUm(aging, 30, 10), 16.0, 0.001);        // a younger bag: coarser
+  CHECK(ageShiftUm(aging, -1, 30) == 0.0f && ageShiftUm(aging, 10, -1) == 0.0f);
+  CHECK_NEAR(ageShiftUm(aging, 10, 400), -60.0, 0.001);      // not stretched past 90 days, nor past 60 um
+  CHECK_NEAR(ageShiftUm(aging, 100, 200), 0.0, 0.001);       // both beyond what was measured
+  // A suggestion for a bag three weeks older than the contributors' were.
+  CommunityDialin aged;
+  aged.found = true;
+  aged.contributors = 3;
+  aged.finenessUm = 240.0f;
+  aged.spreadUm = 3.0f;
+  aged.ageDays = 10;
+  CommunityFit mine;
+  mine.known = true;
+  mine.scale = 1.0f;
+  mine.offset = -4.0f;
+  mine.coffeesInCommon = 2;
+  CommunityStart plain = communityStart(aged, mine, e64);
+  CHECK(plain.setting == 236 && plain.ageShift == 0);        // age not given: as before
+  CommunityStart older = communityStart(aged, mine, e64, aging, 31);
+  CHECK(older.setting == 219 && older.ageShift == -17);      // 236 - 0.8 x 21
+  CHECK(communityStart(aged, mine, e64, aging, 10).ageShift == 0);
+  CHECK(communityStart(aged, mine, e64, none, 31).setting == 236);    // no rate: no allowance
+  aged.ageDays = -1;
+  CHECK(communityStart(aged, mine, e64, aging, 31).setting == 236);   // their age unknown: none either
+  aged.ageDays = 10;
+  // On a grinder read in steps of 5 microns the same 16.8 microns is 3 steps.
+  CommunityFit stepFit;
+  stepFit.known = true;
+  stepFit.scale = 0.2f;
+  stepFit.offset = 2.0f;
+  stepFit.coffeesInCommon = 2;
+  Grinder stepper;
+  stepper.umPerUnit = 5.0f;
+  CommunityStart inSteps = communityStart(aged, stepFit, stepper, aging, 31);
+  CHECK(inSteps.setting == 47 && inSteps.ageShift == -3);    // 0.2 x 240 + 2 = 50, less 3.36
+  // An unmarked dial with no fit: nothing to convert microns with, so no allowance.
+  Grinder unmarked;
+  unmarked.umPerUnit = 0.0f;
+  CHECK(grinderUnitsPerUm(CommunityFit{}, unmarked) == 0.0f);
   char file[80];
   CHECK(libraryIdToFile("portrait/idjwi-island", file, sizeof(file)) &&
         strcmp(file, "portrait__idjwi-island") == 0);
@@ -3876,6 +4872,1054 @@ static void testBloom() {
   CHECK(recipe.bloomPauseMs == 0 && recipe.preinfusion == Preinfusion::MACHINE);
 }
 
+// ---------------------------------------------------------------------------
+// Ratings-driven target, frozen beans, similar coffee (added with docs/COMMUNITY.md 8e, 8f, 8g)
+
+static uint32_t epochOfDate(uint32_t yyyymmdd) {
+  return static_cast<uint32_t>(daysFromDate(yyyymmdd)) * 86400u + 43200u;  // midday
+}
+
+static GrindShot ratedShot(float timeS, uint16_t um, uint8_t rating, uint8_t taste = 0) {
+  GrindShot s;
+  s.timeS = timeS;
+  s.grindUm = um;
+  s.rating = rating;
+  s.taste = taste;
+  return s;
+}
+
+static void testRatedTarget() {
+  printf("grind advice: ratings refine the time advice, inside its tolerance\n");
+  GrindConfig cfg;  // +-2 s tolerance, window 3, max step 20 um, 3 um/s guess
+  const float target = 28.0f;
+
+  // The base is untouched: with ratings off, or with too few liked shots, the answer is exactly
+  // the old advice, field for field.
+  {
+    GrindShot shots[] = {ratedShot(29.5f, 250, 5), ratedShot(29.3f, 250, 4), ratedShot(29.1f, 250, 2)};
+    const GrindAdvice plain = adviseGrind(shots, 3, 250, target, cfg);
+    const GrindAdvice few = adviseGrindRated(shots, 3, 250, target, cfg, true);
+    CHECK(few.rated == RatedState::TOO_FEW && few.ratedShots == 2 && few.aimTimeS == 0.0f);
+    CHECK(few.action == plain.action && few.deltaUm == plain.deltaUm && few.suggestedUm == plain.suggestedUm &&
+          few.errorS == plain.errorS && few.targetTimeS == target && !few.refined);
+    const GrindAdvice off = adviseGrindRated(shots, 3, 250, target, cfg, false);
+    CHECK(off.rated == RatedState::OFF && off.action == plain.action && off.deltaUm == plain.deltaUm &&
+          off.baseAction == plain.action);
+  }
+
+  // Three liked shots at an earlier setting ran 27 s; the shots at today's setting (unrated) run
+  // 29.3 s. Against the recipe's 28 s that is inside the tolerance: the base says keep. The
+  // ratings say the owner liked 27 s: a small move, to the setting those shots were made at.
+  GrindShot refine[] = {ratedShot(29.5f, 250, 0), ratedShot(29.3f, 250, 0), ratedShot(29.1f, 250, 0),
+                        ratedShot(27.0f, 255, 5), ratedShot(27.4f, 255, 4), ratedShot(26.8f, 255, 5)};
+  {
+    const GrindAdvice plain = adviseGrind(refine, 6, 250, target, cfg);
+    CHECK(plain.action == GrindAction::HOLD);                       // the base, unchanged, says keep
+    const GrindAdvice a = adviseGrindRated(refine, 6, 250, target, cfg, true);
+    CHECK(a.baseAction == GrindAction::HOLD && a.rated == RatedState::REFINING && a.refined);
+    CHECK(a.action == GrindAction::COARSER && a.deltaUm > 0 && a.deltaUm <= 6 && a.suggestedUm == 250 + a.deltaUm);
+    CHECK(a.targetTimeS == target);                                  // the recipe's time is still the target
+    CHECK(fabsf(a.aimTimeS - 27.0f) < 0.001f && a.ratedShots == 3 && fabsf(a.ratedTimeS - 27.0f) < 0.001f);
+    CHECK(a.ratedBandS >= RATED_BAND_FLOOR_S && a.ratedBandS <= cfg.toleranceS);
+    // It moves by what the base's own sensitivity says the gap is worth, and never more.
+    CHECK(a.learned && fabsf(static_cast<float>(a.deltaUm) - (a.averageTimeS - 27.0f) * a.umPerS) <= 1.0f);
+    // And it is still inside the base range: the average, after the move, would be inside +-2 s of 28.
+    CHECK(fabsf(27.0f - target) <= cfg.toleranceS);
+  }
+  // The same, but the owner liked a faster shot: it goes the other way (finer when slower is liked).
+  {
+    GrindShot slowLiked[] = {ratedShot(26.8f, 250, 0), ratedShot(26.6f, 250, 0), ratedShot(27.0f, 250, 0),
+                             ratedShot(29.0f, 245, 5), ratedShot(29.4f, 245, 5), ratedShot(28.8f, 245, 4)};
+    const GrindAdvice a = adviseGrindRated(slowLiked, 6, 250, target, cfg, true);
+    CHECK(a.baseAction == GrindAction::HOLD && a.rated == RatedState::REFINING && a.action == GrindAction::FINER &&
+          a.deltaUm < 0 && a.suggestedUm < 250);
+  }
+
+  // On the liked time already: keep, and say so.
+  {
+    GrindShot on[] = {ratedShot(27.2f, 250, 5), ratedShot(27.0f, 250, 5), ratedShot(26.9f, 250, 4)};
+    const GrindAdvice a = adviseGrindRated(on, 3, 250, target, cfg, true);
+    CHECK(a.baseAction == GrindAction::HOLD && a.rated == RatedState::ON_LIKED && a.action == GrindAction::HOLD &&
+          !a.refined && a.deltaUm == 0 && fabsf(a.aimTimeS - 27.0f) < 0.001f);
+  }
+
+  // The base wins whenever it is asking for a move: ratings never override it, and never delay it.
+  {
+    GrindShot slow[] = {ratedShot(31.5f, 250, 0), ratedShot(31.2f, 250, 0), ratedShot(31.0f, 250, 0),
+                        ratedShot(27.0f, 255, 5), ratedShot(27.4f, 255, 4), ratedShot(26.8f, 255, 5)};
+    const GrindAdvice plain = adviseGrind(slow, 6, 250, target, cfg);
+    const GrindAdvice a = adviseGrindRated(slow, 6, 250, target, cfg, true);
+    CHECK(plain.action == GrindAction::COARSER);
+    CHECK(a.rated == RatedState::BASE_MOVING && !a.refined && a.action == plain.action && a.deltaUm == plain.deltaUm &&
+          a.suggestedUm == plain.suggestedUm && a.aimTimeS == 0.0f);
+  }
+  // A liked time outside the tolerance is not used: the range is never widened.
+  {
+    GrindShot far[] = {ratedShot(28.5f, 250, 0), ratedShot(28.7f, 250, 0), ratedShot(28.3f, 250, 0),
+                       ratedShot(24.0f, 270, 5), ratedShot(24.5f, 270, 5), ratedShot(24.2f, 270, 4)};
+    const GrindAdvice a = adviseGrindRated(far, 6, 250, target, cfg, true);
+    CHECK(a.rated == RatedState::OUTSIDE_BAND && a.action == GrindAction::HOLD && !a.refined && a.aimTimeS == 0.0f);
+    // Right on the edge of the tolerance it is still inside.
+    GrindShot edge[] = {ratedShot(29.0f, 250, 0), ratedShot(29.2f, 250, 0), ratedShot(28.8f, 250, 0),
+                        ratedShot(26.0f, 255, 5), ratedShot(26.0f, 255, 5), ratedShot(26.0f, 255, 5)};
+    CHECK(adviseGrindRated(edge, 6, 250, target, cfg, true).rated == RatedState::REFINING);
+  }
+  // The tighter range follows the liked shots' own scatter, within [0.5 s, the tolerance].
+  {
+    GrindShot tight[] = {ratedShot(27.0f, 250, 5), ratedShot(27.0f, 250, 5), ratedShot(27.0f, 250, 5)};
+    CHECK(likedTime(tight, 3).seS == 0.0f);
+    const GrindAdvice t = adviseGrindRated(tight, 3, 250, target, cfg, true);
+    CHECK(fabsf(t.ratedBandS - RATED_BAND_FLOOR_S) < 0.001f);                 // floored
+    GrindShot loose[] = {ratedShot(26.0f, 250, 5), ratedShot(28.0f, 250, 5), ratedShot(30.0f, 250, 4)};
+    const LikedTime l = likedTime(loose, 3);
+    CHECK(fabsf(l.seS - 1.2533f * 2.0f / sqrtf(3.0f)) < 0.01f && l.spreadS == 4.0f);
+    const GrindAdvice w = adviseGrindRated(loose, 3, 250, target, cfg, true);
+    CHECK(w.ratedBandS > 1.4f && w.ratedBandS <= cfg.toleranceS);             // wider, never past the base
+    GrindShot wild[] = {ratedShot(20.0f, 250, 5), ratedShot(28.0f, 250, 5), ratedShot(36.0f, 250, 4)};
+    CHECK(adviseGrindRated(wild, 3, 250, target, cfg, true).ratedBandS <= cfg.toleranceS);
+  }
+  // Ratings below the "liked" line do not count, whatever the time.
+  {
+    GrindShot meh[] = {ratedShot(27.0f, 250, 3), ratedShot(27.0f, 250, 3), ratedShot(27.0f, 250, 3)};
+    CHECK(adviseGrindRated(meh, 3, 250, target, cfg, true).rated == RatedState::TOO_FEW);
+  }
+  // No setting entered: nothing to refine.
+  CHECK(adviseGrindRated(refine, 6, 0, target, cfg, true).rated == RatedState::OFF);
+  // Ratings never hide a problem the base reports: brew times that vary stay "vary", and no data stays no data.
+  {
+    GrindShot mixed[] = {ratedShot(22.0f, 250, 5), ratedShot(34.0f, 250, 5), ratedShot(23.0f, 250, 4), ratedShot(33.0f, 250, 4)};
+    const GrindAdvice plain = adviseGrind(mixed, 4, 250, target, cfg);
+    CHECK(plain.action == GrindAction::INCONSISTENT);
+    const GrindAdvice a = adviseGrindRated(mixed, 4, 250, target, cfg, true);
+    CHECK(a.action == GrindAction::INCONSISTENT && a.baseAction == GrindAction::INCONSISTENT && !a.refined);
+    GrindShot elsewhere[] = {ratedShot(27.0f, 255, 5), ratedShot(27.2f, 255, 5), ratedShot(26.9f, 255, 4)};
+    const GrindAdvice none = adviseGrindRated(elsewhere, 3, 250, target, cfg, true);   // nothing at 250 yet
+    CHECK(none.action == GrindAction::NO_DATA && none.baseAction == GrindAction::NO_DATA && !none.refined);
+  }
+
+  // Taste: only a note, and only when the last shots at the setting agree.
+  {
+    uint8_t used = 0;
+    const uint8_t sour2[] = {1, 1, 0};
+    CHECK(grindTasteHint(sour2, 3, used) == -1 && used == 2);
+    const uint8_t bitter2[] = {3, 3, 3};
+    CHECK(grindTasteHint(bitter2, 3, used) == 1 && used == 3);
+    const uint8_t mixed[] = {1, 3, 1};
+    CHECK(grindTasteHint(mixed, 3, used) == 0);
+    const uint8_t balanced[] = {1, 1, 2};
+    CHECK(grindTasteHint(balanced, 3, used) == 0);             // one balanced shot contradicts it
+    const uint8_t one[] = {1, 0, 0};
+    CHECK(grindTasteHint(one, 3, used) == 0 && used == 1);     // one verdict is not enough
+    const uint8_t old[] = {0, 0, 0, 1, 1};
+    CHECK(grindTasteHint(old, 5, used) == 0);                  // only the newest three count
+    // It does not move the advice: time stays the rule.
+    GrindShot sour[] = {ratedShot(28.0f, 250, 0, 1), ratedShot(28.2f, 250, 0, 1), ratedShot(27.8f, 250, 0, 1)};
+    const GrindAdvice a = adviseGrindRated(sour, 3, 250, target, cfg, true);
+    CHECK(a.action == GrindAction::HOLD && a.tasteHint == -1 && a.tasteShots == 3);
+    // A shot at another setting ends the run it was judged on.
+    GrindShot moved[] = {ratedShot(28.0f, 248, 0, 1), ratedShot(28.2f, 250, 0, 1), ratedShot(27.8f, 250, 0, 1)};
+    CHECK(adviseGrindRated(moved, 3, 248, target, cfg, true).tasteHint == 0);
+  }
+}
+
+static void testSettingsGrowAtTheEnd() {
+  printf("settings: an older, shorter blob keeps the defaults of what was added after it\n");
+  // Store::loadBlob copies the stored bytes over a struct already holding the defaults.
+  Settings stored;
+  stored.shareRatings = true;                     // the last field before the one added later
+  stored.grindRatedTarget = false;                // what a newer build wrote
+  Settings loaded;                                // defaults
+  const size_t olderLength = offsetof(Settings, grindRatedTarget);
+  memcpy(&loaded, &stored, olderLength);          // an earlier build wrote only this much
+  CHECK(loaded.shareRatings && loaded.grindRatedTarget == Settings{}.grindRatedTarget && loaded.grindRatedTarget);
+  CHECK(Settings{}.grindRatedTarget);              // refinement by ratings is on unless the owner turns it off
+  // Settings saved by the builds of 16-17 Oct carry two retired bytes at the end; the record still
+  // ends with them, so such a blob is not longer than the record and still loads.
+  CHECK(offsetof(Settings, retiredLearnGrinderFlag) + sizeof(uint8_t) <= sizeof(Settings));
+}
+
+static void testFrozenBeans() {
+  printf("frozen beans: the freezer is not ageing\n");
+  const uint32_t apr1 = epochOfDate(20260401);
+  // Days spent frozen.
+  CHECK(frozenDaysAt(20260301, 20260315, apr1) == 14);
+  CHECK(frozenDaysAt(20260301, 0, apr1) == 31);                   // still frozen: up to today
+  CHECK(frozenDaysAt(20260301, 20260315, epochOfDate(20260310)) == 9);   // asked part-way through
+  CHECK(frozenDaysAt(20260301, 20260315, epochOfDate(20260220)) == 0);   // before it went in
+  CHECK(frozenDaysAt(0, 0, apr1) == 0);
+  CHECK(frozenDaysAt(20260301, 20260315, 0) == 0);                // no clock
+  CHECK(frozenDaysAt(20260301, 20260515, apr1) == 31);            // thaw date in the future: frozen today
+  CHECK(frozenDaysAt(20260315, 20260301, apr1) == 0);             // thawed before it froze: nonsense
+  CHECK(frozenAt(20260301, 20260315, epochOfDate(20260310)));
+  CHECK(!frozenAt(20260301, 20260315, apr1));
+  CHECK(frozenAt(20260301, 0, apr1));
+  CHECK(!frozenAt(20260301, 0, epochOfDate(20260201)));
+  CHECK(!frozenAt(0, 0, apr1));
+
+  // Age: calendar days off roast less the days in the freezer.
+  CHECK(effectiveAgeDays(20260201, 0, 0, apr1) == 59);                      // no freezer: as before
+  CHECK(effectiveAgeDays(20260201, 20260210, 20260310, apr1) == 34);        // 28 frozen days, 25 of them left out
+  CHECK(effectiveAgeDays(20260201, 20260210, 0, apr1) == 14);               // still frozen: 59 days, 50 frozen
+  CHECK(effectiveAgeDays(20260201, 20260210, 0, epochOfDate(20260301)) == 11);  // it ages, slowly
+  CHECK(effectiveAgeDays(20260201, 20260210, 0, apr1) > effectiveAgeDays(20260201, 20260210, 0, epochOfDate(20260301)));
+  CHECK(FROZEN_AGING_FRACTION > 0.0f && FROZEN_AGING_FRACTION < 0.34f);       // inside what the research supports
+  CHECK(effectiveAgeDays(20260201, 20260210, 20260310, epochOfDate(20260205)) == 4);  // before freezing
+  CHECK(effectiveAgeDays(0, 20260210, 20260310, apr1) == -1);               // no roast date, no age
+  CHECK(effectiveAgeDays(20260201, 0, 0, 0) == -1);                         // no clock
+  CHECK(effectiveAgeDays(20260401, 0, 0, apr1) == 0);
+  CHECK(beanAgeDays(20260201, apr1) == 59);                                 // the calendar age is untouched
+
+  // What the ageing allowance makes of it: a bag frozen for the whole gap between two shots has
+  // aged only a tenth as much, so it is shifted a tenth as far.
+  AgeModel model;
+  model.known = true;
+  model.umPerDay = -0.8f;
+  const int thenAge = effectiveAgeDays(20260201, 20260210, 20260310, epochOfDate(20260210));
+  const int nowAge = effectiveAgeDays(20260201, 20260210, 20260310, epochOfDate(20260310));
+  CHECK(thenAge == 9 && nowAge == 12);
+  CHECK(ageShiftUm(model, thenAge, nowAge) > -3.0f && ageShiftUm(model, thenAge, nowAge) < -2.0f);
+  CHECK(ageShiftUm(model, 9, 59) < -30.0f);                                 // unfrozen it would have been
+
+  // What is kept: dates in order, after the roast.
+  Coffee c;
+  c.roastDate = 20260201;
+  c.frozenDate = 20260210;
+  c.thawDate = 20260310;
+  sanitizeCoffee(c);
+  CHECK(c.frozenDate == 20260210 && c.thawDate == 20260310);
+  c.frozenDate = 20260110;                                        // before the roast
+  sanitizeCoffee(c);
+  CHECK(c.frozenDate == 0 && c.thawDate == 0);
+  c.frozenDate = 0;
+  c.thawDate = 20260310;                                          // out of the freezer, never in
+  sanitizeCoffee(c);
+  CHECK(c.thawDate == 0);
+  c.frozenDate = 20260310;
+  c.thawDate = 20260210;                                          // out before in
+  sanitizeCoffee(c);
+  CHECK(c.frozenDate == 20260310 && c.thawDate == 0);             // treated as still frozen
+  c.frozenDate = 20261340;                                        // not a date
+  sanitizeCoffee(c);
+  CHECK(c.frozenDate == 0);
+
+  // Typing new dates corrects the bag in use (a new bag is startBag: see testBags).
+  Library lib;
+  Coffee a;
+  copyText(a.name, "Idjwi", COFFEE_NAME_LEN);
+  a.roastDate = 20260201;
+  a.frozenDate = 20260210;
+  a.thawDate = 20260310;
+  const uint16_t id = saveCoffee(lib, a);
+  CHECK(id != 0 && findCoffee(lib, id)->frozenDate == 20260210);
+  Coffee again = *findCoffee(lib, id);
+  again.frozenDate = 20260325;
+  again.thawDate = 20260401;
+  CHECK(saveCoffee(lib, again) == id && findCoffee(lib, id)->frozenDate == 20260325 &&
+        findCoffee(lib, id)->thawDate == 20260401);
+  Coffee moved = *findCoffee(lib, id);
+  moved.roastDate = 20260320;                                     // the roast date was mistyped: corrected, dates kept
+  CHECK(saveCoffee(lib, moved) == id && findCoffee(lib, id)->roastDate == 20260320 &&
+        findCoffee(lib, id)->frozenDate == 20260325);
+
+  // Saved and read back; and a library saved before the two fields existed still reads.
+  uint8_t buffer[LIBRARY_MAX_BYTES];
+  const size_t written = encodeLibrary(lib, buffer, sizeof(buffer));
+  CHECK(written > 0);
+  Library back;
+  CHECK(decodeLibrary(buffer, written, back));
+  CHECK(back.coffees[0].frozenDate == 20260325 && back.coffees[0].thawDate == 20260401);
+  {
+    // Rebuild the file as an earlier build wrote it: Coffee records without the last 8 bytes.
+    const size_t oldCoffee = offsetof(Coffee, frozenDate);          // before the freezer dates and the bag
+    LibraryFileHeader h;
+    memcpy(&h, buffer, sizeof(h));
+    const size_t headers = sizeof(LibraryFileHeader) + sizeof(LibraryFileHeaderV2);
+    std::vector<uint8_t> old(buffer, buffer + headers);
+    h.coffeeSize = static_cast<uint16_t>(oldCoffee);
+    memcpy(old.data(), &h, sizeof(h));
+    const uint8_t *at = buffer + headers;
+    for (uint8_t i = 0; i < h.coffeeCount; ++i, at += sizeof(Coffee)) old.insert(old.end(), at, at + oldCoffee);
+    old.insert(old.end(), at, static_cast<const uint8_t *>(buffer + written));                  // recipes, presets, grinders
+    Library read;
+    CHECK(decodeLibrary(old.data(), old.size(), read));
+    CHECK(read.coffeeCount == 1 && strcmp(read.coffees[0].name, "Idjwi") == 0);
+    CHECK(read.coffees[0].roastDate == 20260320 && read.coffees[0].frozenDate == 0 &&
+          read.coffees[0].thawDate == 0);                         // the new fields read as "never frozen"
+  }
+
+  // Shared records say how many days to leave out, so the library's ageing rate is not fooled.
+  Grinder grinder;
+  grinder.modelId = 1;
+  copyText(grinder.model, "Mahlkonig E64 WS", GRINDER_NAME_LEN);
+  Recipe preset;
+  preset.doseG = 18.0f;
+  preset.targetWeightG = 36.0f;
+  preset.targetTimeS = 26.0f;
+  GrindAdvice advice;
+  advice.action = GrindAction::HOLD;
+  advice.currentUm = 246;
+  advice.averageTimeS = 25.6f;
+  advice.shotsUsed = 3;
+  Coffee shared;
+  shared.id = 4;
+  copyText(shared.name, "Idjwi Island", COFFEE_NAME_LEN);
+  shared.roastDate = 20260801;
+  shared.frozenDate = 20260901;
+  shared.thawDate = 20260920;
+  static char body[SHARE_BODY_MAX];
+  CHECK(buildDialinRecord(preset, shared, grinder, advice, GrindTimeBasis::TOTAL, 1791672710, body,
+                          sizeof(body)) != 0);
+  CHECK(strstr(body, "\"roast_date\":\"2026-08-01\",\"frozen_days\":19,\"recipe\""));
+  shared.frozenDate = shared.thawDate = 0;
+  CHECK(buildDialinRecord(preset, shared, grinder, advice, GrindTimeBasis::TOTAL, 1791672710, body,
+                          sizeof(body)) != 0);
+  CHECK(!strstr(body, "frozen_days"));                            // never frozen: nothing said
+  ShotRecord shot = grindRecord(25.4f, 246, 26.0f);
+  shot.epochS = 1791672710;
+  shot.roastDate = 20260801;
+  shot.finalWeightG = 35.8f;
+  shared.frozenDate = 20260901;
+  shared.thawDate = 20260920;
+  CHECK(buildShotRecord(shot, &shared, grinder, false, body, sizeof(body)) != 0);
+  CHECK(strstr(body, "\"frozen_days\":19"));
+  shared.roastDate = 20261001;                                    // since moved on to another bag
+  CHECK(buildShotRecord(shot, &shared, grinder, false, body, sizeof(body)) != 0);
+  CHECK(!strstr(body, "frozen_days"));
+}
+
+static Coffee shelfCoffee(uint16_t id, const char *name, uint8_t roast, const char *process,
+                          uint16_t altitude, const char *origin) {
+  Coffee c;
+  c.id = id;
+  copyText(c.name, name, COFFEE_NAME_LEN);
+  c.roastLevel = roast;
+  copyText(c.process, process, PROCESS_LEN);
+  c.altitudeM = altitude;
+  copyText(c.origin, origin, COFFEE_NAME_LEN);
+  return c;
+}
+
+static SimilarCandidate cand(const Coffee *c, uint16_t um, float dose = 18.0f, float yield = 36.0f,
+                             bool settled = false) {
+  SimilarCandidate k;
+  k.coffee = c;
+  k.grindUm = um;
+  k.doseG = dose;
+  k.yieldG = yield;
+  k.settled = settled;
+  return k;
+}
+
+static void testSimilarCoffee() {
+  printf("similar coffee: a place to start from the owner's own coffees\n");
+  CHECK(processClass("Washed") == ProcessClass::WASHED);
+  CHECK(processClass("fully washed") == ProcessClass::WASHED);
+  CHECK(processClass("Natural") == ProcessClass::NATURAL);
+  CHECK(processClass("anaerobic natural") == ProcessClass::NATURAL);
+  CHECK(processClass("Red honey") == ProcessClass::HONEY);
+  CHECK(processClass("carbonic maceration") == ProcessClass::NATURAL);
+  CHECK(processClass("experimental") == ProcessClass::UNKNOWN);
+  CHECK(processClass("") == ProcessClass::UNKNOWN);
+
+  Grinder e64;                  // microns: 1 um a unit
+  e64.umPerUnit = 1.0f;
+  Grinder dial;                 // an unmarked dial
+  dial.umPerUnit = 0.0f;
+  const Coffee target = shelfCoffee(9, "New", 3, "washed", 1900, "Ethiopia");
+
+  // Nothing to compare with: nothing offered.
+  CHECK(!similarStart(target, 18.0f, 36.0f, nullptr, 0, e64).found);
+
+  // ONE coffee dialled: the number is that coffee's, never moved (no figure says how far), with a
+  // wide range and the direction as a hint only.
+  const Coffee base = shelfCoffee(1, "Yirg medium", 3, "washed", 1900, "Ethiopia");
+  SimilarCandidate one[1] = {cand(&base, 250)};
+  SimilarStart s = similarStart(target, 18.0f, 36.0f, one, 1, e64);
+  CHECK(s.found && s.setting == 250 && s.shift == 0 && !s.fitted && s.applied == 0 && s.samples == 1);
+  CHECK(s.fromCoffeeId == 1 && strcmp(s.fromName, "Yirg medium") == 0);
+  CHECK(s.range == 25);                                                  // 10% of 250: wide on purpose
+  CHECK(s.hintRoast == 0 && s.hintAltitude == 0 && s.hintProcess == 0);  // alike: nothing to hint
+  s = similarStart(shelfCoffee(9, "Light", 2, "washed", 1900, "Ethiopia"), 18.0f, 36.0f, one, 1, e64);
+  CHECK(s.found && s.setting == 250 && !s.fitted && s.hintRoast == -1);  // lighter: usually finer, but not applied
+  s = similarStart(shelfCoffee(9, "Dark", 4, "washed", 1900, "Ethiopia"), 18.0f, 36.0f, one, 1, e64);
+  CHECK(s.setting == 250 && s.hintRoast == +1);
+  s = similarStart(shelfCoffee(9, "High", 3, "washed", 2400, "Ethiopia"), 18.0f, 36.0f, one, 1, e64);
+  CHECK(s.setting == 250 && s.hintAltitude == -1 && s.hintRoast == 0);
+  s = similarStart(shelfCoffee(9, "Low", 3, "washed", 1500, "Ethiopia"), 18.0f, 36.0f, one, 1, e64);
+  CHECK(s.hintAltitude == +1);
+  s = similarStart(shelfCoffee(9, "Close alt", 3, "washed", 2000, "Ethiopia"), 18.0f, 36.0f, one, 1, e64);
+  CHECK(s.hintAltitude == 0);                                            // 100 m is not worth a word
+  s = similarStart(shelfCoffee(9, "Natural", 3, "natural", 1900, "Ethiopia"), 18.0f, 36.0f, one, 1, e64);
+  CHECK(s.setting == 250 && s.hintProcess == +1);
+
+  // Not enough in common to say anything.
+  CHECK(!similarStart(shelfCoffee(9, "Blank", 0, "", 0, ""), 18.0f, 36.0f, one, 1, e64).found);
+  CHECK(!similarStart(shelfCoffee(9, "Roast only", 3, "", 0, ""), 18.0f, 36.0f, one, 1, e64).found);   // 1 known
+  CHECK(similarStart(shelfCoffee(9, "Roast and origin", 3, "", 0, "Ethiopia"), 18.0f, 36.0f, one, 1, e64).found);
+  // A coffee is not compared with itself, and a coffee with no setting is no guide.
+  CHECK(!similarStart(base, 18.0f, 36.0f, one, 1, e64).found);
+  SimilarCandidate unset[1] = {cand(&base, 0)};
+  CHECK(!similarStart(target, 18.0f, 36.0f, unset, 1, e64).found);
+
+  // The recipe it was set for has to be close: 18 g -> 36 g does not carry to 22 g -> 44 g.
+  CHECK(!similarStart(target, 22.0f, 44.0f, one, 1, e64).found);
+  const SimilarStart exact = similarStart(target, 18.0f, 36.0f, one, 1, e64);
+  s = similarStart(target, 18.5f, 40.0f, one, 1, e64);
+  CHECK(s.found && s.nearRecipe && !exact.nearRecipe && s.range > exact.range);
+
+  // The nearest coffee wins; a settled setting breaks a tie.
+  const Coffee mediumDark = shelfCoffee(4, "Medium dark", 4, "washed", 1800, "Colombia");
+  SimilarCandidate two[2] = {cand(&base, 250), cand(&mediumDark, 262)};
+  s = similarStart(shelfCoffee(9, "Medium dark too", 4, "washed", 1850, "Colombia"), 18.0f, 36.0f, two, 2, e64);
+  CHECK(s.found && s.fromCoffeeId == 4 && s.setting == 262 && !s.fitted);     // 2 coffees: too few to fit
+  SimilarCandidate tie[2] = {cand(&base, 250), cand(&base, 255, 18.0f, 36.0f, true)};
+  s = similarStart(target, 18.0f, 36.0f, tie, 2, e64);
+  CHECK(s.fromSettled && s.fromSetting == 255);
+
+  // The range is the scatter of the owner's own settings, not a constant.
+  {
+    SimilarCandidate tight[3] = {cand(&base, 250), cand(&base, 250), cand(&base, 250)};
+    SimilarCandidate loose[3] = {cand(&base, 230), cand(&base, 250), cand(&base, 270)};
+    const SimilarStart t = similarStart(target, 18.0f, 36.0f, tight, 3, e64);
+    const SimilarStart l = similarStart(target, 18.0f, 36.0f, loose, 3, e64);
+    CHECK(t.range == 10 && l.range > 20 && l.range > t.range && t.samples == 3 && l.samples == 3);
+  }
+
+  // MEASURED: five of the owner's coffees whose settings rise with roast level, 5% a level
+  // (250 at level 3). The new coffee is a level 2: the number is moved finer, by what the data show
+  // (a little less than 5%, the ridge pulling it towards "no effect").
+  {
+    const Coffee c1 = shelfCoffee(11, "L1", 1, "washed", 1900, "Ethiopia");
+    const Coffee c3 = shelfCoffee(12, "L3", 3, "washed", 1900, "Ethiopia");
+    const Coffee c4 = shelfCoffee(13, "L4", 4, "washed", 1900, "Ethiopia");
+    const Coffee c5 = shelfCoffee(14, "L5", 5, "washed", 1900, "Ethiopia");
+    SimilarCandidate rising[4] = {cand(&c3, 250), cand(&c1, 226), cand(&c4, 263), cand(&c5, 276)};
+    const Coffee l2 = shelfCoffee(9, "New level 2", 2, "washed", 1900, "Ethiopia");
+    s = similarStart(l2, 18.0f, 36.0f, rising, 4, e64);
+    CHECK(s.found && s.fitted && (s.applied & SIMILAR_ROAST) && s.fromCoffeeId == 12 && s.samples == 4);
+    CHECK(s.setting >= 236 && s.setting <= 243 && s.shift < 0);
+    // The same coffees, settings falling with roast (the other way round): not applied.
+    SimilarCandidate falling[4] = {cand(&c3, 250), cand(&c1, 276), cand(&c4, 238), cand(&c5, 226)};
+    s = similarStart(l2, 18.0f, 36.0f, falling, 4, e64);
+    CHECK(s.found && !s.fitted && s.applied == 0 && s.setting == 250 && s.hintRoast == -1);
+    // Three coffees are not enough to fit one factor with any confidence (needs factors + 2 = 3: just enough).
+    SimilarCandidate three[3] = {cand(&c3, 250), cand(&c1, 226), cand(&c5, 276)};
+    s = similarStart(l2, 18.0f, 36.0f, three, 3, e64);
+    CHECK(s.found && s.samples == 3);
+    // Two are not.
+    SimilarCandidate pair[2] = {cand(&c3, 250), cand(&c1, 226)};
+    s = similarStart(l2, 18.0f, 36.0f, pair, 2, e64);
+    CHECK(s.found && !s.fitted && s.setting == 250);
+    // A factor that does not vary among the coffees cannot be measured: all one roast level.
+    SimilarCandidate flat[4] = {cand(&c3, 250), cand(&c3, 245), cand(&c3, 255), cand(&c3, 252)};
+    s = similarStart(l2, 18.0f, 36.0f, flat, 4, e64);
+    CHECK(s.found && !s.fitted && s.applied == 0);
+  }
+  // Altitude measured the same way (higher-grown coffee ground finer, as practitioners say).
+  {
+    const Coffee a1 = shelfCoffee(21, "A1200", 3, "washed", 1200, "Ethiopia");
+    const Coffee a2 = shelfCoffee(22, "A1600", 3, "washed", 1600, "Ethiopia");
+    const Coffee a3 = shelfCoffee(23, "A2000", 3, "washed", 2000, "Ethiopia");
+    const Coffee a4 = shelfCoffee(24, "A2400", 3, "washed", 2400, "Ethiopia");
+    SimilarCandidate fall[4] = {cand(&a2, 250), cand(&a1, 270), cand(&a3, 232), cand(&a4, 216)};
+    const Coffee high = shelfCoffee(9, "High", 3, "washed", 2200, "Ethiopia");
+    s = similarStart(high, 18.0f, 36.0f, fall, 4, e64);
+    CHECK(s.found && s.fitted && (s.applied & SIMILAR_ALTITUDE) && s.setting < 250 && s.shift < 0);
+  }
+  // Roast and altitude both varying: the fit may use both; it must not crash or go out of range.
+  {
+    const Coffee m1 = shelfCoffee(31, "m1", 2, "washed", 1500, "Kenya");
+    const Coffee m2 = shelfCoffee(32, "m2", 3, "washed", 1800, "Kenya");
+    const Coffee m3 = shelfCoffee(33, "m3", 4, "washed", 1600, "Kenya");
+    const Coffee m4 = shelfCoffee(34, "m4", 3, "washed", 2100, "Kenya");
+    const Coffee m5 = shelfCoffee(35, "m5", 5, "washed", 1400, "Kenya");
+    SimilarCandidate mix[5] = {cand(&m2, 250), cand(&m1, 238), cand(&m3, 268), cand(&m4, 241), cand(&m5, 285)};
+    s = similarStart(shelfCoffee(9, "Mix", 3, "washed", 1900, "Kenya"), 18.0f, 36.0f, mix, 5, e64);
+    CHECK(s.found && s.setting >= 150 && s.setting <= 350 && s.range >= 10 && s.samples >= 3);
+  }
+
+  // Units: an unmarked dial moves in whole units; a grinder marked in microns never closer than 5.
+  const Coffee dialCoffee = shelfCoffee(1, "Dial coffee", 3, "washed", 1900, "Ethiopia");
+  SimilarCandidate onDial[1] = {cand(&dialCoffee, 12)};
+  s = similarStart(target, 18.0f, 36.0f, onDial, 1, dial);
+  CHECK(s.found && s.setting == 12 && s.range >= 2);                      // 10% of 12 is 1.2: two units at least
+  SimilarCandidate small[1] = {cand(&dialCoffee, 3)};
+  s = similarStart(target, 18.0f, 36.0f, small, 1, e64);
+  CHECK(s.found && s.range >= 10);                                         // 2 x 5 microns
+}
+
+static void testBags() {
+  printf("bags: a coffee keeps every bag it has had\n");
+  Library lib;
+  // A coffee saved with dates gets a bag made from them; the coffee mirrors it.
+  Coffee a;
+  copyText(a.name, "Idjwi", COFFEE_NAME_LEN);
+  a.roastDate = 20260201;
+  a.frozenDate = 20260210;
+  a.thawDate = 20260310;
+  const uint16_t id = saveCoffee(lib, a);
+  CHECK(id != 0 && lib.bagCount == 1 && findCoffee(lib, id)->bagId == lib.bags[0].id);
+  CHECK(lib.bags[0].coffeeId == id && lib.bags[0].roastDate == 20260201 && lib.bags[0].frozenDate == 20260210 &&
+        lib.bags[0].thawDate == 20260310);
+  const uint16_t first = lib.bags[0].id;
+  // A coffee with no dates has no bag.
+  Coffee none;
+  copyText(none.name, "Plain", COFFEE_NAME_LEN);
+  const uint16_t plain = saveCoffee(lib, none);
+  CHECK(plain != 0 && findCoffee(lib, plain)->bagId == 0 && lib.bagCount == 1);
+
+  // Editing the dates corrects the bag in use: same bag, same id.
+  Coffee fix = *findCoffee(lib, id);
+  fix.roastDate = 20260205;
+  CHECK(saveCoffee(lib, fix) == id && lib.bagCount == 1 && findCoffee(lib, id)->bagId == first &&
+        lib.bags[0].roastDate == 20260205 && lib.bags[0].frozenDate == 20260210);
+  fix.roastDate = 20260320;                                 // after it went in the freezer: not a bag that was frozen
+  CHECK(saveCoffee(lib, fix) == id && findCoffee(lib, id)->frozenDate == 0 && lib.bags[0].frozenDate == 0 &&
+        lib.bags[0].thawDate == 0);
+  fix.roastDate = 20260201;
+  fix.frozenDate = 20260210;
+  fix.thawDate = 20260310;
+  CHECK(saveCoffee(lib, fix) == id && lib.bags[0].frozenDate == 20260210 && lib.bags[0].thawDate == 20260310);
+
+  // A new bag: the old one stays with its own dates; the coffee now mirrors a fresh one, not frozen.
+  const uint16_t second = startBag(lib, id, 20260401, 20260403, 250);
+  CHECK(second != 0 && second != first && lib.bagCount == 2);
+  CHECK(findCoffee(lib, id)->bagId == second && findCoffee(lib, id)->roastDate == 20260401 &&
+        findCoffee(lib, id)->frozenDate == 0 && findCoffee(lib, id)->thawDate == 0);
+  CHECK(findBag(lib, first)->roastDate == 20260201 && findBag(lib, first)->frozenDate == 20260210);
+  CHECK(findBag(lib, second)->openedDate == 20260403 && findBag(lib, second)->weightG == 250);
+  // The preset sees the bag.
+  lib.presetCount = 1;
+  lib.presets[0].coffeeId = id;
+  CHECK(resolvePreset(lib, 0).bagId == second && resolvePreset(lib, 0).roastDate == 20260401);
+  // Editing the coffee now corrects the NEW bag and leaves the old one alone.
+  Coffee again = *findCoffee(lib, id);
+  again.frozenDate = 20260410;
+  CHECK(saveCoffee(lib, again) == id && findBag(lib, second)->frozenDate == 20260410 &&
+        findBag(lib, first)->frozenDate == 20260210);
+  // Putting an earlier bag back in use.
+  CHECK(useBag(lib, id, first) && findCoffee(lib, id)->bagId == first && findCoffee(lib, id)->roastDate == 20260201 &&
+        findCoffee(lib, id)->thawDate == 20260310);
+  CHECK(!useBag(lib, plain, first));                        // another coffee's bag is not its
+  CHECK(!useBag(lib, id, 999));
+  // A bag in use cannot be removed; one that is not, can.
+  CHECK(!removeBag(lib, first) && removeBag(lib, second) && lib.bagCount == 1 && !findBag(lib, second));
+  CHECK(!startBag(lib, 999, 20260401));                     // no such coffee
+  // Editing a bag directly keeps the coffee's mirror in step, and keeps the dates in order.
+  CHECK(editBag(lib, first, 20260201, 20260205, 20260215, 20260301, 340));
+  CHECK(findCoffee(lib, id)->frozenDate == 20260215 && findBag(lib, first)->weightG == 340);
+  CHECK(editBag(lib, first, 20260201, 0, 20260110, 0, 0) && findBag(lib, first)->frozenDate == 0);   // frozen before roast
+  CHECK(!editBag(lib, 999, 0, 0, 0, 0, 0));
+  // A shot belongs to a bag by id; one from before bags by the roast date it copied.
+  CHECK(sameBag(5, 20260201, 5, 20260301));                  // same id wins over differing dates
+  CHECK(!sameBag(5, 20260201, 6, 20260201));
+  CHECK(sameBag(0, 20260201, 6, 20260201));                  // an old shot: by date
+  CHECK(!sameBag(0, 20260201, 6, 20260301));
+  CHECK(sameBag(5, 20260201, 0, 20260201));
+  // Deleting a coffee takes its bags (a coffee a preset uses cannot be deleted).
+  CHECK(!removeCoffee(lib, id));
+  lib.presets[0].coffeeId = 0;
+  CHECK(removeCoffee(lib, id) && lib.bagCount == 0);
+
+  // The list does not overflow: the oldest bag nobody has in use goes first.
+  Library big;
+  Coffee c;
+  copyText(c.name, "Many", COFFEE_NAME_LEN);
+  c.roastDate = 20260101;
+  const uint16_t many = saveCoffee(big, c);
+  uint16_t firstOfMany = big.bags[0].id;
+  for (int i = 0; i < 60; ++i) startBag(big, many, 20260101 + (i % 28));
+  CHECK(big.bagCount == MAX_BAGS && !findBag(big, firstOfMany) && findBag(big, findCoffee(big, many)->bagId));
+  // Every coffee keeps its own in use: a full list of in-use bags says no instead of dropping one.
+  Library crowded;
+  for (size_t i = 0; i < MAX_COFFEES; ++i) {
+    Coffee x;
+    snprintf(x.name, sizeof(x.name), "C%u", static_cast<unsigned>(i));
+    x.roastDate = 20260101;
+    CHECK(saveCoffee(crowded, x) != 0);
+  }
+  CHECK(crowded.bagCount == MAX_COFFEES);
+
+  // Saved and read back, version 3; a library from before bags is given them from its coffees.
+  Library src;
+  Coffee s1;
+  copyText(s1.name, "Saved", COFFEE_NAME_LEN);
+  s1.roastDate = 20260301;
+  s1.frozenDate = 20260310;
+  const uint16_t sid = saveCoffee(src, s1);
+  const uint16_t sBag2 = startBag(src, sid, 20260501);
+  uint8_t buffer[LIBRARY_MAX_BYTES];
+  const size_t written = encodeLibrary(src, buffer, sizeof(buffer));
+  CHECK(written > 0);
+  Library back;
+  CHECK(decodeLibrary(buffer, written, back));
+  CHECK(back.bagCount == 2 && back.nextBagId == src.nextBagId && findCoffee(back, sid)->bagId == sBag2 &&
+        findBag(back, sBag2)->roastDate == 20260501 && findBag(back, back.bags[0].id)->frozenDate == 20260310);
+  {
+    // Version 2 on disk: no bag section, the version number 2.
+    LibraryFileHeader h;
+    memcpy(&h, buffer, sizeof(h));
+    h.version = LIBRARY_VERSION_V2;
+    std::vector<uint8_t> v2(buffer, buffer + written - sizeof(LibraryFileHeaderV3) - 2 * sizeof(Bag));
+    memcpy(v2.data(), &h, sizeof(h));
+    Library old;
+    CHECK(decodeLibrary(v2.data(), v2.size(), old));
+    CHECK(old.bagCount == 1 && findCoffee(old, sid)->bagId == old.bags[0].id && old.bags[0].roastDate == 20260501);
+    // The same file claiming version 3 but cut off before the bags reads the same way.
+    h.version = LIBRARY_VERSION;
+    memcpy(v2.data(), &h, sizeof(h));
+    Library cut;
+    CHECK(decodeLibrary(v2.data(), v2.size(), cut) && cut.bagCount == 1);
+    // A bag section that claims more bags than there are bytes for is refused.
+    std::vector<uint8_t> lie(buffer, buffer + written - sizeof(Bag));
+    Library refused;
+    CHECK(!decodeLibrary(lie.data(), lie.size(), refused));
+  }
+
+  // History: a version 9 shot reads as version 10 with no bag and no TDS.
+  legacy::ShotRecordV9 old9 = {};
+  old9.id = 77;
+  old9.epochS = 1791672710;
+  old9.finalWeightG = 36.4f;
+  old9.rating = 4;
+  old9.coffeeId = 3;
+  old9.roastDate = 20260301;
+  const ShotRecord up = shotFromV9(old9);
+  CHECK(up.id == 77 && up.finalWeightG == 36.4f && up.rating == 4 && up.coffeeId == 3 && up.roastDate == 20260301 &&
+        up.bagId == 0 && up.tdsX100 == 0);
+}
+
+static void testUpkeep() {
+  printf("upkeep counters\n");
+  Maintenance m;
+  CHECK(m.shotsTotal == 0 && upkeepDueCount(m) == 0);
+  for (int i = 0; i < 5; ++i) countUpkeepShot(m);
+  CHECK(shotsSince(m, Upkeep::BACKFLUSH) == 5 && !upkeepDue(m, Upkeep::BACKFLUSH));    // no interval, no reminder
+  setUpkeepEvery(m, Upkeep::BACKFLUSH, 5);
+  CHECK(upkeepDue(m, Upkeep::BACKFLUSH) && upkeepDueCount(m) == 1);
+  markUpkeepDone(m, Upkeep::BACKFLUSH, 1791672710);
+  CHECK(shotsSince(m, Upkeep::BACKFLUSH) == 0 && !upkeepDue(m, Upkeep::BACKFLUSH) && m.doneAtEpochS[0] == 1791672710);
+  for (int i = 0; i < 4; ++i) countUpkeepShot(m);
+  CHECK(!upkeepDue(m, Upkeep::BACKFLUSH));
+  countUpkeepShot(m);
+  CHECK(upkeepDue(m, Upkeep::BACKFLUSH) && shotsSince(m, Upkeep::DESCALE) == 10);       // the others count from the start
+  setUpkeepEvery(m, Upkeep::DESCALE, 99999);
+  CHECK(m.everyShots[1] == UPKEEP_MAX_EVERY);
+  m.doneAtShots[2] = 9999;                                                              // nonsense from a damaged blob
+  m.everyShots[0] = 60000;
+  sanitizeMaintenance(m);
+  CHECK(m.doneAtShots[2] == m.shotsTotal && m.everyShots[0] == UPKEEP_MAX_EVERY);
+  Upkeep job;
+  CHECK(upkeepFromName("descale", job) && job == Upkeep::DESCALE);
+  CHECK(upkeepFromName("grinder_clean", job) && job == Upkeep::GRINDER_CLEAN);
+  CHECK(!upkeepFromName("descal", job) && !upkeepFromName("descaler", job) && !upkeepFromName("", job) &&
+        !upkeepFromName(nullptr, job));
+  // A rinse or a flush is not a shot.
+  ShotRecord shot;
+  shot.shotTimeS = 27.0f;
+  shot.finalWeightG = 36.0f;
+  CHECK(upkeepCountsShot(shot));
+  shot.shotTimeS = 6.0f;
+  CHECK(!upkeepCountsShot(shot));
+  shot.shotTimeS = 27.0f;
+  shot.finalWeightG = 1.0f;
+  CHECK(!upkeepCountsShot(shot));
+}
+
+static void testShotContext() {
+  printf("shot context\n");
+  ShotRecord shot;
+  shot.id = 77;
+  shot.epochS = 1789992000;  // 2026-09-21 12:00 UTC
+  ShotContextInputs in;
+  in.shot = &shot;
+  in.previousEpochS = shot.epochS - 95;
+  in.roastDate = 20260901;
+  in.frozenDate = 20260905;
+  in.thawDate = 20260915;    // ten days in the freezer
+  in.grinderCleanShots = 41;
+  in.advice.action = GrindAction::FINER;
+  in.advice.baseAction = GrindAction::HOLD;
+  in.advice.suggestedUm = 66;
+  in.advice.deltaUm = -3;
+  in.advice.umPerS = 2.75f;
+  in.advice.shotsUsed = 2;
+  in.advice.learned = true;
+  in.advice.learnShots = 5;
+  in.advice.refined = true;
+  in.toleranceS = 2.0f;
+  in.window = 3;
+  in.maxStepUm = 20;
+  in.defaultUmPerS = 3.0f;
+  in.ratedTarget = true;
+  // A 10 Hz curve in 0.1 g steps.
+  static CurvePoint curve[300];
+  for (int i = 0; i < 300; ++i) {
+    curve[i] = packPoint(i * 0.1f, 0.1f * (i / 3), CURVE_NO_TIMER, 0);
+  }
+  in.curve = curve;
+  in.curvePoints = 300;
+  ShotContext c = buildShotContext(in);
+  CHECK(c.shotId == 77 && c.engineVersion == SHOT_ENGINE_VERSION);
+  CHECK(c.calendarDays == 20 && c.frozenDays == 10);
+  CHECK(c.ageDays == 11);                                        // 20 days less 9 of the 10 frozen ones
+  CHECK((c.beanFlags & CTX_BEAN_FROZEN) == 0);                   // thawed on the 15th
+  CHECK(c.sinceLastShotS == 95 && c.grinderCleanShots == 41);
+  CHECK(c.adviceUm == 66 && c.adviceDeltaUm == -3 && c.adviceUmPerSx100 == 275);
+  CHECK(c.adviceAction == static_cast<uint8_t>(GrindAction::FINER));
+  CHECK(c.adviceBaseAction == static_cast<uint8_t>(GrindAction::HOLD));
+  CHECK(c.adviceShots == 2 && c.adviceLearnShots == 5 && c.adviceFlags == 5);   // learned + refined
+  CHECK(c.sampleIntervalMs >= 95 && c.sampleIntervalMs <= 105);
+  CHECK(c.weightStepCg == 10 && c.curvePoints == 300);           // 0.1 g steps
+  CHECK(c.toleranceDs == 20 && c.window == 3 && c.maxStepUm == 20 && c.defaultUmPerSx100 == 300 &&
+        c.ratedTarget == 1);
+  CHECK(c.doseActualDg == 0 && c.prepFlags == 0 && c.machineOnS == 0);
+  // The owner's entries afterwards: dose weighed, purged, uneven. Other flags are left alone.
+  c.prepFlags = CTX_PREP_WDT;
+  CHECK(applyShotPrep(c, 182, true, false));
+  CHECK(c.doseActualDg == 182 && (c.prepFlags & CTX_PREP_PURGED) && !(c.prepFlags & CTX_PREP_UNEVEN) &&
+        (c.prepFlags & CTX_PREP_WDT));
+  CHECK(applyShotPrep(c, 0, false, true));
+  CHECK(c.doseActualDg == 0 && !(c.prepFlags & CTX_PREP_PURGED) && (c.prepFlags & CTX_PREP_UNEVEN));
+  CHECK(!applyShotPrep(c, 30, true, true) && !applyShotPrep(c, 401, true, true));   // 3 g, 40.1 g: typing errors
+  CHECK(c.doseActualDg == 0 && (c.prepFlags & CTX_PREP_UNEVEN));                    // unchanged by a refusal
+
+  // Still frozen at the shot: the flag, and the frozen days up to that day.
+  shot.epochS = 1789128000;  // 2026-09-11
+  in.thawDate = 0;
+  c = buildShotContext(in);
+  CHECK((c.beanFlags & CTX_BEAN_FROZEN) != 0 && c.frozenDays == 6 && c.calendarDays == 10 && c.ageDays == 5);
+  // Nothing known: no clock, no roast date, no curve.
+  ShotRecord bare;
+  bare.id = 5;
+  ShotContextInputs none;
+  none.shot = &bare;
+  c = buildShotContext(none);
+  CHECK(c.ageDays == -1 && c.calendarDays == -1 && c.sinceLastShotS == 0 && c.sampleIntervalMs == 0 &&
+        c.weightStepCg == 0 && c.startSetting == 0 && c.similarSetting == 0);
+  CHECK(buildShotContext(ShotContextInputs()).shotId == 0);
+  // A community start and an own-coffee start are both kept.
+  ShotContextInputs offered;
+  offered.shot = &bare;
+  offered.start.basis = StartBasis::FITTED;
+  offered.start.setting = 71;
+  offered.start.range = 9;
+  offered.similar.found = true;
+  offered.similar.setting = 64;
+  offered.similar.range = 12;
+  offered.similar.fitted = true;
+  offered.similar.samples = 3;
+  c = buildShotContext(offered);
+  CHECK(c.startSetting == 71 && c.startRange == 9 && c.startBasis == static_cast<uint8_t>(StartBasis::FITTED));
+  CHECK(c.similarSetting == 64 && c.similarRange == 12 && c.similarFitted == 1 && c.similarSamples == 3);
+  // Curve quality on a coarse, slow scale: 0.5 s apart, whole-gram steps.
+  static CurvePoint slow[40];
+  for (int i = 0; i < 40; ++i) slow[i] = packPoint(i * 0.5f, 1.0f * (i / 2), CURVE_NO_TIMER, 0);
+  uint16_t interval;
+  uint8_t step;
+  curveQuality(slow, 40, interval, step);
+  CHECK(interval >= 495 && interval <= 510 && step == 100);
+  curveQuality(slow, 2, interval, step);
+  CHECK(interval == 0 && step == 0);                             // too short to say
+  printf("  ShotContext is %u bytes\n", static_cast<unsigned>(sizeof(ShotContext)));
+}
+
+static void testLearnGrinder() {
+  printf("grind advice: learn the grinder\n");
+  const GrindConfig base;
+  GrinderElasticity none;
+  // The plain rule (a default-constructed config) is the original Grind-by-Sync advice, kept for
+  // comparison: one shot 5 s fast, 3 um per second, 15 um finer, direction only.
+  {
+    GrindShot one[1];
+    one[0].timeS = 23.0f;
+    one[0].grindUm = 70;
+    const GrindAdvice a = adviseGrind(one, 1, 70, 28.0f, base);
+    CHECK(a.action == GrindAction::FINER && a.deltaUm == -15 && !adviceHasNumber(a) &&
+          a.source == SensitivitySource::GUESS);
+  }
+  // Units: microns per step known -> converted; not known -> relative to the setting.
+  {
+    const GrindConfig atom = grindConfigForGrinder(base, 5.0f, 14, 28.0f, none);
+    CHECK_NEAR(atom.defaultUmPerS, 0.6f, 1e-4);
+    CHECK(atom.maxStepUm == 4 && atom.minLearnSpan == 1.0f && atom.bracket && atom.priorCv > 0.0f);
+    CHECK_NEAR(atom.minUmPerS, 0.1f, 1e-4);
+    CHECK_NEAR(atom.maxUmPerS, 4.0f, 1e-4);
+    const GrindConfig e64 = grindConfigForGrinder(base, 1.0f, 70, 28.0f, none);
+    CHECK(e64.defaultUmPerS == base.defaultUmPerS && e64.maxStepUm == base.maxStepUm);   // microns: same numbers
+    const GrindConfig dial = grindConfigForGrinder(base, 0.0f, 15, 28.0f, none);
+    CHECK_NEAR(dial.defaultUmPerS, 15.0f / (0.9f * 28.0f), 1e-4);
+    CHECK(dial.maxStepUm == 2 && dial.minLearnSpan == 1.0f);
+    CHECK(dial.minUmPerS < 0.595f && dial.maxUmPerS > 0.595f);
+  }
+  // Pooled elasticity: three coffees at different settings on one power law (eps 1.2).
+  {
+    GrinderShot s[12];
+    const uint16_t settings[3] = {60, 75, 220};
+    size_t n = 0;
+    for (int g = 0; g < 3; ++g) {
+      for (int k = 0; k < 4; ++k) {
+        const float x = settings[g] * (1.0f + 0.05f * (k - 1.5f));
+        s[n].setting = static_cast<uint16_t>(lroundf(x));
+        s[n].timeS = 28.0f * powf(s[n].setting / static_cast<float>(settings[g]), -1.2f) * (1.0f + 0.02f * g);
+        s[n].group = static_cast<uint16_t>(100 + g);
+        ++n;
+      }
+    }
+    const GrinderElasticity el = pooledGrindElasticity(s, n);
+    CHECK(el.known && el.groups == 3 && el.shots == 12);
+    CHECK_NEAR(el.eps, 1.2f, 0.02f);
+    // A new coffee on this grinder starts from it, and can show a number at its first correction.
+    const GrindConfig c = grindConfigForGrinder(base, 1.0f, 70, 28.0f, el);
+    CHECK_NEAR(c.defaultUmPerS, 70.0f / (el.eps * 28.0f), 1e-3);
+    CHECK(c.guessSource == static_cast<uint8_t>(SensitivitySource::GRINDER));
+    GrindShot one[1];
+    one[0].timeS = 23.0f;
+    one[0].grindUm = 70;
+    const GrindAdvice a = adviseGrind(one, 1, 70, 28.0f, c);
+    CHECK(a.action == GrindAction::FINER && adviceHasNumber(a) && a.source == SensitivitySource::GRINDER);
+    // All at one setting per coffee: nothing to learn.
+    for (size_t i = 0; i < n; ++i) s[i].setting = settings[i / 4];
+    CHECK(!pooledGrindElasticity(s, n).known);
+    // Time rising with a coarser setting is not a grinder: rejected.
+    for (size_t i = 0; i < n; ++i) {
+      s[i].setting = static_cast<uint16_t>(settings[i / 4] + (i % 4) * 4);
+      s[i].timeS = 25.0f + (i % 4);
+    }
+    CHECK(!pooledGrindElasticity(s, n).known);
+    CHECK(!pooledGrindElasticity(nullptr, 0).known);
+  }
+  // Weighing: three shots a few steps apart barely move the guess; a wide, long series takes over.
+  {
+    GrindConfig c = base;
+    c.priorCv = GRIND_PRIOR_CV;
+    GrindShot noisy[3] = {};
+    noisy[0].grindUm = 70; noisy[0].timeS = 26.0f;
+    noisy[1].grindUm = 72; noisy[1].timeS = 25.9f;   // noise hides most of the response
+    noisy[2].grindUm = 74; noisy[2].timeS = 25.5f;
+    float sens = 0.0f, w = 0.0f;
+    const bool ok = weighGrindSensitivity(noisy, 3, c, sens, w);
+    CHECK(ok && w < 0.5f && sens > 2.0f && sens < 6.0f);
+    float legacy = 0.0f;
+    CHECK(learnGrindSensitivity(noisy, 3, legacy) && legacy > 7.0f);   // the old rule believed a 3x too big figure
+    GrindShot wide[10] = {};
+    for (int i = 0; i < 10; ++i) {
+      wide[i].grindUm = static_cast<uint16_t>(60 + 3 * i);
+      wide[i].timeS = 28.0f - (wide[i].grindUm - 70) / 6.0f + ((i % 2) ? 0.4f : -0.4f);   // true 6 um/s
+    }
+    CHECK(weighGrindSensitivity(wide, 10, c, sens, w) && w > 0.85f);
+    CHECK_NEAR(sens, 6.0f, 0.6f);
+    GrindShot single[1] = {};
+    single[0].grindUm = 70;
+    single[0].timeS = 25.0f;
+    CHECK(!weighGrindSensitivity(single, 1, c, sens, w) && w == 0.0f);
+  }
+  // Not stepping past a setting seen on the other side of the target.
+  {
+    GrindConfig c = grindConfigForGrinder(base, 1.0f, 66, 28.0f, none);
+    GrindShot h[2] = {};
+    h[0].grindUm = 66; h[0].timeS = 23.0f;   // now: 5 s fast
+    h[1].grindUm = 60; h[1].timeS = 34.0f;   // before: 6 s slow
+    GrindAdvice a = adviseGrind(h, 2, 66, 28.0f, c);
+    CHECK(a.action == GrindAction::FINER && a.bracketed && !a.betweenSteps);
+    CHECK(a.suggestedUm == 63);              // where the target lies between them, not past 60
+    GrindConfig plain = base;
+    a = adviseGrind(h, 2, 66, 28.0f, plain);
+    CHECK(a.suggestedUm == 51 && !a.bracketed);   // as before: straight past the slow setting
+    // A dial whose one step moves more than the tolerance: the closer of the two is kept.
+    c = grindConfigForGrinder(base, 0.0f, 9, 28.0f, none);
+    h[0].grindUm = 9; h[0].timeS = 24.0f;    // 4 s fast
+    h[1].grindUm = 8; h[1].timeS = 33.0f;    // 5 s slow
+    a = adviseGrind(h, 2, 9, 28.0f, c);
+    CHECK(a.action == GrindAction::HOLD && a.betweenSteps && a.suggestedUm == 9);
+    h[0].timeS = 22.0f;                      // 6 s fast: the slow one was closer
+    a = adviseGrind(h, 2, 9, 28.0f, c);
+    CHECK(a.action == GrindAction::FINER && a.betweenSteps && a.suggestedUm == 8);
+    // Ratings do not try to aim between two steps.
+    GrindShot r[5] = {};
+    for (int i = 0; i < 5; ++i) { r[i].grindUm = 9; r[i].timeS = 24.0f; r[i].rating = 5; }
+    r[3].grindUm = 8; r[3].timeS = 33.0f; r[3].rating = 0;
+    r[4].grindUm = 8; r[4].timeS = 33.0f; r[4].rating = 0;
+    GrindConfig wide = c;
+    wide.toleranceS = 2.0f;
+    a = adviseGrindRated(r, 5, 9, 28.0f, wide, true);
+    CHECK(a.betweenSteps && a.rated == RatedState::OUTSIDE_BAND);   // liked time 24 s is outside +-2 s anyway
+  }  // A shot too long or too short to count still gives the direction, by the largest step.
+  {
+    const GrindConfig c = grindConfigForGrinder(base, 1.0f, 60, 28.0f, none);
+    GrindAdvice a = adviseGrind(nullptr, 0, 60, 28.0f, c);
+    CHECK(a.action == GrindAction::NO_DATA);
+    adviseOutOfRange(a, GrindUse::TOO_LONG, 60, c);
+    CHECK(a.action == GrindAction::COARSER && a.suggestedUm == 80 && a.outOfRange && adviceHasNumber(a));
+    a = adviseGrind(nullptr, 0, 60, 28.0f, c);
+    adviseOutOfRange(a, GrindUse::TOO_SHORT, 60, c);
+    CHECK(a.action == GrindAction::FINER && a.suggestedUm == 40);
+    a = adviseGrind(nullptr, 0, 60, 28.0f, c);
+    adviseOutOfRange(a, GrindUse::NOT_WEIGHT_STOP, 60, c);   // an interfered shot says nothing
+    CHECK(a.action == GrindAction::NO_DATA && !a.outOfRange);
+    GrindShot one[1] = {};
+    one[0].grindUm = 60;
+    one[0].timeS = 27.0f;
+    a = adviseGrind(one, 1, 60, 28.0f, c);
+    adviseOutOfRange(a, GrindUse::TOO_LONG, 60, c);           // a counted shot at this setting: its advice stands
+    CHECK(a.action == GrindAction::HOLD && !a.outOfRange);
+  }
+}
+
+static void testExtraction() {
+  printf("extraction yield from a measured TDS\n");
+  ShotRecord s;
+  s.doseG = 18.0f;
+  s.finalWeightG = 36.0f;
+  CHECK(shotExtractionPct(s) == 0.0f);                     // nothing measured, nothing said
+  s.tdsX100 = 900;                                          // 9.00 % TDS
+  CHECK(fabsf(shotExtractionPct(s) - 18.0f) < 0.001f);      // 9.00 x 36 / 18
+  s.finalWeightG = 40.0f;
+  CHECK(fabsf(shotExtractionPct(s) - 20.0f) < 0.001f);
+  s.doseG = 0.0f;
+  CHECK(shotExtractionPct(s) == 0.0f);                      // no dose, no yield
+  s.doseG = 18.0f;
+  s.finalWeightG = 0.0f;
+  CHECK(shotExtractionPct(s) == 0.0f);
+  // The record that came from history version 9 has none.
+  legacy::ShotRecordV9 old9 = {};
+  old9.doseG = 18.0f;
+  old9.finalWeightG = 36.0f;
+  CHECK(shotExtractionPct(shotFromV9(old9)) == 0.0f);
+}
+
+static void testSettingFormat() {
+  printf("settings: whole steps, fractions, two rings\n");
+  char out[24];
+  uint16_t v = 0;
+  Grinder plain;
+  CHECK(formatSetting(246, plain, out, sizeof(out)) == 3 && strcmp(out, "246") == 0);
+  CHECK(formatSetting(0, plain, out, sizeof(out)) == 0 && out[0] == '\0');
+  CHECK(parseSetting("246", plain, v) && v == 246);
+  CHECK(parseSetting(" 12 ", plain, v) && v == 12);
+  CHECK(parseSetting("12.4", plain, v) && v == 12);          // a whole-step dial rounds
+  CHECK(!parseSetting("", plain, v) && !parseSetting("abc", plain, v) && !parseSetting("0", plain, v) &&
+        !parseSetting("2001", plain, v) && !parseSetting("-3", plain, v) && !parseSetting("12x", plain, v));
+
+  Grinder tenths;                       // a dial read in tenths: 3.5 is stored 35
+  tenths.divisor = 10;
+  CHECK(formatSetting(35, tenths, out, sizeof(out)) && strcmp(out, "3.5") == 0);
+  CHECK(formatSetting(40, tenths, out, sizeof(out)) && strcmp(out, "4.0") == 0);
+  CHECK(formatSetting(5, tenths, out, sizeof(out)) && strcmp(out, "0.5") == 0);
+  CHECK(parseSetting("3.5", tenths, v) && v == 35);
+  CHECK(parseSetting("3,5", tenths, v) && v == 35);          // a decimal comma
+  CHECK(parseSetting("4", tenths, v) && v == 40);
+  CHECK(parseSetting("3.54", tenths, v) && v == 35);         // to the nearest step it has
+  CHECK(parseSetting("3.56", tenths, v) && v == 36);
+  Grinder quarters;
+  quarters.divisor = 4;
+  CHECK(formatSetting(7, quarters, out, sizeof(out)) && strcmp(out, "1.75") == 0);
+  CHECK(formatSetting(8, quarters, out, sizeof(out)) && strcmp(out, "2.00") == 0);
+  CHECK(parseSetting("1.75", quarters, v) && v == 7);
+  CHECK(parseSetting("1.8", quarters, v) && v == 7);         // 1.8 is nearer 1.75 than 2.0
+  Grinder halves;
+  halves.divisor = 2;
+  CHECK(formatSetting(3, halves, out, sizeof(out)) && strcmp(out, "1.5") == 0);
+  CHECK(parseSetting("1.5", halves, v) && v == 3);
+  CHECK(parseSetting("1999", halves, v) == false);           // 1999 x 2 is over the largest setting
+  CHECK(parseSetting("1000", halves, v) && v == 2000);
+
+  Grinder rings;                        // outer 1..31, 9 inner steps each (a Baratza Sette's shape)
+  rings.subSteps = 9;
+  CHECK(formatSetting(1, rings, out, sizeof(out)) && strcmp(out, "1:1") == 0);
+  CHECK(formatSetting(9, rings, out, sizeof(out)) && strcmp(out, "1:9") == 0);
+  CHECK(formatSetting(10, rings, out, sizeof(out)) && strcmp(out, "2:1") == 0);
+  CHECK(formatSetting(11 * 9 + 3 - 9 + 0, rings, out, sizeof(out)) && strcmp(out, "11:3") == 0);
+  CHECK(parseSetting("2:1", rings, v) && v == 10);
+  CHECK(parseSetting("12-3", rings, v) && v == 11 * 9 + 3);
+  CHECK(parseSetting("12/3", rings, v) && v == 11 * 9 + 3);
+  CHECK(parseSetting("7", rings, v) && v == 6 * 9 + 1);      // an outer position alone: its first inner step
+  CHECK(!parseSetting("12:0", rings, v) && !parseSetting("12:10", rings, v) && !parseSetting("0:3", rings, v) &&
+        !parseSetting("12:x", rings, v));
+  CHECK(!parseSetting("300:9", rings, v));                   // past SETTING_MAX
+  // The round trip is exact for every setting a ringed dial can have.
+  bool roundTrip = true;
+  for (uint16_t s = 1; s <= SETTING_MAX; ++s) {
+    uint16_t back = 0;
+    formatSetting(s, rings, out, sizeof(out));
+    roundTrip = roundTrip && parseSetting(out, rings, back) && back == s;
+    formatSetting(s, tenths, out, sizeof(out));
+    roundTrip = roundTrip && parseSetting(out, tenths, back) && back == s;
+    formatSetting(s, quarters, out, sizeof(out));
+    roundTrip = roundTrip && parseSetting(out, quarters, back) && back == s;
+    formatSetting(s, plain, out, sizeof(out));
+    roundTrip = roundTrip && parseSetting(out, plain, back) && back == s;
+  }
+  CHECK(roundTrip);
+
+  // Changes of setting, and what to call them.
+  CHECK(formatSettingDelta(-5, plain, out, sizeof(out)) && strcmp(out, "5") == 0);
+  CHECK(formatSettingDelta(-15, tenths, out, sizeof(out)) && strcmp(out, "1.5") == 0);
+  CHECK(formatSettingDelta(3, quarters, out, sizeof(out)) && strcmp(out, "0.75") == 0);
+  CHECK(formatSettingDelta(4, rings, out, sizeof(out)) && strcmp(out, "4") == 0);
+  CHECK(strcmp(settingDeltaUnit(rings), "steps") == 0 && strcmp(settingDeltaUnit(plain), "um") == 0);
+
+  // A grinder's way of reading is kept in order.
+  Grinder odd;
+  odd.divisor = 3;
+  sanitizeSettingFormat(odd);
+  CHECK(odd.divisor == 1);                                   // 3 does not divide 100
+  odd.subSteps = 1;
+  sanitizeSettingFormat(odd);
+  CHECK(odd.subSteps == 0);                                  // one inner step is no ring
+  odd.subSteps = 120;
+  sanitizeSettingFormat(odd);
+  CHECK(odd.subSteps == 0);
+  odd.subSteps = 9;
+  odd.divisor = 10;
+  sanitizeSettingFormat(odd);
+  CHECK(odd.subSteps == 9 && odd.divisor == 1);              // rings and a divisor do not mix
+  for (uint8_t d : {1, 2, 4, 5, 10, 20, 25, 50, 100}) CHECK(validDivisor(d));
+  for (uint8_t d : {0, 3, 6, 7, 8, 9, 11, 40, 99, 101}) CHECK(!validDivisor(d));
+
+  // Changing how a grinder is read starts a new calibration and clears the settings entered.
+  Library lib;
+  lib.grinder.id = 1;
+  copyText(lib.grinder.model, "Home Built", GRINDER_NAME_LEN);
+  copyText(lib.grinder.unit, "dial", GRINDER_UNIT_LEN);
+  lib.grinder.calibration = 1;
+  lib.nextCalibration = 2;
+  lib.presets[0].grindUm = 35;
+  lib.presetCount = 1;
+  Grinder next = lib.grinder;
+  next.divisor = 10;                                         // now read in tenths: 35 would mean 3.5, not 35
+  setGrinder(lib, next, false);
+  CHECK(lib.grinder.divisor == 10 && lib.grinder.calibration == 2 && lib.presets[0].grindUm == 0);
+  next = lib.grinder;
+  next.umPerUnit = 2.0f;                                     // a microns figure alone does not
+  const uint16_t cal = lib.grinder.calibration;
+  lib.presets[0].grindUm = 12;
+  setGrinder(lib, next, false);
+  CHECK(lib.grinder.calibration == cal && lib.presets[0].grindUm == 12);
+  // The grinder is described to the library with its way of reading.
+  static char body[SHARE_BODY_MAX];
+  Grinder shared = lib.grinder;
+  shared.subSteps = 9;
+  shared.divisor = 1;
+  Recipe preset;
+  GrindAdvice advice;
+  advice.currentUm = 40;
+  advice.averageTimeS = 26.0f;
+  advice.shotsUsed = 3;
+  Coffee coffee;
+  coffee.id = 1;
+  copyText(coffee.name, "X", COFFEE_NAME_LEN);
+  CHECK(buildDialinRecord(preset, coffee, shared, advice, GrindTimeBasis::TOTAL, 1791672710, body, sizeof(body)) != 0);
+  CHECK(strstr(body, "\"sub_steps\":9") && !strstr(body, "\"divisor\""));
+  shared.subSteps = 0;
+  shared.divisor = 10;
+  CHECK(buildDialinRecord(preset, coffee, shared, advice, GrindTimeBasis::TOTAL, 1791672710, body, sizeof(body)) != 0);
+  CHECK(strstr(body, "\"divisor\":10") && !strstr(body, "sub_steps"));
+  shared.divisor = 1;
+  CHECK(buildDialinRecord(preset, coffee, shared, advice, GrindTimeBasis::TOTAL, 1791672710, body, sizeof(body)) != 0);
+  CHECK(!strstr(body, "divisor") && !strstr(body, "sub_steps"));       // whole numbers: nothing extra said
+}
+
 int main() {
   setvbuf(stdout, nullptr, _IONBF, 0);  // keep the output if a test crashes
   testAcaiaProtocol();
@@ -3886,10 +5930,16 @@ int main() {
   testShotOverEveryScale();
   testTuyaCrypto();
   testPusherLinkKeepsSwitchBot();
+  testUpRefusedWhileMoving();
   testPusherDrivers();
+  testPusherHold();
   testPowerControl();
+  testMachineProfiles();
   testShotDataSet();
   testReadingNewerThanTick();
+  testCupRemembered();
+  testCupAutoTareScale();
+  testCupPutBackBriefly();
   testSwitchBotProtocol();
   testAlgorithms();
   testSanitize();
@@ -3903,6 +5953,8 @@ int main() {
   testScaleLost();
   testCupRemoved();
   testStopPressMissed();
+  testSlowStopIsNotPressedAgain();
+  testStopOffsetWarmUp();
   testStopNeverWorks();
   testStartNotDelivered();
   testLateFlowIsAdopted();
@@ -3922,6 +5974,16 @@ int main() {
   testGrinders();
   testCupRequired();
   testRestartRecovery();
+  testRatedTarget();
+  testSettingsGrowAtTheEnd();
+  testFrozenBeans();
+  testSimilarCoffee();
+  testBags();
+  testExtraction();
+  testUpkeep();
+  testShotContext();
+  testLearnGrinder();
+  testSettingFormat();
   printf("\n%d checks, %d failed\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

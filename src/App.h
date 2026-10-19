@@ -2,12 +2,17 @@
 // Thread-safe facade between the control task and the UI / web / serial
 // front ends. Everything here may be called from any task.
 
+#include <ArduinoJson.h>
+
 #include "ble/Ble.h"
 #include "core/BrewController.h"
 #include "core/GrindAdvisor.h"
+#include "core/Maintenance.h"
+#include "core/SimilarCoffee.h"
 #include "core/Library.h"
 #include "core/Community.h"
 #include "core/Share.h"
+#include "platform/LibraryLink.h"
 #include "core/Types.h"
 #include "storage/Store.h"
 
@@ -37,7 +42,17 @@ struct Devices {
   char powerLabel[24] = {};
   uint32_t powerCaps = 0;
   const char *powerProblem = nullptr;
+  // The stop bot, on the stop button of a machine that has one.
+  bool stopConnected = false;
+  char stopAddress[bbw::ADDR_LEN] = {};
+  bbw::PusherInfo stop;
+  char stopProtocol[24] = {};
+  char stopLabel[24] = {};
+  const char *stopProblem = nullptr;
 };
+
+// Which bot something is about.
+enum class BotRole : uint8_t { BREW = 0, POWER = 1, STOP = 2 };
 
 // The machine's power button (core/PowerControl.h).
 struct PowerView {
@@ -95,8 +110,16 @@ bbw::Grinder grinder();
 // Grinder. Advice is for the active preset and is cached; call from the
 // loop task only (it reads shot history from flash when the cache is stale).
 bbw::GrindAdvice grindAdvice();
+// What the grinder's other coffees showed (computed with grindAdvice; empty until they show something).
+bbw::GrinderElasticity grinderElasticity();
 void setGrind(uint16_t grindUm);                     // grinder setting of the active preset
 bool setShotRating(uint32_t shotId, uint8_t rating, uint8_t taste);
+bool setShotTds(uint32_t shotId, uint16_t tdsX100);
+
+// Upkeep counters (core/Maintenance.h): shots since backflush, descale, grinder clean.
+bbw::Maintenance maintenance();
+void upkeepDone(bbw::Upkeep job);                       // the owner did it just now
+void upkeepEvery(bbw::Upkeep job, uint32_t everyShots);  // remind after this many shots; 0 = never  // 0 clears; hundredths of a percent, up to 25.00 %
 bool setShotGrindVote(uint32_t shotId, uint8_t vote);  // bbw::GrindVote
 bool setShotGrind(uint32_t shotId, uint16_t grindUm);  // correct a stored shot
 
@@ -105,17 +128,24 @@ struct ShareStatus {
   bool keyReady = false;
   char keyId[bbw::KEY_ID_LEN] = {};
   char algorithm[24] = {};
-  bool canSend = false;      // there is somewhere to send to
-  const char *sendsTo = "";  // in words
+  bool canSend = false;      // the library can be reached right now
+  bool tokenSet = false;     // a token is stored (it is never handed back)
+  bbw::LibraryLinkStatus link;
   uint32_t waiting = 0;
   uint32_t sent = 0;
 };
 ShareStatus shareStatus();
+// The library's repository ("owner/name") and the token for it. An empty
+// token keeps the one already stored; an empty repository forgets both.
+void setLibraryLink(const char *repo, const char *token);
 // Queues a coffee's description if sharing is on and the library does not
 // already have this version. asked: the owner pressed the button, so the
 // "coffees I add or change" setting does not have to be on.
 bool shareCoffee(uint16_t coffeeId, bool asked = false);
 uint8_t shareAllCoffees();            // queue every coffee on the shelf; how many
+// Forgets what was sent and queues every coffee and grinder the owner has
+// described, the key first. For when earlier sending went nowhere.
+uint8_t shareEverythingAgain();
 // Queues a grinder's description (the one in use or the other, by its id), if
 // sharing is on and it is not a model already known.
 bool shareGrinder(uint16_t grinderId);
@@ -127,10 +157,26 @@ struct CommunityView {
   bbw::CommunityDialin dialin;
   bbw::CommunityFit fit;
   bbw::CommunityStart start;
+  bbw::AgeModel age;
+  int myAgeDays = -1;          // this controller's bag
 };
+
+// The age of the coffee being brewed, and what that means for the grind.
+struct BeanAge {
+  int ageDays = -1;            // days off roast today, less days frozen; -1: no roast date, or no clock
+  int daysSinceBrewed = -1;    // since the last shot of this coffee and recipe that counted; -1: none
+  bool rateKnown = false;      // the library has measured how fast grind follows age
+  int shift = 0;               // expected change of setting since that shot, grinder's unit; negative = finer
+  bool frozenNow = false;      // the bag in use is in the freezer today (it is not ageing)
+  int frozenDays = 0;          // days it has spent there, not counted in ageDays
+};
+BeanAge beanAge();  // for the active preset; loop task only
 CommunityView community(uint16_t coffeeId, uint16_t recipeId);
 // For the active preset, remembered for a few seconds: cheap to ask often.
 bbw::CommunityStart communityStartForActive();
+// A place to start a coffee that has no setting yet, from the owner's most similar coffee
+// (core/SimilarCoffee.h). Loop task only.
+bbw::SimilarStart similarStart(uint16_t coffeeId, uint16_t recipeId);
 // The library's list of coffees as last read (JSON text); "" if never read.
 const char *communityCoffees();
 // The library's list of grinder models as last read; "" if never read.
@@ -146,14 +192,43 @@ void pairScale(const char *address, uint8_t type);
 void pairBot(const char *address, uint8_t type);
 bool pairStrongestBot();
 void pairPower(const char *address, uint8_t type);
-// The keys a pusher needs (Tuya, MicroBot); power: the power bot's, else the brew bot's.
-bbw::PusherSecrets pusherSecrets(bool power);
-void applyPusherSecrets(bool power, const bbw::PusherSecrets &secrets);
+void pairStop(const char *address, uint8_t type);
+// The keys a pusher needs (Tuya, MicroBot), per bot.
+bbw::PusherSecrets pusherSecrets(BotRole role);
+void applyPusherSecrets(BotRole role, const bbw::PusherSecrets &secrets);
+
+// The espresso machine: how its shot is started and stopped (core/MachineProfile.h).
+bbw::MachineProfile machineProfile();
+// false: refused (a shot is running). Stored, and used from the next shot.
+bool applyMachine(const bbw::MachineProfile &machine);
+// Where the machine profile stands with the shared library (bbw::ShareState).
+bbw::ShareState machineShareState();
+// Queues the owner's own machine profile for the shared library, if sharing
+// is on and it is new or changed. false: nothing to send.
+bool shareMachine();
+// The library's list of machine profiles as last read (JSON text); "" if never read.
+const char *communityMachines();
 
 // Machine power
 PowerView powerView();
 bool powerRequest(bool on);       // false: refused, powerView().lastOutcome says why
 bool powerPressAnyway();
+// One press of the brew bot, to see which pusher it is. False if a shot is in
+// hand or no brew bot is paired. Progress: "none", "waiting", "pressed", "failed".
+bool testPressBrew();
+// Connects a bot without pressing, so it reports battery and firmware.
+bool wakeBot(BotRole role);
+// The radio test switch: zero the heard counts, and report them.
+void resetHeard();
+void radioTestReport(JsonObject out);
+// GET /api/diagnostics: firmware, memory, stacks, Wi-Fi, Bluetooth links and
+// their connection statistics, storage, update state.
+void diagnostics(JsonObject out);
+// The scale has been seen taring itself (an auto-tare mode).
+bool scaleZeroesItself();
+const char *testPressState();
+// Saves the log and restarts the controller. Loop task.
+void restartSoon();
 void powerBelieve(bbw::PowerBelief belief);
 void applyPowerSchedule(const bbw::PowerScheduleEntry *entries, int16_t utcOffsetMin);
 

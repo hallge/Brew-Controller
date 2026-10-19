@@ -1,7 +1,14 @@
-# Name,   Type, SubType, Offset,   Size
-nvs,      data, nvs,     0x9000,   0x5000
-otadata,  data, ota,     0xe000,   0x2000
-app0,     app,  ota_0,   0x10000,  0x600000
-app1,     app,  ota_1,   0x610000, 0x600000
-littlefs, data, spiffs,  0xc10000, 0x3e0000
-coredump, data, coredump,0xff0000, 0x10000
+# Name,   Type, SubType,  Offset,   Size
+# 16 MB flash. nvs and otadata stay where they were, so settings and pairing
+# survive the change to this table.
+#   factory  the firmware flashed over USB: kept as the safe version, never
+#            written by an update (src/platform/FirmwareUpdate.h)
+#   app0/1   updates go to whichever is not running; the one before stays
+#   littlefs shot history, shot data, logs
+nvs,      data, nvs,      0x9000,   0x5000
+otadata,  data, ota,      0xe000,   0x2000
+factory,  app,  factory,  0x10000,  0x380000
+app0,     app,  ota_0,    0x390000, 0x380000
+app1,     app,  ota_1,    0x710000, 0x380000
+littlefs, data, spiffs,   0xa90000, 0x560000
+coredump, data, coredump, 0xff0000, 0x10000

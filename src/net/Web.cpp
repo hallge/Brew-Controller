@@ -4,13 +4,23 @@
 #include <ESPmDNS.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <LittleFS.h>
+#ifndef BBW_EMULATOR
+#include <Update.h>
+#include <esp_coexist.h>
+#include <esp_wifi.h>
+#include <esp_ota_ops.h>
+#endif
 
 #include "App.h"
 #include "Log.h"
+#include "Version.h"
 #include "ShotFormat.h"
 #include "WebPage.h"
 #include "core/SettingsUtil.h"
 #include "platform/BigMem.h"
+#include "platform/FirmwareUpdate.h"
+#include "platform/FsUtil.h"
 #include "ui/Ui.h"
 
 using bbw::State;
@@ -76,12 +86,27 @@ void handleStatus() {
   const bbw::LiveStatus st = app::status();
   const app::Devices dev = app::devices();
   JsonDocument doc;
+  // What this controller speaks (docs/API.md). Additive changes keep apiVersion; a change that breaks a
+  // reader raises it. capabilities say which groups of endpoints exist, so a client need not guess from
+  // the firmware version.
+  doc["api_version"] = 1;
+  doc["maintenance_due"] = bbw::upkeepDueCount(app::maintenance());
+  {
+    JsonArray caps = doc["capabilities"].to<JsonArray>();
+    for (const char *c : {"status_v1", "shots_v1", "shot_data_v1", "shot_csv_v1", "grind_advice_v1",
+                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1"}) {
+      caps.add(c);
+    }
+  }
   doc["state"] = bbw::stateName(st.state);
   doc["weight_g"] = bbw::round2(st.weightG);
   doc["flow_g_s"] = bbw::round2(st.flowGS);
   doc["shot_time_s"] = bbw::round2(st.shotTimeS);
   doc["target_weight_g"] = st.targetWeightG;
   doc["stop_offset_g"] = bbw::round2(st.stopOffsetG);
+  doc["machine_style"] = bbw::machineStyleName(st.machineStyle);
+  doc["target_cue"] = st.targetCue;
+  doc["awaiting_drip"] = st.awaitingDrip;
   doc["recipe"] = st.recipe;
   doc["scale_connected"] = st.scaleConnected;
   doc["bot_connected"] = st.botConnected;
@@ -122,6 +147,8 @@ void handleGetSettings() {
   doc["autoStartAfterTare"] = s.autoStartAfterTare;
   doc["scaleTimer"] = s.scaleTimer;
   doc["requireCup"] = s.requireCup;
+  doc["keepPowerBotConnected"] = s.keepPowerBotConnected;
+  doc["displayFlipped"] = s.displayFlipped;
   doc["actuationMode"] = static_cast<int>(s.actuationMode);
   doc["pressDurationMs"] = s.pressDurationMs;
   doc["releaseSettleMs"] = s.releaseSettleMs;
@@ -138,6 +165,7 @@ void handleGetSettings() {
   doc["shareDialIns"] = s.shareDialIns;
   doc["shareShots"] = s.shareShots;
   doc["shareRatings"] = s.shareRatings;
+  doc["grindRatedTarget"] = s.grindRatedTarget;
   doc["activeRecipe"] = activePreset;
   doc["maxRecipes"] = bbw::MAX_PRESETS;
   // The controller's list, one flat entry per preset: the form this page's
@@ -205,6 +233,8 @@ void handlePostSettings() {
   s.autoStartAfterTare = doc["autoStartAfterTare"] | s.autoStartAfterTare;
   s.scaleTimer = doc["scaleTimer"] | s.scaleTimer;
   s.requireCup = doc["requireCup"] | s.requireCup;
+  s.keepPowerBotConnected = doc["keepPowerBotConnected"] | s.keepPowerBotConnected;
+  s.displayFlipped = doc["displayFlipped"] | s.displayFlipped;
   s.actuationMode =
       static_cast<bbw::ActuationMode>(doc["actuationMode"] | static_cast<int>(s.actuationMode));
   s.pressDurationMs = doc["pressDurationMs"] | s.pressDurationMs;
@@ -222,6 +252,7 @@ void handlePostSettings() {
   s.shareDialIns = doc["shareDialIns"] | s.shareDialIns;
   s.shareShots = doc["shareShots"] | s.shareShots;
   s.shareRatings = doc["shareRatings"] | s.shareRatings;
+  s.grindRatedTarget = doc["grindRatedTarget"] | s.grindRatedTarget;
 
   JsonArrayConst recipes = doc["recipes"];
   if (!recipes.isNull() && recipes.size() >= 1) {
@@ -281,9 +312,42 @@ void handleShots() {
     JsonDocument doc;
     bbw::shotToJson(shot, doc.to<JsonObject>());
     doc["has_data"] = app::store().hasCurve(shot.id);
+    {
+      bbw::ShotContext context;
+      if (app::store().loadContext(shot.id, context)) {
+        doc["dose_weighed_g"] = context.doseActualDg / 10.0f;   // 0: not weighed
+        doc["purged"] = (context.prepFlags & bbw::CTX_PREP_PURGED) != 0;
+        doc["uneven"] = (context.prepFlags & bbw::CTX_PREP_UNEVEN) != 0;
+      }
+    }
     String line;
     serializeJson(doc, line);
     if (i) server.sendContent(",");
+    server.sendContent(line);
+  }
+  server.sendContent("]");
+  server.sendContent("");
+}
+
+// The circumstances of the newest shots (core/ShotContext.h), joined to the shots by `shot_id`.
+void handleContexts() {
+  if (busyBrewing()) return sendError(409, "not while a shot is running");
+  uint32_t limit = server.hasArg("limit") ? server.arg("limit").toInt() : 100;
+  limit = bbw::clampTo<uint32_t>(limit, 1, bbw::Store::HISTORY_CAPACITY);
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "application/json", "");
+  server.sendContent("[");
+  bbw::ShotRecord shot;
+  bool first = true;
+  for (uint32_t i = 0; i < limit && app::store().readShot(i, shot); ++i) {
+    bbw::ShotContext context;
+    if (!app::store().loadContext(shot.id, context)) continue;
+    JsonDocument doc;
+    bbw::shotContextToJson(context, doc.to<JsonObject>());
+    String line;
+    serializeJson(doc, line);
+    if (!first) server.sendContent(",");
+    first = false;
     server.sendContent(line);
   }
   server.sendContent("]");
@@ -527,6 +591,9 @@ void handleLibrary() {
       o["altitudeM"] = c.altitudeM;
       o["roastLevel"] = c.roastLevel;
       o["roastDate"] = c.roastDate;
+      o["frozenDate"] = c.frozenDate;
+      o["thawDate"] = c.thawDate;
+      o["bagId"] = c.bagId;
       // Where it stands with the shared library.
       o["share"] = bbw::shareStateName(bbw::coffeeShareState(c, outboxSent));
       o["shareChanged"] = bbw::coffeeChangedSinceShared(c);
@@ -557,7 +624,9 @@ void handleLibrary() {
       g["model"] = grinder.model;
       g["burrs"] = grinder.burrs;
       g["unit"] = grinder.unit;
-      g["umPerUnit"] = grinder.umPerUnit;
+      g["umPerUnit"] = grinder.umPerUnit;        // microns per STORED step
+      g["divisor"] = grinder.divisor;            // stored steps per displayed unit (core/SettingFormat.h)
+      g["subSteps"] = grinder.subSteps;          // 0, or the inner ring's steps per outer step
       g["zeroDate"] = grinder.zeroDate;
       g["calibration"] = grinder.calibration;
       g["share"] = bbw::shareStateName(bbw::grinderShareState(grinder, outboxSent));
@@ -566,6 +635,20 @@ void handleLibrary() {
       g["reviewNote"] = grinder.reviewNote;
       g["libraryId"] = grinder.libraryId;
     };
+    JsonArray bags = doc["bags"].to<JsonArray>();
+    for (uint8_t i = 0; i < lib.bagCount; ++i) {
+      const bbw::Bag &b = lib.bags[i];
+      JsonObject o = bags.add<JsonObject>();
+      o["id"] = b.id;
+      o["coffeeId"] = b.coffeeId;
+      o["roastDate"] = b.roastDate;
+      o["openedDate"] = b.openedDate;
+      o["frozenDate"] = b.frozenDate;
+      o["thawDate"] = b.thawDate;
+      o["weightG"] = b.weightG;
+      const bbw::Coffee *owner = bbw::findCoffee(lib, b.coffeeId);
+      o["current"] = owner && owner->bagId == b.id;   // the bag in use
+    }
     grinderJson(doc["grinder"].to<JsonObject>(), lib.grinder);
     if (lib.hasOtherGrinder) grinderJson(doc["otherGrinder"].to<JsonObject>(), lib.otherGrinder);
     JsonArray models = doc["grinderModels"].to<JsonArray>();
@@ -620,6 +703,8 @@ void handleSaveCoffee() {
   coffee.altitudeM = doc["altitudeM"] | 0;
   coffee.roastLevel = doc["roastLevel"] | 0;
   coffee.roastDate = doc["roastDate"] | 0;
+  coffee.frozenDate = doc["frozenDate"] | 0;
+  coffee.thawDate = doc["thawDate"] | 0;
   if (!coffee.name[0]) return sendError(400, "a coffee needs a name");
   static uint16_t saved;
   saved = 0;
@@ -649,6 +734,8 @@ bool readCoffee(JsonDocument &doc, bbw::Coffee &coffee) {
   coffee.altitudeM = doc["altitudeM"] | 0;
   coffee.roastLevel = doc["roastLevel"] | 0;
   coffee.roastDate = doc["roastDate"] | 0;
+  coffee.frozenDate = doc["frozenDate"] | 0;
+  coffee.thawDate = doc["thawDate"] | 0;
   if (!coffee.name[0]) {
     sendError(400, "a coffee needs a name");
     return false;
@@ -696,14 +783,46 @@ void handleCommunity() {
     doc["dialins"] = view.dialin.dialins;
     doc["time_s"] = bbw::round2(view.dialin.timeS);
     doc["fineness_um"] = bbw::round2(view.dialin.finenessUm);
+    doc["axis_relative"] = view.dialin.axis != 0;  // fineness_um is then not in microns
+    doc["recipe_match"] = view.dialin.recipeDistance > 0.0f ? "near" : "exact";
+    doc["their_dose_g"] = bbw::round2(view.dialin.theirDoseG);
+    doc["their_yield_g"] = bbw::round2(view.dialin.theirYieldG);
     doc["spread_um"] = bbw::round2(view.dialin.spreadUm);
     doc["same_model"] = view.dialin.modelCount;
+    doc["their_age_days"] = view.dialin.ageDays;
   }
   doc["coffees_in_common"] = view.fit.known ? view.fit.coffeesInCommon : 0;
   JsonObject start = doc["start"].to<JsonObject>();
   start["basis"] = bbw::startBasisName(view.start.basis);
   start["setting"] = view.start.setting;
   start["range"] = view.start.range;
+  start["age_shift"] = view.start.ageShift;
+  start["flow_shift"] = view.start.flowShift;
+  // The owner's own most similar coffee (core/SimilarCoffee.h): a guess to start from, offered
+  // whether or not the shared library knows this coffee.
+  const bbw::SimilarStart similar =
+      app::similarStart(static_cast<uint16_t>(coffeeId), static_cast<uint16_t>(recipeId));
+  JsonObject sim = doc["similar"].to<JsonObject>();
+  sim["found"] = similar.found;
+  if (similar.found) {
+    sim["setting"] = similar.setting;
+    sim["range"] = similar.range;
+    sim["from_coffee"] = similar.fromName;
+    sim["from_setting"] = similar.fromSetting;
+    sim["shift"] = similar.shift;
+    sim["basis"] = similar.fitted ? "fitted" : "nearest";   // fitted: moved by the owner's own coffees
+    sim["samples"] = similar.samples;                        // coffees the fit or the range rests on
+    sim["applied"] = similar.applied;                        // factors that moved it: 1 roast, 2 altitude, 4 process
+    sim["hint_roast"] = similar.hintRoast;                   // -1 finer, +1 coarser than the nearest, by convention
+    sim["hint_altitude"] = similar.hintAltitude;
+    sim["hint_process"] = similar.hintProcess;
+    sim["near_recipe"] = similar.nearRecipe;
+    sim["from_settled"] = similar.fromSettled;
+    sim["verified"] = false;                                 // no published size for any factor (SimilarCoffee.h)
+  }
+  doc["my_age_days"] = view.myAgeDays;
+  doc["age_rate_known"] = view.age.known;
+  if (view.age.known) doc["um_per_day"] = bbw::round2(view.age.umPerDay);
   sendJson(doc);
 }
 
@@ -751,11 +870,45 @@ void handleShare() {
   // Only ES256 is a signature the library can check.
   doc["real_signatures"] = strcmp(st.algorithm, "ES256") == 0;
   doc["can_send"] = st.canSend;
-  doc["sends_to"] = st.sendsTo;
+  doc["repository"] = st.link.repository;
+  doc["configured"] = st.link.configured;
+  doc["token_set"] = st.tokenSet;   // whether there is one; never the token itself
+  doc["problem"] = st.link.problem;
+  doc["via"] = st.link.via;
+  // false: what is "sent" goes no further than this PC (the emulator's folder).
+  doc["to_library"] = st.link.toLibrary;
+  doc["last_answer"] = st.link.lastHttp;
+  doc["last_ok"] = st.link.lastOkEpoch;
   doc["waiting"] = st.waiting;
   doc["sent"] = st.sent;
   doc["capacity"] = bbw::Store::OUTBOX_CAPACITY;
   sendJson(doc);
+}
+
+// The library's repository and the controller's token for it.
+void handleShareLink() {
+  if (busyBrewing()) return sendError(409, "not while a shot is running");
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  const char *repo = doc["repository"] | "";
+  const char *token = doc["token"] | "";
+  // "owner/name": letters, digits, '-', '_', '.', and exactly one '/'.
+  size_t slashes = 0, length = strlen(repo);
+  for (const char *p = repo; *p; ++p) {
+    const char c = *p;
+    if (c == '/') ++slashes;
+    else if (!isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_' && c != '.') slashes = 9;
+  }
+  if (length != 0 && (slashes != 1 || length > 63 || repo[0] == '/' || repo[length - 1] == '/')) {
+    return sendError(400, "the repository is written owner/name");
+  }
+  const size_t tokenLength = strlen(token);
+  if (tokenLength > 127) return sendError(400, "that token is too long");
+  for (const char *p = token; *p; ++p) {
+    if (*p <= 0x20 || *p > 0x7e) return sendError(400, "a token has no spaces or special characters");
+  }
+  app::setLibraryLink(repo, token);
+  sendOk();
 }
 
 void handleSaveGrinder() {
@@ -770,6 +923,8 @@ void handleSaveGrinder() {
   cleanText(doc["burrs"] | "", grinder.burrs, sizeof(grinder.burrs));
   cleanName(doc["unit"] | "um", grinder.unit, sizeof(grinder.unit));
   grinder.umPerUnit = doc["umPerUnit"] | 0.0f;
+  grinder.divisor = doc["divisor"] | 1;
+  grinder.subSteps = doc["subSteps"] | 0;
   grinder.zeroDate = doc["zeroDate"] | 0;
   rezeroed = doc["rezeroed"] | false;
   // asOther: keep it as the owner's second grinder, beside the one in use.
@@ -828,6 +983,14 @@ void handleLibraryDo() {
       error = "there is no second grinder";
       return bbw::removeOtherGrinder(lib);
     }
+    if (what == "bag_use") {  // a = coffee id, b = bag id
+      error = "that is not a bag of this coffee";
+      return bbw::useBag(lib, static_cast<uint16_t>(a), static_cast<uint16_t>(b));
+    }
+    if (what == "bag_delete") {  // a = bag id
+      error = "the bag in use cannot be removed: put another in use first";
+      return bbw::removeBag(lib, static_cast<uint16_t>(a));
+    }
     if (what == "preset_add") {  // a = recipe id, b = coffee id (0 = none)
       error = "not added: the list is full (16) or already has it";
       return bbw::addPreset(lib, static_cast<uint16_t>(a), static_cast<uint16_t>(b)) >= 0;
@@ -854,6 +1017,73 @@ void handleLibraryDo() {
   sendOk();
 }
 
+// POST /api/bag {coffeeId, roastDate, openedDate?, weightG?}: a new bag of that coffee, in use from now.
+// {id, roastDate, openedDate, frozenDate, thawDate, weightG}: correct the dates and weight of a bag.
+void handleBag() {
+  if (busyBrewing()) return sendError(409, "not while a shot is running");
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  static uint16_t bagId, coffeeId, weight;
+  static uint32_t roast, opened, frozen, thaw;
+  static uint16_t result;
+  bagId = doc["id"] | 0;
+  coffeeId = doc["coffeeId"] | 0;
+  weight = doc["weightG"] | 0;
+  roast = doc["roastDate"] | 0;
+  opened = doc["openedDate"] | 0;
+  frozen = doc["frozenDate"] | 0;
+  thaw = doc["thawDate"] | 0;
+  if (bagId == 0 && coffeeId == 0) return sendError(400, "say which coffee, or which bag");
+  if (roast != 0 && !bbw::validRoastDate(roast)) return sendError(400, "not a date");
+  result = 0;
+  if (!app::editLibrary([](bbw::Library &lib, void *) {
+        if (bagId != 0) {
+          if (!bbw::editBag(lib, bagId, roast, opened, frozen, thaw, weight)) return false;
+          result = bagId;
+          return true;
+        }
+        result = bbw::startBag(lib, coffeeId, roast, opened, weight);
+        return result != 0;
+      }, nullptr)) {
+    return sendError(409, "not saved: no such coffee or bag, or the list holds only bags in use");
+  }
+  sendId(result);
+}
+
+void handleGetMaintenance() {
+  const bbw::Maintenance m = app::maintenance();
+  JsonDocument doc;
+  doc["shots_total"] = m.shotsTotal;
+  doc["due"] = bbw::upkeepDueCount(m);
+  JsonArray jobs = doc["jobs"].to<JsonArray>();
+  for (size_t i = 0; i < bbw::UPKEEP_COUNT; ++i) {
+    const bbw::Upkeep job = static_cast<bbw::Upkeep>(i);
+    JsonObject o = jobs.add<JsonObject>();
+    o["id"] = bbw::upkeepName(job);
+    o["since_shots"] = bbw::shotsSince(m, job);
+    o["every_shots"] = m.everyShots[i];            // 0: no reminder
+    o["due"] = bbw::upkeepDue(m, job);
+    o["last_epoch"] = m.doneAtEpochS[i];           // 0: not known
+  }
+  sendJson(doc);
+}
+
+// POST /api/maintenance?job=backflush&action=done | action=every&every=200
+void handlePostMaintenance() {
+  bbw::Upkeep job;
+  if (!bbw::upkeepFromName(server.arg("job").c_str(), job)) return sendError(400, "job is backflush, descale or grinder_clean");
+  const String action = server.arg("action");
+  if (action == "done") app::upkeepDone(job);
+  else if (action == "every") {
+    const long every = server.arg("every").toInt();
+    if (every < 0 || every > bbw::UPKEEP_MAX_EVERY) return sendError(400, "every is 0 (never) to 5000 shots");
+    app::upkeepEvery(job, static_cast<uint32_t>(every));
+  } else {
+    return sendError(400, "action is done or every");
+  }
+  sendOk();
+}
+
 void handleGrind() {
   const bbw::GrindAdvice a = app::grindAdvice();
   const bbw::Settings s = app::settings();
@@ -865,6 +1095,18 @@ void handleGrind() {
   doc["suggested_um"] = a.suggestedUm;
   doc["delta_um"] = a.deltaUm;
   doc["target_time_s"] = a.targetTimeS;
+  // The base verdict (Grind-by-Sync style, against the recipe's time) and the refinement by the
+  // owner's ratings that may sit on top of it: `action` is the refined one only when `refined`.
+  doc["base_action"] = bbw::grindActionName(a.baseAction);
+  doc["refined"] = a.refined;
+  doc["rated_state"] = bbw::ratedStateName(a.rated);
+  doc["rated_shots"] = a.ratedShots;
+  doc["rated_time_s"] = bbw::round2(a.ratedTimeS);   // median time of the liked shots
+  doc["rated_band_s"] = bbw::round2(a.ratedBandS);   // the tighter range around it, +-
+  doc["aim_time_s"] = bbw::round2(a.aimTimeS);       // 0 unless refining
+  doc["rated_target_on"] = s.grindRatedTarget;
+  doc["taste_hint"] = a.tasteHint;   // -1 sour (finer), 0 none, 1 bitter (coarser)
+  doc["taste_shots"] = a.tasteShots;
   doc["average_time_s"] = bbw::round2(a.averageTimeS);
   doc["error_s"] = bbw::round2(a.errorS);
   doc["shots_used"] = a.shotsUsed;
@@ -874,11 +1116,36 @@ void handleGrind() {
   doc["um_per_s"] = bbw::round2(a.umPerS);
   doc["learned"] = a.learned;
   doc["learn_shots"] = a.learnShots;
+  // How far the advice rests on what was learned (research/grind-logic-review.md).
+  doc["sensitivity_source"] = a.source == bbw::SensitivitySource::MEASURED ? "measured"
+                              : a.source == bbw::SensitivitySource::GRINDER ? "grinder" : "guess";
+  doc["has_number"] = bbw::adviceHasNumber(a);
+  doc["data_weight"] = bbw::round2(a.dataWeight);
+  doc["bracketed"] = a.bracketed;
+  doc["between_steps"] = a.betweenSteps;
+  doc["out_of_range"] = a.outOfRange;
+  {
+    const bbw::GrinderElasticity el = app::grinderElasticity();
+    if (el.known) {
+      doc["grinder_elasticity"] = bbw::round2(el.eps);
+      doc["grinder_elasticity_se"] = bbw::round2(el.se);
+      doc["grinder_shots"] = el.shots;
+      doc["grinder_coffees"] = el.groups;
+    }
+  }
   doc["step_limited"] = a.stepLimited;
   doc["outliers_ignored"] = a.outliersIgnored;
   doc["min_time_s"] = bbw::round2(a.minTimeS);
   doc["max_time_s"] = bbw::round2(a.maxTimeS);
   doc["coffee"] = active.coffee;
+  // Bean age, and what it means for the grind since this was last brewed.
+  const app::BeanAge age = app::beanAge();
+  doc["bean_age_days"] = age.ageDays;
+  doc["bean_frozen"] = age.frozenNow;
+  doc["bean_frozen_days"] = age.frozenDays;
+  doc["days_since_brewed"] = age.daysSinceBrewed;
+  doc["age_rate_known"] = age.rateKnown;
+  doc["age_shift"] = age.shift;
   sendJson(doc);
 }
 
@@ -910,9 +1177,22 @@ void handleDevices() {
   doc["power_connected"] = dev.powerConnected;
   doc["power_protocol"] = dev.powerProtocol;
   doc["power_label"] = dev.powerLabel;
-  if (dev.power.valid) doc["power_battery"] = dev.power.batteryPercent;
+  if (dev.power.valid) {
+    doc["power_battery"] = dev.power.batteryPercent;
+    char pfw[8];
+    snprintf(pfw, sizeof(pfw), "%u.%u", dev.power.firmwareTenths / 10, dev.power.firmwareTenths % 10);
+    doc["power_firmware"] = pfw;
+    doc["power_switch_mode"] = dev.power.switchMode;
+    doc["power_hold_s"] = dev.power.holdSeconds;
+  }
   if (dev.powerProblem) doc["power_problem"] = dev.powerProblem;
   doc["pairing"]["power"] = dev.powerAddress;
+  // The stop bot.
+  doc["stop_connected"] = dev.stopConnected;
+  doc["stop_label"] = dev.stopLabel;
+  if (dev.stop.valid) doc["stop_battery"] = dev.stop.batteryPercent;
+  if (dev.stopProblem) doc["stop_problem"] = dev.stopProblem;
+  doc["pairing"]["stop"] = dev.stopAddress;
   // What the connected scale can do; the page leaves out what it cannot.
   JsonArray caps = doc["scale_caps"].to<JsonArray>();
   for (uint32_t bit = 1; dev.scaleConnected && bit != 0 && bit <= dev.scale.caps; bit <<= 1) {
@@ -933,6 +1213,7 @@ void handleDevices() {
     snprintf(hex + 2 * i, 3, "%02x", dev.scale.lastFrame[i]);
   }
   sd["last_frame"] = hex;
+  sd["zeroes_itself"] = app::scaleZeroesItself();
   const bbw::MemoryReport memory = bbw::memoryReport();
   if (memory.known) {
     JsonObject m = doc["memory"].to<JsonObject>();
@@ -962,6 +1243,69 @@ void handleDevices() {
   sendJson(doc);
 }
 
+// The radio test switch (see bbw::RadioTest). POST any of the fields to
+// change them, reset_counts to start measuring afresh; GET (or the POST's
+// answer) gives the settings and what was heard since the counts were reset.
+// Nothing is stored: a restart brings back the defaults.
+void handleRadioTest(bool post) {
+  static const char *wifiSleep = "min";
+  static const char *coex = "bt";
+  if (post) {
+    JsonDocument in;
+    if (deserializeJson(in, server.arg("plain"))) return sendError(400, "invalid JSON");
+    bbw::RadioTest &t = bbw::g_radioTest;
+    auto units = [&](const char *key, std::atomic<uint16_t> &field) {
+      if (!in[key].is<int>()) return true;
+      const int v = in[key];
+      if (v < 4 || v > 16384) return false;
+      field = static_cast<uint16_t>(v);
+      return true;
+    };
+    if (!units("scan_interval", t.scanInterval) || !units("scan_window", t.scanWindow) ||
+        !units("connect_interval", t.connectInterval) || !units("connect_window", t.connectWindow)) {
+      return sendError(400, "intervals and windows are 4..16384 (0.625 ms units)");
+    }
+    if (t.scanWindow.load() > t.scanInterval.load()) t.scanWindow = t.scanInterval.load();
+    if (t.connectWindow.load() > t.connectInterval.load()) t.connectWindow = t.connectInterval.load();
+    if (in["active"].is<const char *>()) {
+      const String a = in["active"].as<const char *>();
+      t.active = a == "on" ? 1 : a == "off" ? 0 : -1;
+    }
+    if (in["always_scan"].is<bool>()) t.alwaysScan = in["always_scan"].as<bool>();
+    if (in["hold_connects"].is<bool>()) t.holdConnects = in["hold_connects"].as<bool>();
+#ifndef BBW_EMULATOR
+    if (in["wifi_sleep"].is<const char *>()) {
+      const String w = in["wifi_sleep"].as<const char *>();
+      const wifi_ps_type_t ps = w == "none" ? WIFI_PS_NONE : w == "max" ? WIFI_PS_MAX_MODEM : WIFI_PS_MIN_MODEM;
+      if (esp_wifi_set_ps(ps) != ESP_OK) return sendError(409, "Wi-Fi refused that sleep mode");
+      wifiSleep = ps == WIFI_PS_NONE ? "none" : ps == WIFI_PS_MAX_MODEM ? "max" : "min";
+    }
+    if (in["coex"].is<const char *>()) {
+      const String c = in["coex"].as<const char *>();
+      const esp_coex_prefer_t p = c == "wifi" ? ESP_COEX_PREFER_WIFI
+                                  : c == "balance" ? ESP_COEX_PREFER_BALANCE : ESP_COEX_PREFER_BT;
+      if (esp_coex_preference_set(p) != ESP_OK) return sendError(409, "coexistence preference refused");
+      coex = p == ESP_COEX_PREFER_WIFI ? "wifi" : p == ESP_COEX_PREFER_BALANCE ? "balance" : "bt";
+    }
+#endif
+    ++t.generation;
+    if (in["reset_counts"] | false) app::resetHeard();
+  }
+  const bbw::RadioTest &t = bbw::g_radioTest;
+  JsonDocument doc;
+  doc["scan_interval"] = t.scanInterval.load();
+  doc["scan_window"] = t.scanWindow.load();
+  doc["connect_interval"] = t.connectInterval.load();
+  doc["connect_window"] = t.connectWindow.load();
+  doc["active"] = t.active.load() < 0 ? "auto" : t.active.load() ? "on" : "off";
+  doc["always_scan"] = t.alwaysScan.load();
+  doc["hold_connects"] = t.holdConnects.load();
+  doc["wifi_sleep"] = wifiSleep;
+  doc["coex"] = coex;
+  app::radioTestReport(doc.as<JsonObject>());
+  sendJson(doc);
+}
+
 void handlePair() {
   if (busyBrewing()) return sendError(409, "not while a shot is running");
   JsonDocument doc;
@@ -974,6 +1318,7 @@ void handlePair() {
   }
   if (strcmp(kind, "bot") == 0) app::pairBot(address, type);
   else if (strcmp(kind, "power") == 0) app::pairPower(address, type);
+  else if (strcmp(kind, "stop") == 0) app::pairStop(address, type);
   else if (strcmp(kind, "scale") == 0) app::pairScale(address, type);
   else return sendError(400, "bad kind");
   sendOk();
@@ -982,10 +1327,12 @@ void handlePair() {
 // The keys a pusher needs. They are write-only: the page is told which are
 // set, never what they are.
 void handleGetPusher() {
-  const bool power = server.arg("role") == "power";
-  const bbw::PusherSecrets secrets = app::pusherSecrets(power);
+  const app::BotRole role = server.arg("role") == "power" ? app::BotRole::POWER
+                            : server.arg("role") == "stop" ? app::BotRole::STOP : app::BotRole::BREW;
+  const bool power = role != app::BotRole::BREW;  // a bot whose SwitchBot password is kept with its keys
+  const bbw::PusherSecrets secrets = app::pusherSecrets(role);
   JsonDocument doc;
-  doc["role"] = power ? "power" : "brew";
+  doc["role"] = role == app::BotRole::POWER ? "power" : role == app::BotRole::STOP ? "stop" : "brew";
   doc["tuya_uuid"] = secrets.tuyaUuid;
   doc["tuya_device_id"] = secrets.tuyaDeviceId;
   doc["tuya_local_key_set"] = secrets.tuyaLocalKey[0] != '\0';
@@ -999,8 +1346,11 @@ void handlePostPusher() {
   if (busyBrewing()) return sendError(409, "not while a shot is running");
   JsonDocument doc;
   if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
-  const bool power = strcmp(doc["role"] | "", "power") == 0;
-  bbw::PusherSecrets secrets = app::pusherSecrets(power);
+  const char *roleName = doc["role"] | "";
+  const app::BotRole role = strcmp(roleName, "power") == 0 ? app::BotRole::POWER
+                            : strcmp(roleName, "stop") == 0 ? app::BotRole::STOP : app::BotRole::BREW;
+  const bool power = role != app::BotRole::BREW;
+  bbw::PusherSecrets secrets = app::pusherSecrets(role);
   const char *uuid = doc["tuya_uuid"] | "";
   const char *deviceId = doc["tuya_device_id"] | "";
   const char *localKey = doc["tuya_local_key"] | "";
@@ -1027,7 +1377,97 @@ void handlePostPusher() {
   if (doc["forget"] | false) secrets = bbw::PusherSecrets();
   // A SwitchBot password: the power bot's is kept here, the brew bot's with the network settings.
   if (power && password[0]) strlcpy(secrets.password, password, sizeof(secrets.password));
-  app::applyPusherSecrets(power, secrets);
+  app::applyPusherSecrets(role, secrets);
+  sendOk();
+}
+
+void machineToJson(const bbw::MachineProfile &m, JsonObject o) {
+  o["maker"] = m.maker;
+  o["model"] = m.model;
+  o["control"] = m.control;
+  o["style"] = bbw::machineStyleName(m.style);
+  o["manual_start"] = m.manualStart == static_cast<uint8_t>(bbw::ManualStart::FIRST_DRIP) ? "first_drip" : "tap";
+  o["hold_preinfusion"] = m.holdPreinfusion != 0;
+  o["tap_preinfusion"] = m.tapPreinfusion != 0;
+  o["power_toggle"] = m.powerToggle != 0;
+  o["self_stop_s"] = m.selfStopS;
+  o["builtin"] = m.builtin;
+  o["library_id"] = m.libraryId;
+}
+
+void handleGetMachine() {
+  const bbw::MachineProfile m = app::machineProfile();
+  JsonDocument doc;
+  JsonObject current = doc["current"].to<JsonObject>();
+  machineToJson(m, current);
+  current["can_share"] = bbw::machineCanBeShared(m);
+  // Where it stands with the shared library, as for a coffee or a grinder.
+  current["share_state"] = bbw::shareStateName(app::machineShareState());
+  current["changed_since_shared"] = bbw::machineChangedSinceShared(m);
+  if (m.reviewNote[0]) current["review_note"] = m.reviewNote;
+  JsonArray builtins = doc["builtins"].to<JsonArray>();
+  // Kept until the reply is written: the document points at their text
+  // rather than copying it, so a temporary would leave every entry reading
+  // as whatever was last on the stack.
+  bbw::MachineProfile all[bbw::MACHINE_BUILTIN_COUNT];
+  for (size_t i = 0; i < bbw::MACHINE_BUILTIN_COUNT; ++i) {
+    all[i] = bbw::machineBuiltin(i);
+    machineToJson(all[i], builtins.add<JsonObject>());
+  }
+  sendJson(doc);
+}
+
+// {"builtin": n} picks one that comes with the firmware; otherwise the
+// fields describe the owner's own, or one picked from the shared library
+// (then with its library_id).
+void handlePostMachine() {
+  if (busyBrewing()) return sendError(409, "not while a shot is running");
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  bbw::MachineProfile m;
+  const int builtin = doc["builtin"] | 0;
+  if (builtin >= 1 && builtin <= static_cast<int>(bbw::MACHINE_BUILTIN_COUNT)) {
+    m = bbw::machineBuiltin(static_cast<size_t>(builtin - 1));
+  } else {
+    const char *maker = doc["maker"] | "";
+    const char *model = doc["model"] | "";
+    const char *control = doc["control"] | "";
+    const char *libraryId = doc["library_id"] | "";
+    if (!maker[0] || !model[0]) return sendError(400, "maker and model are needed");
+    if (strlen(maker) >= sizeof(m.maker) || strlen(model) >= sizeof(m.model) ||
+        strlen(control) >= sizeof(m.control) || strlen(libraryId) >= sizeof(m.libraryId)) {
+      return sendError(400, "text too long");
+    }
+    const bbw::MachineProfile before = app::machineProfile();
+    strlcpy(m.maker, maker, sizeof(m.maker));
+    strlcpy(m.model, model, sizeof(m.model));
+    strlcpy(m.control, control, sizeof(m.control));
+    m.style = bbw::machineStyleFromName(doc["style"] | "toggle_button");
+    m.manualStart = strcmp(doc["manual_start"] | "tap", "first_drip") == 0 ? 1 : 0;
+    m.holdPreinfusion = (doc["hold_preinfusion"] | false) ? 1 : 0;
+    m.tapPreinfusion = (doc["tap_preinfusion"] | false) ? 1 : 0;
+    m.powerToggle = (doc["power_toggle"] | false) ? 1 : 0;
+    m.selfStopS = doc["self_stop_s"] | 0;
+    m.builtin = 0;
+    bbw::sanitizeMachine(m);
+    if (libraryId[0]) {
+      // Picked from the library's list: published already.
+      bbw::markMachineFromLibrary(m, libraryId);
+    } else if (before.builtin == 0 && bbw::machineHash(before) == bbw::machineHash(m)) {
+      // The same description as before keeps what is known about its sending.
+      m.shareState = before.shareState;
+      m.shareSeq = before.shareSeq;
+      m.shareHash = before.shareHash;
+      memcpy(m.reviewNote, before.reviewNote, sizeof(m.reviewNote));
+      memcpy(m.libraryId, before.libraryId, sizeof(m.libraryId));
+    } else if (before.builtin == 0 && before.shareState != 0) {
+      // Changed since it was sent: it keeps its record, and can be sent again.
+      m.shareState = before.shareState;
+      m.shareSeq = before.shareSeq;
+      m.shareHash = before.shareHash;
+    }
+  }
+  if (!app::applyMachine(m)) return sendError(409, "not while a shot is running");
   sendOk();
 }
 
@@ -1105,7 +1545,256 @@ void handleNet() {
 
 }  // namespace
 
+// ---- log ------------------------------------------------------------------
+char *g_logChunk;  // PSRAM, made in begin()
+constexpr size_t LOG_CHUNK_SIZE = 8192;
+
+// Live view: everything logged since position `from`, as plain text. The
+// position to ask from next time comes back in a header.
+void handleLogRead() {
+  uint32_t from = static_cast<uint32_t>(strtoul(server.arg("from").c_str(), nullptr, 10));
+  bbw::logRead(from, g_logChunk, LOG_CHUNK_SIZE);
+  char next[16];
+  snprintf(next, sizeof(next), "%u", static_cast<unsigned>(from));
+  server.sendHeader("X-Log-Next", next);
+  server.send(200, "text/plain", g_logChunk);
+}
+
+void sendLogFile(const char *path) {
+  if (!bbw::fileExists(path)) return;
+  File file = LittleFS.open(path, "r");
+  if (!file) return;
+  for (;;) {
+    const size_t n = file.read(reinterpret_cast<uint8_t *>(g_logChunk), 1024);
+    if (n == 0) break;
+    g_logChunk[n] = '\0';
+    server.sendContent(g_logChunk);
+  }
+  file.close();
+}
+
+// Everything kept: the previous file, the current one, and what is still
+// only in RAM.
+void handleLogDownload() {
+  if (busyBrewing()) return sendError(409, "not while a shot is running");
+  const bool kept = bbw::logConfig().keepOnFlash;
+  if (kept) bbw::logFlush();
+  server.sendHeader("Content-Disposition", "attachment; filename=\"brew-controller-log.txt\"");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/plain", "");
+  sendLogFile(bbw::LOG_FILE_OLD);
+  sendLogFile(bbw::LOG_FILE);
+  if (!kept) {
+    uint32_t from = 0;
+    while (bbw::logRead(from, g_logChunk, 1024) > 0) server.sendContent(g_logChunk);
+  }
+  server.sendContent("");
+}
+
+void handleLogConfig(bool change) {
+  if (change) {
+    JsonDocument in;
+    if (deserializeJson(in, server.arg("plain"))) return sendError(400, "invalid JSON");
+    bbw::LogConfig config = bbw::logConfig();
+    config.level = in["level"] | config.level;
+    config.keepOnFlash = in["keep"] | config.keepOnFlash;
+    bbw::logSetConfig(config);
+    LOGI("log: level %u, %s", static_cast<unsigned>(bbw::logConfig().level),
+         config.keepOnFlash ? "kept on flash" : "in memory only");
+  }
+  const bbw::LogConfig config = bbw::logConfig();
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["level"] = config.level;
+  doc["keep"] = config.keepOnFlash;
+  doc["flash_bytes"] = bbw::logFlashBytes();
+  doc["flash_limit"] = 2 * bbw::LOG_FILE_BYTES;
+  doc["memory_bytes"] = bbw::LOG_RING_BYTES;
+  doc["position"] = bbw::logPosition();
+  sendJson(doc);
+}
+
+// ---- test press -----------------------------------------------------------
+void handleBotTest(bool press) {
+  if (press) {
+    const bool power = server.arg("role") == "power";
+    const bool ok = power ? app::powerPressAnyway() : app::testPressBrew();
+    if (!ok) {
+      return sendError(409, power ? "no power bot paired, or it is busy"
+                                  : "no brew bot paired, or a shot is in hand");
+    }
+    LOGI("%s bot: test press asked for from the Setup page", power ? "power" : "brew");
+  }
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["brew"] = app::testPressState();
+  sendJson(doc);
+}
+
+// ---- firmware update ------------------------------------------------------
+// A firmware may go in whenever no shot is in hand: on the home screen, or
+// waiting for the scale (a deployed controller usually is: the scale is off).
+bool idleForUpdate() {
+  const State st = app::status().state;
+  return !busyBrewing() && (st == State::READY || st == State::CONNECTING_SCALE);
+}
+
+char g_updateError[96];
+
+void handleUpdateInfo() {
+  JsonDocument doc;
+  doc["version"] = BBW_VERSION;
+  doc["built"] = BBW_BUILT;
+  const bbw::UpdateConfig config = bbw::updateConfig();
+  char releases[128];
+  snprintf(releases, sizeof(releases), "https://github.com/%s/releases", config.repo);
+  doc["releases"] = releases;
+  doc["repo"] = config.repo;
+  doc["token_set"] = config.token[0] != '\0';
+  doc["auto_check"] = config.autoCheck;
+  // The update from GitHub: what the last check found, and how it is going.
+  const bbw::UpdateStatus u = bbw::updateStatus();
+  doc["state"] = bbw::updatePhaseName(u.phase);
+  doc["percent"] = u.percent;
+  doc["message"] = u.message;
+  doc["available"] = u.available;
+  if (u.checkedEpoch) doc["checked_epoch"] = u.checkedEpoch;
+  if (u.latest.valid) {
+    JsonObject l = doc["latest"].to<JsonObject>();
+    l["tag"] = u.latest.tag;
+    l["name"] = u.latest.name;
+    l["published"] = u.latest.published;
+    l["bytes"] = u.latest.firmwareBytes;
+  }
+  bbw::SlotInfo slots[4];
+  const size_t n = bbw::updateSlots(slots, 4);
+  JsonArray list = doc["slots"].to<JsonArray>();
+  for (size_t i = 0; i < n; ++i) {
+    JsonObject o = list.add<JsonObject>();
+    o["label"] = slots[i].label;
+    o["version"] = slots[i].version;
+    o["state"] = slots[i].state;
+    o["bytes"] = slots[i].bytes;
+    o["running"] = slots[i].running;
+    o["boot_next"] = slots[i].bootNext;
+  }
+#ifdef BBW_EMULATOR
+  doc["can_update"] = false;
+  doc["slot"] = "emulator";
+#else
+  doc["can_update"] = true;
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  const esp_partition_t *next = esp_ota_get_next_update_partition(nullptr);
+  doc["slot"] = running ? running->label : "?";
+  doc["slot_bytes"] = next ? next->size : 0;
+  doc["sketch_bytes"] = ESP.getSketchSize();
+#endif
+  sendJson(doc);
+}
+
+#ifndef BBW_EMULATOR
+// The file arrives in pieces; each is written straight to the spare firmware
+// slot. The running firmware is untouched until the whole image has been
+// received and checked.
+void handleUpdateUpload() {
+  HTTPUpload &upload = server.upload();
+  auto fail = [](const char *why) {
+    if (!g_updateError[0]) strlcpy(g_updateError, why, sizeof(g_updateError));
+  };
+  if (upload.status == UPLOAD_FILE_START) {
+    g_updateError[0] = '\0';
+    if (!idleForUpdate()) {
+      fail("not while a shot is in hand");
+    } else {
+      LOGI("update: receiving %s", upload.filename.c_str());
+      bbw::logFlush();
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) fail(Update.errorString());
+    }
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (!g_updateError[0] && Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      fail(Update.errorString());
+    }
+  } else if (upload.status == UPLOAD_FILE_END) {
+    if (!g_updateError[0]) {
+      if (Update.end(true)) {
+        LOGI("update: %u bytes received and verified", static_cast<unsigned>(upload.totalSize));
+      } else {
+        fail(Update.errorString());
+      }
+    }
+  } else if (upload.status == UPLOAD_FILE_ABORTED) {
+    Update.abort();
+    fail("the upload was interrupted");
+  }
+}
+#endif
+
+void handleUpdateDone() {
+#ifdef BBW_EMULATOR
+  sendError(501, "the emulator cannot be updated this way: rebuild it");
+#else
+  if (g_updateError[0]) {
+    if (Update.isRunning()) Update.abort();
+    LOGW("update: refused, %s", g_updateError);
+    return sendError(400, g_updateError);
+  }
+  sendOk();
+  restartPending = true;
+  restartAtMs = millis() + 1500;
+#endif
+}
+
+// POST /api/update/check | /api/update/install | /api/update/boot?slot=factory|previous
+void handleUpdateCheck() {
+  if (!bbw::updateCheck()) return sendError(409, "an update check or install is already running");
+  sendOk();
+}
+
+void handleUpdateInstall() {
+  if (!idleForUpdate()) return sendError(409, "not while a shot is in hand");
+  if (!bbw::updateInstall()) return sendError(409, "an update check or install is already running");
+  LOGI("update: install asked for from the web page");
+  sendOk();
+}
+
+void handleUpdateBoot() {
+  if (busyBrewing()) return sendError(409, "not while a shot is running");
+  char why[96];
+  if (!bbw::updateBootSlot(server.arg("slot").c_str(), why, sizeof(why))) return sendError(400, why);
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["message"] = why;
+  sendJson(doc);
+  restartPending = true;
+  restartAtMs = millis() + 1500;
+}
+
+// {"repo":"owner/name","token":"...","auto_check":true}. The token is write
+// only; an empty one keeps the stored token, "-" forgets it.
+void handleUpdateConfig() {
+  JsonDocument in;
+  if (deserializeJson(in, server.arg("plain"))) return sendError(400, "invalid JSON");
+  bbw::UpdateConfig config = bbw::updateConfig();
+  const char *repo = in["repo"] | config.repo;
+  if (!strchr(repo, '/') || strlen(repo) >= sizeof(config.repo)) {
+    return sendError(400, "repository as owner/name");
+  }
+  strlcpy(config.repo, repo, sizeof(config.repo));
+  const char *token = in["token"] | "";
+  if (strcmp(token, "-") == 0) config.token[0] = '\0';
+  else if (token[0]) {
+    if (strlen(token) >= sizeof(config.token)) return sendError(400, "token too long");
+    strlcpy(config.token, token, sizeof(config.token));
+  }
+  config.autoCheck = in["auto_check"] | config.autoCheck;
+  bbw::updateConfigure(config);
+  app::store().saveUpdateConfig(config);
+  LOGI("update: releases from %s%s", config.repo, config.token[0] ? ", with a token" : "");
+  sendOk();
+}
+
 void begin() {
+  g_logChunk = bbw::bigArray<char>(LOG_CHUNK_SIZE);
   g_points = bbw::bigArray<bbw::CurvePoint>(bbw::MAX_CURVE_POINTS);
   g_curveT = bbw::bigArray<float>(bbw::MAX_CURVE_POINTS);
   g_curveW = bbw::bigArray<float>(bbw::MAX_CURVE_POINTS);
@@ -1125,13 +1814,29 @@ void begin() {
     WiFi.begin(net.staSsid, net.staPassword);
   }
   MDNS.begin("brewbyweight");
+#ifndef BBW_EMULATOR
+  // One radio for Wi-Fi and Bluetooth. The scale and the bots are the
+  // controller's job; the web page can wait. Measured on the board with the
+  // home network joined: the bots were heard about once every 30 s and the
+  // power bot not at all, with the radio left to share evenly.
+  const esp_err_t coex = esp_coex_preference_set(ESP_COEX_PREFER_BT);
+  LOGI("radio: Bluetooth first%s", coex == ESP_OK ? "" : " (not accepted)");
+#endif
 
-  server.on("/", HTTP_GET, []() { server.send_P(200, "text/html", WEB_PAGE); });
+  server.on("/", HTTP_GET, []() {
+    // Always the page of the firmware now running: a browser holding on to
+    // the page from before an update runs old code against the new API.
+    server.sendHeader("Cache-Control", "no-cache");
+    server.send_P(200, "text/html", WEB_PAGE);
+  });
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/settings", HTTP_GET, handleGetSettings);
   server.on("/api/settings", HTTP_POST, handlePostSettings);
   server.on("/api/library", HTTP_GET, handleLibrary);
   server.on("/api/coffee", HTTP_POST, handleSaveCoffee);
+  server.on("/api/bag", HTTP_POST, handleBag);
+  server.on("/api/maintenance", HTTP_GET, handleGetMaintenance);
+  server.on("/api/maintenance", HTTP_POST, handlePostMaintenance);
   server.on("/api/coffee/adopt", HTTP_POST, handleAdoptCoffee);
   server.on("/api/community", HTTP_GET, handleCommunity);
   server.on("/api/community/coffees", HTTP_GET, []() {
@@ -1141,6 +1846,7 @@ void begin() {
   server.on("/api/recipe", HTTP_POST, handleSaveRecipe);
   server.on("/api/grinder", HTTP_POST, handleSaveGrinder);
   server.on("/api/share", HTTP_GET, handleShare);
+  server.on("/api/share/link", HTTP_POST, handleShareLink);
   server.on("/api/share/coffee", HTTP_POST, []() {
     if (busyBrewing()) return sendError(409, "not while a shot is running");
     if (!app::settings().shareEnabled) return sendError(409, "sharing is switched off (Setup)");
@@ -1149,6 +1855,20 @@ void begin() {
       return sendError(409, "nothing to send: the library already has this version");
     }
     sendOk();
+  });
+  server.on("/api/machine", HTTP_GET, handleGetMachine);
+  server.on("/api/machine", HTTP_POST, handlePostMachine);
+  server.on("/api/share/machine", HTTP_POST, []() {
+    if (busyBrewing()) return sendError(409, "not while a shot is running");
+    if (!app::settings().shareEnabled) return sendError(409, "sharing is switched off (Setup)");
+    if (!app::shareMachine()) {
+      return sendError(409, "nothing to send: it came with the firmware or the library, or this version was sent");
+    }
+    sendOk();
+  });
+  server.on("/api/community/machines", HTTP_GET, []() {
+    const char *text = app::communityMachines();
+    server.send(200, "application/json", text[0] ? text : "{\"v\":1,\"machines\":[]}");
   });
   server.on("/api/share/grinder", HTTP_POST, []() {
     if (busyBrewing()) return sendError(409, "not while a shot is running");
@@ -1163,6 +1883,14 @@ void begin() {
     const char *list = app::communityGrinders();
     server.send(200, "application/json", list[0] ? list : "{\"v\":1,\"grinders\":[]}");
   });
+  server.on("/api/share/again", HTTP_POST, []() {
+    if (busyBrewing()) return sendError(409, "not while a shot is running");
+    if (!app::settings().shareEnabled) return sendError(409, "sharing is switched off");
+    JsonDocument doc;
+    doc["ok"] = true;
+    doc["queued"] = app::shareEverythingAgain();
+    sendJson(doc);
+  });
   server.on("/api/share/coffees", HTTP_POST, []() {
     if (busyBrewing()) return sendError(409, "not while a shot is running");
     if (!app::settings().shareEnabled) return sendError(409, "sharing is switched off");
@@ -1173,6 +1901,7 @@ void begin() {
   });
   server.on("/api/library/do", HTTP_POST, handleLibraryDo);
   server.on("/api/shots", HTTP_GET, handleShots);
+  server.on("/api/contexts", HTTP_GET, handleContexts);
   server.on("/shots.csv", HTTP_GET, handleCsv);
   server.on("/api/shot/data", HTTP_GET, handleShotData);
   server.on("/shot.csv", HTTP_GET, handleShotCsv);
@@ -1193,6 +1922,26 @@ void begin() {
     if (vote < 0 || vote > 2) return sendError(400, "vote must be 0 (auto), 1 (ignore) or 2 (count)");
     const uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 10);
     if (!app::setShotGrindVote(id, static_cast<uint8_t>(vote))) return sendError(404, "shot not found");
+    sendOk();
+  });
+  // POST /api/shot/prep?id=N&dose=18.2&purged=1&uneven=0 : what the owner says about the preparation.
+  server.on("/api/shot/prep", HTTP_POST, []() {
+    if (busyBrewing()) return sendError(409, "not while a shot is running");
+    const uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 10);
+    const float dose = static_cast<float>(atof(server.arg("dose").c_str()));   // grams; 0 or empty: not weighed
+    if (!(dose == 0.0f || (dose >= 5.0f && dose <= 40.0f))) return sendError(400, "dose must be 5 to 40 g, or 0");
+    const uint16_t doseDg = static_cast<uint16_t>(dose * 10.0f + 0.5f);
+    if (!app::store().setShotPrep(id, doseDg, server.arg("purged") == "1", server.arg("uneven") == "1")) {
+      return sendError(404, "shot not found");
+    }
+    sendOk();
+  });
+  server.on("/api/shot/tds", HTTP_POST, []() {
+    if (busyBrewing()) return sendError(409, "not while a shot is running");
+    const float tds = static_cast<float>(atof(server.arg("tds").c_str()));   // percent TDS from a refractometer; 0 clears it
+    if (!(tds == 0.0f || (tds >= 0.5f && tds <= 25.0f))) return sendError(400, "TDS must be 0.5 to 25 percent, or 0 to clear it");
+    const uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 10);
+    if (!app::setShotTds(id, static_cast<uint16_t>(tds * 100.0f + 0.5f))) return sendError(404, "shot not found");
     sendOk();
   });
   server.on("/api/shot/rate", HTTP_POST, []() {
@@ -1234,13 +1983,84 @@ void begin() {
     app::store().clearShots();
     sendOk();
   });
+  server.on("/api/log", HTTP_GET, handleLogRead);
+  server.on("/log.txt", HTTP_GET, handleLogDownload);
+  server.on("/api/log/config", HTTP_GET, []() { handleLogConfig(false); });
+  server.on("/api/log/config", HTTP_POST, []() { handleLogConfig(true); });
+  server.on("/api/log/clear", HTTP_POST, []() {
+    bbw::logClear();
+    LOGI("log: cleared from the Logs page");
+    sendOk();
+  });
+  server.on("/api/radio/test", HTTP_GET, []() { handleRadioTest(false); });
+  server.on("/api/radio/test", HTTP_POST, []() { handleRadioTest(true); });
+  server.on("/api/bot/wake", HTTP_POST, []() {
+    const String role = server.arg("role");
+    const app::BotRole r = role == "power" ? app::BotRole::POWER
+                           : role == "stop" ? app::BotRole::STOP : app::BotRole::BREW;
+    if (!app::wakeBot(r)) return sendError(409, "no such bot paired");
+    sendOk();
+  });
+  server.on("/api/bot/test", HTTP_GET, []() { handleBotTest(false); });
+  server.on("/api/bot/test", HTTP_POST, []() { handleBotTest(true); });
+  server.on("/api/diagnostics", HTTP_GET, []() {
+    JsonDocument doc;
+    app::diagnostics(doc.to<JsonObject>());
+    sendJson(doc);
+  });
+  server.on("/api/update", HTTP_GET, handleUpdateInfo);
+  server.on("/api/update/check", HTTP_POST, handleUpdateCheck);
+  server.on("/api/update/install", HTTP_POST, handleUpdateInstall);
+  server.on("/api/update/boot", HTTP_POST, handleUpdateBoot);
+  server.on("/api/update/config", HTTP_POST, handleUpdateConfig);
+#ifdef BBW_EMULATOR
+  server.on("/api/update", HTTP_POST, handleUpdateDone);
+#else
+  server.on("/api/update", HTTP_POST, handleUpdateDone, handleUpdateUpload);
+#endif
   server.onNotFound([]() { sendError(404, "not found"); });
   server.begin();
   LOGI("web: access point %s, http://192.168.4.1", apSsid);
 }
 
+#ifndef BBW_EMULATOR
+// The controller's own access point is for setting it up, and for when the
+// home network cannot be reached. Once it has been on the home network for a
+// minute the access point goes: it does not need both, and an access point
+// keeps the shared radio busy all the time, at the scale's and the bots'
+// expense. Lost for a minute, and it comes back.
+void serviceAccessPoint(uint32_t now) {
+  constexpr uint32_t SETTLE_MS = 60000;
+  static bool apOn = true;
+  static uint32_t changedAtMs = 0;  // when the station state last changed
+  static bool wasConnected = false;
+  if (!app::netConfig().staSsid[0]) return;  // no home network: the access point is the only way in
+  const bool connected = WiFi.status() == WL_CONNECTED;
+  if (connected != wasConnected) {
+    wasConnected = connected;
+    changedAtMs = now;
+  }
+  if (now - changedAtMs < SETTLE_MS) return;
+  if (connected && apOn) {
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(true);  // modem sleep between beacons: more time for Bluetooth
+    apOn = false;
+    LOGI("wifi: on the home network (%s), own access point off", WiFi.localIP().toString().c_str());
+  } else if (!connected && !apOn) {
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.softAP(apSsid, app::netConfig().apPassword);
+    apOn = true;
+    LOGW("wifi: home network lost for a minute, own access point %s back on", apSsid);
+  }
+}
+#endif
+
 void loop() {
   server.handleClient();
+#ifndef BBW_EMULATOR
+  serviceAccessPoint(millis());
+#endif
 
   static uint32_t lastLine = 0;
   const uint32_t now = millis();
@@ -1258,7 +2078,7 @@ void loop() {
     ui::setWifiLine(line);
   }
   if (restartPending && static_cast<int32_t>(now - restartAtMs) >= 0 && !busyBrewing()) {
-    ESP.restart();
+    app::restartSoon();  // saves the log first
   }
 }
 

@@ -221,6 +221,10 @@
           <span class="facts">decoy presses <b id="decoyPresses">0</b></span>
           <label title="A second SwitchBot Bot on the machine's POWER button. Pair it as the power bot on the controller's web page."><input type="checkbox" data-dev="powerbot" data-key="inRange"> power bot in range</label>
           <span class="facts">power presses <b id="powerPresses">0</b></span>
+          <label title="A third SwitchBot Bot on a separate STOP button. Pair it as the stop bot and pick a machine with separate start and stop buttons."><input type="checkbox" data-dev="stopbot" data-key="inRange"> stop bot in range</label>
+          <label title="The machine's brew button only starts; a separate STOP button stops"><input type="checkbox" data-dev="machine" data-key="separateButtons"> machine has separate start / stop buttons</label>
+          <label title="The machine brews only while its button is held down"><input type="checkbox" data-dev="machine" data-key="holdToBrew"> machine brews while the button is held</label>
+          <span class="facts">stop presses <b id="stopPresses">0</b></span>
         </div>
       </details>
     </section>
@@ -419,6 +423,7 @@ async function stateLoop() {
       $('botLast').textContent = bot.lastCommand || '-';
       $('decoyPresses').textContent = s.decoy.presses;
       $('powerPresses').textContent = s.machine.powerPresses;
+      $('stopPresses').textContent = s.machine.stopPresses;
       syncControls(s);
     } catch (e) {
       pill($('conn'), 'emulator offline', 'bad');
