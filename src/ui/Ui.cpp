@@ -97,12 +97,13 @@ char wifiText[128] = "Wi-Fi starting";
 // Home
 lv_obj_t *homeStatus, *homeScaleBattery, *homeBotBattery, *homeScaleDot, *homeBotDot, *homeCard, *homeHint, *homeEditLabel;
 lv_obj_t *homeName, *homeYield, *homeGrind, *homeAdvice, *homePre;
-lv_obj_t *homeRoast, *homeAge, *homeFoot;
+lv_obj_t *homeFoot;
 // The hint under the card is also a key: it starts the shot while it says so.
 lv_obj_t *homeStartKey;
 bool homeCanStart = false;
 // The coffee screen: its name, and everything else about it in a scrolling column.
-lv_obj_t *coffeeTitle, *coffeeBody;
+lv_obj_t *coffeeTitle, *coffeeSub, *coffeeList;
+uint32_t coffeeOpenedAtMs = 0;
 lv_obj_t *recipeBar;
 lv_obj_t *editFieldBtn[EDIT_FIELDS], *editTitle, *editValue, *editHint;
 lv_obj_t *recipeList;
@@ -244,17 +245,27 @@ void scrollIfLong(lv_obj_t *label, const char *text, int width) {
   if (lv_label_get_long_mode(label) != mode) lv_label_set_long_mode(label, mode);
 }
 
-// A home card column entry: never below the minimum size.
-void fitSmall(lv_obj_t *label, const char *text) {
-  fitText(label, text, COL_W, 1, &lv_font_montserrat_20);
-  scrollIfLong(label, text, COL_W);
+bool fitsColumn(const char *text, const lv_font_t *font) {
+  return lv_txt_get_width(text, strlen(text), font, 0, LV_TEXT_FLAG_NONE) <= COL_W;
 }
 
-// The same with a shorter wording for when the full one does not fit.
-void fitSmall(lv_obj_t *label, const char *text, const char *shorter) {
-  const bool fits = lv_txt_get_width(text, strlen(text), &lv_font_montserrat_20, 0,
-                                     LV_TEXT_FLAG_NONE) <= COL_W;
-  fitSmall(label, fits ? text : shorter);
+// The home card's column entries, all in one size: 22 pt when every one fits,
+// 20 otherwise. Each has a shorter wording for when the full one does not fit
+// at 20; a text still too wide scrolls.
+struct CardEntry {
+  lv_obj_t *label;
+  const char *text, *shorter;
+};
+void fitCardEntries(const CardEntry *entries, int count) {
+  bool large = true;
+  for (int i = 0; i < count; ++i) large = large && fitsColumn(entries[i].text, &lv_font_montserrat_22);
+  const lv_font_t *font = large ? &lv_font_montserrat_22 : &lv_font_montserrat_20;
+  for (int i = 0; i < count; ++i) {
+    const CardEntry &e = entries[i];
+    const char *text = large || fitsColumn(e.text, font) ? e.text : e.shorter;
+    fitText(e.label, text, COL_W, 1, font);
+    scrollIfLong(e.label, text, COL_W);
+  }
 }
 
 // A status lamp.
@@ -395,7 +406,10 @@ void onVoteIgnore(lv_event_t *) {
 void onVoteCount(lv_event_t *) {
   app::setShotGrindVote(resShotId, static_cast<uint8_t>(bbw::GrindVote::COUNT));
 }
-void onOpenCoffee(lv_event_t *) { coffeeOpen = true; }
+void onOpenCoffee(lv_event_t *) {
+  coffeeOpenedAtMs = millis() ? millis() : 1;
+  coffeeOpen = true;
+}
 void onCloseCoffee(lv_event_t *) { coffeeOpen = false; }
 // The hint under the card, pressed while it says TOUCH KEY TO BREW: the same
 // start as the touch key. A tap on a dimmed screen only brightens it.
@@ -460,14 +474,12 @@ void buildHome() {
   homeName = makeLine(homeCard, &lv_font_montserrat_26, COLOR_ACCENT, 2, CARD_PAD, CARD_W - 24);
   lv_obj_align(homeName, LV_ALIGN_TOP_LEFT, CARD_PAD + 12, 2);
   homeYield = makeLine(homeCard, &lv_font_montserrat_24, COLOR_TEXT, 31, CARD_PAD, CARD_W);
-  constexpr int ROW0 = 64, ROW = 31;
+  constexpr int ROW0 = 76, ROW = 40;
   constexpr int RIGHT_X = CARD_PAD + COL_W + COL_GAP;
   homeGrind = makeLeft(homeCard, COLOR_TEXT, CARD_PAD, ROW0, COL_W);
   homeAdvice = makeLeft(homeCard, COLOR_ACCENT, CARD_PAD, ROW0 + ROW, COL_W);
-  homeRoast = makeLeft(homeCard, COLOR_DIM, CARD_PAD, ROW0 + 2 * ROW, COL_W);
   homePre = makeLeft(homeCard, COLOR_TEXT, RIGHT_X, ROW0, COL_W);
   homeFoot = makeLeft(homeCard, COLOR_TEXT, RIGHT_X, ROW0 + ROW, COL_W);
-  homeAge = makeLeft(homeCard, COLOR_DIM, RIGHT_X, ROW0 + 2 * ROW, COL_W);
   makeLabel(homeCard, &lv_font_montserrat_20, COLOR_DIM, LV_ALIGN_TOP_RIGHT, -8, 6,
             LV_SYMBOL_DOWN);
 
@@ -491,24 +503,47 @@ void buildHome() {
 // The coffee being brewed, in full: everything the shelf knows about it.
 void buildCoffee() {
   lv_obj_t *p = panels[static_cast<int>(Panel::COFFEE)] = makePanel();
-  coffeeTitle = makeLine(p, &lv_font_montserrat_24, COLOR_ACCENT, 12, 16, 536 - 16 - 12 - 104 - 12);
+  // The name, and under it the roast: what changes the grind most.
+  constexpr int HEAD_W = 536 - 16 - 12 - 104 - 12;
+  coffeeTitle = makeLine(p, &lv_font_montserrat_26, COLOR_ACCENT, 6, 16, HEAD_W);
   lv_obj_set_style_text_align(coffeeTitle, LV_TEXT_ALIGN_LEFT, 0);
-  makeButton(p, LV_SYMBOL_LEFT " BACK", &lv_font_montserrat_20, COLOR_PANEL, 104, 40,
-             LV_ALIGN_TOP_RIGHT, -12, 6, onCloseCoffee);
-  // Drag to scroll when there is more than fits.
-  lv_obj_t *box = lv_obj_create(p);
-  lv_obj_set_size(box, 536 - 24, 240 - 54);
-  lv_obj_align(box, LV_ALIGN_TOP_LEFT, 12, 52);
-  lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_border_width(box, 0, 0);
-  lv_obj_set_style_pad_all(box, 4, 0);
-  lv_obj_set_scroll_dir(box, LV_DIR_VER);
-  coffeeBody = lv_label_create(box);
-  lv_obj_set_width(coffeeBody, lv_pct(100));
-  lv_obj_set_style_text_font(coffeeBody, &lv_font_montserrat_20, 0);
-  lv_obj_set_style_text_color(coffeeBody, lv_color_hex(COLOR_TEXT), 0);
-  lv_label_set_long_mode(coffeeBody, LV_LABEL_LONG_WRAP);
-  lv_label_set_text(coffeeBody, "");
+  coffeeSub = makeLine(p, &lv_font_montserrat_20, COLOR_TEXT, 38, 16, HEAD_W);
+  lv_obj_set_style_text_align(coffeeSub, LV_TEXT_ALIGN_LEFT, 0);
+  makeButton(p, LV_SYMBOL_LEFT " BACK", &lv_font_montserrat_20, COLOR_PANEL, 104, 52,
+             LV_ALIGN_TOP_RIGHT, -12, 8, onCloseCoffee);
+  // The rest on a card, a name and its value to a row; drag it when it is longer
+  // than the screen.
+  coffeeList = lv_obj_create(p);
+  lv_obj_set_size(coffeeList, 536 - 24, 240 - 72 - 6);
+  lv_obj_align(coffeeList, LV_ALIGN_TOP_LEFT, 12, 72);
+  lv_obj_set_style_bg_color(coffeeList, lv_color_hex(COLOR_PANEL), 0);
+  lv_obj_set_style_radius(coffeeList, 14, 0);
+  lv_obj_set_style_border_width(coffeeList, 0, 0);
+  lv_obj_set_style_pad_hor(coffeeList, 14, 0);
+  lv_obj_set_style_pad_ver(coffeeList, 8, 0);
+  lv_obj_set_style_pad_row(coffeeList, 4, 0);
+  lv_obj_set_flex_flow(coffeeList, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_scroll_dir(coffeeList, LV_DIR_VER);
+  lv_obj_set_style_bg_color(coffeeList, lv_color_hex(COLOR_ACCENT), LV_PART_SCROLLBAR);
+}
+
+// One row of the coffee card: the name dim on the left, the value beside it,
+// wrapping onto more lines when it is long (the notes).
+void addCoffeeRow(const char *name, const char *value) {
+  if (!value || !value[0]) return;
+  constexpr int NAME_W = 112;
+  lv_obj_t *row = lv_obj_create(coffeeList);
+  lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+  lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(row, 0, 0);
+  lv_obj_set_style_pad_all(row, 0, 0);
+  lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
+  lv_obj_t *label = makeLabel(row, &lv_font_montserrat_20, COLOR_DIM, LV_ALIGN_TOP_LEFT, 0, 0, name);
+  lv_obj_set_width(label, NAME_W);
+  lv_obj_t *text = makeLabel(row, &lv_font_montserrat_20, COLOR_TEXT, LV_ALIGN_TOP_LEFT, NAME_W, 0, value);
+  lv_label_set_long_mode(text, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(text, 536 - 24 - 28 - NAME_W - 8);
 }
 
 // Quick edits to the selected recipe. Everything else is on the web page.
@@ -973,50 +1008,58 @@ void refreshCoffee() {
       }
     }, &look);
   }
-  setText(coffeeTitle, r.coffee[0] ? r.coffee : "No coffee");
-  scrollIfLong(coffeeTitle, r.coffee[0] ? r.coffee : "No coffee", 536 - 16 - 12 - 104 - 12);
-  if (!r.coffee[0] && !look.found) {
-    setText(coffeeBody, "No coffee is attached to this recipe.\nAdd one on the web page: Coffees.");
-    show(Panel::COFFEE);
-    return;
-  }
-  static char body[640];
-  size_t n = 0;
-  auto add = [&](const char *name, const char *value) {
-    if (!value || !value[0] || n >= sizeof(body)) return;
-    const int w = snprintf(body + n, sizeof(body) - n, "%s%s: %s", n ? "\n" : "", name, value);
-    if (w > 0) n += static_cast<size_t>(w);
-  };
-  const bbw::Coffee &c = look.coffee;
-  char line[96];
-  if (look.found) {
-    add("Roaster", c.roaster);
-    if (c.name[0] && strcmp(c.name, r.coffee) != 0) add("Coffee", c.name);
-    add("Country", c.origin);
-  }
-  add("Region", look.found ? c.region : r.region);
-  if (look.found) add("Producer", c.producer);
-  add("Varietal", look.found ? c.varietal : r.varietal);
-  if (look.found) {
-    add("Process", c.process);
-    if (c.altitudeM) {
-      snprintf(line, sizeof(line), "%u m", static_cast<unsigned>(c.altitudeM));
-      add("Altitude", line);
+  constexpr int HEAD_W = 536 - 16 - 12 - 104 - 12;
+  const char *name = r.coffee[0] ? r.coffee : "No coffee";
+  fitText(coffeeTitle, name, HEAD_W, 3, &lv_font_montserrat_26, &lv_font_montserrat_22,
+          &lv_font_montserrat_20);
+  scrollIfLong(coffeeTitle, name, HEAD_W);
+
+  // Under the name: the roast level and how long ago, "medium-light, 118 d off roast".
+  char age[32], sub[64];
+  describeRoastAge(r, false, age, sizeof(age));
+  snprintf(sub, sizeof(sub), "%s%s%s", r.roastLevel ? bbw::roastLevelName(r.roastLevel) : "",
+           r.roastLevel && age[0] ? ", " : "", age);
+  fitText(coffeeSub, sub, HEAD_W, 1, &lv_font_montserrat_20);
+  scrollIfLong(coffeeSub, sub, HEAD_W);
+
+  // The rows are built once each time the screen is opened.
+  static uint32_t builtFor = 0;
+  if (builtFor != coffeeOpenedAtMs) {
+    builtFor = coffeeOpenedAtMs;
+    lv_obj_clean(coffeeList);
+    lv_obj_scroll_to_y(coffeeList, 0, LV_ANIM_OFF);
+    const bbw::Coffee &c = look.coffee;
+    char line[48];
+    if (look.found) {
+      addCoffeeRow("Roaster", c.roaster);
+      if (c.name[0] && strcmp(c.name, r.coffee) != 0) addCoffeeRow("Coffee", c.name);
+      addCoffeeRow("Country", c.origin);
+    }
+    addCoffeeRow("Region", look.found ? c.region : r.region);
+    if (look.found) addCoffeeRow("Producer", c.producer);
+    addCoffeeRow("Varietal", look.found ? c.varietal : r.varietal);
+    if (look.found) {
+      addCoffeeRow("Process", c.process);
+      if (c.altitudeM) {
+        snprintf(line, sizeof(line), "%u m", static_cast<unsigned>(c.altitudeM));
+        addCoffeeRow("Altitude", line);
+      }
+    }
+    if (r.roastDate) {
+      snprintf(line, sizeof(line), "%04u-%02u-%02u", static_cast<unsigned>(r.roastDate / 10000),
+               static_cast<unsigned>((r.roastDate / 100) % 100), static_cast<unsigned>(r.roastDate % 100));
+      addCoffeeRow("Roasted", line);
+    }
+    if (look.found) addCoffeeRow("Notes", c.notes);
+    if (lv_obj_get_child_cnt(coffeeList) == 0) {
+      lv_obj_t *none = makeLabel(coffeeList, &lv_font_montserrat_20, COLOR_DIM, LV_ALIGN_TOP_LEFT, 0, 0,
+                                 r.coffee[0] || look.found
+                                     ? "Nothing more is known about this coffee.\nAdd details on the web page, Coffees."
+                                     : "No coffee is attached to this recipe.\nAdd one on the web page, Coffees.");
+      lv_label_set_long_mode(none, LV_LABEL_LONG_WRAP);
+      lv_obj_set_width(none, lv_pct(100));
     }
   }
-  add("Roast", r.roastLevel ? bbw::roastLevelName(r.roastLevel) : "");
-  char age[32];
-  describeRoastAge(r, false, age, sizeof(age));
-  if (r.roastDate) {
-    snprintf(line, sizeof(line), "%04u-%02u-%02u%s%s%s", static_cast<unsigned>(r.roastDate / 10000),
-             static_cast<unsigned>((r.roastDate / 100) % 100), static_cast<unsigned>(r.roastDate % 100),
-             strncmp(age, "roasted", 7) != 0 ? " (" : "", strncmp(age, "roasted", 7) != 0 ? age : "",
-             strncmp(age, "roasted", 7) != 0 ? ")" : "");
-    add("Roasted", line);
-  }
-  if (look.found) add("Notes", c.notes);
-  if (n == 0) snprintf(body, sizeof(body), "Nothing more is known about this coffee.\nAdd details on the web page: Coffees.");
-  setText(coffeeBody, body);
   show(Panel::COFFEE);
 }
 
@@ -1073,10 +1116,9 @@ void refreshHome(const bbw::LiveStatus &st) {
   // shorter wording for when the full one is too wide for the column.
   const bbw::GrindAdvice g = app::grindAdvice();
   const char *unit = grindUnit();
-  char shorter[64];
-  if (r.grindUm) snprintf(text, sizeof(text), "grind %s %s", gs(r.grindUm), unit);
-  else snprintf(text, sizeof(text), "grind not set");
-  fitSmall(homeGrind, text);
+  char shorter[64], grindText[40];
+  if (r.grindUm) snprintf(grindText, sizeof(grindText), "grind %s %s", gs(r.grindUm), unit);
+  else snprintf(grindText, sizeof(grindText), "grind not set");
   // As on the result screen, the setting to go to is only shown once the
   // sensitivity has been measured from this grinder's own shots. The unit is
   // on the grind line above, so the short wording leaves it out.
@@ -1117,31 +1159,20 @@ void refreshHome(const bbw::LiveStatus &st) {
   } else {
     text[0] = shorter[0] = '\0';
   }
-  fitSmall(homeAdvice, text, shorter);
   setColor(homeAdvice, g.action == GrindAction::HOLD ? COLOR_OK : COLOR_ACCENT);
-  describePreinfusion(r, text, sizeof(text));
-  snprintf(shorter, sizeof(shorter), "pre %.1f, bloom %.0f s", r.preinfusionHoldMs / 1000.0f,
+  char preText[48], preShort[48], footText[32];
+  describePreinfusion(r, preText, sizeof(preText));
+  snprintf(preShort, sizeof(preShort), "pre %.1f, bloom %.0f s", r.preinfusionHoldMs / 1000.0f,
            r.bloomPauseMs / 1000.0f);  // only ever needed with a bloom
-  fitSmall(homePre, text, shorter);
-
   // The stop offset is learned and looks after itself; it is not shown here.
-  snprintf(text, sizeof(text), "brew time %.0f s", r.targetTimeS);
-  fitSmall(homeFoot, text);
+  snprintf(footText, sizeof(footText), "brew time %.0f s", r.targetTimeS);
+  const CardEntry entries[] = {{homeGrind, grindText, grindText},
+                               {homeAdvice, text, shorter},
+                               {homePre, preText, preShort},
+                               {homeFoot, footText, footText}};
+  fitCardEntries(entries, 4);
 
-  // Bottom row: the roast level under the grind, its age under the brew time.
-  const bool anyCoffee = r.coffee[0] || r.roastLevel || r.roastDate;
-  const char *level = bbw::roastLevelName(r.roastLevel);
-  if (r.roastLevel) {
-    snprintf(shorter, sizeof(shorter), strncmp(level, "medium-", 7) == 0 ? "med-%s" : "%s",
-             strncmp(level, "medium-", 7) == 0 ? level + 7 : level);
-    fitSmall(homeRoast, level, shorter);
-  } else {
-    fitSmall(homeRoast, anyCoffee ? "" : "no coffee attached", anyCoffee ? "" : "no coffee");
-  }
-  char age[32];
-  describeRoastAge(r, false, age, sizeof(age));
-  describeRoastAge(r, true, shorter, sizeof(shorter));
-  fitSmall(homeAge, age, shorter);
+  // The roast level and age are on the COFFEE screen.
 
   if (!ready) {
     setText(homeHint, "SWITCH ON THE SCALE");
