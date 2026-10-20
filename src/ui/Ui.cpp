@@ -113,6 +113,7 @@ constexpr int COFFEE_LIST_Y = 72, COFFEE_LIST_H = 240 - COFFEE_LIST_Y - 6;
 constexpr int FINISH_KEY_H = 40, FINISH_KEY_GAP = 6;
 lv_obj_t *recipeBar;
 lv_obj_t *editFieldBtn[EDIT_FIELDS], *editTitle, *editValue, *editHint;
+lv_obj_t *editSetAdviceBtn, *editSetAdviceLabel;
 lv_obj_t *recipeList;
 // Brew
 lv_obj_t *brewArc, *brewWeight, *brewUnit, *brewTime, *brewTarget, *brewFlow, *brewPhase;
@@ -375,6 +376,21 @@ void editStep(int direction, bool held) {
 }
 void onEditMinus(lv_event_t *e) { editStep(-1, repeating(e)); }
 void onEditPlus(lv_event_t *e) { editStep(+1, repeating(e)); }
+// The setting the grind advice names, when it names one (finer or coarser, with a number).
+bool adviceSetting(uint16_t &um) {
+  const bbw::GrindAdvice g = app::grindAdvice();
+  if (g.action != GrindAction::FINER && g.action != GrindAction::COARSER) return false;
+  if (!bbw::adviceHasNumber(g) || !g.suggestedUm) return false;
+  um = g.suggestedUm;
+  return true;
+}
+// SET under the advice: the advised setting in one tap. Kept only on SAVE, like - and +.
+void onEditSetAdvice(lv_event_t *) {
+  uint16_t um = 0;
+  if (editField != EDIT_FIELD_GRIND || !adviceSetting(um)) return;
+  editRecipe.grindUm = um;
+  bbw::sanitizeRecipe(editRecipe);
+}
 void onEditSave(lv_event_t *) {
   app::applyPresetEdit(app::activePreset(), editRecipe);
   editOpen = false;
@@ -586,9 +602,14 @@ void buildEdit() {
   }
   editTitle = makeLine(p, &lv_font_montserrat_20, COLOR_DIM, 18, 146, 190);
   editValue = makeLine(p, &lv_font_montserrat_30, COLOR_TEXT, 54, 146, 190);
-  // Up to four lines of 20 pt down to the bottom edge.
+  // Up to four lines of 20 pt down to the bottom edge; three when SET is shown beneath.
   editHint = makeLine(p, &lv_font_montserrat_20, COLOR_DIM, 104, 146, 190);
   lv_label_set_long_mode(editHint, LV_LABEL_LONG_WRAP);
+  // Under the grind advice, between PRE-INF and CANCEL: sets the advised number.
+  editSetAdviceBtn = makeButton(p, "", &lv_font_montserrat_22, COLOR_ACCENT, 190, 52,
+                                LV_ALIGN_BOTTOM_LEFT, 146, -8, onEditSetAdvice,
+                                &editSetAdviceLabel);
+  lv_obj_add_flag(editSetAdviceBtn, LV_OBJ_FLAG_HIDDEN);
   makeRepeatKey(p, LV_SYMBOL_MINUS, 86, 86, LV_ALIGN_TOP_RIGHT, KEY_X - 94, 8, onEditMinus);
   makeRepeatKey(p, LV_SYMBOL_PLUS, 86, 86, LV_ALIGN_TOP_RIGHT, KEY_X, 8, onEditPlus);
   makeButton(p, "SAVE", &lv_font_montserrat_24, COLOR_OK, KEY_W, 70, LV_ALIGN_TOP_RIGHT, KEY_X,
@@ -1010,6 +1031,16 @@ void refreshEdit() {
   fitText(editValue, value, 190, 3, &lv_font_montserrat_30, &lv_font_montserrat_26,
           &lv_font_montserrat_22);
   setText(editHint, hint);
+  // SET while the grind is open and differs from the advised setting.
+  uint16_t advised = 0;
+  if (editField == EDIT_FIELD_GRIND && adviceSetting(advised) && editRecipe.grindUm != advised) {
+    char label[32];
+    snprintf(label, sizeof(label), "SET %s %s", gs(advised), grindUnit());
+    fitText(editSetAdviceLabel, label, 170, 2, &lv_font_montserrat_22, &lv_font_montserrat_20);
+    lv_obj_clear_flag(editSetAdviceBtn, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(editSetAdviceBtn, LV_OBJ_FLAG_HIDDEN);
+  }
   for (int i = 0; i < EDIT_FIELDS; ++i) {
     lv_obj_set_style_bg_color(editFieldBtn[i],
                               lv_color_hex(i == editField ? 0x3A2A12 : COLOR_PANEL), 0);
