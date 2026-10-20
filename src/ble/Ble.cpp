@@ -588,10 +588,15 @@ void BleManager::run() {
     servePusher(stop_, "stop", stopAddress, stopType, stopWanted_, power_.linkUp(), stopFailures_,
                 stopRetryAtMs_, scan, stopStats_);
     // Kept while the scale is off: not connected, and not heard for 30 s
-    // (a scale switched on advertises until it is connected).
+    // (a scale switched on advertises until it is connected). Also 30 s since
+    // its link was last up: while connected it does not advertise, so when
+    // the link has just dropped (an idle scale let go to rest) the last time
+    // it was heard is old, and the power bot would be tried as a third link.
+    if (scale_.linkUp()) scaleLinkUpAtMs_ = now ? now : 1;
     const uint32_t scaleHeardAt = scaleHeardAtMs_.load();
     const bool scaleOff = !scale_.linkUp() &&
-                          (scaleHeardAt == 0 || static_cast<int32_t>(now - scaleHeardAt) > 30000);
+                          (scaleHeardAt == 0 || static_cast<int32_t>(now - scaleHeardAt) > 30000) &&
+                          (scaleLinkUpAtMs_ == 0 || static_cast<int32_t>(now - scaleLinkUpAtMs_) > 30000);
     const bool powerWanted = powerWanted_.load() || (powerKept_.load() && scaleOff);
     servePusher(power_, "power", powerAddress, powerType, powerWanted, stop_.linkUp(),
                 powerFailures_, powerRetryAtMs_, scan, powerStats_);

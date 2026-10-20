@@ -250,6 +250,7 @@ class BleManager {
   std::atomic<bool> powerKept_{false};
   std::atomic<uint32_t> scaleHeardAtMs_{0};  // 0: not heard since start-up
   std::atomic<bool> scaleResting_{false};
+  uint32_t scaleLinkUpAtMs_ = 0;  // BLE task: when the scale's link was last seen up; 0: not since start-up
   char powerAddress_[ADDR_LEN] = {};
   uint8_t powerAddressType_ = 0;
   uint8_t powerFailures_ = 0;
