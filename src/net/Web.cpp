@@ -919,6 +919,8 @@ void handleShareLink() {
   for (const char *p = token; *p; ++p) {
     if (*p <= 0x20 || *p > 0x7e) return sendError(400, "a token has no spaces or special characters");
   }
+  // A token with no repository would be dropped (there is nothing to keep it for): say so instead.
+  if (tokenLength != 0 && length == 0) return sendError(400, "enter the library repository with the token");
   app::setLibraryLink(repo, token);
   sendOk();
 }

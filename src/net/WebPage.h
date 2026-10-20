@@ -360,15 +360,15 @@ main{padding:14px 12px 70px}.big{font-size:38px}.otp{top:62px}.otp.mini{margin-r
 <div class="sm mid" id="sh_key"></div>
 <div class="grid"><label>Library repository (owner/name)<input id="sh_repo" maxlength="63" placeholder="e.g. hallge/Community-Coffee" autocomplete="off"></label>
 <label>Token for that repository only (blank keeps the one stored)<input id="sh_token" type="password" maxlength="127" autocomplete="new-password"></label></div>
-<div class="row"><button onclick="saveLink()">Save the connection</button><span class="sm mid" id="sh_link"></span></div>
-<div class="sm mid">The token should be a fine-grained one limited to this repository, with Contents: read and write and nothing else. It is stored on the controller and never shown again.</div>
+<div class="sm mid" id="sh_link"></div>
+<div class="sm mid">The token should be a fine-grained one limited to this repository, with Contents: read and write and nothing else. Save below stores it on the controller; it is never shown again.</div>
 <label class="chk"><input type="checkbox" id="shareEnabled" style="accent-color:var(--com)">Share from this controller</label>
 <fieldset><legend>What it shares</legend>
 <label class="chk"><input type="checkbox" id="shareCoffees" style="accent-color:var(--com)">Coffees I add or change (name, roaster, origin, process, roast level, notes)</label>
 <label class="chk"><input type="checkbox" id="shareDialIns" style="accent-color:var(--com)">Settled dial-ins: grind, dose, yield, brew time, grinder, roast date</label>
 <label class="chk"><input type="checkbox" id="shareShots" style="accent-color:var(--com)">Every shot that counts for grind advice, with its flow</label>
 <label class="chk"><input type="checkbox" id="shareRatings" style="accent-color:var(--com)">My taste ratings, with those shots</label></fieldset>
-<div class="row"><button class="pri" style="background:var(--com);border-color:var(--com);color:#06203a" onclick="saveSettings()">Save</button><button onclick="post('/api/share/coffees').then(r=>{done(r,r.queued+' coffees queued');loadLibrary();loadShare()})">Queue coffees not sent yet</button><button onclick="if(confirm('Forget what was sent before and send every coffee and grinder you have described again?'))post('/api/share/again').then(r=>{done(r,r.queued+' queued');loadLibrary();loadShare()})">Send everything again</button></div>
+<div class="row"><button class="pri" style="background:var(--com);border-color:var(--com);color:#06203a" onclick="saveShare()">Save</button><button onclick="post('/api/share/coffees').then(r=>{done(r,r.queued+' coffees queued');loadLibrary();loadShare()})">Queue coffees not sent yet</button><button onclick="if(confirm('Forget what was sent before and send every coffee and grinder you have described again?'))post('/api/share/again').then(r=>{done(r,r.queued+' queued');loadLibrary();loadShare()})">Send everything again</button></div>
 <div class="sm mid" id="sh_queue"></div>
 <details class="note"><summary>Every record is signed with this controller's own key.</summary><ul><li>It carries the key's short id, never a name, an address or anything about the network.</li><li>Coffees and grinders wait for a reviewer before they are published; measurements do not.</li></ul></details></section>
 </div>
@@ -420,7 +420,11 @@ $('sh_key').textContent=s.key_ready?'This controller\'s key id: '+s.key_id+'. '+
 $('sh_queue').textContent=s.waiting+' waiting to send (room for '+s.capacity+'), '+s.sent+' sent.';
 if(document.activeElement!=$('sh_repo'))$('sh_repo').value=s.repository||'';
 $('sh_link').textContent=(s.real_signatures?(!s.configured?(s.repository?'No token stored yet.':'Not connected: records wait on the controller.'):s.problem?'Not reaching the library: '+s.problem+(s.last_answer?' (answer '+s.last_answer+')':'')+'.':s.can_send?'Connected'+(s.last_ok?', last reached '+new Date(s.last_ok*1000).toLocaleString():'')+'.':'Waiting to try again.')+(s.token_set?' A token is stored.':''):'This PC has no OpenSSL, so the emulator cannot sign: records go to a folder beside its data and no further.')+(s.real_signatures&&!s.to_library?' Not reaching the library: set the repository above, and log the GitHub CLI in on this PC (gh auth login).':'')}
-function saveLink(){post('/api/share/link',{repository:$('sh_repo').value.trim(),token:$('sh_token').value}).then(r=>{done(r,'Connection saved');$('sh_token').value='';loadShare()})}
+// The Shared library card has one Save: the connection (repository, token) when either was changed,
+// then the sharing switches. A token typed here is never left behind by a Save that says Saved.
+function saveShare(){const repo=$('sh_repo').value.trim(),tok=$('sh_token').value.trim(),linkChanged=!!tok||!SH_||repo!==(SH_.repository||'');
+(linkChanged?post('/api/share/link',{repository:repo,token:tok}):Promise.resolve({ok:true})).then(r=>{if(!r.ok){done(r,'');return}
+if(linkChanged)$('sh_token').value='';saveSettings();loadShare()})}
 const CF=['name','roaster','origin','region','producer','varietal','process','roastLevel','altitudeM','roastDate','frozenDate','thawDate','notes'];
 const RF=['name','doseG','useRatio','targetWeightG','ratio','targetTimeS','preinfusion','preinfusionHoldS','bloomPauseS','timeLimit','maxShotTimeS','baselineOffsetG'];
 const coffee=id=>L.coffees.find(c=>c.id==id),recipe=id=>L.recipes.find(r=>r.id==id);

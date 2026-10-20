@@ -1526,6 +1526,9 @@ void setLibraryLink(const char *repo, const char *token) {
   if (token && token[0]) strlcpy(g_net.libraryToken, token, sizeof(g_net.libraryToken));
   if (!g_net.libraryRepo[0]) g_net.libraryToken[0] = '\0';  // no repository: nothing to keep a token for
   g_store.saveNet(g_net);
+  // Never the token itself: whether one came, and whether one is kept.
+  LOGI("library: connection saved: %s, %s", g_net.libraryRepo[0] ? g_net.libraryRepo : "no repository",
+       token && token[0] ? "new token stored" : g_net.libraryToken[0] ? "token kept" : "no token");
   bbw::libraryLinkConfigure(g_net.libraryRepo, g_net.libraryToken);
   g_libraryReadSoon = true;
 }
