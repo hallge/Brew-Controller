@@ -57,6 +57,7 @@ bool updateBootSlot(const char *, char *why, size_t whySize) {
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <esp_heap_caps.h>
+#include <esp_image_format.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <mbedtls/platform.h>
@@ -90,6 +91,8 @@ namespace {
 constexpr uint16_t CONNECT_TIMEOUT_MS = 8000;
 constexpr uint16_t ANSWER_TIMEOUT_MS = 15000;
 constexpr uint32_t STALL_TIMEOUT_MS = 20000;            // no bytes for this long: give up
+constexpr int ACTIVATE_RETRIES = 3;                      // the last step of an install, tried again
+constexpr uint32_t ACTIVATE_RETRY_MS = 500;
 constexpr uint32_t CHECK_PERIOD_S = 24UL * 3600UL;      // daily
 constexpr uint32_t FIRST_CHECK_AFTER_MS = 120000;       // after start-up
 constexpr size_t CHUNK = 4096;
@@ -377,6 +380,9 @@ bool doInstall() {
     failWith("the firmware download could not be started");
     return false;
   }
+  // The slot is about to be overwritten: until the new firmware is in and activated, it holds no
+  // version the page can offer to go back to.
+  recordSlotVersion(target->label, "");
   if (!Update.begin(info.firmwareBytes, U_FLASH)) {
     http.end();
     snprintf(message, sizeof(message), "could not prepare the update slot: %s", Update.errorString());
@@ -426,9 +432,29 @@ bool doInstall() {
   }
   // Checks the image itself and makes the slot the one to start from.
   if (!Update.end(true)) {
-    snprintf(message, sizeof(message), "the image was refused: %s", Update.errorString());
-    failWith(message);
-    return false;
+    const uint8_t error = Update.getError();
+    // The whole image is written and matches the release, but the last step, making it the slot to
+    // start from, was refused. Seen on the board on the first try into app0 (twice); a second full
+    // download then went through. Arduino's library keeps the IDF's reason to itself, so it is asked
+    // for here and kept in the log, and the step is tried again on the image already in place.
+    bool activated = false;
+    if (error == UPDATE_ERROR_ACTIVATE) {
+      esp_image_metadata_t data;
+      const esp_partition_pos_t pos = {target->address, target->size};
+      LOGW("update: activation refused; the image checks %s",
+           esp_err_to_name(esp_image_verify(ESP_IMAGE_VERIFY, &pos, &data)));
+      for (int attempt = 1; attempt <= ACTIVATE_RETRIES && !activated; ++attempt) {
+        delay(ACTIVATE_RETRY_MS);
+        const esp_err_t e = esp_ota_set_boot_partition(target);
+        LOGW("update: activation, try %d: %s", attempt, esp_err_to_name(e));
+        activated = e == ESP_OK;
+      }
+    }
+    if (!activated) {
+      snprintf(message, sizeof(message), "the image was refused: %s", Update.errorString());
+      failWith(message);
+      return false;
+    }
   }
   recordSlotVersion(target->label, info.tag);
   snprintf(message, sizeof(message), "%s installed in slot %s; restarting into it", info.tag, target->label);
@@ -546,6 +572,8 @@ size_t updateSlots(SlotInfo *out, size_t max) {
       esp_ota_img_states_t state;
       if (!image) {
         s.state = "unused";
+      } else if (!s.running && s.version[0] == '\0') {
+        s.state = "incomplete";  // an install into it did not finish: nothing to go back to
       } else if (esp_ota_get_state_partition(p, &state) != ESP_OK) {
         s.state = "valid";  // written over USB, never through the update process
       } else if (state == ESP_OTA_IMG_PENDING_VERIFY || state == ESP_OTA_IMG_NEW) {
@@ -571,7 +599,9 @@ bool updateBootSlot(const char *which, char *why, size_t whySize) {
       return false;
     }
   } else if (strcmp(which, "previous") == 0) {
-    // The update slot that is not running, if it holds a firmware that ran.
+    // The update slot that is not running, if it holds a firmware that ran (an install that did not
+    // finish left its slot without a version).
+    const SlotVersions versions = loadSlotVersions();
     for (int sub = ESP_PARTITION_SUBTYPE_APP_OTA_0; sub <= ESP_PARTITION_SUBTYPE_APP_OTA_1; ++sub) {
       const esp_partition_t *p = esp_partition_find_first(
           ESP_PARTITION_TYPE_APP, static_cast<esp_partition_subtype_t>(sub), nullptr);
@@ -581,7 +611,7 @@ bool updateBootSlot(const char *which, char *why, size_t whySize) {
       const bool image = esp_ota_get_partition_description(p, &desc) == ESP_OK;
       const bool failed = esp_ota_get_state_partition(p, &state) == ESP_OK &&
                           (state == ESP_OTA_IMG_INVALID || state == ESP_OTA_IMG_ABORTED);
-      if (image && !failed) target = p;
+      if (image && !failed && slotVersion(versions, p->label)[0] != '\0') target = p;
     }
     if (!target) {
       strlcpy(why, "there is no earlier version in the other update slot", whySize);
