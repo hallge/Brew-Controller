@@ -304,6 +304,7 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <label><span>Largest single change (<span class="un">&micro;m</span>)</span><input id="grindMaxStepUm" type="number" min="1" max="100"></label>
 <label>Brew time measured<select id="grindTimeBasis"><option value="0">Total: start press to stop (with pre-infusion)</option><option value="1">Pour: first drops to stop</option></select></label></div>
 <div class="row"><button class="pri" data-save onclick="saveSettings(this.closest('.card'))">Save</button><span class="sm dim">Changing how brew time is measured starts a fresh comparison: set each recipe's target time to match.</span></div></section>
+<section class="card"><div class="head"><h2>Grinder upkeep</h2><span class="sm dim" id="gu_total"></span></div><div id="gu_rows"></div><details class="note"><summary>Cleaning is counted in shots, like the machine's upkeep. Zeroing starts a fresh comparison of settings.</summary><ul><li>After zeroing the grinder again (or changing burrs), settings from before are no longer compared with new ones: grind advice starts fresh for every coffee.</li><li>The date can be corrected under My grinder.</li></ul></details></section>
 <section class="card"><h2>My grinder</h2><div class="grid">
 <label>Model<select id="gm_model" onchange="grinderForm()"></select></label>
 <label>Name<input id="gm_name" maxlength="31"></label>
@@ -313,7 +314,7 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <label>A dial that reads in parts of a step<select id="gm_divisor"><option value="1">No: whole numbers (246, 12)</option><option value="2">Halves (3.5)</option><option value="4">Quarters (3.25)</option><option value="5">Fifths (3.2)</option><option value="10">Tenths (3.5)</option><option value="20">Twentieths (3.05)</option><option value="25">Twenty-fifths (3.04)</option><option value="50">Fiftieths (3.02)</option><option value="100">Hundredths (3.01)</option></select></label>
 <label>Two rings (inner steps per outer step; 0: one scale)<input id="gm_subSteps" type="number" min="0" max="99" step="1" placeholder="0" oninput="$('gm_divisor').disabled=+this.value>=2"></label>
 <label>Last zeroed, or burrs changed<input id="gm_zeroDate" type="date"></label></div>
-<div class="row"><button class="pri" data-save onclick="saveGrinder(false)">Save</button><button onclick="saveGrinder(true)">I zeroed it again today</button><button id="gm_addother" onclick="saveGrinder(false,true)">Add what is typed above as my second grinder</button></div>
+<div class="row"><button class="pri" data-save onclick="saveGrinder(false)">Save</button><button id="gm_addother" onclick="saveGrinder(false,true)">Add what is typed above as my second grinder</button></div>
 <div class="sm dim" id="gm_info"></div>
 <div class="row" id="gm_shrow" style="border-top:1px solid var(--line);padding-top:12px"><span class="pill" id="gm_shpill" style="background:var(--combg);color:#8cc4ff;border:1px solid var(--comline)"></span><span class="sm mid" id="gm_share" style="flex:1 1 260px"></span><button id="gm_send" onclick="sendGrinder(L.grinder.id)">Send to the shared library</button></div>
 <div class="row" id="gm_other" style="border-top:1px solid var(--line);padding-top:12px"></div>
@@ -468,7 +469,7 @@ const plabel=p=>{const c=coffee(p.coffeeId),r=recipe(p.recipeId);return (c?c.nam
 
 function show(){const h=(location.hash||'#home').slice(1);document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on',p.id=='p-'+h));
 document.querySelectorAll('nav a,#bnav a,#more a').forEach(a=>a.classList.toggle('on',a.getAttribute('href')=='#'+h));
-$('bmore').classList.toggle('on',['recipes','machine','setup','logs'].includes(h));$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees')loadCommunityCoffees();if(h=='grinder'){drawScatter();loadCommunityGrinders()}}
+$('bmore').classList.toggle('on',['recipes','machine','setup','logs'].includes(h));$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees')loadCommunityCoffees();if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}}
 window.addEventListener('hashchange',show);loadHomePower();
 let LOGT='',LOGN=0,LOGB=false;
 function drawLog(){const f=$('lg_filter').value.toLowerCase(),v=$('lg_view');v.innerHTML=LOGT.split('\n').filter(l=>l&&(!f||l.toLowerCase().includes(f))).map(l=>{const k=l.charAt(11);return '<span'+(k=='E'||k=='W'?' style="color:var(--warn)"':k=='D'?' class="dim"':'')+'>'+esc(l)+'</span>'}).join('\n');if($('lg_follow').checked)v.scrollTop=v.scrollHeight}
@@ -741,7 +742,7 @@ const order=pts.map((q,i)=>i).sort((a,b)=>(pts[a].c==cc.cur)-(pts[b].c==cc.cur))
 order.forEach(i=>{const q=pts[i],px=X(i),py=Y(q.t);x.fillStyle=cc.m.get(q.c).col;x.beginPath();x.arc(px,py,q.c==cc.cur?5:4,0,7);x.fill();if(q.r>=4){x.strokeStyle='#ffffff';x.lineWidth=2;x.beginPath();x.arc(px,py,7.5,0,7);x.stroke();x.lineWidth=1}dots.push({x:px,y:py,q})});
 chartDots(c,dots);
 const out=pts.filter(q=>Math.abs(q.t-tg)>tol).length;$('cnote').textContent=pts.length+' shots, '+out+' outside the tolerance'}
-function drawScatter(){drawControl();const c=$('gchart'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);$('gleg').innerHTML='';c._dots=[];if(!L||!G||!S)return;
+function drawScatter(){drawControl();drawGrinderUpkeep();const c=$('gchart'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);$('gleg').innerHTML='';c._dots=[];if(!L||!G||!S)return;
 const pts=grindShots().filter(q=>q.u);
 const tg=G.target_time_s,tol=G.tolerance_s;if(!pts.length){$('gnote').textContent='No shots stopped by weight on this grinder yet.';return}
 const cc=coffeeColours(pts);drawLegend('gleg',cc);
@@ -843,7 +844,15 @@ x.fillStyle='#eceef0';x.fillText(wm.toFixed(0)+' g',2,16);x.fillStyle='#9aa3ad';
 
 const UPK={backflush:'Backflush',descale:'Descale',grinder_clean:'Clean the grinder'};
 async function loadUpkeep(){let m;try{m=await get('/api/maintenance')}catch(e){return}$('mt_total').textContent=m.shots_total+' shots counted';
-$('mt_rows').innerHTML=m.jobs.map(j=>`<div class="row" style="align-items:center"><b style="flex:1 1 150px">${UPK[j.id]}</b><span style="flex:1 1 200px" class="${j.due?'off':''}">${j.since_shots} shots since${j.last_epoch?', last done '+new Date(j.last_epoch*1000).toLocaleDateString():''}${j.due?' - due now':j.every_shots?' - next in '+Math.max(0,j.every_shots-j.since_shots)+' shots':''}</span><label style="flex:0 0 130px">Remind after<input type="number" min="0" max="5000" step="10" value="${j.every_shots||''}" placeholder="never" onchange="act2('/api/maintenance?job=${j.id}&action=every&every='+(this.value||0))"></label><button onclick="act2('/api/maintenance?job=${j.id}&action=done')">Done today</button></div>`).join('')}
+const row=j=>`<div class="row" style="align-items:center"><b style="flex:1 1 150px">${UPK[j.id]}</b><span style="flex:1 1 200px" class="${j.due?'off':''}">${j.since_shots} shots since${j.last_epoch?', last done '+new Date(j.last_epoch*1000).toLocaleDateString():''}${j.due?' - due now':j.every_shots?' - next in '+Math.max(0,j.every_shots-j.since_shots)+' shots':''}</span><label style="flex:0 0 130px">Remind after<input type="number" min="0" max="5000" step="10" value="${j.every_shots||''}" placeholder="never" onchange="act2('/api/maintenance?job=${j.id}&action=every&every='+(this.value||0))"></label><button onclick="act2('/api/maintenance?job=${j.id}&action=done')">Done today</button></div>`;
+$('mt_rows').innerHTML=m.jobs.filter(j=>j.id!='grinder_clean').map(row).join('');
+MT={m,row};drawGrinderUpkeep()}
+// The grinder's own upkeep: cleaning, and zeroing (which starts a new calibration, see saveGrinder).
+// Drawn again with the charts, once the shots and the grinder are known.
+let MT=null;function drawGrinderUpkeep(){if(!MT||!$('gu_rows'))return;const m=MT.m,row=MT.row;
+const gc=m.jobs.find(j=>j.id=='grinder_clean'),g=L&&L.grinder,cal=g?g.calibration:0,since0=SH.filter(s=>(s.grinder_calibration||0)==cal).length;
+$('gu_total').textContent=m.shots_total+' shots counted';
+$('gu_rows').innerHTML=(gc?row(gc):'')+`<div class="row" style="align-items:center"><b style="flex:1 1 150px">Zero the grinder</b><span style="flex:1 1 200px">${since0} shots since${g&&g.zeroDate?', last zeroed '+fd(g.zeroDate):', never recorded'}</span><span style="flex:0 0 130px"></span><button onclick="saveGrinder(true).then(()=>setTimeout(loadUpkeep,1500))">Zeroed today</button></div>`}
 function act2(u){post(u).then(r=>{done(r,'');loadUpkeep()})}
 async function forget(role,what){if(await ask('Forget '+what+'? It will have to be paired again before it is used.'))pair(role,'',0)}
 async function loadDevices(){let d;try{d=await get('/api/devices')}catch(e){return}
