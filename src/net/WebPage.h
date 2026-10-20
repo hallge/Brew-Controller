@@ -274,8 +274,8 @@ main{padding:14px 12px 70px}.big{font-size:38px}.otp{top:62px}.otp.mini{margin-r
 <section class="card"><h2>Advice</h2><div><span class="pill" id="gadv" style="font-size:16px"></span></div>
 <div class="sm mid" id="gwhy"></div><div class="sm mid" id="gage"></div><div class="sm mid" id="grate"></div><div class="row"><button class="pri" id="gapply" style="display:none" onclick="setGrind(G.suggested_um)"></button></div></section></div>
 <section class="card"><div class="head"><h2>Brew time against grind setting</h2><span class="sm dim" id="gsens"></span></div>
-<canvas id="gchart" width="900" height="220" style="height:220px"></canvas><div class="sm mid" id="gnote"></div></section>
-<section class="card"><div class="head"><h2>Each shot's time</h2><span class="sm dim" id="cnote"></span></div><canvas id="cchart" width="900" height="200" style="height:200px"></canvas><details class="note"><summary>One dot per shot of this coffee and recipe that stopped on weight, oldest on the left.</summary><ul><li>Green band: the target time and its tolerance.</li><li>Dashed line and narrower band: the time of the shots you rated 4 or 5, when the advice is refining towards it.</li><li>Thin lines: where the grind setting changed.</li><li>Bright dots: shots you rated 4 or 5.</li></ul></details></section>
+<canvas id="gchart" width="900" height="220" style="height:220px"></canvas><div class="row sm" id="gleg"></div><div class="sm mid" id="gnote"></div></section>
+<section class="card"><div class="head"><h2>Each shot's time</h2><span class="sm dim" id="cnote"></span></div><canvas id="cchart" width="900" height="200" style="height:200px"></canvas><div class="row sm" id="cleg"></div><details class="note"><summary>One dot per shot that stopped on weight on this grinder, every coffee and recipe, oldest on the left.</summary><ul><li>Each coffee has its own colour (named below the chart); the one being brewed now is orange.</li><li>Green band: the target time and its tolerance, for the recipe being brewed now.</li><li>Dashed line and narrower band: the time of the shots you rated 4 or 5, when the advice is refining towards it.</li><li>Thin lines: where the grind setting changed.</li><li>White rings: shots you rated 4 or 5.</li></ul></details></section>
 <section class="card"><h2>How advice is worked out</h2><div class="grid">
 <label>Brew time tolerance (&plusmn; s)<input id="grindToleranceS" type="number" step="0.5" min="0.5" max="10"></label>
 <label>Shots averaged<input id="grindWindow" type="number" min="1" max="10"></label>
@@ -631,29 +631,43 @@ function switchGrinder(){act('grinder_switch').then(()=>say('Now using '+L.grind
 function removeOther(){if(confirm('Remove '+L.otherGrinder.model+'? Its settings for each coffee go with it; its shots stay in the history.'))act('grinder_remove_other')}
 function sendGrinder(id){post('/api/share/grinder?id='+id).then(r=>{done(r,'Queued for the shared library');loadLibrary();loadShare()})}
 function setGrind(um){if(um==null||!(um>=1&&um<=2000))return say('That is not a setting this grinder can have'+((GRD.subSteps||0)>=2?' (outer ring : inner ring, for example 12:3)':(GRD.divisor||1)>1?' (a number such as 3.5)':' (a whole number)'));post('/api/grind/set?um='+Math.round(um)).then(r=>{done(r,'Grind setting saved');$('gset').value='';loadLibrary()})}
-function drawControl(){const c=$('cchart');if(!c)return;const x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);$('cnote').textContent='';if(!L||!G||!S)return;const p=L.presets[L.activePreset];
-let pts=SH.filter(s=>s.recipe_id==p.recipeId&&s.coffee_id==p.coffeeId&&(s.grinder_calibration||0)==L.grinder.calibration&&/^weight/.test(s.end_reason)&&s.grind_vote!='ignore').map(s=>({t:S.grindTimeBasis==1?s.pour_time_s:s.shot_time_s,u:s.grind_um,r:s.rating})).filter(q=>q.t>0).reverse().slice(-40);
+// Both grinder charts show every coffee and recipe brewed on this grinder, each coffee in its own colour;
+// the one being brewed now is orange and drawn on top. The legend under each chart names them. The
+// green band is the target of the recipe being brewed now.
+const CCOL=['#f59e0b','#38bdf8','#a78bfa','#f472b6','#34d399','#facc15','#fb7185','#60a5fa','#2dd4bf','#c084fc'];
+function grindShots(){return SH.filter(s=>(s.grinder_calibration||0)==L.grinder.calibration&&/^weight/.test(s.end_reason)&&s.grind_vote!='ignore').map(s=>({t:S.grindTimeBasis==1?s.pour_time_s:s.shot_time_s,u:s.grind_um,r:s.rating,c:s.coffee_id||0,n:s.coffee||'no coffee'})).filter(q=>q.t>0)}
+// A coffee keeps its colour on both charts: the one being brewed gets the first, the others follow in
+// the order of their ids among all shots on this grinder. The legend counts the shots on its own chart.
+function coffeeColours(pts){const cur=(L.presets[L.activePreset]||{}).coffeeId||0,ids=[...new Set(grindShots().map(q=>q.c))].sort((a,b)=>(b==cur)-(a==cur)||a-b),off=ids.includes(cur)?0:1,col=new Map(ids.map((id,i)=>[id,CCOL[(i+off)%CCOL.length]])),m=new Map();
+[...ids].forEach(id=>{const q=pts.find(q=>q.c==id);if(q)m.set(id,{col:col.get(id),n:q.n,k:pts.filter(p=>p.c==id).length})});return {cur,m}}
+function drawLegend(el,cc){$(el).innerHTML=[...cc.m].map(([id,v])=>`<span class="chk" style="gap:6px;margin-right:14px"><span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:${v.col}"></span>${esc(v.n)}${id==cc.cur?' <span class="dim">(brewing now)</span>':''} <span class="dim">${v.k}</span></span>`).join('')}
+function drawControl(){const c=$('cchart');if(!c)return;const x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);$('cnote').textContent='';$('cleg').innerHTML='';if(!L||!G||!S)return;
+let pts=grindShots().reverse().slice(-100);
 if(pts.length<2){$('cnote').textContent='needs two shots';return}
+const cc=coffeeColours(pts);drawLegend('cleg',cc);
 const tg=G.target_time_s,tol=G.tolerance_s,aim=G.aim_time_s>0?G.aim_time_s:0,band=G.rated_band_s||0;
 const ts=pts.map(q=>q.t),t0=Math.min(...ts,tg-tol)-2,t1=Math.max(...ts,tg+tol)+2,X=i=>50+i/(pts.length-1)*(c.width-70),Y=t=>c.height-24-(t-t0)/(t1-t0)*(c.height-38);
 x.fillStyle='#14301f';x.fillRect(50,Y(tg+tol),c.width-70,Y(tg-tol)-Y(tg+tol));
 if(aim){x.fillStyle='#1d4a30';x.fillRect(50,Y(aim+band),c.width-70,Y(aim-band)-Y(aim+band));x.strokeStyle='#4cc38a';x.setLineDash([4,6]);x.beginPath();x.moveTo(50,Y(aim));x.lineTo(c.width-20,Y(aim));x.stroke();x.setLineDash([])}
 x.strokeStyle='#2a2e33';x.beginPath();x.moveTo(50,10);x.lineTo(50,c.height-24);x.lineTo(c.width-20,c.height-24);x.stroke();
 x.fillStyle='#9aa3ad';x.font='12px sans-serif';x.fillText(t1.toFixed(0)+' s',8,18);x.fillText(t0.toFixed(0)+' s',8,c.height-26);
-pts.forEach((q,i)=>{if(i&&q.u!=pts[i-1].u){x.strokeStyle='#4a4f56';x.beginPath();x.moveTo(X(i)-0.5*(c.width-70)/(pts.length-1),10);x.lineTo(X(i)-0.5*(c.width-70)/(pts.length-1),c.height-24);x.stroke();x.fillStyle='#9aa3ad';x.fillText(fsn(q.u),X(i)-0.5*(c.width-70)/(pts.length-1)+3,c.height-8)}});
+let lastLabel=-99;pts.forEach((q,i)=>{if(i&&q.u!=pts[i-1].u){const lx=X(i)-0.5*(c.width-70)/(pts.length-1);x.strokeStyle='#4a4f56';x.beginPath();x.moveTo(lx,10);x.lineTo(lx,c.height-24);x.stroke();const label=fsn(q.u);if(lx-lastLabel>x.measureText(label).width+8){x.fillStyle='#9aa3ad';x.fillText(label,lx+3,c.height-8);lastLabel=lx}}});
 x.strokeStyle='#6b7280';x.lineWidth=1;x.beginPath();pts.forEach((q,i)=>i?x.lineTo(X(i),Y(q.t)):x.moveTo(X(i),Y(q.t)));x.stroke();
-pts.forEach((q,i)=>{x.fillStyle=q.r>=4?'#6ee7a8':'#eceef0';x.beginPath();x.arc(X(i),Y(q.t),q.r>=4?5:3.5,0,7);x.fill()});
+// Coffee colour per dot; a white ring marks a shot rated 4 or 5. The coffee being brewed goes on top.
+const order=pts.map((q,i)=>i).sort((a,b)=>(pts[a].c==cc.cur)-(pts[b].c==cc.cur));
+order.forEach(i=>{const q=pts[i];x.fillStyle=cc.m.get(q.c).col;x.beginPath();x.arc(X(i),Y(q.t),q.c==cc.cur?5:4,0,7);x.fill();if(q.r>=4){x.strokeStyle='#ffffff';x.lineWidth=2;x.beginPath();x.arc(X(i),Y(q.t),7.5,0,7);x.stroke();x.lineWidth=1}});
 const out=pts.filter(q=>Math.abs(q.t-tg)>tol).length;$('cnote').textContent=pts.length+' shots, '+out+' outside the tolerance'}
-function drawScatter(){drawControl();const c=$('gchart'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);if(!L||!G||!S)return;const p=L.presets[L.activePreset];
-const pts=SH.filter(s=>s.recipe_id==p.recipeId&&s.coffee_id==p.coffeeId&&s.grind_um&&/^weight/.test(s.end_reason)&&s.grind_vote!='ignore'&&(s.grinder_calibration||0)==L.grinder.calibration).map(s=>({u:s.grind_um,t:S.grindTimeBasis==1?s.pour_time_s:s.shot_time_s})).filter(q=>q.t>0);
-const tg=G.target_time_s,tol=G.tolerance_s;if(!pts.length){$('gnote').textContent='No shots of this coffee and recipe stopped by weight yet.';return}
+function drawScatter(){drawControl();const c=$('gchart'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);$('gleg').innerHTML='';if(!L||!G||!S)return;
+const pts=grindShots().filter(q=>q.u);
+const tg=G.target_time_s,tol=G.tolerance_s;if(!pts.length){$('gnote').textContent='No shots stopped by weight on this grinder yet.';return}
+const cc=coffeeColours(pts);drawLegend('gleg',cc);
 const us=pts.map(q=>q.u),lo=Math.min(...us,G.current_um||us[0])-10,hi=Math.max(...us,G.current_um||us[0])+10,ts=pts.map(q=>q.t),t0=Math.min(...ts,tg-tol)-3,t1=Math.max(...ts,tg+tol)+3;
 const X=u=>50+(u-lo)/(hi-lo)*(c.width-70),Y=t=>c.height-26-(t-t0)/(t1-t0)*(c.height-40);
 x.fillStyle='#14301f';x.fillRect(50,Y(tg+tol),c.width-70,Y(tg-tol)-Y(tg+tol));x.strokeStyle='#4cc38a';x.setLineDash([4,6]);x.beginPath();x.moveTo(50,Y(tg));x.lineTo(c.width-20,Y(tg));x.stroke();x.setLineDash([]);
 x.strokeStyle='#2a2e33';x.beginPath();x.moveTo(50,10);x.lineTo(50,c.height-26);x.lineTo(c.width-20,c.height-26);x.stroke();
 x.fillStyle='#9aa3ad';x.font='12px sans-serif';x.fillText(t1.toFixed(0)+' s',8,18);x.fillText(t0.toFixed(0)+' s',8,c.height-28);x.fillText(fs(Math.round(lo)),50,c.height-8);x.fillText(fs(Math.round(hi)),c.width-70,c.height-8);
-pts.forEach((q,i)=>{x.fillStyle=Math.abs(q.t-tg)<=tol?'#7be0aa':'#f5c451';x.beginPath();x.arc(X(q.u)+((i*37)%13-6),Y(q.t),5,0,7);x.fill()});
-const set=new Set(us);$('gnote').textContent=pts.length+' shot'+(pts.length==1?'':'s')+' stopped by weight, at '+set.size+' setting'+(set.size==1?'. With one setting there is no slope to measure: once shots exist at two settings at least 4 '+U+' apart, the line through them replaces the starting guess.':'s.')+' Green band: '+tg+' s ± '+tol+' s.'}
+pts.map((q,i)=>i).sort((a,b)=>(pts[a].c==cc.cur)-(pts[b].c==cc.cur)).forEach(i=>{const q=pts[i];x.fillStyle=cc.m.get(q.c).col;x.globalAlpha=q.c==cc.cur?1:0.85;x.beginPath();x.arc(X(q.u)+((i*37)%13-6),Y(q.t),q.c==cc.cur?5.5:4.5,0,7);x.fill();x.globalAlpha=1});
+const set=new Set(us);$('gnote').textContent=pts.length+' shot'+(pts.length==1?'':'s')+' stopped by weight, '+cc.m.size+' coffee'+(cc.m.size==1?'':'s')+', at '+set.size+' setting'+(set.size==1?'. With one setting there is no slope to measure: once shots exist at two settings at least 4 '+U+' apart, the line through them replaces the starting guess.':'s.')+' Green band, the recipe being brewed now: '+tg+' s ± '+tol+' s.'}
 
 function drawFilter(){const cur=$('fcoffee').value;$('fcoffee').innerHTML='<option value="">All coffees</option>'+[...new Set(SH.map(s=>s.coffee).filter(x=>x))].map(n=>`<option ${n==cur?'selected':''}>${esc(n)}</option>`).join('')}
 async function loadShots(){let a;try{a=await get('/api/shots?limit=500')}catch(e){return}if(!Array.isArray(a))return;SH=a;drawFilter();drawShots();
