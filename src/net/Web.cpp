@@ -109,6 +109,8 @@ void handleStatus() {
   doc["awaiting_drip"] = st.awaitingDrip;
   doc["recipe"] = st.recipe;
   doc["scale_connected"] = st.scaleConnected;
+  doc["scale_resting"] = app::scaleResting();         // let go when idle so it can switch itself off
+  doc["scale_start_pending"] = app::scaleStartPending();  // a start waiting for the scale to come back
   doc["bot_connected"] = st.botConnected;
   doc["bot_paired"] = st.botPaired;
   doc["cup_present"] = st.cupPresent;
@@ -149,6 +151,8 @@ void handleGetSettings() {
   doc["requireCup"] = s.requireCup;
   doc["keepPowerBotConnected"] = s.keepPowerBotConnected;
   doc["displayFlipped"] = s.displayFlipped;
+  // Minutes idle before the scale is let go so that it can switch itself off; 0: kept connected.
+  doc["scaleRestMin"] = s.scaleRestMin == bbw::SCALE_REST_NEVER ? 0 : s.scaleRestMin;
   doc["actuationMode"] = static_cast<int>(s.actuationMode);
   doc["pressDurationMs"] = s.pressDurationMs;
   doc["releaseSettleMs"] = s.releaseSettleMs;
@@ -235,6 +239,11 @@ void handlePostSettings() {
   s.requireCup = doc["requireCup"] | s.requireCup;
   s.keepPowerBotConnected = doc["keepPowerBotConnected"] | s.keepPowerBotConnected;
   s.displayFlipped = doc["displayFlipped"] | s.displayFlipped;
+  if (doc["scaleRestMin"].is<int>()) {
+    const int minutes = doc["scaleRestMin"].as<int>();
+    s.scaleRestMin = minutes <= 0 ? bbw::SCALE_REST_NEVER
+                     : static_cast<uint8_t>(minutes > bbw::SCALE_REST_MAX_MIN ? bbw::SCALE_REST_MAX_MIN : minutes);
+  }
   s.actuationMode =
       static_cast<bbw::ActuationMode>(doc["actuationMode"] | static_cast<int>(s.actuationMode));
   s.pressDurationMs = doc["pressDurationMs"] | s.pressDurationMs;
@@ -545,6 +554,9 @@ void handleLast() {
 
 void handleCmd() {
   const String c = server.arg("c");
+  // An idle scale is not let go, one let go is taken back (Start does this itself, and starts once
+  // the scale is back).
+  if (c != "start") app::noteActivity();
   if (c == "stop") {
     app::stop();
   } else if (c == "tare") {
@@ -958,6 +970,7 @@ void handleSaveGrinder() {
 // POST /api/library/do?what=...: the small changes, all by id or list index.
 void handleLibraryDo() {
   if (busyBrewing()) return sendError(409, "not while a shot is running");
+  app::noteActivity();  // a change from the page: an idle scale is not let go
   static String what;
   static long a, b;
   what = server.arg("what");

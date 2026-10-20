@@ -167,6 +167,16 @@ Three keys sit beside the card:
 - **Gear**: offset learning, Bot pairing, forget scale, TARE SCALE and the
   Wi-Fi details.
 
+An Acaia scale only counts down its own sleep timer while nothing is
+connected to it, so after 5 minutes with nothing happening (READY, the
+reading unchanged, nobody using the screen, the touch key or the web page)
+the controller lets go of it and the home screen says `SCALE RESTING`. The
+brew bot is let go with it, and once the scale has switched itself off the
+power bot is connected instead. Pressing the touch key while the scale rests
+takes it back and starts the shot as soon as the scale and a cup are there.
+The time is set on the web page under Machine power (0 keeps the scale
+connected).
+
 The grind setting is part of the recipe: change it under EDIT RECIPE, where
 the advisor's suggested setting is shown when it has one.
 

@@ -2464,6 +2464,75 @@ static void testEmptyScaleZeroed() {
   CHECK(a.sim.tares == beforeLift);
 }
 
+static void testScaleRest() {
+  printf("idle scale let go so it can switch itself off, taken back on use\n");
+  const uint32_t MIN = 60000;
+  {
+    ScaleRest r;
+    uint32_t t = 1000;
+    CHECK(!r.update(t, 5, true, true, 0.0f, 0));
+    t += 5 * MIN - 1000;
+    CHECK(!r.update(t, 5, true, true, 0.1f, 0));    // a little noise is still
+    t += 1000;
+    CHECK(r.update(t, 5, true, true, 0.0f, 0));      // five minutes: let go
+    CHECK(r.resting());
+    // Just let go: last heard long ago (it does not advertise while connected), but it is not off.
+    CHECK(r.update(t + 50, 5, false, false, 0.0f, 10 * MIN));
+    // Let go: no link, still heard advertising for a while.
+    CHECK(r.update(t + 10000, 5, false, false, 0.0f, 5000));
+    // Gone quiet for 30 s: it has switched itself off; free to connect when switched on.
+    CHECK(!r.update(t + 60000, 5, false, false, 0.0f, ScaleRest::QUIET_MS));
+  }
+  {
+    ScaleRest r;  // a reading that moves, or the owner doing something, starts the count again
+    uint32_t t = 0;
+    r.update(t, 5, true, true, 0.0f, 0);
+    t += 4 * MIN;
+    r.update(t, 5, true, true, 250.0f, 0);           // a cup went on
+    t += 4 * MIN;
+    CHECK(!r.update(t, 5, true, true, 250.0f, 0));
+    r.activity(t);
+    t += 4 * MIN;
+    CHECK(!r.update(t, 5, true, true, 250.0f, 0));
+    t += MIN;
+    CHECK(r.update(t, 5, true, true, 250.0f, 0));    // five minutes after the last of them
+    r.activity(t + 1000);                            // the owner is back
+    CHECK(!r.resting());
+  }
+  {
+    ScaleRest r;  // never outside READY, never with the setting off
+    r.update(0, 5, false, true, 0.0f, 0);
+    CHECK(!r.update(30 * MIN, 5, false, true, 0.0f, 0));
+    ScaleRest n;
+    n.update(0, SCALE_REST_NEVER, true, true, 0.0f, 0);
+    CHECK(!n.update(600 * MIN, SCALE_REST_NEVER, true, true, 0.0f, 0));
+  }
+  {
+    ScaleRest r;  // a start asked for while resting goes ahead once, when ready with a cup
+    r.update(0, 1, true, true, 0.0f, 0);
+    CHECK(r.update(MIN, 1, true, true, 0.0f, 0));
+    r.startWhenBack(MIN + 100);
+    CHECK(!r.resting() && r.startPending(MIN + 200));
+    CHECK(!r.takeStart(MIN + 5000, false, false, false));   // still connecting
+    CHECK(!r.takeStart(MIN + 9000, true, true, false));     // back, but no cup yet
+    CHECK(r.takeStart(MIN + 12000, true, true, true));      // now
+    CHECK(!r.takeStart(MIN + 12100, true, true, true));     // once
+    r.startWhenBack(2 * MIN);
+    CHECK(!r.takeStart(2 * MIN + ScaleRest::PENDING_START_MS, true, true, true));  // too late
+    CHECK(!r.startPending(2 * MIN + ScaleRest::PENDING_START_MS + 1));
+  }
+  // The setting: 0 is a record saved before it existed, and means the default.
+  CHECK(sanitizeScaleRestMin(0) == SCALE_REST_DEFAULT_MIN);
+  CHECK(sanitizeScaleRestMin(SCALE_REST_NEVER) == SCALE_REST_NEVER);
+  CHECK(sanitizeScaleRestMin(200) == SCALE_REST_MAX_MIN);
+  CHECK(sanitizeScaleRestMin(3) == 3);
+  Settings s;
+  s.scaleRestMin = 0;
+  sanitize(s);
+  CHECK(s.scaleRestMin == 5);
+  CHECK(defaultSettings().scaleRestMin == 5);
+}
+
 static void testCupRemembered() {
   printf("cup remembered across a controller restart\n");
   // A shot, then a fresh cup put on and tared. The scale's timer now holds
@@ -6029,6 +6098,7 @@ int main() {
   testShotDataSet();
   testReadingNewerThanTick();
   testEmptyScaleZeroed();
+  testScaleRest();
   testCupRemembered();
   testCupAutoTareScale();
   testCupPutBackBriefly();

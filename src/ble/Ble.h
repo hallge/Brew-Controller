@@ -216,6 +216,12 @@ class BleManager {
   void setPowerKept(bool kept) { powerKept_ = kept; }
   // The stop bot's link is held around a shot, like the brew bot's.
   void setStopWanted(bool wanted) { stopWanted_ = wanted; }
+  // An idle scale is let go so that it can switch itself off (core/ScaleRest.h): while resting its
+  // link is dropped and not made again. Its advertisements are still heard.
+  void setScaleResting(bool resting) { scaleResting_ = resting; }
+  bool scaleResting() const { return scaleResting_.load(); }
+  // When the paired scale was last heard advertising; 0 if not since start-up.
+  uint32_t scaleHeardAtMs() const { return scaleHeardAtMs_.load(); }
   // Keep scanning for a while so the pairing list fills in.
   void requestDiscovery(uint32_t forMs = 30000) { discoveryUntilMs_ = millis() + forMs; }
 
@@ -243,6 +249,7 @@ class BleManager {
   std::atomic<bool> powerWanted_{false};
   std::atomic<bool> powerKept_{false};
   std::atomic<uint32_t> scaleHeardAtMs_{0};  // 0: not heard since start-up
+  std::atomic<bool> scaleResting_{false};
   char powerAddress_[ADDR_LEN] = {};
   uint8_t powerAddressType_ = 0;
   uint8_t powerFailures_ = 0;

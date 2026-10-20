@@ -565,12 +565,18 @@ void BleManager::run() {
     strlcpy(stopAddress, stopAddress_, ADDR_LEN);
     const uint8_t stopType = stopAddressType_;
     const bool botPaired = paired.botAddress[0] != '\0';
-    const bool wantScale = !scale_.linkUp();
+    const bool resting = scaleResting_.load();
+    const bool wantScale = !scale_.linkUp() && !resting;
     const bool connectScale = wantScale && scaleFound_ &&
                               static_cast<int32_t>(now - scaleRetryAtMs_) >= 0;
     const SeenDevice scaleTarget = scaleCandidate_;
-    if (connectScale) scaleFound_ = false;
+    if (connectScale || resting) scaleFound_ = false;
     xSemaphoreGive(mutex_);
+    // Let go of an idle scale so that it can switch itself off.
+    if (resting && scale_.linkUp()) {
+      LOGI("scale: idle, letting it go so it can switch itself off");
+      scale_.disconnect();
+    }
 
     // The bots a shot needs first: they are the only way to stop the machine.
     servePusher(bot_, "bot", paired.botAddress, paired.botAddressType, botWanted_, false,

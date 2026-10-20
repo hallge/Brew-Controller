@@ -79,6 +79,7 @@ bbw::PusherConfig g_pushers;
 bbw::MachineProfile g_machine;  // guarded by g_lock, like the settings
 std::atomic<bool> g_machineDirty{false};
 bbw::PowerControl g_powerControl;
+bbw::ScaleRest g_scaleRest;  // control task, under the lock
 std::atomic<bool> g_pushersDirty{false};
 std::atomic<uint32_t> g_powerHoldUntilMs{0};  // keep the power bot's link up until then
 std::atomic<uint32_t> g_stopHoldUntilMs{0};   // and the stop bot's (pairing check, new key)
@@ -610,6 +611,29 @@ void controlTask(void *) {
         g_bot.clearResult();  // the brew logic must not find a result it did not ask for
         g_testPressTidy = false;
       }
+      // An idle scale is let go so that it can switch itself off; the bots follow it (core/ScaleRest.h).
+      {
+        const bbw::LiveStatus st = g_controller.status(now);
+        const uint32_t heardAt = g_ble.scaleHeardAtMs();
+        const uint32_t quietMs = scaleConnected ? 0 : (heardAt == 0 ? UINT32_MAX : now - heardAt);
+        const bool wasResting = g_scaleRest.resting();
+        const bool resting = g_scaleRest.update(now, g_settings.scaleRestMin, state == State::READY,
+                                                scaleConnected, st.weightG, quietMs);
+        if (resting != wasResting) {
+          LOGI("scale: %s", resting ? "resting (idle), let go so it can switch itself off"
+                                    : "taken back");
+        }
+        g_ble.setScaleResting(resting);
+        if (g_scaleRest.takeStart(now, state == State::READY, st.weightFresh,
+                                  !st.cupRequired || st.cupPresent)) {
+          if (bbw::updateBusy()) {
+            LOGW("start refused: a firmware update is in progress");
+          } else {
+            LOGI("scale: back, starting the shot asked for while it rested");
+            g_controller.requestStart();
+          }
+        }
+      }
     }
     esp_task_wdt_reset();
     vTaskDelayUntil(&wake, pdMS_TO_TICKS(CONTROL_PERIOD_MS));
@@ -894,16 +918,39 @@ size_t lastCurve(float *timeS, float *weightG, size_t max) {
   return n;
 }
 
+// The scale is not connected but is near: let go to rest, or heard advertising in the last 30 s while
+// the controller waits for it (switched on, or just taken back). Under the lock.
+bool scaleNearbyLocked() {
+  if (g_scaleRest.resting()) return true;
+  if (g_controller.state() != State::CONNECTING_SCALE) return false;
+  const uint32_t heardAt = g_ble.scaleHeardAtMs();
+  return heardAt != 0 && millis() - heardAt < bbw::ScaleRest::QUIET_MS;
+}
+
 void start() {
   if (bbw::updateBusy()) {  // a firmware is being downloaded or installed
     LOGW("start refused: a firmware update is in progress");
     return;
   }
   Lock lock;
+  // The scale was let go to rest, or is on its way back: take it back, and start once it is there
+  // and ready.
+  if (scaleNearbyLocked()) {
+    LOGI("scale: start asked for while it rested; taking it back");
+    g_scaleRest.startWhenBack(millis());
+    return;
+  }
+  g_scaleRest.activity(millis());
   g_controller.requestStart();
 }
-void stop() { Lock lock; g_controller.requestStop(); }
-void tare() { Lock lock; g_controller.requestTare(); }
+// The owner did something (screen, touch key, web page): an idle scale is not let go, and one let go
+// is taken back.
+void noteActivity() { Lock lock; g_scaleRest.activity(millis()); }
+bool scaleResting() { Lock lock; return g_scaleRest.resting(); }
+bool scaleStartPending() { Lock lock; return g_scaleRest.startPending(millis()); }
+bool scaleNearby() { Lock lock; return scaleNearbyLocked(); }
+void stop() { Lock lock; g_scaleRest.cancelStart(); g_controller.requestStop(); }
+void tare() { Lock lock; g_scaleRest.activity(millis()); g_controller.requestTare(); }
 void acknowledge() { Lock lock; g_controller.acknowledge(); }
 void manualPress() { Lock lock; g_controller.requestManualPress(); }
 

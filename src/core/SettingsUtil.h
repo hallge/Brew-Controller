@@ -5,6 +5,7 @@
 #include <cmath>
 #include <string.h>
 
+#include "ScaleRest.h"
 #include "Types.h"
 
 namespace bbw {
@@ -69,6 +70,7 @@ inline void sanitize(Settings &s) {
   s.grindWindow = clampTo<uint8_t>(s.grindWindow, 1, 10);
   if (s.grindTimeBasis != GrindTimeBasis::POUR) s.grindTimeBasis = GrindTimeBasis::TOTAL;
   s.grindMaxStepUm = clampTo<uint8_t>(s.grindMaxStepUm, 1, 100);
+  s.scaleRestMin = sanitizeScaleRestMin(s.scaleRestMin);
 }
 
 inline Settings defaultSettings() {

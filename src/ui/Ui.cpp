@@ -90,6 +90,7 @@ volatile uint32_t touchKeySeenMs = 0;
 volatile bool touchKeyPressed = false;
 bool dimmed = false;
 bool screenOff = false;
+uint32_t ownActivityMs = 0;  // when wake() last told LVGL of activity (not a touch)
 bool started = false;
 uint32_t scaleLostAtMs = 0;
 char wifiText[128] = "Wi-Fi starting";
@@ -415,7 +416,8 @@ void onCloseCoffee(lv_event_t *) { coffeeOpen = false; }
 // start as the touch key. A tap on a dimmed screen only brightens it.
 void onHomeStart(lv_event_t *) {
   if (dimmed || !homeCanStart) return;
-  if (app::status().state == State::READY) app::start();
+  const State state = app::status().state;
+  if (state == State::READY || (state == State::CONNECTING_SCALE && app::scaleNearby())) app::start();
 }
 void onOpenSettings(lv_event_t *) { settingsOpen = true; }
 void onCloseSettings(lv_event_t *) { settingsOpen = false; }
@@ -1067,7 +1069,7 @@ void refreshCoffee() {
 void refreshHome(const bbw::LiveStatus &st) {
   const bool ready = st.state == State::READY;
   if (!ready) {
-    setText(homeStatus, "NO SCALE");
+    setText(homeStatus, app::scaleResting() ? "SCALE RESTING" : "NO SCALE");
   } else if (!st.botPaired && st.machineStyle != static_cast<uint8_t>(bbw::MachineStyle::MANUAL)) {
     setText(homeStatus, "NO BOT");
   } else if (st.cupRequired && !st.cupPresent) {
@@ -1175,7 +1177,17 @@ void refreshHome(const bbw::LiveStatus &st) {
 
   // The roast level and age are on the COFFEE screen.
 
-  if (!ready) {
+  // An idle scale is let go so that it can switch itself off (core/ScaleRest.h). While it rests, or
+  // is on its way back, Start takes it back and brews as soon as it is there.
+  const bool startPending = !ready && app::scaleStartPending();
+  const bool scaleNear = !ready && !startPending && app::scaleNearby();
+  if (startPending) {
+    setText(homeHint, "CONNECTING TO THE SCALE");
+    setColor(homeHint, COLOR_DIM);
+  } else if (scaleNear) {
+    setText(homeHint, LV_SYMBOL_LEFT "  TOUCH KEY TO BREW");
+    setColor(homeHint, COLOR_OK);
+  } else if (!ready) {
     setText(homeHint, "SWITCH ON THE SCALE");
     setColor(homeHint, COLOR_DIM);
   } else if (!st.botPaired && st.machineStyle != static_cast<uint8_t>(bbw::MachineStyle::MANUAL)) {
@@ -1192,8 +1204,9 @@ void refreshHome(const bbw::LiveStatus &st) {
     setColor(homeHint, COLOR_OK);
   }
   // A key only while it offers the start; plain text, as before, otherwise.
-  const bool canStart = ready && (st.botPaired || st.machineStyle == static_cast<uint8_t>(bbw::MachineStyle::MANUAL)) &&
-                        st.weightFresh && !(st.cupRequired && !st.cupPresent);
+  const bool canStart = scaleNear ||
+                        (ready && (st.botPaired || st.machineStyle == static_cast<uint8_t>(bbw::MachineStyle::MANUAL)) &&
+                         st.weightFresh && !(st.cupRequired && !st.cupPresent));
   if (canStart != homeCanStart || !lv_obj_has_flag(homeStartKey, LV_OBJ_FLAG_USER_1)) {
     homeCanStart = canStart;
     lv_obj_add_flag(homeStartKey, LV_OBJ_FLAG_USER_1);  // styled at least once
@@ -1543,8 +1556,17 @@ void refresh() {
       // Touched while dark: wake only, the touch must not press a key.
       lv_indev_wait_release(lv_indev_get_next(nullptr));
       wake();
+      app::noteActivity();  // the owner is here: a resting scale is taken back
     }
     return;
+  }
+  // A touch on the screen (not this code's own wake(), which also counts as activity to LVGL):
+  // an idle scale is not let go, and one let go is taken back.
+  {
+    const uint32_t inactive = lv_disp_get_inactive_time(nullptr);
+    if (inactive < 1000 && static_cast<int32_t>((millis() - inactive) - ownActivityMs) > 50) {
+      app::noteActivity();
+    }
   }
 
   if (editPending) {
@@ -1687,6 +1709,7 @@ void wake() {
   }
   dimmed = false;
   lv_disp_trig_activity(nullptr);
+  ownActivityMs = millis();
 }
 
 bool isOff() { return screenOff; }
@@ -1715,12 +1738,17 @@ void loop() {
     const bool wasOff = screenOff;
     wake();
     if (wasOff) {
-      // a press on a dark screen only wakes it
+      // a press on a dark screen only wakes it (and takes a resting scale back)
+      app::noteActivity();
     } else if (settingsOpen || recipesOpen || editOpen || coffeeOpen) {
+      app::noteActivity();
       settingsOpen = recipesOpen = editOpen = coffeeOpen = false;
     } else {
       const State state = app::status().state;
       if (state == State::READY || state == State::READY_TO_BREW) app::start();
+      // The scale rests (let go so that it can switch itself off) or is on its way back: it is taken
+      // back and the shot starts once it is there.
+      else if (state == State::CONNECTING_SCALE && app::scaleNearby()) app::start();
       else if (state == State::SHOT_COMPLETE || bbw::isFault(state)) app::acknowledge();
     }
   }

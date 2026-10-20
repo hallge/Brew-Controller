@@ -73,6 +73,13 @@ size_t lastCurve(float *timeS, float *weightG, size_t max);
 // Intents
 void start();
 void stop();
+// The idle scale (core/ScaleRest.h): the owner did something; whether the scale has been let go so
+// that it can switch itself off; a start asked for while it rested, waiting for it to come back
+// (start() asks for one then).
+void noteActivity();
+bool scaleResting();
+bool scaleStartPending();
+bool scaleNearby();  // not connected, but resting or heard in the last 30 s: Start waits for it
 void tare();
 void acknowledge();
 void manualPress();

@@ -418,6 +418,10 @@ struct Settings {
   // The controller's screen turned half a turn: for a mounting with the
   // USB-C connector (and the touch key) on the right instead of the left.
   bool displayFlipped = false;
+  // Minutes the scale may sit idle before the controller lets go of it, so that it can switch itself
+  // off (core/ScaleRest.h). 0, as a record saved before this field reads, means the default (5);
+  // 255 keeps it connected all the time.
+  uint8_t scaleRestMin = 5;
 };
 
 struct WeightSample {
