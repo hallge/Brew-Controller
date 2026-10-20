@@ -105,6 +105,12 @@ bool homeCanStart = false;
 // The coffee screen: its name, and everything else about it in a scrolling column.
 lv_obj_t *coffeeTitle, *coffeeSub, *coffeeList;
 uint32_t coffeeOpenedAtMs = 0;
+// BAG FINISHED under the coffee card: the first tap asks, a second within FINISH_CONFIRM_MS finishes.
+lv_obj_t *coffeeFinishKey, *coffeeFinishLabel;
+uint32_t finishConfirmUntilMs = 0;  // 0: not asking
+constexpr uint32_t FINISH_CONFIRM_MS = 5000;
+constexpr int COFFEE_LIST_Y = 72, COFFEE_LIST_H = 240 - COFFEE_LIST_Y - 6;
+constexpr int FINISH_KEY_H = 40, FINISH_KEY_GAP = 6;
 lv_obj_t *recipeBar;
 lv_obj_t *editFieldBtn[EDIT_FIELDS], *editTitle, *editValue, *editHint;
 lv_obj_t *recipeList;
@@ -410,6 +416,21 @@ void onVoteCount(lv_event_t *) {
 void onOpenCoffee(lv_event_t *) {
   coffeeOpenedAtMs = millis() ? millis() : 1;
   coffeeOpen = true;
+  finishConfirmUntilMs = 0;
+}
+bool finishConfirming() {
+  return finishConfirmUntilMs != 0 && static_cast<int32_t>(millis() - finishConfirmUntilMs) < 0;
+}
+// The bag of the coffee in use is finished: its entries leave the list until a new bag is started on
+// the web page, and the home screen shows the entry picked next (app::finishActiveCoffee).
+void onBagFinished(lv_event_t *) {
+  if (!finishConfirming()) {
+    finishConfirmUntilMs = millis() + FINISH_CONFIRM_MS;
+    if (finishConfirmUntilMs == 0) finishConfirmUntilMs = 1;
+    return;
+  }
+  finishConfirmUntilMs = 0;
+  if (app::finishActiveCoffee()) coffeeOpen = false;
 }
 void onCloseCoffee(lv_event_t *) { coffeeOpen = false; }
 // The hint under the card, pressed while it says TOUCH KEY TO BREW: the same
@@ -517,8 +538,8 @@ void buildCoffee() {
   // The rest on a card, a name and its value to a row; drag it when it is longer
   // than the screen.
   coffeeList = lv_obj_create(p);
-  lv_obj_set_size(coffeeList, 536 - 24, 240 - 72 - 6);
-  lv_obj_align(coffeeList, LV_ALIGN_TOP_LEFT, 12, 72);
+  lv_obj_set_size(coffeeList, 536 - 24, COFFEE_LIST_H);
+  lv_obj_align(coffeeList, LV_ALIGN_TOP_LEFT, 12, COFFEE_LIST_Y);
   lv_obj_set_style_bg_color(coffeeList, lv_color_hex(COLOR_PANEL), 0);
   lv_obj_set_style_radius(coffeeList, 14, 0);
   lv_obj_set_style_border_width(coffeeList, 0, 0);
@@ -528,6 +549,11 @@ void buildCoffee() {
   lv_obj_set_flex_flow(coffeeList, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_scroll_dir(coffeeList, LV_DIR_VER);
   lv_obj_set_style_bg_color(coffeeList, lv_color_hex(COLOR_ACCENT), LV_PART_SCROLLBAR);
+  // Across the bottom, under a shorter card, when the entry has a coffee (refreshCoffee).
+  coffeeFinishKey = makeButton(p, "BAG FINISHED", &lv_font_montserrat_20, COLOR_PANEL, 536 - 24,
+                               FINISH_KEY_H, LV_ALIGN_BOTTOM_LEFT, 12, -6, onBagFinished,
+                               &coffeeFinishLabel);
+  lv_obj_add_flag(coffeeFinishKey, LV_OBJ_FLAG_HIDDEN);
 }
 
 // One row of the coffee card: the name dim on the left, the value beside it,
@@ -881,6 +907,8 @@ void refreshRecipes() {
     const char *unit = grindUnit();
     lv_obj_clean(recipeList);
     for (uint8_t i = 0; i < count; ++i) {
+      // Entries of a finished coffee are left out (the active one stays, should every entry be hidden).
+      if (i != activeIndex && !app::presetVisible(i)) continue;
       const bbw::Recipe r = app::preset(i);
       // Two lines: the coffee, then the recipe with what it makes and the
       // grind (a long name wraps onto a third). A recipe listed by itself has
@@ -1024,6 +1052,21 @@ void refreshCoffee() {
            r.roastLevel && age[0] ? ", " : "", age);
   fitText(coffeeSub, sub, HEAD_W, 1, &lv_font_montserrat_20);
   scrollIfLong(coffeeSub, sub, HEAD_W);
+
+  // BAG FINISHED, for a coffee on the shelf; asking for the second tap for a few seconds.
+  const bool canFinish = r.coffeeId != 0 && look.found;
+  const bool asking = canFinish && finishConfirming();
+  if (!asking) finishConfirmUntilMs = 0;
+  static int8_t keyShown = -1;  // 0 hidden, 1 BAG FINISHED, 2 asking; -1 not drawn yet
+  const int8_t keyNow = !canFinish ? 0 : asking ? 2 : 1;
+  if (keyNow != keyShown) {
+    keyShown = keyNow;
+    if (keyNow == 0) lv_obj_add_flag(coffeeFinishKey, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_clear_flag(coffeeFinishKey, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_height(coffeeList, keyNow == 0 ? COFFEE_LIST_H : COFFEE_LIST_H - FINISH_KEY_H - FINISH_KEY_GAP);
+    lv_label_set_text(coffeeFinishLabel, keyNow == 2 ? "TAP AGAIN TO CONFIRM" : "BAG FINISHED");
+    lv_obj_set_style_bg_color(coffeeFinishKey, lv_color_hex(keyNow == 2 ? COLOR_BAD : COLOR_PANEL), 0);
+  }
 
   // The rows are built once each time the screen is opened.
   static uint32_t builtFor = 0;

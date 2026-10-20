@@ -30,10 +30,10 @@ described; the rest are as the page uses them.
 | `/shots.csv`, `/shot.csv?id=` | GET | CSV exports; `shots.csv` now ends with `tds_pct,extraction_pct` |
 | `/api/grind` | GET | grind advice, see below |
 | `/api/grind/set?um=` | POST | set the active preset's setting, in **stored steps** (1 to 2000) |
-| `/api/library` | GET | coffees, recipes, presets, grinders, **bags** |
+| `/api/library` | GET | coffees, recipes, presets, grinders, **bags**; each coffee's `finished` and each preset's `hidden` (see Bag finished) |
 | `/api/coffee` | POST | save a coffee (edits correct the bag in use) |
 | `/api/bag` | POST | new bag, or correct one; see below |
-| `/api/library/do?what=&a=&b=` | POST | small changes by id; adds `bag_use` (a = coffee, b = bag) and `bag_delete` (a = bag) |
+| `/api/library/do?what=&a=&b=` | POST | small changes by id; adds `bag_use` (a = coffee, b = bag), `bag_delete` (a = bag) and `coffee_finish` (a = coffee) |
 | `/api/grinder` | POST | save the grinder; takes `divisor` and `subSteps` (how a setting is read) |
 | `/api/shot/rate?id=&rating=&taste=` | POST | rating 0 to 5, taste 0 to 3 |
 | `/api/shot/tds?id=&tds=` | POST | percent TDS from a refractometer, 0.5 to 25, or 0 to clear |
@@ -77,11 +77,28 @@ The base verdict is the Grind-by-Sync-style advice against the recipe's target t
 now. `{ "id": 7, "roastDate": ..., "openedDate": ..., "frozenDate": ..., "thawDate": ..., "weightG": ... }` corrects bag 7.
 Dates are `YYYYMMDD`, 0 for none. Answers `{ "ok": true, "id": <bag id> }`.
 
+## Bag finished
+
+A coffee whose bag is used up is taken off the controller's list without deleting it. `POST /api/library/do?what=coffee_finish&a=<coffee id>`
+dates it today by the controller's clock (`20000101` if the clock is not set); refused with 409 while a shot runs, 409 for no
+such coffee. The controller's COFFEE screen does the same with BAG FINISHED.
+
+- `/api/library` `coffees[].finished`: `YYYYMMDD` the bag was finished, `0` = on the shelf.
+- `/api/library` `presets[].hidden` (and `/api/settings` `recipes[].hidden`): `true` when its coffee is finished. Hidden
+  presets keep their grind, offset and learning, are not listed on the controller, are skipped by BOOT's next recipe and refused by
+  `preset_select`. Presets with no coffee are never hidden.
+- When the active preset becomes hidden, the shown preset whose coffee has the oldest roast date is selected (presets with no
+  coffee or no roast date after those, ties in list order); `activePreset` says which. With every preset hidden it stays put.
+- A new bag (`POST /api/bag` with `coffeeId`) or `bag_use` puts the coffee back on the shelf: `finished` returns to 0 and its
+  presets show again as they were. Saving the coffee's details (`/api/coffee`) does not change `finished`.
+
 ## `/api/maintenance`
 
 `GET` returns `{ "shots_total": 41, "due": 1, "jobs": [ { "id": "backflush", "since_shots": 12, "every_shots": 10, "due": true,
 "last_epoch": 1791672710 }, ... ] }` for `backflush`, `descale`, `grinder_clean`. `POST ?job=backflush&action=done` marks it done;
-`?job=descale&action=every&every=200` sets the reminder interval (0 = never, at most 5000). No interval is preset.
+`?job=descale&action=every&every=200` sets the reminder interval (0 = never, at most 5000). A new controller (or one updated from a build before these) starts with
+backflush every 200 shots, descale off and grinder clean every 500, given once to each job still at 0; after that a 0 the owner
+sets stays never.
 
 ## `/api/community`: `similar`
 

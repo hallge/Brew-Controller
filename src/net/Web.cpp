@@ -186,6 +186,7 @@ void handleGetSettings() {
     r["slot"] = i + 1;
     r["recipeId"] = p.recipeId;
     r["coffeeId"] = p.coffeeId;
+    r["hidden"] = !app::presetVisible(i);  // its coffee's bag is finished
     r["name"] = p.name;
     r["targetWeightG"] = p.targetWeightG;
     r["baselineOffsetG"] = p.baselineOffsetG;
@@ -606,6 +607,7 @@ void handleLibrary() {
       o["frozenDate"] = c.frozenDate;
       o["thawDate"] = c.thawDate;
       o["bagId"] = c.bagId;
+      o["finished"] = c.finishedDate;  // YYYYMMDD the bag was finished; 0 = on the shelf
       // Where it stands with the shared library.
       o["share"] = bbw::shareStateName(bbw::coffeeShareState(c, outboxSent));
       o["shareChanged"] = bbw::coffeeChangedSinceShared(c);
@@ -682,6 +684,7 @@ void handleLibrary() {
       o["grindUm"] = p.grindUm;
       o["stopOffsetG"] = p.stopOffsetG;
       o["learnedAlpha"] = p.learnedAlpha;
+      o["hidden"] = !bbw::presetVisible(lib, i);  // its coffee's bag is finished
     }
   }, nullptr);
   sendJson(doc);
@@ -980,8 +983,14 @@ void handleLibraryDo() {
   b = server.arg("b").toInt();
   if (a < 0 || a > 65535 || b < 0 || b > 65535) return sendError(400, "bad value");
   static const char *error;
+  static uint32_t today;
   error = "unknown change";
+  today = bbw::dateFromEpoch(app::epochNow());
   const bool ok = app::editLibrary([](bbw::Library &lib, void *) {
+    if (what == "coffee_finish") {  // a = coffee id; a new bag (POST /api/bag) puts it back
+      error = "no such coffee";
+      return bbw::finishCoffee(lib, static_cast<uint16_t>(a), today);
+    }
     if (what == "coffee_delete") {
       error = "that coffee is still on the controller's list: take it off first";
       return bbw::removeCoffee(lib, static_cast<uint16_t>(a));
@@ -1015,8 +1024,8 @@ void handleLibraryDo() {
       return a < 256 && bbw::removePreset(lib, static_cast<uint8_t>(a));
     }
     if (what == "preset_select") {
-      error = "no such entry";
-      if (a >= lib.presetCount) return false;
+      error = "no such entry, or its coffee's bag is finished";
+      if (a >= lib.presetCount || !bbw::presetVisible(lib, static_cast<uint8_t>(a))) return false;
       lib.activePreset = static_cast<uint8_t>(a);
       return true;
     }

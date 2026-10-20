@@ -5621,6 +5621,148 @@ static void testBags() {
         up.bagId == 0 && up.tdsX100 == 0);
 }
 
+static void testBagFinished() {
+  printf("bag finished: hidden entries, next by roast age, a new bag restores\n");
+  static Library lib;
+  setDefaultLibrary(lib);                                          // 0 Double, 1 Single, no coffee
+  const uint16_t dbl = lib.presets[0].recipeId, sgl = lib.presets[1].recipeId;
+  auto coffee = [](const char *name, uint32_t roast) {
+    Coffee c;
+    copyText(c.name, name, COFFEE_NAME_LEN);
+    c.roastDate = roast;
+    return c;
+  };
+  const uint16_t oldId = saveCoffee(lib, coffee("Old", 20260901));
+  const uint16_t newId = saveCoffee(lib, coffee("New", 20261001));
+  const uint16_t undatedId = saveCoffee(lib, coffee("Undated", 0));
+  const uint16_t sameId = saveCoffee(lib, coffee("Same day", 20260901));
+  CHECK(oldId && newId && undatedId && sameId);
+  CHECK(findCoffee(lib, oldId)->finishedDate == 0);               // a new coffee is on the shelf
+  const int pOld = addPreset(lib, dbl, oldId), pNew = addPreset(lib, dbl, newId);
+  const int pUndated = addPreset(lib, dbl, undatedId), pSame = addPreset(lib, sgl, sameId);
+  const int pOld2 = addPreset(lib, sgl, oldId);
+  CHECK(pOld == 2 && pNew == 3 && pUndated == 4 && pSame == 5 && pOld2 == 6 && lib.presetCount == 7);
+  for (uint8_t i = 0; i < lib.presetCount; ++i) CHECK(presetVisible(lib, i));
+  CHECK(!presetVisible(lib, 7) && !coffeeFinished(lib, oldId) && !coffeeFinished(lib, 0));
+
+  // Oldest roast first; the same roast date keeps list order; undated and no-coffee entries after.
+  CHECK(nextPresetByRoastAge(lib) == pOld);
+  CHECK(nextPresetByRoastAge(lib, pOld) == pSame);
+  lib.presets[pOld].grindUm = 250;                                  // what was learned on it
+  lib.presets[pOld].stopOffsetG = 2.1f;
+  lib.presets[pOld].learnedShots = 7;
+  lib.presets[pOld].learnedAlpha = 40;
+  const Preset learned = lib.presets[pOld];
+
+  // Finished: both its entries are hidden, the rest stay, and the active entry moves on by roast age.
+  lib.activePreset = static_cast<uint8_t>(pOld);
+  CHECK(finishCoffee(lib, oldId, 20261020));
+  CHECK(findCoffee(lib, oldId)->finishedDate == 20261020 && coffeeFinished(lib, oldId));
+  CHECK(!presetVisible(lib, pOld) && !presetVisible(lib, pOld2));
+  CHECK(presetVisible(lib, 0) && presetVisible(lib, 1) && presetVisible(lib, pNew) && presetVisible(lib, pSame));
+  CHECK(lib.activePreset == pSame);                                 // the same roast date, next in the list
+  CHECK(nextShownPreset(lib, pSame) == 0 && nextShownPreset(lib, 1) == pNew);  // the list skips hidden ones
+  CHECK(finishCoffee(lib, oldId, 20261101) && findCoffee(lib, oldId)->finishedDate == 20261020);  // keeps its day
+  CHECK(!finishCoffee(lib, 999, 20261020) && !finishCoffee(lib, 0, 20261020));
+  CHECK(lib.presets[pOld].grindUm == 250 && lib.presets[pOld].learnedShots == 7);  // nothing learned is lost
+
+  // The coffee edited on the form stays finished: only finishCoffee and a new bag say.
+  Coffee edit = *findCoffee(lib, oldId);
+  edit.finishedDate = 0;
+  copyText(edit.notes, "chocolate", NOTES_LEN);
+  CHECK(saveCoffee(lib, edit) == oldId && findCoffee(lib, oldId)->finishedDate == 20261020);
+
+  // Finishing the coffee of an entry that is not active leaves the active one alone.
+  CHECK(finishCoffee(lib, newId, 20261020) && lib.activePreset == pSame);
+  // The active one finished with only undated and coffee-less entries left: the first in the list.
+  CHECK(finishCoffee(lib, sameId, 0) && findCoffee(lib, sameId)->finishedDate == FINISHED_DATE_UNKNOWN);
+  CHECK(lib.activePreset == 0);
+  // A hidden active entry from anywhere (a file, the web page) is moved by sanitizeLibrary.
+  lib.activePreset = static_cast<uint8_t>(pNew);
+  sanitizeLibrary(lib);
+  CHECK(lib.activePreset == 0);
+  CHECK(dateFromEpoch(0) == 0 && dateFromEpoch(1792540799) == 20261020 && dateFromEpoch(1835438400) == 20280229);
+
+  // Saved and read back finished; and a file saved before the field reads every coffee as on the shelf.
+  static uint8_t buffer[LIBRARY_MAX_BYTES];
+  const size_t written = encodeLibrary(lib, buffer, sizeof(buffer));
+  CHECK(written > 0);
+  static Library back;
+  CHECK(decodeLibrary(buffer, written, back));
+  CHECK(findCoffee(back, oldId)->finishedDate == 20261020 && !presetVisible(back, pOld) &&
+        presetVisible(back, pUndated) && back.activePreset == 0);
+  {
+    const size_t oldCoffee = offsetof(Coffee, finishedDate);
+    LibraryFileHeader h;
+    memcpy(&h, buffer, sizeof(h));
+    const size_t headers = sizeof(LibraryFileHeader) + sizeof(LibraryFileHeaderV2);
+    std::vector<uint8_t> old(buffer, buffer + headers);
+    h.coffeeSize = static_cast<uint16_t>(oldCoffee);
+    memcpy(old.data(), &h, sizeof(h));
+    const uint8_t *at = buffer + headers;
+    for (uint8_t i = 0; i < h.coffeeCount; ++i, at += sizeof(Coffee)) old.insert(old.end(), at, at + oldCoffee);
+    old.insert(old.end(), at, static_cast<const uint8_t *>(buffer + written));  // recipes, presets, grinders, bags
+    static Library read;
+    CHECK(decodeLibrary(old.data(), old.size(), read));
+    CHECK(read.coffeeCount == 4 && strcmp(findCoffee(read, oldId)->notes, "chocolate") == 0 &&
+          findCoffee(read, oldId)->roastDate == 20260901);
+    for (uint8_t i = 0; i < read.coffeeCount; ++i) CHECK(read.coffees[i].finishedDate == 0);
+    for (uint8_t i = 0; i < read.presetCount; ++i) CHECK(presetVisible(read, i));
+  }
+
+  // A new bag puts the coffee back, its entries exactly as they were.
+  CHECK(startBag(lib, oldId, 20261015) != 0);
+  CHECK(findCoffee(lib, oldId)->finishedDate == 0 && presetVisible(lib, pOld) && presetVisible(lib, pOld2));
+  CHECK(memcmp(&lib.presets[pOld], &learned, sizeof(Preset)) == 0);
+  CHECK(nextPresetByRoastAge(lib) == pOld);                          // the new bag, and New is finished
+  // So does putting one of its earlier bags back in use.
+  const uint16_t sameBag = findCoffee(lib, sameId)->bagId;
+  CHECK(sameBag != 0 && useBag(lib, sameId, sameBag) && presetVisible(lib, pSame));
+
+  // Every entry hidden: the active one stays (Start always needs something), and nothing else is next.
+  static Library one;
+  setDefaultLibrary(one);
+  const uint16_t only = saveCoffee(one, coffee("Only", 20260901));
+  CHECK(addPreset(one, one.presets[0].recipeId, only) == 2 && removePreset(one, 0) && removePreset(one, 0));
+  CHECK(one.presetCount == 1 && one.activePreset == 0);
+  CHECK(finishCoffee(one, only, 20261020) && one.activePreset == 0 && !presetVisible(one, 0));
+  CHECK(nextPresetByRoastAge(one) == -1 && nextShownPreset(one, 0) == 0);
+  // A damaged date is not a finish.
+  one.coffees[0].finishedDate = 20261399;
+  sanitizeLibrary(one);
+  CHECK(one.coffees[0].finishedDate == 0 && presetVisible(one, 0));
+}
+
+static void testUpkeepDefaults() {
+  printf("upkeep defaults: backflush 200, descale off, grinder clean 500, once\n");
+  Maintenance fresh;                                                // a new controller
+  sanitizeMaintenance(fresh);
+  CHECK(fresh.everyShots[0] == 200 && fresh.everyShots[1] == 0 && fresh.everyShots[2] == 500 &&
+        fresh.defaultsApplied == 1);
+  // A blob saved before the field: the owner had set descale only. The others get their starting
+  // interval, the owner's descale stays. The store zeroes a blob before copying the record in.
+  Maintenance before;
+  before.shotsTotal = 321;
+  before.everyShots[1] = 300;
+  uint8_t blob[sizeof(Maintenance)];
+  memset(blob, 0, sizeof(blob));
+  memcpy(blob, &before, offsetof(Maintenance, defaultsApplied));
+  Maintenance loaded;
+  memcpy(&loaded, blob, sizeof(blob));
+  CHECK(loaded.defaultsApplied == 0);
+  sanitizeMaintenance(loaded);
+  CHECK(loaded.shotsTotal == 321 && loaded.everyShots[0] == 200 && loaded.everyShots[1] == 300 &&
+        loaded.everyShots[2] == 500 && loaded.defaultsApplied == 1);
+  // After that a 0 is the owner's "never", and stays never through a save and a load.
+  setUpkeepEvery(loaded, Upkeep::BACKFLUSH, 0);
+  setUpkeepEvery(loaded, Upkeep::GRINDER_CLEAN, 0);
+  Maintenance again;
+  memcpy(&again, &loaded, sizeof(Maintenance));
+  sanitizeMaintenance(again);
+  CHECK(again.everyShots[0] == 0 && again.everyShots[1] == 300 && again.everyShots[2] == 0);
+  CHECK(!upkeepDue(again, Upkeep::BACKFLUSH));
+}
+
 static void testUpkeep() {
   printf("upkeep counters\n");
   Maintenance m;
@@ -6143,6 +6285,8 @@ int main() {
   testBags();
   testExtraction();
   testUpkeep();
+  testUpkeepDefaults();
+  testBagFinished();
   testShotContext();
   testLearnGrinder();
   testSettingFormat();

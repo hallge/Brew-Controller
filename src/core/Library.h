@@ -133,6 +133,7 @@ inline uint16_t startBag(Library &lib, uint16_t coffeeId, uint32_t roastDate, ui
   const uint16_t id = addBag(lib, coffeeId, roastDate, openedDate, 0, 0, weightG);
   if (id == 0) return 0;
   mirrorBag(*c, *findBag(lib, id));
+  c->finishedDate = 0;  // back on the shelf: its presets show again, as they were
   return id;
 }
 
@@ -143,6 +144,7 @@ inline bool useBag(Library &lib, uint16_t coffeeId, uint16_t bagId) {
   for (uint8_t i = 0; i < lib.coffeeCount; ++i) {
     if (lib.coffees[i].id == coffeeId) {
       mirrorBag(lib.coffees[i], *b);
+      lib.coffees[i].finishedDate = 0;  // a bag in use again: back on the shelf
       return true;
     }
   }
@@ -177,6 +179,85 @@ inline bool editBag(Library &lib, uint16_t bagId, uint32_t roastDate, uint32_t o
   for (uint8_t i = 0; i < lib.coffeeCount; ++i) {
     if (lib.coffees[i].bagId == bagId) mirrorBag(lib.coffees[i], *b);
   }
+  return true;
+}
+
+// ---------------------------------------------------------- bag finished --
+// A coffee whose bag is used up comes off the controller's list without being deleted: its presets
+// are hidden, everything learned on them stays, and a new bag (startBag, or useBag) brings them back
+// exactly as they were. Presets with no coffee are always shown.
+
+// Stored when the controller's clock is not set: finished, just not known when.
+constexpr uint32_t FINISHED_DATE_UNKNOWN = 20000101;
+
+// Seconds since 1970 (UTC) as YYYYMMDD; 0 for 0 (clock not set).
+inline uint32_t dateFromEpoch(uint32_t epochS) {
+  if (epochS == 0) return 0;
+  // Days to civil date (H. Hinnant's algorithm), as core/Share.h timeText.
+  const uint32_t z = epochS / 86400 + 719468;
+  const uint32_t era = z / 146097, doe = z - era * 146097;
+  const uint32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  const uint32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const uint32_t mp = (5 * doy + 2) / 153;
+  const uint32_t day = doy - (153 * mp + 2) / 5 + 1;
+  const uint32_t month = mp < 10 ? mp + 3 : mp - 9;
+  const uint32_t year = yoe + era * 400 + (month <= 2 ? 1 : 0);
+  return year * 10000 + month * 100 + day;
+}
+
+inline bool coffeeFinished(const Library &lib, uint16_t coffeeId) {
+  const Coffee *c = coffeeId != 0 ? findCoffee(lib, coffeeId) : nullptr;
+  return c && c->finishedDate != 0;
+}
+
+// false for an index out of range, or a preset whose coffee is finished.
+inline bool presetVisible(const Library &lib, uint8_t index) {
+  return index < lib.presetCount && !coffeeFinished(lib, lib.presets[index].coffeeId);
+}
+
+// The shown preset to brew next: the one whose coffee was roasted longest ago (the bag to use up
+// first). Presets with no coffee, or a coffee with no roast date, come after those, and ties keep
+// list order. `skip` is left out (-1: none). -1 if no other preset is shown.
+inline int nextPresetByRoastAge(const Library &lib, int skip = -1) {
+  int best = -1;
+  uint32_t bestKey = 0;
+  for (uint8_t i = 0; i < lib.presetCount; ++i) {
+    if (static_cast<int>(i) == skip || !presetVisible(lib, i)) continue;
+    const Coffee *c = lib.presets[i].coffeeId != 0 ? findCoffee(lib, lib.presets[i].coffeeId) : nullptr;
+    const uint32_t key = c && c->roastDate != 0 ? c->roastDate : 0xFFFFFFFFu;
+    if (best < 0 || key < bestKey) {
+      best = i;
+      bestKey = key;
+    }
+  }
+  return best;
+}
+
+// The next shown preset after `from` in list order, wrapping round; `from` itself if no other is
+// shown (BOOT's "next recipe" and the controller's list step through these).
+inline uint8_t nextShownPreset(const Library &lib, uint8_t from) {
+  for (uint8_t k = 1; k <= lib.presetCount; ++k) {
+    const uint8_t i = static_cast<uint8_t>((from + k) % lib.presetCount);
+    if (presetVisible(lib, i)) return i;
+  }
+  return from;
+}
+
+// The active preset hidden (its coffee finished): the next one by roast age is selected. With every
+// preset hidden it stays where it is: Start always needs something to brew.
+inline void keepActivePresetShown(Library &lib) {
+  if (lib.presetCount == 0 || presetVisible(lib, lib.activePreset)) return;
+  const int next = nextPresetByRoastAge(lib);
+  if (next >= 0) lib.activePreset = static_cast<uint8_t>(next);
+}
+
+// The bag of a coffee is finished: off the shelf from `today` (YYYYMMDD; 0 or not a date when the
+// clock is not set). A coffee finished already keeps its date. false if there is no such coffee.
+inline bool finishCoffee(Library &lib, uint16_t coffeeId, uint32_t today) {
+  Coffee *c = coffeeId != 0 ? findCoffee(lib, coffeeId) : nullptr;
+  if (!c) return false;
+  if (c->finishedDate == 0) c->finishedDate = validRoastDate(today) ? today : FINISHED_DATE_UNKNOWN;
+  keepActivePresetShown(lib);
   return true;
 }
 
@@ -287,6 +368,7 @@ inline void sanitizeCoffee(Coffee &c) {
   if (c.thawDate != 0 && c.thawDate < c.frozenDate) c.thawDate = 0;
   c.reviewNote[NOTES_LEN - 1] = c.libraryId[LIBRARY_ID_LEN - 1] = '\0';
   if (c.shareState > 5) c.shareState = 0;  // ShareState::DECLINED
+  if (!validRoastDate(c.finishedDate)) c.finishedDate = 0;
 }
 
 inline void sanitizeRecipeDef(RecipeDef &d) {
@@ -551,6 +633,7 @@ inline void sanitizeLibrary(Library &lib) {
     lib.presetCount = 1;
   }
   if (lib.activePreset >= lib.presetCount) lib.activePreset = 0;
+  keepActivePresetShown(lib);
   sanitizeGrinder(lib.grinder);
   if (lib.hasOtherGrinder) sanitizeGrinder(lib.otherGrinder);
   else new (&lib.otherGrinder) Grinder();
@@ -683,6 +766,7 @@ inline uint16_t saveCoffee(Library &lib, Coffee coffee) {
     memcpy(coffee.libraryId, existing->libraryId, LIBRARY_ID_LEN);
     // The bag in use stays; what is typed here corrects it (a new bag is startBag).
     coffee.bagId = existing->bagId;
+    coffee.finishedDate = existing->finishedDate;  // finishCoffee and startBag say, not the form
     *existing = coffee;
     syncBagFromCoffee(lib, *existing);
     return coffee.id;
@@ -693,6 +777,7 @@ inline uint16_t saveCoffee(Library &lib, Coffee coffee) {
   coffee.shareSeq = coffee.shareHash = 0;
   coffee.reviewNote[0] = coffee.libraryId[0] = '\0';
   coffee.bagId = 0;
+  coffee.finishedDate = 0;
   lib.coffees[lib.coffeeCount++] = coffee;
   syncBagFromCoffee(lib, lib.coffees[lib.coffeeCount - 1]);
   return coffee.id;

@@ -164,6 +164,11 @@ Three keys sit beside the card:
 - **COFFEE**: the coffee's roast level and days off roast under its name,
   then everything else known about it: roaster, country, region, producer,
   varietal, process, altitude, roast date, notes (drag to scroll).
+  **BAG FINISHED** at the bottom (tap twice within 5 s) takes the coffee off
+  the controller's list when its bag is used up: its entries are hidden, not
+  deleted, and the entry whose coffee was roasted longest ago is selected
+  instead. Starting a new bag of that coffee on the web page puts its entries
+  back exactly as they were, grind and learned offset included.
 - **Gear**: offset learning, Bot pairing, forget scale, TARE SCALE and the
   Wi-Fi details.
 

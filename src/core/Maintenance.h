@@ -3,8 +3,11 @@
 // last cleaned, and a reminder when the interval the owner chose has passed.
 //
 // Nothing is inferred. The controller cannot see scale in the machine or dull burrs from the cup (see
-// docs/FEATURES.md 14 and 15), so it counts what it can count and lets the owner decide the intervals;
-// none is preset. OBBW keeps a similar history of activations (shot, rinse, backflush, ...).
+// docs/FEATURES.md 14 and 15), so it counts what it can count and lets the owner decide the intervals.
+// A new controller starts with reminders to backflush every 200 shots and clean the grinder every
+// 500, and none to descale (how often depends on the water, which it cannot see); the owner changes
+// any of them, and a reminder set to 0 (never) stays off. OBBW keeps a similar history of activations
+// (shot, rinse, backflush, ...).
 //
 // Portable and host-tested; no flash or UI access in here.
 
@@ -24,7 +27,23 @@ struct Maintenance {
   uint32_t doneAtShots[UPKEEP_COUNT] = {};    // shotsTotal when each job was last done
   uint32_t doneAtEpochS[UPKEEP_COUNT] = {};   // and when, 0 = not known
   uint16_t everyShots[UPKEEP_COUNT] = {};     // shots between reminders; 0 = no reminder
+  // 1 once the starting intervals below were given (applyUpkeepDefaults). Appended last: a blob saved
+  // before it reads 0, so a controller that never had them gets them once.
+  uint8_t defaultsApplied = 0;
 };
+
+// The starting reminders, in Upkeep order: backflush, descale (off), grinder clean.
+constexpr uint16_t UPKEEP_DEFAULT_EVERY[UPKEEP_COUNT] = {200, 0, 500};
+
+// Gives each job still without a reminder its starting interval, once: after that a 0 is the
+// owner's "never" and is kept.
+inline void applyUpkeepDefaults(Maintenance &m) {
+  if (m.defaultsApplied != 0) return;
+  for (size_t i = 0; i < UPKEEP_COUNT; ++i) {
+    if (m.everyShots[i] == 0) m.everyShots[i] = UPKEEP_DEFAULT_EVERY[i];
+  }
+  m.defaultsApplied = 1;
+}
 
 inline const char *upkeepName(Upkeep job) {
   switch (job) {
@@ -53,6 +72,7 @@ inline bool upkeepFromName(const char *name, Upkeep &out) {
 inline bool upkeepCountsShot(const ShotRecord &s) { return s.shotTimeS >= 12.0f && s.finalWeightG >= 2.0f; }
 
 inline void sanitizeMaintenance(Maintenance &m) {
+  applyUpkeepDefaults(m);
   for (size_t i = 0; i < UPKEEP_COUNT; ++i) {
     if (m.doneAtShots[i] > m.shotsTotal) m.doneAtShots[i] = m.shotsTotal;
     if (m.everyShots[i] > UPKEEP_MAX_EVERY) m.everyShots[i] = UPKEEP_MAX_EVERY;
