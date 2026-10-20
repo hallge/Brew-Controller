@@ -208,6 +208,7 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <div class="page" id="p-shots">
 <div class="head"><h1>Shots</h1><div class="row"><a href="/shots.csv"><button>Download CSV</button></a><a href="/api/shots?limit=500"><button>JSON</button></a></div></div>
 <div class="tiles" id="ssum"></div>
+<section class="card" id="cmpcard" style="display:none"><div class="head"><h2>Compare shots</h2><div class="row"><label class="chk"><input type="checkbox" id="cmpflow" onchange="drawCompare()">Flow</label><label class="chk"><input type="checkbox" id="cmpalign" onchange="drawCompare()">Line up at first drops</label><button onclick="CMP=[];drawCompare();cmpButton()">Clear</button></div></div><canvas id="cmpchart" width="900" height="260" style="height:260px"></canvas><div class="row sm" id="cmpleg"></div><div class="sm dim">Solid: weight in the cup. Dashed: flow (right-hand scale). Open a shot below and press "Add to comparison" to add it; up to 8.</div></section>
 <section class="card"><div class="head"><h2>History</h2><div class="row">
 <label>Coffee<select id="fcoffee" onchange="SHOWN=20;drawShots()"></select></label>
 <label>Show<select id="fshow" onchange="SHOWN=20;drawShots()"><option value="0">All shots</option><option value="1">Stopped by weight</option><option value="2">Brew time off target</option><option value="3">Not rated yet</option></select></label></div></div>
@@ -216,7 +217,7 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <div class="head sm dim"><span>Click a shot to open it. Brew times outside the tolerance are marked; every stored value is in the CSV.</span>
 <button class="del" onclick="ask('Delete all shot history?').then(ok=>{if(ok){post('/api/history/clear').then(loadShots)}})">Clear history</button></div></section>
 <div id="sstash"><div id="sdetail"><div class="head"><div><h2 id="swhen">No shot selected</h2><div style="font-size:19px;font-weight:650" id="sname"></div></div>
-<div class="row"><span class="sm dim">For grind advice</span><span class="row" id="svote"></span></div></div>
+<div class="row"><button id="scmp" onclick="cmpToggle(SEL)">Add to comparison</button><span class="sm dim">For grind advice</span><span class="row" id="svote"></span></div></div>
 <div class="tiles" id="stiles"></div><canvas id="schart" width="900" height="200"></canvas>
 <div class="row sm dim"><span id="sdata"></span></div><div class="row sm dim" id="srate"></div></div></div>
 </div>
@@ -740,6 +741,29 @@ x.strokeStyle='#3a3f46';x.beginPath();x.moveTo(L0,10);x.lineTo(L0,B0);x.lineTo(R
 const dots=[];pts.map((q,i)=>i).sort((a,b)=>(pts[a].c==cc.cur)-(pts[b].c==cc.cur)).forEach(i=>{const q=pts[i],px=X(q.u)+((i*37)%13-6),py=Y(q.t);x.fillStyle=cc.m.get(q.c).col;x.globalAlpha=q.c==cc.cur?1:0.85;x.beginPath();x.arc(px,py,q.c==cc.cur?5.5:4.5,0,7);x.fill();x.globalAlpha=1;dots.push({x:px,y:py,q})});
 chartDots(c,dots);
 const set=new Set(us);$('gnote').textContent=pts.length+' shot'+(pts.length==1?'':'s')+' stopped by weight, '+cc.m.size+' coffee'+(cc.m.size==1?'':'s')+', at '+set.size+' setting'+(set.size==1?'. With one setting there is no slope to measure: once shots exist at two settings at least 4 '+U+' apart, the line through them replaces the starting guess.':'s.')+' Green band, the recipe being brewed now: '+tg+' s ± '+tol+' s. Hover or tap a dot to see the shot.'}
+// Several shots' curves on one chart, each in its own colour: weight solid, flow dashed on its own scale.
+// Readings are fetched once per shot and kept while the page is open.
+let CMP=[];const CMPD=new Map();
+function cmpButton(){const b=$('scmp');if(b){const on=CMP.includes(SEL);b.textContent=on?'Remove from comparison':'Add to comparison';b.classList.toggle('on',on)}}
+function cmpToggle(id){if(!id)return;const i=CMP.indexOf(id);if(i>=0)CMP.splice(i,1);else{if(CMP.length>=8)return say('Up to 8 shots can be compared',false);CMP.push(id)}cmpButton();drawCompare();
+if(i<0)setTimeout(()=>$('cmpcard').scrollIntoView({behavior:'smooth',block:'nearest'}),100)}
+async function drawCompare(){const card=$('cmpcard');card.style.display=CMP.length?'':'none';if(!CMP.length)return;
+for(const id of CMP){if(!CMPD.has(id)){try{const r=await get('/api/shot/data?id='+id);if(r.time_s)CMPD.set(id,{T:r.time_s,W:r.weight_g,F:r.flow_g_s})}catch(e){}}}
+const c=$('cmpchart'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);
+const align=$('cmpalign').checked,flow=$('cmpflow').checked,rows=CMP.map((id,k)=>({id,k,s:SH.find(q=>q.id==id),d:CMPD.get(id)})).filter(r=>r.s);
+const off=r=>align&&r.s.first_drop_s>0?r.s.first_drop_s:0;
+let t0=0,t1=1,wm=1,fm=1;rows.forEach(r=>{if(!r.d)return;const o=off(r);t0=Math.min(t0,-o);t1=Math.max(t1,r.d.T[r.d.T.length-1]-o);wm=Math.max(wm,...r.d.W);if(r.d.F)fm=Math.max(fm,...r.d.F.filter(v=>v!=null))});
+wm*=1.05;fm*=1.1;const L0=50,R0=c.width-(flow?50:20),B0=c.height-24,X=t=>L0+(t-t0)/(t1-t0)*(R0-L0),Y=w=>B0-Math.max(w,0)/wm*(B0-10),YF=v=>B0-Math.max(v,0)/fm*(B0-10);
+x.font='12px sans-serif';x.lineWidth=1;
+niceTicks(0,wm,4,1).forEach(v=>{const y=Math.round(Y(v))+0.5;x.strokeStyle='#22262b';x.beginPath();x.moveTo(L0,y);x.lineTo(R0,y);x.stroke();x.fillStyle='#9aa3ad';x.fillText(v+' g',6,y+4)});
+niceTicks(t0,t1,6,1).forEach(v=>{const gx=Math.round(X(v))+0.5;x.strokeStyle='#22262b';x.beginPath();x.moveTo(gx,10);x.lineTo(gx,B0);x.stroke();const lab=v+' s';x.fillStyle='#9aa3ad';x.fillText(lab,Math.min(R0-x.measureText(lab).width,Math.max(L0,gx-x.measureText(lab).width/2)),c.height-6)});
+if(flow)niceTicks(0,fm,4,0.5).forEach(v=>{x.fillStyle='#9aa3ad';x.fillText(v+' g/s',R0+6,Math.round(YF(v))+4)});
+if(align){x.strokeStyle='#4a4f56';x.setLineDash([3,5]);x.beginPath();x.moveTo(X(0),10);x.lineTo(X(0),B0);x.stroke();x.setLineDash([]);x.fillStyle='#9aa3ad';x.fillText('first drops',X(0)+4,22)}
+x.strokeStyle='#3a3f46';x.beginPath();x.moveTo(L0,10);x.lineTo(L0,B0);x.lineTo(R0,B0);x.stroke();
+const line=(T,V,o,f)=>{x.beginPath();let on=false;T.forEach((t,i)=>{const v=V[i];if(v==null){on=false;return}const px=X(t-o),py=f(v);if(on)x.lineTo(px,py);else{x.moveTo(px,py);on=true}});x.stroke()};
+rows.forEach(r=>{if(!r.d)return;const col=CCOL[r.k%CCOL.length],o=off(r);x.strokeStyle=col;x.lineWidth=2;x.setLineDash([]);line(r.d.T,r.d.W,o,Y);
+if(flow&&r.d.F){x.lineWidth=1.5;x.setLineDash([5,4]);line(r.d.T,r.d.F,o,YF);x.setLineDash([])}});x.lineWidth=1;
+$('cmpleg').innerHTML=rows.map(r=>`<span class="chk" style="gap:6px;margin-right:12px"><span style="display:inline-block;width:18px;height:3px;border-radius:2px;background:${CCOL[r.k%CCOL.length]}"></span>${esc(r.s.coffee||r.s.recipe)} <span class="dim">${esc(when(r.s))}, ${f1(r.s.final_weight_g)} g in ${f1(r.s.shot_time_s)} s${r.s.grind_um?', '+esc(fs(r.s.grind_um)):''}${r.d?'':', no readings stored'}</span> <a href="#" onclick="cmpToggle(${r.id});return false" aria-label="Remove from the comparison">✕</a></span>`).join('')}
 function drawFilter(){const cur=$('fcoffee').value;$('fcoffee').innerHTML='<option value="">All coffees</option>'+[...new Set(SH.map(s=>s.coffee).filter(x=>x))].map(n=>`<option ${n==cur?'selected':''}>${esc(n)}</option>`).join('')}
 async function loadShots(){let a;try{a=await get('/api/shots?limit=500')}catch(e){return}if(!Array.isArray(a))return;SH=a;drawFilter();drawShots();
 if(SH.length){showShot(SH[0].id,'h');if(!SEL||!SH.some(s=>s.id==SEL))SEL=SH[0].id;showShot(SEL,'s')}drawScatter();loadPrev()}
@@ -786,7 +810,7 @@ if(big){$('hshot').className='';$('hshot').innerHTML=`<div class="row" style="ga
 const d=s.final_weight_g-s.target_weight_g;$('res').textContent='Last shot '+(Math.abs(d)<0.05?'on target':(d>0?'over +':'under ')+f1(d)+' g')+(s.final_valid?'':', did not settle')}
 else{$('swhen').textContent=when(s);$('sname').textContent=(s.coffee?s.coffee+', ':'')+s.recipe;
 $('stiles').innerHTML=[['In the cup',f1(s.final_weight_g)+' g','target '+s.target_weight_g+', drip '+f1(s.drip_weight_g)],['Brew time',f1(s.shot_time_s)+' s',s.target_time_s?'target '+s.target_time_s:''],['Pour',f1(s.pour_time_s)+' s',f2(s.pour_flow_g_s)+' g/s, first drops '+f1(s.first_drop_s)+' s'],['Grind',(s.grind_um?fs(s.grind_um):'--'),s.dose_g+' g dose · <a href="#" onclick="editGrind('+s.id+','+s.grind_um+');return false">change</a>'],['Flow at 25/50/75 %',[s.flow_25_g_s,s.flow_50_g_s,s.flow_75_g_s].map(f1).join(' / '),'peak '+f2(s.peak_flow_g_s)+' g/s'],['Ended by',esc(s.end_reason.replace(/_/g,' ')),'offset '+f2(s.stop_offset_g)+' → '+f2(s.next_stop_offset_g)+' g'+(s.bloom_pause_s?', bloom '+s.bloom_pause_s+' s':'')]].map(x=>`<div class="tile"><span>${x[0]}</span><b>${x[1]}</b><span>${x[2]}</span></div>`).join('');
-$('svote').innerHTML=[['Auto',0,''],['Count',2,'count'],['Ignore',1,'ignore']].map(v=>`<button class="${s.grind_vote==v[2]?'on':''}" onclick="vote(${s.id},'',${v[1]})">${v[0]}</button>`).join('');$('srate').innerHTML=rateRow(s)+'<div class="row" style="margin-top:6px;gap:6px;align-items:center">'+prepRow(s)+'</div>'}
+cmpButton();$('svote').innerHTML=[['Auto',0,''],['Count',2,'count'],['Ignore',1,'ignore']].map(v=>`<button class="${s.grind_vote==v[2]?'on':''}" onclick="vote(${s.id},'',${v[1]})">${v[0]}</button>`).join('');$('srate').innerHTML=rateRow(s)+'<div class="row" style="margin-top:6px;gap:6px;align-items:center">'+prepRow(s)+'</div>'}
 const cv=big?'hchart':'schart';if(!s.has_data){draw(cv,s,null);if(!big)$('sdata').textContent='The readings of this shot are no longer stored; the summary is.';return}
 let r;try{r=await get('/api/shot/data?id='+id)}catch(e){return}if(!r.time_s)return;
 // the shot you rated best of this coffee and recipe, drawn behind it for comparison
