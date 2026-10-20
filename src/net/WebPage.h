@@ -94,8 +94,16 @@ button.didnt{box-shadow:0 0 0 2px var(--bad);animation:shake .28s}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes shake{25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
 /* something typed and not saved yet */
-button.pri.dirty{box-shadow:0 0 0 3px rgba(240,138,36,.38)}
-button.pri.dirty::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:#1d0f00;margin-right:8px;vertical-align:middle}
+button.dirty{box-shadow:0 0 0 3px rgba(240,138,36,.38)}
+button.dirty::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:currentColor;margin-right:8px;vertical-align:middle}
+.tick{margin-left:8px;font-size:12px;font-weight:600;color:var(--ok);white-space:nowrap}.tick.bad{color:var(--bad)}
+#unsaved{display:none;position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:60;max-width:min(640px,calc(100vw - 24px));background:var(--up);border:1px solid var(--acc);border-radius:12px;padding:12px 14px;box-shadow:0 8px 30px rgba(0,0,0,.5);gap:10px;align-items:center;flex-wrap:wrap}
+#unsaved.on{display:flex}
+#askbox{display:none;position:fixed;z-index:80;background:var(--up);border:1px solid var(--edge);border-radius:12px;padding:14px 16px;max-width:min(420px,calc(100vw - 24px));box-shadow:0 10px 34px rgba(0,0,0,.55);white-space:pre-line}#askbox.on{display:block}#asktxt{margin-bottom:12px;line-height:1.45}
+#askyes.del{background:var(--bad);border-color:var(--bad);color:#200}
+#ctip{display:none;position:fixed;z-index:70;background:var(--up);border:1px solid var(--edge);border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.45;pointer-events:none;max-width:280px;box-shadow:0 6px 20px rgba(0,0,0,.45)}
+#bnav{display:none}#more{display:none;position:fixed;right:8px;bottom:72px;z-index:45;flex-direction:column;min-width:210px;background:var(--up);border:1px solid var(--edge);border-radius:12px;padding:6px;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+#more a{padding:13px 14px;border-radius:8px;color:var(--fg)}#more a.on{background:var(--card);font-weight:600}#unsaved span{flex:1 1 220px;font-size:14px}
 /* messages */
 #toast{left:50%;bottom:24px;transform:translateX(-50%);background:#22262b;color:var(--fg);border:1px solid var(--edge);border-left:4px solid var(--dim);padding:12px 18px;border-radius:12px;font-weight:600;max-width:min(90vw,560px);box-shadow:0 10px 30px rgba(0,0,0,.5);z-index:50;animation:rise .18s ease-out}
 #toast.ok{border-left-color:var(--ok)}#toast.bad{border-left-color:var(--bad)}
@@ -138,7 +146,13 @@ button.pri.dirty::before{content:"";display:inline-block;width:7px;height:7px;bo
 nav{flex-direction:row;align-items:center;overflow-x:auto;position:sticky;top:0;z-index:20;background:var(--bg);padding:8px 10px;gap:2px;border-bottom:1px solid var(--line)}
 nav b,#link{display:none}nav a{white-space:nowrap;padding:9px 12px}
 #navstate{margin:0 6px 0 2px;order:-1;white-space:nowrap}
-main{padding:14px 12px 70px}.big{font-size:38px}.otp{top:62px}.otp.mini{margin-right:-10px}.card{padding:16px}
+main{padding:14px 12px 96px}.big{font-size:38px}
+nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-size:15px}
+.page>.head #state{display:none}
+#bnav{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:40;background:var(--bg);border-top:1px solid var(--line);padding:4px 4px calc(4px + env(safe-area-inset-bottom))}
+#bnav a,#bnav button{flex:1 1 0;text-align:center;padding:12px 2px;border-radius:10px;color:var(--dim);font-size:14px;background:none;border:0;min-height:48px}
+#bnav a.on,#bnav button.on{color:var(--fg);background:var(--up);font-weight:600}
+#more.open{display:flex}#unsaved{bottom:84px}.otp{top:62px}.otp.mini{margin-right:-10px}.card{padding:16px}
 }
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 
@@ -161,7 +175,12 @@ main{padding:14px 12px 70px}.big{font-size:38px}.otp{top:62px}.otp.mini{margin-r
 <nav aria-label="Sections"><b>Brew by Weight</b><span class="pill" id="navstate" title="What the controller is doing">--</span>
 <a href="#home">Home</a><a href="#shots">Shots</a><a href="#coffees">Coffees</a><a href="#recipes">Recipes</a><a href="#grinder">Grinder</a><a href="#machine">Espresso machine</a><a href="#setup">Setup</a><a href="#logs">Logs</a>
 <div id="link"></div></nav>
+<div id="bnav" role="navigation" aria-label="Sections"><a href="#home">Home</a><a href="#shots">Shots</a><a href="#coffees">Coffees</a><a href="#grinder">Grinder</a><button type="button" id="bmore" aria-expanded="false" aria-controls="more">More</button></div>
+<div id="more" role="menu"><a href="#recipes">Recipes</a><a href="#machine">Espresso machine</a><a href="#setup">Setup</a><a href="#logs">Logs</a></div>
 <main>
+<div id="ctip" role="tooltip"></div>
+<div id="askbox" role="dialog" aria-modal="true" aria-labelledby="asktxt"><div id="asktxt"></div><div class="row"><button id="askyes" class="pri">Yes</button><button id="askno">Cancel</button></div></div>
+<div id="unsaved" role="alertdialog" aria-live="polite"><span id="unsavedtxt"></span><button class="pri" id="unsavedsave">Save</button><button id="unsaveddrop">Discard</button><button id="unsavedstay">Stay</button></div>
 <div id="offline" role="status">Lost contact with the controller. Trying again...</div>
 <div id="alert" role="alert"></div>
 
@@ -169,7 +188,7 @@ main{padding:14px 12px 70px}.big{font-size:38px}.otp{top:62px}.otp.mini{margin-r
 <div class="head"><h1>Home</h1><div class="row"><button id="hpower" class="pwr" style="display:none" onclick="homePower()">Espresso machine power</button><button id="hmstate" class="pill mstate" style="display:none" onclick="toggleMachineState()" title="What the controller believes, from the power bot's last press. Tap to correct it: nothing is pressed.">Espresso machine off</button><span class="pill" id="state">--</span></div></div>
 <section class="card"><div class="head">
 <div class="live"><div><span class="big" id="w">--</span> <span class="dim">g</span></div><div><span class="big" id="t">--</span> <span class="dim">s</span></div><div><span class="big" id="f">--</span> <span class="dim">g/s</span></div></div>
-<div class="row"><button class="go" id="bstart" onclick="cmd('start')">Start</button><button class="stop" onclick="cmd('stop')">Stop / Cancel</button><button onclick="cmd('tare')">Tare</button><button onclick="cmd('ack')">Ready</button></div></div>
+<div class="row"><span class="mid" id="ihint"></span><button class="go" id="bstart" onclick="cmd('start')">Start</button><button class="stop" id="bstop" style="display:none" onclick="cmd('stop')">Stop</button><button id="btare" onclick="cmd('tare')">Tare</button><button id="back" style="display:none" onclick="cmd('ack')">Done with this shot</button></div></div>
 <div class="row sm dim"><span><i class="dot" id="ds"></i>Scale <span id="sbat"></span></span><span><i class="dot" id="db"></i>Brew bot <span id="bat"></span></span><span id="cut"></span><span id="res"></span></div></section>
 <div class="cols">
 <section class="card"><div class="head"><h2>Brewing now</h2><a class="sm" href="#coffees">Coffees</a></div>
@@ -195,7 +214,7 @@ main{padding:14px 12px 70px}.big{font-size:38px}.otp{top:62px}.otp.mini{margin-r
 <div class="shots" id="hist"></div>
 <div class="row" id="smore"></div>
 <div class="head sm dim"><span>Click a shot to open it. Brew times outside the tolerance are marked; every stored value is in the CSV.</span>
-<button class="del" onclick="if(confirm('Delete all shot history?'))post('/api/history/clear').then(loadShots)">Clear history</button></div></section>
+<button class="del" onclick="ask('Delete all shot history?').then(ok=>{if(ok){post('/api/history/clear').then(loadShots)}})">Clear history</button></div></section>
 <div id="sstash"><div id="sdetail"><div class="head"><div><h2 id="swhen">No shot selected</h2><div style="font-size:19px;font-weight:650" id="sname"></div></div>
 <div class="row"><span class="sm dim">For grind advice</span><span class="row" id="svote"></span></div></div>
 <div class="tiles" id="stiles"></div><canvas id="schart" width="900" height="200"></canvas>
@@ -225,7 +244,7 @@ main{padding:14px 12px 70px}.big{font-size:38px}.otp{top:62px}.otp.mini{margin-r
 <label>Varietal<input id="c_varietal" maxlength="31"></label>
 <label>Process<input id="c_process" maxlength="15" placeholder="washed, natural..."></label>
 <label>Altitude (m)<input id="c_altitudeM" type="number" min="0" max="4000" step="10"></label></div></fieldset>
-<div class="row"><button class="pri" onclick="saveCoffee()">Save</button><button onclick="newBag()" id="cbag">New bag...</button><span class="sm dim" id="cinfo"></span><button class="del" id="cdel" style="margin-left:auto" onclick="delCoffee()">Delete</button></div>
+<div class="row"><button class="pri" data-save onclick="saveCoffee()">Save</button><button onclick="newBag()" id="cbag">New bag...</button><span class="sm dim" id="cinfo"></span><button class="del" id="cdel" style="margin-left:auto" onclick="delCoffee()">Delete</button></div>
 <div class="row" id="cbagrow" style="display:none;background:var(--up);border-radius:10px;padding:12px"><label style="flex:1 1 180px">Roast date printed on the new bag<input id="cbagdate" type="date"></label><label style="flex:1 1 160px">Opened (optional)<input id="cbagopen" type="date"></label><button class="pri" style="align-self:flex-end" onclick="startBag()">Start this bag</button><button style="align-self:flex-end" onclick="$('cbagrow').style.display='none'">Cancel</button></div>
 <div id="cbags"></div>
 <details class="note"><summary>A new bag keeps the coffee, its recipes and its grind setting, and starts a fresh run of shots for grind advice.</summary><ul><li>Earlier bags are kept below: put one back in use if you go back to it.</li><li>The dates above are those of the bag in use; correcting them corrects that bag.</li><li>Days in the freezer are not counted as age: enter the day the bag went in and the day it came out.</li></ul></details>
@@ -258,7 +277,7 @@ main{padding:14px 12px 70px}.big{font-size:38px}.otp{top:62px}.otp.mini{margin-r
 <label>Who ends the shot<select id="r_timeLimit" onchange="recipeForm()"><option value="0">The machine's own time-out</option><option value="1">The Bot, after a set time</option></select></label>
 <label>Stop after (s)<input id="r_maxShotTimeS" type="number" min="5" max="90"></label>
 <label>Starting stop offset (g)<input id="r_baselineOffsetG" type="number" step="0.1" min="0" max="5"></label></div></fieldset>
-<div class="row"><button class="pri" onclick="saveRecipe()">Save</button><span class="sm dim" id="rinfo"></span></div></section>
+<div class="row"><button class="pri" data-save onclick="saveRecipe()">Save</button><span class="sm dim" id="rinfo"></span></div></section>
 <section class="card" id="rused"><div class="head"><h2>Used with</h2><a class="sm" href="#coffees">Add to a coffee</a></div>
 <div class="scroll"><table id="rtable"></table></div>
 <div class="row"><button id="ralone" onclick="act('preset_add',R,0)">List it on the controller by itself</button></div>
@@ -283,7 +302,7 @@ main{padding:14px 12px 70px}.big{font-size:38px}.otp{top:62px}.otp.mini{margin-r
 <label><span>Starting guess (<span class="un">&micro;m</span> per s)</span><input id="grindUmPerS" type="number" step="0.5" min="0.5" max="20"></label>
 <label><span>Largest single change (<span class="un">&micro;m</span>)</span><input id="grindMaxStepUm" type="number" min="1" max="100"></label>
 <label>Brew time measured<select id="grindTimeBasis"><option value="0">Total: start press to stop (with pre-infusion)</option><option value="1">Pour: first drops to stop</option></select></label></div>
-<div class="row"><button class="pri" onclick="saveSettings()">Save</button><span class="sm dim">Changing how brew time is measured starts a fresh comparison: set each recipe's target time to match.</span></div></section>
+<div class="row"><button class="pri" data-save onclick="saveSettings(this.closest('.card'))">Save</button><span class="sm dim">Changing how brew time is measured starts a fresh comparison: set each recipe's target time to match.</span></div></section>
 <section class="card"><h2>My grinder</h2><div class="grid">
 <label>Model<select id="gm_model" onchange="grinderForm()"></select></label>
 <label>Name<input id="gm_name" maxlength="31"></label>
@@ -293,7 +312,7 @@ main{padding:14px 12px 70px}.big{font-size:38px}.otp{top:62px}.otp.mini{margin-r
 <label>A dial that reads in parts of a step<select id="gm_divisor"><option value="1">No: whole numbers (246, 12)</option><option value="2">Halves (3.5)</option><option value="4">Quarters (3.25)</option><option value="5">Fifths (3.2)</option><option value="10">Tenths (3.5)</option><option value="20">Twentieths (3.05)</option><option value="25">Twenty-fifths (3.04)</option><option value="50">Fiftieths (3.02)</option><option value="100">Hundredths (3.01)</option></select></label>
 <label>Two rings (inner steps per outer step; 0: one scale)<input id="gm_subSteps" type="number" min="0" max="99" step="1" placeholder="0" oninput="$('gm_divisor').disabled=+this.value>=2"></label>
 <label>Last zeroed, or burrs changed<input id="gm_zeroDate" type="date"></label></div>
-<div class="row"><button class="pri" onclick="saveGrinder(false)">Save</button><button onclick="saveGrinder(true)">I zeroed it again today</button><button id="gm_addother" onclick="saveGrinder(false,true)">Add what is typed above as my second grinder</button></div>
+<div class="row"><button class="pri" data-save onclick="saveGrinder(false)">Save</button><button onclick="saveGrinder(true)">I zeroed it again today</button><button id="gm_addother" onclick="saveGrinder(false,true)">Add what is typed above as my second grinder</button></div>
 <div class="sm dim" id="gm_info"></div>
 <div class="row" id="gm_shrow" style="border-top:1px solid var(--line);padding-top:12px"><span class="pill" id="gm_shpill" style="background:var(--combg);color:#8cc4ff;border:1px solid var(--comline)"></span><span class="sm mid" id="gm_share" style="flex:1 1 260px"></span><button id="gm_send" onclick="sendGrinder(L.grinder.id)">Send to the shared library</button></div>
 <div class="row" id="gm_other" style="border-top:1px solid var(--line);padding-top:12px"></div>
@@ -304,8 +323,8 @@ main{padding:14px 12px 70px}.big{font-size:38px}.otp{top:62px}.otp.mini{margin-r
 <div class="page" id="p-machine">
 <div class="head"><h1>Espresso machine</h1></div>
 <section class="card"><div class="head"><h2>Upkeep</h2><span class="sm dim" id="mt_total"></span></div><div id="mt_rows"></div><details class="note"><summary>Counts shots (12 s or longer, 2 g or more) since each job was last done.</summary><ul><li>The controller cannot tell from the cup when a machine needs descaling or a grinder cleaning, so it counts.</li><li>You choose how often to be reminded; no interval is set until you set one.</li></ul></details></section>
-<section class="card"><h2>Make and model</h2><div id="mc" class="mid"></div><div class="grid"><label>Pick one<select id="mc_pick" onchange="pickMachine()"></select></label><label>Maker<input id="mc_maker" maxlength="23"></label><label>Model<input id="mc_model" maxlength="31"></label><label>Button, lever or knob<input id="mc_control" maxlength="31"></label><label>How a shot is run<select id="mc_style"><option value="toggle_button">One button: a press starts, a press stops (the brew bot does both)</option><option value="start_button">A button starts, the machine stops itself (the brew bot starts)</option><option value="start_stop_buttons">Two buttons: one starts, another stops (brew bot on start, stop bot on stop)</option><option value="hold_button">One button, held down for the whole shot (the brew bot holds it; needs a SwitchBot)</option><option value="manual">By hand: lever, knob, wheel or paddle (nothing is pressed)</option></select></label><label>By hand: the clock starts<select id="mc_start"><option value="tap">when Start is tapped</option><option value="first_drip">with the first coffee on the scale</option></select></label><label>Holding the button holds pre-infusion<select id="mc_hold"><option value="0">No</option><option value="1">Yes</option></select></label><label>A tap uses the machine's own pre-infusion<select id="mc_tap"><option value="0">No</option><option value="1">Yes</option></select></label><label>The power button is a toggle<select id="mc_pow"><option value="0">No</option><option value="1">Yes</option></select></label><label>The machine ends a shot itself after (s, 0: no)<input id="mc_self" type="number" min="0" max="600"></label></div><div class="row"><button class="pri" onclick="saveMachine()">Save</button><button onclick="shareMachine()">Send to the shared library</button></div><details class="note"><summary>Change anything above and Save: a listed machine you have changed is kept as your own version.</summary><ul><li>Set a machine up once and send it: the next owner of the same machine picks it from the list.</li><li>The same machine worked by another button is another entry.</li><li>Where the bot does not stop the machine, the target weight is a cue: the screen says STOP NOW (and the scale sounds, if it can be told to) and the shot ends when the pour does.</li><li>Held pre-infusion and bloom in a recipe are only used on a machine whose button holds pre-infusion.</li></ul></details></section>
-<section class="card"><h2>Machine power</h2><div id="pw" class="mid"></div><label class="chk"><input type="checkbox" id="keepPowerBotConnected" onchange="post('/api/settings',{keepPowerBotConnected:this.checked}).then(r=>done(r,'Saved'))">Keep the power bot connected while the scale is off, so the power button presses at once (it is let go when the scale comes on; uses more of its battery)</label><label style="max-width:520px">Let the scale switch itself off after this many minutes with nothing happening (0: keep it connected)<input id="scaleRestMin" type="number" min="0" max="60" step="1" onchange="post('/api/settings',{scaleRestMin:+this.value}).then(r=>{done(r,'Saved');loadSettings()})"></label><details class="note"><summary>An Acaia scale only counts down its own sleep timer while nothing is connected to it, so the controller lets go of it.</summary><ul><li>The brew bot is let go with it, and the power bot is connected once the scale is off.</li><li>Touching the screen, the touch key or this page keeps it connected. Pressing the touch key while it rests takes it back and starts the shot once it is there.</li></ul></details><div class="row"><button onclick="power('on')">Switch on</button><button onclick="power('off')">Switch off</button><button onclick="power('press')">Press the power button anyway</button></div><div class="row sm">It is really: <button onclick="power('believe_on')">on</button><button onclick="power('believe_off')">off</button></div><details class="note"><summary>If the machine was switched by hand, or switched itself off, put it right here: nothing is pressed.</summary><ul><li>The power button is a toggle and the machine does not say whether it is on, so the controller keeps count.</li></ul></details><h2 style="margin-top:10px">Schedule</h2><div class="scroll"><table id="pws"></table></div><div class="row"><button onclick="savePowerSchedule()">Save schedule</button></div><details class="note"><summary>Times are this browser's local time.</summary><ul><li>Saving stores its time zone, so save again after a daylight-saving change.</li><li>A time is skipped if the machine is already believed to be that way, or while a shot is running.</li></ul></details></section>
+<section class="card"><h2>Make and model</h2><div id="mc" class="mid"></div><div class="grid"><label>Pick one<select id="mc_pick" onchange="pickMachine()"></select></label><label>Maker<input id="mc_maker" maxlength="23"></label><label>Model<input id="mc_model" maxlength="31"></label><label>Button, lever or knob<input id="mc_control" maxlength="31"></label><label>How a shot is run<select id="mc_style"><option value="toggle_button">One button: a press starts, a press stops (the brew bot does both)</option><option value="start_button">A button starts, the machine stops itself (the brew bot starts)</option><option value="start_stop_buttons">Two buttons: one starts, another stops (brew bot on start, stop bot on stop)</option><option value="hold_button">One button, held down for the whole shot (the brew bot holds it; needs a SwitchBot)</option><option value="manual">By hand: lever, knob, wheel or paddle (nothing is pressed)</option></select></label><label>By hand: the clock starts<select id="mc_start"><option value="tap">when Start is tapped</option><option value="first_drip">with the first coffee on the scale</option></select></label><label>Holding the button holds pre-infusion<select id="mc_hold"><option value="0">No</option><option value="1">Yes</option></select></label><label>A tap uses the machine's own pre-infusion<select id="mc_tap"><option value="0">No</option><option value="1">Yes</option></select></label><label>The power button is a toggle<select id="mc_pow"><option value="0">No</option><option value="1">Yes</option></select></label><label>The machine ends a shot itself after (s, 0: no)<input id="mc_self" type="number" min="0" max="600"></label></div><div class="row"><button class="pri" data-save onclick="saveMachine()">Save</button><button onclick="shareMachine()">Send to the shared library</button></div><details class="note"><summary>Change anything above and Save: a listed machine you have changed is kept as your own version.</summary><ul><li>Set a machine up once and send it: the next owner of the same machine picks it from the list.</li><li>The same machine worked by another button is another entry.</li><li>Where the bot does not stop the machine, the target weight is a cue: the screen says STOP NOW (and the scale sounds, if it can be told to) and the shot ends when the pour does.</li><li>Held pre-infusion and bloom in a recipe are only used on a machine whose button holds pre-infusion.</li></ul></details></section>
+<section class="card"><h2>Machine power</h2><div id="pw" class="mid"></div><label class="chk"><input type="checkbox" id="keepPowerBotConnected" onchange="post('/api/settings',{keepPowerBotConnected:this.checked}).then(r=>done(r,'Saved'))">Keep the power bot connected while the scale is off, so the power button presses at once (it is let go when the scale comes on; uses more of its battery)</label><label style="max-width:520px">Let the scale switch itself off after this many minutes with nothing happening (0: keep it connected)<input id="scaleRestMin" type="number" min="0" max="60" step="1" onchange="post('/api/settings',{scaleRestMin:+this.value}).then(r=>{done(r,'Saved');loadSettings()})"></label><details class="note"><summary>An Acaia scale only counts down its own sleep timer while nothing is connected to it, so the controller lets go of it.</summary><ul><li>The brew bot is let go with it, and the power bot is connected once the scale is off.</li><li>Touching the screen, the touch key or this page keeps it connected. Pressing the touch key while it rests takes it back and starts the shot once it is there.</li></ul></details><div class="row"><button onclick="power('on')">Switch on</button><button onclick="power('off')">Switch off</button><button onclick="power('press')">Press the power button anyway</button></div><div class="row sm">It is really: <button onclick="power('believe_on')">on</button><button onclick="power('believe_off')">off</button></div><details class="note"><summary>If the machine was switched by hand, or switched itself off, put it right here: nothing is pressed.</summary><ul><li>The power button is a toggle and the machine does not say whether it is on, so the controller keeps count.</li></ul></details><h2 style="margin-top:10px">Schedule</h2><div class="scroll"><table id="pws"></table></div><div class="row"><button data-save onclick="savePowerSchedule()">Save schedule</button></div><details class="note"><summary>Times are this browser's local time.</summary><ul><li>Saving stores its time zone, so save again after a daylight-saving change.</li><li>A time is skipped if the machine is already believed to be that way, or while a shot is running.</li></ul></details></section>
 </div>
 
 <div class="page" id="p-setup">
@@ -316,7 +335,7 @@ main{padding:14px 12px 70px}.big{font-size:38px}.otp{top:62px}.otp.mini{margin-r
 <details class="note"><summary>A test press moves one pusher once, so you can see which button it is on. <b>It really presses.</b></summary><ul><li>Two pushers of the same make look the same in the list.</li><li>The brew bot starts the pump if the machine is on (press again to stop it).</li><li>The power bot switches the machine on or off.</li></ul></details>
 <details class="note"><summary>A pusher in the list can be the brew bot, the power bot or the stop bot.</summary><ul><li><b>Brew bot</b>: on the brew button; it stops the shot.</li><li><b>Power bot</b>: on the power button.</li><li><b>Stop bot</b>: on the stop button of a machine with separate start and stop buttons.</li><li>SwitchBot Bot, Tuya Fingerbot and MicroBot Push are supported; the last two need a key, under Pusher keys.</li></ul></details></section>
 <section class="card"><h2>Controller screen</h2><label class="chk"><input type="checkbox" id="displayFlipped" onchange="post('/api/settings',{displayFlipped:this.checked}).then(r=>done(r,'Saved'))">Turned upside down, for a mounting with the USB-C connector and the touch key on the right</label></section>
-<section class="card"><h2>Pusher keys</h2><div class="grid"><label>For<select id="pk_role" onchange="loadPusher()"><option value="brew">Brew bot</option><option value="power">Power bot</option><option value="stop">Stop bot</option></select></label><label>Tuya uuid<input id="pk_uuid" maxlength="16"></label><label>Tuya device id<input id="pk_dev" maxlength="22"></label><label>Tuya local key<input id="pk_key" type="password" maxlength="16"></label><label>Tuya model<select id="pk_var"><option value="0">Fingerbot / Fingerbot Plus</option><option value="1">CubeTouch</option></select></label><label>MicroBot token (32 hex digits)<input id="pk_tok" type="password" maxlength="32"></label><label id="pk_pwl">SwitchBot password (this bot)<input id="pk_pw" type="password" maxlength="23"></label></div><div id="pk_state" class="sm dim"></div><div class="row"><button class="pri" onclick="savePusher()">Save keys</button></div><details class="note"><summary>A SwitchBot Bot needs nothing here; the other pushers need a key.</summary><ul><li>Tuya Fingerbot: its uuid, device id and local key from Tuya's cloud.</li><li>MicroBot Push: the token from its first pairing (Home Assistant shows it).</li><li>Keys are stored on the controller and never shown again.</li></ul></details></section>
+<section class="card"><h2>Pusher keys</h2><div class="grid"><label>For<select id="pk_role" onchange="loadPusher()"><option value="brew">Brew bot</option><option value="power">Power bot</option><option value="stop">Stop bot</option></select></label><label>Tuya uuid<input id="pk_uuid" maxlength="16"></label><label>Tuya device id<input id="pk_dev" maxlength="22"></label><label>Tuya local key<input id="pk_key" type="password" maxlength="16"></label><label>Tuya model<select id="pk_var"><option value="0">Fingerbot / Fingerbot Plus</option><option value="1">CubeTouch</option></select></label><label>MicroBot token (32 hex digits)<input id="pk_tok" type="password" maxlength="32"></label><label id="pk_pwl">SwitchBot password (this bot)<input id="pk_pw" type="password" maxlength="23"></label></div><div id="pk_state" class="sm dim"></div><div class="row"><button class="pri" data-save onclick="savePusher()">Save keys</button></div><details class="note"><summary>A SwitchBot Bot needs nothing here; the other pushers need a key.</summary><ul><li>Tuya Fingerbot: its uuid, device id and local key from Tuya's cloud.</li><li>MicroBot Push: the token from its first pairing (Home Assistant shows it).</li><li>Keys are stored on the controller and never shown again.</li></ul></details></section>
 <section class="card"><h2>Brew</h2><fieldset><legend>Cup</legend><div class="grid">
 <label>Cup workflow<select id="cupMode"><option value="0">Cup on scale before Start</option><option value="1">Tare, then place cup</option></select></label>
 <label>Cup on the scale<select id="requireCup"><option value="1">Required before Start</option><option value="0">Not checked</option></select></label>
@@ -337,21 +356,21 @@ main{padding:14px 12px 70px}.big{font-size:38px}.otp{top:62px}.otp.mini{margin-r
 <label>Press duration (ms, down / up style)<input id="pressDurationMs" type="number" step="50"></label>
 <label>Release settle time (ms)<input id="releaseSettleMs" type="number" step="50"></label>
 <label>Bot hold time (s, Bot press style)<input id="botHoldSeconds" type="number" min="0" max="5"></label></div></details>
-<div class="row"><button class="pri" onclick="saveSettings()">Save</button></div></section>
+<div class="row"><button class="pri" data-save onclick="saveSettings(this.closest('.card'))">Save</button></div></section>
 <section class="card"><h2>Network</h2><div class="grid">
 <label>Join Wi-Fi network (empty: access point only)<input id="staSsid"></label>
 <label>Wi-Fi password (blank keeps current)<input id="staPassword" type="password"></label>
 <label>Access point password (blank keeps current)<input id="apPassword" type="password" minlength="8"></label>
 <label>SwitchBot password (only if set in its app)<input id="botPassword" type="password"></label></div>
 <label class="chk"><input type="checkbox" id="webStartEnabled">Allow Start from this page</label>
-<div class="row"><button class="pri" onclick="saveNet()">Save and restart</button></div></section>
+<div class="row"><button class="pri" data-save onclick="saveNet()">Save and restart</button></div></section>
 <section class="card"><h2>Firmware</h2><div id="fw" class="mid"></div>
 <div class="scroll"><table id="fwslots"></table></div>
 <h2 style="margin-top:10px">From GitHub</h2><div id="fwgh" class="mid"></div>
 <div class="row"><button onclick="fwCheck()">Check for an update</button><button class="pri" id="fwinst" style="display:none" onclick="fwInstall()"></button></div>
 <div class="grid"><label>Releases from (owner/name)<input id="fwrepo" maxlength="63"></label><label>Token (private repository only; blank keeps it, - forgets it)<input id="fwtok" type="password" maxlength="127"></label></div>
 <label class="chk"><input type="checkbox" id="fwauto">Look for a new release once a day (installing is always your choice)</label>
-<div class="row"><button onclick="fwSaveCfg()">Save</button><button onclick="fwBoot('previous')">Go back to the previous version</button><button onclick="fwBoot('factory')">Start the safe (factory) version</button></div>
+<div class="row"><button data-save onclick="fwSaveCfg()">Save</button><button onclick="fwBoot('previous')">Go back to the previous version</button><button onclick="fwBoot('factory')">Start the safe (factory) version</button></div>
 <h2 style="margin-top:10px">From a file</h2>
 <div class="row"><input type="file" id="fwfile" accept=".bin" style="flex:1 1 220px"><button onclick="uploadFirmware()">Install this file</button></div>
 <div id="fwprog" class="sm mid"></div>
@@ -368,7 +387,7 @@ main{padding:14px 12px 70px}.big{font-size:38px}.otp{top:62px}.otp.mini{margin-r
 <label class="chk"><input type="checkbox" id="shareDialIns" style="accent-color:var(--com)">Settled dial-ins: grind, dose, yield, brew time, grinder, roast date</label>
 <label class="chk"><input type="checkbox" id="shareShots" style="accent-color:var(--com)">Every shot that counts for grind advice, with its flow</label>
 <label class="chk"><input type="checkbox" id="shareRatings" style="accent-color:var(--com)">My taste ratings, with those shots</label></fieldset>
-<div class="row"><button class="pri" style="background:var(--com);border-color:var(--com);color:#06203a" onclick="saveShare()">Save</button><button onclick="post('/api/share/coffees').then(r=>{done(r,r.queued+' coffees queued');loadLibrary();loadShare()})">Queue coffees not sent yet</button><button onclick="if(confirm('Forget what was sent before and send every coffee and grinder you have described again?'))post('/api/share/again').then(r=>{done(r,r.queued+' queued');loadLibrary();loadShare()})">Send everything again</button></div>
+<div class="row"><button class="pri" style="background:var(--com);border-color:var(--com);color:#06203a" data-save onclick="saveShare()">Save</button><button onclick="post('/api/share/coffees').then(r=>{done(r,r.queued+' coffees queued');loadLibrary();loadShare()})">Queue coffees not sent yet</button><button onclick="ask('Forget what was sent before and send every coffee and grinder you have described again?').then(ok=>{if(ok){post('/api/share/again').then(r=>{done(r,r.queued+' queued');loadLibrary();loadShare()})}})">Send everything again</button></div>
 <div class="sm mid" id="sh_queue"></div>
 <details class="note"><summary>Every record is signed with this controller's own key.</summary><ul><li>It carries the key's short id, never a name, an address or anything about the network.</li><li>Coffees and grinders wait for a reviewer before they are published; measurements do not.</li></ul></details></section>
 </div>
@@ -377,7 +396,7 @@ main{padding:14px 12px 70px}.big{font-size:38px}.otp{top:62px}.otp.mini{margin-r
 <section class="card"><h2>What is recorded</h2><div class="grid">
 <label>Detail<select id="lg_level"><option value="0">Errors only</option><option value="1">Warnings and errors</option><option value="2">Normal: every event</option><option value="3">Debug: also once a second during a shot</option></select></label>
 <label class="chk"><input type="checkbox" id="lg_keep">Keep on flash, so it survives a restart</label></div>
-<div class="row"><button class="pri" onclick="saveLog()">Save</button><a href="/log.txt"><button>Download the whole log</button></a><button class="del" style="margin-left:auto" onclick="if(confirm('Delete the stored log?'))post('/api/log/clear').then(r=>{done(r,'Log cleared');loadLog()})">Clear stored log</button></div>
+<div class="row"><button class="pri" data-save onclick="saveLog()">Save</button><a href="/log.txt"><button>Download the whole log</button></a><button class="del" style="margin-left:auto" onclick="ask('Delete the stored log?').then(ok=>{if(ok){post('/api/log/clear').then(r=>{done(r,'Log cleared');loadLog()})}})">Clear stored log</button></div>
 <div id="lg_state" class="sm dim"></div>
 <details class="note"><summary>What is logged, and when.</summary><ul><li>Each start-up: the firmware version and why the controller started (power on, restart, crash, watchdog).</li><li>Every ten minutes: free memory and how much stack each task has left.</li><li>Lines are written to flash only between shots.</li></ul></details></section>
 <section class="card"><div class="head"><h2>Live</h2><div class="row"><label class="chk"><input type="checkbox" id="lg_follow" checked>Follow</label><input id="lg_filter" placeholder="filter, e.g. scale or W" style="width:170px"><button onclick="LOGT='';drawLog()">Clear view</button></div></div>
@@ -390,8 +409,24 @@ const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;'
 const get=u=>fetch(u).then(r=>r.json());
 let lastBtn=null,lastAt=0;
 const post=(u,b)=>{const btn=lastBtn&&Date.now()-lastAt<700&&document.contains(lastBtn)?lastBtn:null;lastBtn=null;if(btn)btn.classList.add('busy');
+const inp=!btn&&lastIn&&Date.now()-lastInAt<1500&&document.contains(lastIn)?lastIn:null;lastIn=null;
 return fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):''}).then(r=>r.json()).catch(()=>({ok:false,error:'The controller could not be reached'})).then(r=>{if(btn){btn.classList.remove('busy');const how=r&&r.ok===false?'didnt':'did';btn.classList.add(how);setTimeout(()=>btn.classList.remove(how),1000);
-if(how=='did'){const card=btn.closest('.card');if(card)card.querySelectorAll('button.dirty').forEach(x=>x.classList.remove('dirty'))}}return r})};
+if(how=='did'){const card=btn.closest('.card');if(card)card.querySelectorAll('button.dirty').forEach(x=>x.classList.remove('dirty'))}}if(inp)tick(inp,!(r&&r.ok===false));return r})};
+// "Saved" beside a control that saves itself, where the eye already is.
+// A question asked in the page, beside the button that asked it (the browser's own pop-up does not fit
+// the page and is clumsy on a phone). Resolves true for Yes; Esc, Cancel or a click elsewhere is no.
+function ask(msg){return new Promise(res=>{const box=$('askbox'),from=lastBtn&&Date.now()-lastAt<2000&&document.contains(lastBtn)?lastBtn:null;
+$('asktxt').textContent=msg;$('askyes').classList.toggle('del',/^(Delete|Forget|Remove|Clear)/.test(msg));box.classList.add('on');
+const r=from?from.getBoundingClientRect():null,w=box.offsetWidth,h=box.offsetHeight;
+if(r){box.style.left=Math.max(12,Math.min(innerWidth-w-12,r.left))+'px';box.style.top=(r.bottom+8+h<innerHeight?r.bottom+8:Math.max(12,r.top-h-8))+'px'}
+else{box.style.left=Math.max(12,(innerWidth-w)/2)+'px';box.style.top=Math.max(12,(innerHeight-h)/3)+'px'}
+const end=v=>{box.classList.remove('on');document.removeEventListener('keydown',key,true);document.removeEventListener('pointerdown',away,true);if(v&&from){lastBtn=from;lastAt=Date.now()}res(v)};
+const key=e=>{if(e.key=='Escape'){e.preventDefault();end(false)}else if(e.key=='Enter'){e.preventDefault();end(true)}};
+const away=e=>{if(!e.target.closest('#askbox'))end(false)};
+document.addEventListener('keydown',key,true);setTimeout(()=>document.addEventListener('pointerdown',away,true),0);
+$('askyes').onclick=()=>end(true);$('askno').onclick=()=>end(false);$('askyes').focus()})}
+let lastIn=null,lastInAt=0;function tick(el,ok){const host=el.closest('label')||el.parentElement;if(!host)return;let t=host.querySelector(':scope>.tick');if(!t){t=document.createElement('span');t.className='tick';host.appendChild(t)}
+t.textContent=ok?'Saved ✓':'Not saved';t.classList.toggle('bad',!ok);clearTimeout(t._t);t._t=setTimeout(()=>t.remove(),2500)}
 let SH_=null;const lib=()=>!SH_||SH_.to_library;let toastT=0;function say(t,how){if(!t)return;const e=$('toast');e.textContent=t;e.className=how===true?'ok':how===false?'bad':'';e.style.display='none';void e.offsetWidth;e.style.display='block';clearTimeout(toastT);toastT=setTimeout(()=>e.style.display='none',how===false?6000:3500)}
 const done=(r,good)=>{say(r.ok?good:(r.error||'Not saved'),!!r.ok);return r.ok};
 const DK=['roastDate','frozenDate','thawDate'];
@@ -424,14 +459,15 @@ $('sh_link').textContent=(s.real_signatures?(!s.configured?(s.repository?'No tok
 // then the sharing switches. A token typed here is never left behind by a Save that says Saved.
 function saveShare(){const repo=$('sh_repo').value.trim(),tok=$('sh_token').value.trim(),linkChanged=!!tok||!SH_||repo!==(SH_.repository||'');
 (linkChanged?post('/api/share/link',{repository:repo,token:tok}):Promise.resolve({ok:true})).then(r=>{if(!r.ok){done(r,'');return}
-if(linkChanged)$('sh_token').value='';saveSettings();loadShare()})}
+if(linkChanged)$('sh_token').value='';saveSettings($('sh_repo').closest('.card'));loadShare()})}
 const CF=['name','roaster','origin','region','producer','varietal','process','roastLevel','altitudeM','roastDate','frozenDate','thawDate','notes'];
 const RF=['name','doseG','useRatio','targetWeightG','ratio','targetTimeS','preinfusion','preinfusionHoldS','bloomPauseS','timeLimit','maxShotTimeS','baselineOffsetG'];
 const coffee=id=>L.coffees.find(c=>c.id==id),recipe=id=>L.recipes.find(r=>r.id==id);
 const plabel=p=>{const c=coffee(p.coffeeId),r=recipe(p.recipeId);return (c?c.name+' — ':'')+(r?r.name:'?')};
 
 function show(){const h=(location.hash||'#home').slice(1);document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on',p.id=='p-'+h));
-document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.getAttribute('href')=='#'+h));if(h=='setup'){loadDevices();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees')loadCommunityCoffees();if(h=='grinder'){drawScatter();loadCommunityGrinders()}}
+document.querySelectorAll('nav a,#bnav a,#more a').forEach(a=>a.classList.toggle('on',a.getAttribute('href')=='#'+h));
+$('bmore').classList.toggle('on',['recipes','machine','setup','logs'].includes(h));$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees')loadCommunityCoffees();if(h=='grinder'){drawScatter();loadCommunityGrinders()}}
 window.addEventListener('hashchange',show);loadHomePower();
 let LOGT='',LOGN=0,LOGB=false;
 function drawLog(){const f=$('lg_filter').value.toLowerCase(),v=$('lg_view');v.innerHTML=LOGT.split('\n').filter(l=>l&&(!f||l.toLowerCase().includes(f))).map(l=>{const k=l.charAt(11);return '<span'+(k=='E'||k=='W'?' style="color:var(--warn)"':k=='D'?' class="dim"':'')+'>'+esc(l)+'</span>'}).join('\n');if($('lg_follow').checked)v.scrollTop=v.scrollHeight}
@@ -440,10 +476,10 @@ async function loadLog(){let c;try{c=await get('/api/log/config')}catch(e){retur
 $('lg_state').textContent=(c.keep?'On flash: '+Math.round(c.flash_bytes/1024)+' kB of at most '+Math.round(c.flash_limit/1024)+' kB (the oldest half is dropped when it is full). ':'Not kept on flash: only the last '+Math.round(c.memory_bytes/1024)+' kB, in memory, lost at a restart. ');pollLog()}
 function saveLog(){post('/api/log/config',{level:+$('lg_level').value,keep:$('lg_keep').checked}).then(r=>{done(r,'Saved');loadLog()})}
 setInterval(pollLog,2000);
-function testPress(role){const brew=role=='brew';if(!confirm(brew?'Press the brew bot once?\n\nIf it is on the machine and the machine is on, the pump STARTS. Press again to stop it.':'Press the power bot once?\n\nThe machine switches on or off.'))return;
+async function testPress(role){const brew=role=='brew';if(!await ask(brew?'Press the brew bot once?\n\nIf it is on the machine and the machine is on, the pump STARTS. Press again to stop it.':'Press the power bot once?\n\nThe machine switches on or off.'))return;
 fetch('/api/bot/test?role='+role,{method:'POST'}).then(r=>r.json()).then(r=>{if(!r.ok)return say(r.error||'Not pressed');if(!brew){say('Power bot: pressing. Watch which one moves.');return setTimeout(loadDevices,3000)}
 say('Brew bot: waking it up...');let n=0;const t=setInterval(async()=>{let s;try{s=(await get('/api/bot/test')).brew}catch(e){return}if(s=='pressed'||s=='failed'||++n>45){clearInterval(t);say(s=='pressed'?'Brew bot pressed. That is the one that moved.':'The brew bot did not answer: is it in range and awake?');loadDevices()}},1000)}).catch(()=>say('controller not reachable',false))}
-async function swapBots(){let d;try{d=await get('/api/devices')}catch(e){return}const b=d.pairing.bot,p=d.pairing.power;if(!b||!p)return say('Both a brew bot and a power bot must be paired first',false);if(!confirm('Swap them?\n\nBrew bot becomes '+p+'\nPower bot becomes '+b))return;
+async function swapBots(){let d;try{d=await get('/api/devices')}catch(e){return}const b=d.pairing.bot,p=d.pairing.power;if(!b||!p)return say('Both a brew bot and a power bot must be paired first',false);if(!await ask('Swap them?\n\nBrew bot becomes '+p+'\nPower bot becomes '+b))return;
 const ty=a=>{const s=d.seen.find(x=>x.address==a);return s?s.type:1};await post('/api/pair',{kind:'bot',address:'',type:0});await post('/api/pair',{kind:'power',address:b,type:ty(b)});await post('/api/pair',{kind:'bot',address:p,type:ty(p)});say('Swapped');setTimeout(loadDevices,800)}
 let FW=null,FWT=0;
 async function loadFirmware(){let f;try{f=await get('/api/update')}catch(e){return}FW=f;
@@ -455,10 +491,10 @@ const ib=$('fwinst');ib.style.display=f.available&&f.latest&&!busy?'':'none';if(
 if(document.activeElement!=$('fwrepo'))$('fwrepo').value=f.repo||'';$('fwauto').checked=!!f.auto_check;$('fwrel').href=f.releases;
 clearTimeout(FWT);if(busy||f.state=='installed')FWT=setTimeout(loadFirmware,1500);if(f.state=='installed')setTimeout(()=>location.reload(),25000)}
 function fwCheck(){post('/api/update/check').then(r=>{done(r,'Asking GitHub');setTimeout(loadFirmware,800)})}
-function fwInstall(){if(!FW||!FW.latest)return;if(!confirm('Download and install '+FW.latest.tag+'?\n\nThe controller restarts into it when it is done. If it does not run properly in its first 45 seconds, the controller goes back to '+FW.version+' by itself.'))return;post('/api/update/install').then(r=>{done(r,'Downloading '+FW.latest.tag);setTimeout(loadFirmware,800)})}
+async function fwInstall(){if(!FW||!FW.latest)return;if(!await ask('Download and install '+FW.latest.tag+'?\n\nThe controller restarts into it when it is done. If it does not run properly in its first 45 seconds, the controller goes back to '+FW.version+' by itself.'))return;post('/api/update/install').then(r=>{done(r,'Downloading '+FW.latest.tag);setTimeout(loadFirmware,800)})}
 function fwSaveCfg(){post('/api/update/config',{repo:$('fwrepo').value.trim(),token:$('fwtok').value.trim(),auto_check:$('fwauto').checked}).then(r=>{done(r,'Saved');$('fwtok').value='';loadFirmware()})}
-function fwBoot(slot){const t=slot=='factory'?'Restart into the safe (factory) version?\n\nThat is the firmware flashed over USB. Updates can be installed again from there.':'Restart into the version before this one?';if(!confirm(t))return;post('/api/update/boot?slot='+slot).then(r=>{done(r,r.message||'Restarting');if(r.ok)setTimeout(()=>location.reload(),20000)})}
-function uploadFirmware(){const f=$('fwfile').files[0];if(!f)return say('Choose firmware.bin first',false);if(!/\.bin$/i.test(f.name)||f.size<200000||f.size>6291456)return say('That does not look like a firmware.bin',false);if(!confirm('Install '+f.name+' ('+Math.round(f.size/1024)+' kB) and restart the controller?'))return;
+async function fwBoot(slot){const t=slot=='factory'?'Restart into the safe (factory) version?\n\nThat is the firmware flashed over USB. Updates can be installed again from there.':'Restart into the version before this one?';if(!await ask(t))return;post('/api/update/boot?slot='+slot).then(r=>{done(r,r.message||'Restarting');if(r.ok)setTimeout(()=>location.reload(),20000)})}
+async function uploadFirmware(){const f=$('fwfile').files[0];if(!f)return say('Choose firmware.bin first',false);if(!/\.bin$/i.test(f.name)||f.size<200000||f.size>6291456)return say('That does not look like a firmware.bin',false);if(!await ask('Install '+f.name+' ('+Math.round(f.size/1024)+' kB) and restart the controller?'))return;
 const x=new XMLHttpRequest(),d=new FormData();d.append('firmware',f,f.name);x.upload.onprogress=e=>{if(e.lengthComputable)$('fwprog').textContent='Sending: '+Math.round(e.loaded/e.total*100)+' %'};
 x.onload=()=>{let r={};try{r=JSON.parse(x.responseText)}catch(e){}if(r.ok){$('fwprog').textContent='Installed. The controller is restarting; this page reloads in 20 seconds.';setTimeout(()=>location.reload(),20000)}else $('fwprog').textContent='Not installed: '+(r.error||'the controller refused the file')};
 x.onerror=()=>{$('fwprog').textContent='The connection was lost while sending. The running firmware is unchanged.'};x.open('POST','/api/update');x.send(d)}
@@ -476,7 +512,14 @@ $('sbat').textContent=!s.scale_connected?'not connected':(nocup?'no cup':'connec
 $('db').className='dot'+(s.bot_connected?' on':(s.bot_paired?' zz':''));
 $('bat').textContent=(s.bot_connected?'connected':(s.bot_paired?'asleep until Start':'not paired'))+(s.bot_battery!=null?', '+s.bot_battery+'%':'');
 $('cut').textContent='Target '+f1(s.target_weight_g)+' g, stops at '+f1(s.target_weight_g-s.stop_offset_g)+' g';
-$('bstart').style.display=s.web_start?'':'none';
+// What the live keys offer follows the state (core/Types.h State).
+const prep=/^(TARING|WAITING_FOR_CUP|READY_TO_BREW)$/.test(s.state),run=/^(STARTING_SHOT|BREWING|BLOOMING|STOPPING_SHOT|POST_SHOT_DRIP)$/.test(s.state),idle=s.state=='READY';
+const result=s.state=='SHOT_COMPLETE'||(!prep&&!run&&!idle&&s.state!='CONNECTING_SCALE'&&s.state!='BOOT'&&s.state!='INITIALIZING');
+$('bstart').style.display=s.web_start&&idle?'':'none';
+$('bstop').style.display=prep||run?'':'none';$('bstop').textContent=prep?'Cancel':'Stop';
+$('btare').style.display=s.scale_connected&&(idle||prep)?'':'none';
+$('back').style.display=result?'':'none';$('back').textContent=s.state=='SHOT_COMPLETE'?'Done with this shot':'Clear the warning';
+$('ihint').textContent=run||prep||result?'':s.scale_resting?'Scale resting: the touch key wakes it and brews':!s.scale_connected?'Switch on the scale':nocup?'Waiting for a cup':'Ready: press the touch key to brew';
 const a=$('alert');if(s.manual_stop_needed){a.style.display='block';a.textContent='STOP THE MACHINE BY HAND. The stop press was not delivered or confirmed.'}
 else if(s.bot_switch_mode){a.style.display='block';a.textContent='The SwitchBot is in Switch mode. Set it to Press mode in the SwitchBot app.'}else a.style.display='none';
 if(lastShotId!==s.last_shot_id){lastShotId=s.last_shot_id;loadShots();loadLibrary();if(S)loadShare()}}
@@ -487,7 +530,8 @@ SB.forEach(k=>$(k).checked=!!S[k]);loadShare();$('staSsid').value=S.net.staSsid;
 // changed elsewhere (the power card, the API, another browser) must not put
 // the old value back. Seen on the board: the press style and the power bot
 // setting were undone by a Save of an older page.
-function saveSettings(){const b={};F.forEach(k=>{const e=$(k);b[k]=typeof S[k]==='boolean'?e.value==='1':+e.value});SB.forEach(k=>b[k]=$(k).checked);
+// Only the settings in the card whose Save was pressed (scope); without one, all of them.
+function saveSettings(scope){const inS=k=>!scope||scope.contains($(k));const b={};F.filter(inS).forEach(k=>{const e=$(k);b[k]=typeof S[k]==='boolean'?e.value==='1':+e.value});SB.filter(inS).forEach(k=>b[k]=$(k).checked);
 Object.keys(b).forEach(k=>{if(S&&k in S&&b[k]===S[k])delete b[k]});
 post('/api/settings',b).then(r=>{done(r,'Saved');loadSettings();loadGrind()})}
 function saveNet(){post('/api/net',{staSsid:$('staSsid').value,staPassword:$('staPassword').value,apPassword:$('apPassword').value,botPassword:$('botPassword').value,webStartEnabled:$('webStartEnabled').checked}).then(r=>done(r,'Saved, restarting'))}
@@ -540,18 +584,18 @@ if(!c.libraryId){box.innerHTML=esc(c.name+' is not in the shared library yet, so
 if(!m.found){box.innerHTML=esc('Nobody has shared a settled dial-in for '+c.name+' with a recipe like '+r.name+' ('+r.doseG+' g in, '+r.targetWeightG+' g out) yet.'+(m.reachable?'':' The shared library cannot be reached from this controller yet.'))+sim;return}
 const s=m.start,why={fitted:'translated to your grinder through '+m.coffees_in_common+' coffee'+(m.coffees_in_common==1?'':'s')+' you have in common with others',same_model:'what '+m.same_model+' other'+(m.same_model==1?'':'s')+' with your grinder model set',microns:'the shared scale read as microns; how your own grinder sits against it is not known yet',none:'cannot be translated to your grinder yet'}[s.basis]+(s.age_shift?'; includes '+fdn(s.age_shift)+' '+esc(fdu())+' '+(s.age_shift<0?'finer':'coarser')+' because your bag is '+m.my_age_days+' days off roast and theirs were about '+m.their_age_days:(m.their_age_days>=0&&m.my_age_days>=0&&Math.abs(m.my_age_days-m.their_age_days)>=7&&!m.age_rate_known?'; your bag is '+m.my_age_days+' days off roast, theirs were about '+m.their_age_days+', and the library has not yet measured what that difference is worth':''))+(s.flow_shift?'; includes '+fdn(s.flow_shift)+' '+esc(fdu())+' '+(s.flow_shift<0?'finer':'coarser')+' because your recipe aims for a '+(s.flow_shift<0?'slower':'faster')+' flow than theirs':'')+(m.recipe_match=='near'?'; nobody has settled this exact recipe, so this comes from '+m.their_dose_g+' g in, '+m.their_yield_g+' g out, with a wider range':'');
 box.innerHTML=`<div class="tiles"><div class="tile" style="background:#16263a"><span>Start your grinder at</span><b>${s.setting?fsn(s.setting)+' \u00b1 '+fdn(s.range)+' '+esc(U):'not known'}</b><span>${why}</span></div><div class="tile" style="background:#16263a"><span>What a good shot looked like</span><b>${f1(m.time_s)} s</b><span>${r.doseG} g in, ${r.targetWeightG} g out (${esc(r.name)})</span></div><div class="tile" style="background:#16263a"><span>Based on</span><b>${m.contributors} ${m.contributors==1?'person':'people'}</b><span>${m.dialins} settled dial-in${m.dialins==1?'':'s'}, within \u00b1 ${f1(m.spread_um)} \u00b5m of each other</span></div></div>`+(s.setting?`<div class="row" style="margin-top:12px"><button style="background:var(--com);border-color:var(--com);color:#06203a;font-weight:600" onclick="useStart(${x.i},${s.setting})">Use ${fs(s.setting)} as my starting grind</button><span>${x.p.grindUm?'Your setting for it now: '+esc(fs(x.p.grindUm))+'.':'No setting entered for it yet.'} A start only: grind advice takes it from there.</span></div>`:'');box.insertAdjacentHTML('beforeend',sim)}
-function useStart(i,um){const p=L.presets[i];if(p.grindUm&&p.grindUm!=um&&!confirm('Replace your setting of '+fs(p.grindUm)+' with '+fs(um)+'?'))return;act('preset_grind',i,um)}
-function saveCoffee(extra){const b={id:C||0};CF.forEach(k=>{const v=$('c_'+k).value;b[k]=DK.includes(k)?d2i(v):(k=='roastLevel'||k=='altitudeM')?+v||0:v.trim()});Object.assign(b,extra||{});
+async function useStart(i,um){const p=L.presets[i];if(p.grindUm&&p.grindUm!=um&&!await ask('Replace your setting of '+fs(p.grindUm)+' with '+fs(um)+'?'))return;act('preset_grind',i,um)}
+async function saveCoffee(extra){const b={id:C||0};CF.forEach(k=>{const v=$('c_'+k).value;b[k]=DK.includes(k)?d2i(v):(k=='roastLevel'||k=='altitudeM')?+v||0:v.trim()});Object.assign(b,extra||{});
 if(!b.name)return say('A coffee needs a name',false);
-if(!C&&L.coffees.some(c=>c.name.toLowerCase()==b.name.toLowerCase()&&c.roaster.toLowerCase()==b.roaster.toLowerCase())&&!confirm('"'+b.name+'" is already on the shelf. Add it again?'))return;
+if(!C&&L.coffees.some(c=>c.name.toLowerCase()==b.name.toLowerCase()&&c.roaster.toLowerCase()==b.roaster.toLowerCase())&&!await ask('"'+b.name+'" is already on the shelf. Add it again?'))return;
 post('/api/coffee',b).then(r=>{if(done(r,'Coffee saved')){C=r.id;loadLibrary()}})}
 function drawBags(c){const el=$('cbags');if(!el)return;const bs=c?L.bags.filter(b=>b.coffeeId==c.id).sort((a,b)=>b.id-a.id):[];if(!bs.length){el.innerHTML='';return}
 el.innerHTML='<h3 style="margin:14px 0 6px">Bags of '+esc(c.name)+'</h3>'+bs.map(b=>{const f=frozenFor({frozenDate:b.frozenDate,thawDate:b.thawDate});const bits=[b.roastDate?'roasted '+i2d(b.roastDate):'roast date not entered',b.openedDate?'opened '+i2d(b.openedDate):'',f?f+' days frozen'+(b.frozenDate&&!b.thawDate?' (still there)':''):'',b.weightG?b.weightG+' g':''].filter(x=>x).join(', ');
-return `<div class="row" style="align-items:center"><span style="flex:1 1 220px">${esc(bits)}${b.current?' <span class="pill">in use</span>':''}</span>${b.current?'':`<button onclick="act('bag_use',${c.id},${b.id})">Use this bag</button><button class="del" onclick="if(confirm('Forget this bag? Its shots stay in the history.'))act('bag_delete',${b.id})">Forget</button>`}</div>`}).join('')}
+return `<div class="row" style="align-items:center"><span style="flex:1 1 220px">${esc(bits)}${b.current?' <span class="pill">in use</span>':''}</span>${b.current?'':`<button onclick="act('bag_use',${c.id},${b.id})">Use this bag</button><button class="del" onclick="ask('Forget this bag? Its shots stay in the history.').then(ok=>{if(ok){act('bag_delete',${b.id})}})">Forget</button>`}</div>`}).join('')}
 function newBag(){$('cbagdate').value='';$('cbagrow').style.display='';$('cbagdate').focus()}
-function startBag(){const d=d2i($('cbagdate').value),o=d2i($('cbagopen').value),c=coffee(C);if(!c)return say('Save the coffee first',false);if(!d)return say('Enter the roast date printed on the bag',false);if(d>today())return say('That date has not come yet',false);if(c.roastDate==d&&!confirm('The bag in use has this roast date. Start another bag anyway?'))return;
+async function startBag(){const d=d2i($('cbagdate').value),o=d2i($('cbagopen').value),c=coffee(C);if(!c)return say('Save the coffee first',false);if(!d)return say('Enter the roast date printed on the bag',false);if(d>today())return say('That date has not come yet',false);if(c.roastDate==d&&!await ask('The bag in use has this roast date. Start another bag anyway?'))return;
 post('/api/bag',{coffeeId:c.id,roastDate:d,openedDate:o}).then(r=>{if(done(r,'New bag started')){$('cbagrow').style.display='none';loadLibrary()}})}
-function delCoffee(){const c=coffee(C);if(!c||!confirm('Delete "'+c.name+'" from the shelf? Its shots stay in the history.'))return;act('coffee_delete',C).then(()=>{C=-1;loadLibrary()})}
+async function delCoffee(){const c=coffee(C);if(!c||!await ask('Delete "'+c.name+'" from the shelf? Its shots stay in the history.'))return;act('coffee_delete',C).then(()=>{C=-1;loadLibrary()})}
 
 function recipeForm(){const bloom=+$('r_bloomPauseS').value>0;if(bloom)$('r_preinfusion').value=1;$('r_preinfusion').disabled=bloom;
 $('r_targetWeightG').disabled=$('r_useRatio').value=='1';$('r_ratio').disabled=$('r_useRatio').value!='1';
@@ -568,7 +612,7 @@ $('ralone').style.display=use.some(x=>!x.p.coffeeId)?'none':''}
 function readRecipe(){const b={id:R||0};RF.forEach(k=>{const v=$('r_'+k).value;b[k]=k=='name'?v.trim():k=='useRatio'?v==='1':+v});if(b.useRatio)b.targetWeightG=Math.round(b.doseG*b.ratio*10)/10;return b}
 function saveRecipe(){const b=readRecipe();if(!b.name)return say('A recipe needs a name',false);post('/api/recipe',b).then(r=>{if(done(r,'Recipe saved')){R=r.id;loadLibrary()}})}
 function dupRecipe(){const b=readRecipe();b.id=0;b.name=(b.name+' 2').slice(0,23);post('/api/recipe',b).then(r=>{if(done(r,'Copy made: not on the controller yet')){R=r.id;loadLibrary()}})}
-function delRecipe(){const r=recipe(R);if(!r||!confirm('Delete the recipe "'+r.name+'"?'))return;act('recipe_delete',R).then(()=>{R=-1;loadLibrary()})}
+async function delRecipe(){const r=recipe(R);if(!r||!await ask('Delete the recipe "'+r.name+'"?'))return;act('recipe_delete',R).then(()=>{R=-1;loadLibrary()})}
 
 async function loadGrind(){try{G=await get('/api/grind')}catch(e){return}
 const cur=fsn(G.current_um)||'--';$('gcur').textContent=cur;$('hg').textContent=cur;$('gfor').textContent='Advice for '+G.recipe+(G.coffee?', '+G.coffee:'');
@@ -625,54 +669,77 @@ function grinderBody(rezeroed){const p=gmPick(),src=p.own||(p.lib&&{model:p.lib.
 // changed from the listed model: it is saved as the owner's own version
 same=src&&$('gm_name').value.trim()==src.model&&($('gm_unit').value.trim()||'um')==src.unit&&Math.abs((+$('gm_umPerUnit').value||0)-(src.umPerUnit||0))<1e-6;
 return {modelId:p.own&&same?p.own.id:0,libraryId:p.lib&&same?p.lib.id:'',model:$('gm_name').value.trim(),burrs:$('gm_burrs').value.trim(),unit:$('gm_unit').value.trim()||'um',umPerUnit:+$('gm_umPerUnit').value||0,divisor:(+$('gm_subSteps').value>=2?1:+$('gm_divisor').value)||1,subSteps:+$('gm_subSteps').value>=2?+$('gm_subSteps').value:0,zeroDate:rezeroed?today():d2i($('gm_zeroDate').value),rezeroed:!!rezeroed}}
-function saveGrinder(rezeroed,asOther){const g=L.grinder,b=grinderBody(rezeroed);if(!b.modelId&&!b.model)return say('Pick a model, or type its name',false);
+async function saveGrinder(rezeroed,asOther){const g=L.grinder,b=grinderBody(rezeroed);if(!b.modelId&&!b.model)return say('Pick a model, or type its name',false);
 if(asOther){b.asOther=true;b.rezeroed=false;if(b.model==g.model&&b.burrs==g.burrs)return say('That is the grinder already in use: choose or type the other one first',false);
 post('/api/grinder',b).then(r=>{done(r,'Second grinder added');loadLibrary()});return}
 const named=g.model||g.modelId,changes=named&&(b.model!=g.model||b.burrs!=g.burrs||b.unit!=g.unit);
-if((rezeroed||changes)&&!confirm('Grind settings from before will no longer be compared with new ones: grind advice starts fresh for every coffee, and if the unit changes the settings entered so far are cleared. To keep both grinders, use "Add ... as my second grinder" instead. Continue?'))return;
+if((rezeroed||changes)&&!await ask('Grind settings from before will no longer be compared with new ones: grind advice starts fresh for every coffee, and if the unit changes the settings entered so far are cleared. To keep both grinders, use "Add ... as my second grinder" instead. Continue?'))return;
 post('/api/grinder',b).then(r=>{done(r,'Grinder saved');loadLibrary()})}
 function switchGrinder(){act('grinder_switch').then(()=>say('Now using '+L.grinder.model))}
-function removeOther(){if(confirm('Remove '+L.otherGrinder.model+'? Its settings for each coffee go with it; its shots stay in the history.'))act('grinder_remove_other')}
+async function removeOther(){if(await ask('Remove '+L.otherGrinder.model+'? Its settings for each coffee go with it; its shots stay in the history.'))act('grinder_remove_other')}
 function sendGrinder(id){post('/api/share/grinder?id='+id).then(r=>{done(r,'Queued for the shared library');loadLibrary();loadShare()})}
 function setGrind(um){if(um==null||!(um>=1&&um<=2000))return say('That is not a setting this grinder can have'+((GRD.subSteps||0)>=2?' (outer ring : inner ring, for example 12:3)':(GRD.divisor||1)>1?' (a number such as 3.5)':' (a whole number)'));post('/api/grind/set?um='+Math.round(um)).then(r=>{done(r,'Grind setting saved');$('gset').value='';loadLibrary()})}
 // Both grinder charts show every coffee and recipe brewed on this grinder, each coffee in its own colour;
 // the one being brewed now is orange and drawn on top. The legend under each chart names them. The
 // green band is the target of the recipe being brewed now.
 const CCOL=['#f59e0b','#38bdf8','#a78bfa','#f472b6','#34d399','#facc15','#fb7185','#60a5fa','#2dd4bf','#c084fc'];
-function grindShots(){return SH.filter(s=>(s.grinder_calibration||0)==L.grinder.calibration&&/^weight/.test(s.end_reason)&&s.grind_vote!='ignore').map(s=>({t:S.grindTimeBasis==1?s.pour_time_s:s.shot_time_s,u:s.grind_um,r:s.rating,c:s.coffee_id||0,n:s.coffee||'no coffee'})).filter(q=>q.t>0)}
+function grindShots(){return SH.filter(s=>(s.grinder_calibration||0)==L.grinder.calibration&&/^weight/.test(s.end_reason)&&s.grind_vote!='ignore').map(s=>({id:s.id,t:S.grindTimeBasis==1?s.pour_time_s:s.shot_time_s,u:s.grind_um,r:s.rating,c:s.coffee_id||0,n:s.coffee||'no coffee',rc:s.recipe||'',w:when(s)})).filter(q=>q.t>0)}
 // A coffee keeps its colour on both charts: the one being brewed gets the first, the others follow in
 // the order of their ids among all shots on this grinder. The legend counts the shots on its own chart.
 function coffeeColours(pts){const cur=(L.presets[L.activePreset]||{}).coffeeId||0,ids=[...new Set(grindShots().map(q=>q.c))].sort((a,b)=>(b==cur)-(a==cur)||a-b),off=ids.includes(cur)?0:1,col=new Map(ids.map((id,i)=>[id,CCOL[(i+off)%CCOL.length]])),m=new Map();
 [...ids].forEach(id=>{const q=pts.find(q=>q.c==id);if(q)m.set(id,{col:col.get(id),n:q.n,k:pts.filter(p=>p.c==id).length})});return {cur,m}}
 function drawLegend(el,cc){$(el).innerHTML=[...cc.m].map(([id,v])=>`<span class="chk" style="gap:6px;margin-right:14px"><span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:${v.col}"></span>${esc(v.n)}${id==cc.cur?' <span class="dim">(brewing now)</span>':''} <span class="dim">${v.k}</span></span>`).join('')}
-function drawControl(){const c=$('cchart');if(!c)return;const x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);$('cnote').textContent='';$('cleg').innerHTML='';if(!L||!G||!S)return;
+// Round values for an axis from lo to hi: 1, 2 or 5 times a power of ten, about n of them, no finer than minStep.
+function niceTicks(lo,hi,n,minStep){const span=hi-lo;if(!(span>0))return [lo];const raw=span/n,p=Math.pow(10,Math.floor(Math.log10(raw))),f=raw/p;
+const step=Math.max(minStep||0,(f<1.5?1:f<3?2:f<7?5:10)*p),out=[];for(let v=Math.ceil(lo/step)*step;v<=hi+1e-9;v+=step)out.push(+v.toFixed(6));return out}
+// Horizontal gridlines with the time beside each, from left to right.
+function gridTimes(x,Y,t0,t1,left,right){x.font='12px sans-serif';x.lineWidth=1;niceTicks(t0,t1,4,1).forEach(v=>{const y=Math.round(Y(v))+0.5;x.strokeStyle='#22262b';x.beginPath();x.moveTo(left,y);x.lineTo(right,y);x.stroke();x.fillStyle='#9aa3ad';x.fillText(v+' s',6,y+4)})}
+// The dots a chart drew (canvas pixels): hovering one shows what shot it is, clicking opens it.
+// On a touch screen the first tap shows it and a second tap on the same dot opens it.
+function chartDots(c,dots){c._dots=dots;if(c._wired)return;c._wired=true;const tip=$('ctip');
+const near=e=>{const r=c.getBoundingClientRect(),px=(e.clientX-r.left)*c.width/r.width,py=(e.clientY-r.top)*c.height/r.height;let best=null,bd=196;(c._dots||[]).forEach(d=>{const dd=(d.x-px)**2+(d.y-py)**2;if(dd<bd){bd=dd;best=d}});return best};
+const show=(d,e)=>{if(!d){tip.style.display='none';c.style.cursor='';return}const q=d.q;
+tip.innerHTML=`<b>${esc(q.n)}</b>${q.rc?', '+esc(q.rc):''}<br>${esc(q.w)} · ${q.u?esc(fs(q.u)):'no setting'} · ${f1(q.t)} s${q.r?' · '+q.r+' ★':''}<br><span class="dim">${e.pointerType=='mouse'?'Click':'Tap again'} to open the shot</span>`;
+tip.style.display='block';tip.style.left=Math.max(8,Math.min(innerWidth-tip.offsetWidth-8,e.clientX+12))+'px';tip.style.top=Math.min(innerHeight-tip.offsetHeight-8,e.clientY+14)+'px';c.style.cursor='pointer'};
+c.addEventListener('pointermove',e=>{if(e.pointerType=='mouse')show(near(e),e)});
+c.addEventListener('pointerleave',e=>{if(e.pointerType=='mouse')tip.style.display='none'});
+c.addEventListener('click',e=>{const d=near(e);if(!d){tip._for=null;return show(null)}
+if(e.pointerType!=='mouse'&&tip._for!==d.q.id){tip._for=d.q.id;show(d,e);return}
+tip._for=null;tip.style.display='none';openShot(d.q.id)})}
+// A shot from a chart, opened on the Shots page with nothing filtered away.
+function openShot(id){$('fcoffee').value='';$('fshow').selectedIndex=0;const i=SH.findIndex(s=>s.id==id);if(i<0)return;SHOWN=Math.max(SHOWN,i+1);
+location.hash='#shots';SEL=id;SOPEN=true;showShot(id,'s');drawShots();setTimeout(()=>{const d=$('sdetail');if(d)d.scrollIntoView({behavior:'smooth',block:'center'})},250)}
+function drawControl(){const c=$('cchart');if(!c)return;const x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);$('cnote').textContent='';$('cleg').innerHTML='';c._dots=[];if(!L||!G||!S)return;
 let pts=grindShots().reverse().slice(-100);
 if(pts.length<2){$('cnote').textContent='needs two shots';return}
 const cc=coffeeColours(pts);drawLegend('cleg',cc);
 const tg=G.target_time_s,tol=G.tolerance_s,aim=G.aim_time_s>0?G.aim_time_s:0,band=G.rated_band_s||0;
-const ts=pts.map(q=>q.t),t0=Math.min(...ts,tg-tol)-2,t1=Math.max(...ts,tg+tol)+2,X=i=>50+i/(pts.length-1)*(c.width-70),Y=t=>c.height-24-(t-t0)/(t1-t0)*(c.height-38);
-x.fillStyle='#14301f';x.fillRect(50,Y(tg+tol),c.width-70,Y(tg-tol)-Y(tg+tol));
-if(aim){x.fillStyle='#1d4a30';x.fillRect(50,Y(aim+band),c.width-70,Y(aim-band)-Y(aim+band));x.strokeStyle='#4cc38a';x.setLineDash([4,6]);x.beginPath();x.moveTo(50,Y(aim));x.lineTo(c.width-20,Y(aim));x.stroke();x.setLineDash([])}
-x.strokeStyle='#2a2e33';x.beginPath();x.moveTo(50,10);x.lineTo(50,c.height-24);x.lineTo(c.width-20,c.height-24);x.stroke();
-x.fillStyle='#9aa3ad';x.font='12px sans-serif';x.fillText(t1.toFixed(0)+' s',8,18);x.fillText(t0.toFixed(0)+' s',8,c.height-26);
-let lastLabel=-99;pts.forEach((q,i)=>{if(i&&q.u!=pts[i-1].u){const lx=X(i)-0.5*(c.width-70)/(pts.length-1);x.strokeStyle='#4a4f56';x.beginPath();x.moveTo(lx,10);x.lineTo(lx,c.height-24);x.stroke();const label=fsn(q.u);if(lx-lastLabel>x.measureText(label).width+8){x.fillStyle='#9aa3ad';x.fillText(label,lx+3,c.height-8);lastLabel=lx}}});
+const L0=50,R0=c.width-20,ts=pts.map(q=>q.t),t0=Math.min(...ts,tg-tol)-2,t1=Math.max(...ts,tg+tol)+2,X=i=>L0+i/(pts.length-1)*(R0-L0),Y=t=>c.height-24-(t-t0)/(t1-t0)*(c.height-38);
+gridTimes(x,Y,t0,t1,L0,R0);
+x.fillStyle='rgba(76,195,138,.16)';x.fillRect(L0,Y(tg+tol),R0-L0,Y(tg-tol)-Y(tg+tol));
+if(aim){x.fillStyle='rgba(76,195,138,.22)';x.fillRect(L0,Y(aim+band),R0-L0,Y(aim-band)-Y(aim+band));x.strokeStyle='#4cc38a';x.setLineDash([4,6]);x.beginPath();x.moveTo(L0,Y(aim));x.lineTo(R0,Y(aim));x.stroke();x.setLineDash([])}
+x.strokeStyle='#3a3f46';x.beginPath();x.moveTo(L0,10);x.lineTo(L0,c.height-24);x.lineTo(R0,c.height-24);x.stroke();
+x.font='12px sans-serif';let lastLabel=-99;pts.forEach((q,i)=>{if(i&&q.u!=pts[i-1].u){const lx=X(i)-0.5*(R0-L0)/(pts.length-1);x.strokeStyle='#4a4f56';x.beginPath();x.moveTo(lx,10);x.lineTo(lx,c.height-24);x.stroke();const label=fsn(q.u);if(lx-lastLabel>x.measureText(label).width+8){x.fillStyle='#9aa3ad';x.fillText(label,lx+3,c.height-8);lastLabel=lx}}});
 x.strokeStyle='#6b7280';x.lineWidth=1;x.beginPath();pts.forEach((q,i)=>i?x.lineTo(X(i),Y(q.t)):x.moveTo(X(i),Y(q.t)));x.stroke();
 // Coffee colour per dot; a white ring marks a shot rated 4 or 5. The coffee being brewed goes on top.
-const order=pts.map((q,i)=>i).sort((a,b)=>(pts[a].c==cc.cur)-(pts[b].c==cc.cur));
-order.forEach(i=>{const q=pts[i];x.fillStyle=cc.m.get(q.c).col;x.beginPath();x.arc(X(i),Y(q.t),q.c==cc.cur?5:4,0,7);x.fill();if(q.r>=4){x.strokeStyle='#ffffff';x.lineWidth=2;x.beginPath();x.arc(X(i),Y(q.t),7.5,0,7);x.stroke();x.lineWidth=1}});
+const order=pts.map((q,i)=>i).sort((a,b)=>(pts[a].c==cc.cur)-(pts[b].c==cc.cur)),dots=[];
+order.forEach(i=>{const q=pts[i],px=X(i),py=Y(q.t);x.fillStyle=cc.m.get(q.c).col;x.beginPath();x.arc(px,py,q.c==cc.cur?5:4,0,7);x.fill();if(q.r>=4){x.strokeStyle='#ffffff';x.lineWidth=2;x.beginPath();x.arc(px,py,7.5,0,7);x.stroke();x.lineWidth=1}dots.push({x:px,y:py,q})});
+chartDots(c,dots);
 const out=pts.filter(q=>Math.abs(q.t-tg)>tol).length;$('cnote').textContent=pts.length+' shots, '+out+' outside the tolerance'}
-function drawScatter(){drawControl();const c=$('gchart'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);$('gleg').innerHTML='';if(!L||!G||!S)return;
+function drawScatter(){drawControl();const c=$('gchart'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);$('gleg').innerHTML='';c._dots=[];if(!L||!G||!S)return;
 const pts=grindShots().filter(q=>q.u);
 const tg=G.target_time_s,tol=G.tolerance_s;if(!pts.length){$('gnote').textContent='No shots stopped by weight on this grinder yet.';return}
 const cc=coffeeColours(pts);drawLegend('gleg',cc);
 const us=pts.map(q=>q.u),lo=Math.min(...us,G.current_um||us[0])-10,hi=Math.max(...us,G.current_um||us[0])+10,ts=pts.map(q=>q.t),t0=Math.min(...ts,tg-tol)-3,t1=Math.max(...ts,tg+tol)+3;
-const X=u=>50+(u-lo)/(hi-lo)*(c.width-70),Y=t=>c.height-26-(t-t0)/(t1-t0)*(c.height-40);
-x.fillStyle='#14301f';x.fillRect(50,Y(tg+tol),c.width-70,Y(tg-tol)-Y(tg+tol));x.strokeStyle='#4cc38a';x.setLineDash([4,6]);x.beginPath();x.moveTo(50,Y(tg));x.lineTo(c.width-20,Y(tg));x.stroke();x.setLineDash([]);
-x.strokeStyle='#2a2e33';x.beginPath();x.moveTo(50,10);x.lineTo(50,c.height-26);x.lineTo(c.width-20,c.height-26);x.stroke();
-x.fillStyle='#9aa3ad';x.font='12px sans-serif';x.fillText(t1.toFixed(0)+' s',8,18);x.fillText(t0.toFixed(0)+' s',8,c.height-28);x.fillText(fs(Math.round(lo)),50,c.height-8);x.fillText(fs(Math.round(hi)),c.width-70,c.height-8);
-pts.map((q,i)=>i).sort((a,b)=>(pts[a].c==cc.cur)-(pts[b].c==cc.cur)).forEach(i=>{const q=pts[i];x.fillStyle=cc.m.get(q.c).col;x.globalAlpha=q.c==cc.cur?1:0.85;x.beginPath();x.arc(X(q.u)+((i*37)%13-6),Y(q.t),q.c==cc.cur?5.5:4.5,0,7);x.fill();x.globalAlpha=1});
-const set=new Set(us);$('gnote').textContent=pts.length+' shot'+(pts.length==1?'':'s')+' stopped by weight, '+cc.m.size+' coffee'+(cc.m.size==1?'':'s')+', at '+set.size+' setting'+(set.size==1?'. With one setting there is no slope to measure: once shots exist at two settings at least 4 '+U+' apart, the line through them replaces the starting guess.':'s.')+' Green band, the recipe being brewed now: '+tg+' s ± '+tol+' s.'}
-
+const L0=50,R0=c.width-20,B0=c.height-26,X=u=>L0+(u-lo)/(hi-lo)*(R0-L0),Y=t=>B0-(t-t0)/(t1-t0)*(c.height-40);
+gridTimes(x,Y,t0,t1,L0,R0);
+// Vertical gridlines at round settings, labelled as the dial reads.
+x.font='12px sans-serif';niceTicks(lo,hi,6,1).forEach(v=>{const gx=Math.round(X(v))+0.5;x.strokeStyle='#22262b';x.beginPath();x.moveTo(gx,10);x.lineTo(gx,B0);x.stroke();const lab=fsn(Math.round(v));x.fillStyle='#9aa3ad';x.fillText(lab,Math.min(R0-x.measureText(lab).width,gx-x.measureText(lab).width/2),c.height-8)});
+x.fillStyle='rgba(76,195,138,.16)';x.fillRect(L0,Y(tg+tol),R0-L0,Y(tg-tol)-Y(tg+tol));x.strokeStyle='#4cc38a';x.setLineDash([4,6]);x.beginPath();x.moveTo(L0,Y(tg));x.lineTo(R0,Y(tg));x.stroke();x.setLineDash([]);
+x.strokeStyle='#3a3f46';x.beginPath();x.moveTo(L0,10);x.lineTo(L0,B0);x.lineTo(R0,B0);x.stroke();
+const dots=[];pts.map((q,i)=>i).sort((a,b)=>(pts[a].c==cc.cur)-(pts[b].c==cc.cur)).forEach(i=>{const q=pts[i],px=X(q.u)+((i*37)%13-6),py=Y(q.t);x.fillStyle=cc.m.get(q.c).col;x.globalAlpha=q.c==cc.cur?1:0.85;x.beginPath();x.arc(px,py,q.c==cc.cur?5.5:4.5,0,7);x.fill();x.globalAlpha=1;dots.push({x:px,y:py,q})});
+chartDots(c,dots);
+const set=new Set(us);$('gnote').textContent=pts.length+' shot'+(pts.length==1?'':'s')+' stopped by weight, '+cc.m.size+' coffee'+(cc.m.size==1?'':'s')+', at '+set.size+' setting'+(set.size==1?'. With one setting there is no slope to measure: once shots exist at two settings at least 4 '+U+' apart, the line through them replaces the starting guess.':'s.')+' Green band, the recipe being brewed now: '+tg+' s ± '+tol+' s. Hover or tap a dot to see the shot.'}
 function drawFilter(){const cur=$('fcoffee').value;$('fcoffee').innerHTML='<option value="">All coffees</option>'+[...new Set(SH.map(s=>s.coffee).filter(x=>x))].map(n=>`<option ${n==cur?'selected':''}>${esc(n)}</option>`).join('')}
 async function loadShots(){let a;try{a=await get('/api/shots?limit=500')}catch(e){return}if(!Array.isArray(a))return;SH=a;drawFilter();drawShots();
 if(SH.length){showShot(SH[0].id,'h');if(!SEL||!SH.some(s=>s.id==SEL))SEL=SH[0].id;showShot(SEL,'s')}drawScatter();loadPrev()}
@@ -738,9 +805,9 @@ x.fillStyle='#eceef0';x.fillText(wm.toFixed(0)+' g',2,16);x.fillStyle='#9aa3ad';
 
 const UPK={backflush:'Backflush',descale:'Descale',grinder_clean:'Clean the grinder'};
 async function loadUpkeep(){let m;try{m=await get('/api/maintenance')}catch(e){return}$('mt_total').textContent=m.shots_total+' shots counted';
-$('mt_rows').innerHTML=m.jobs.map(j=>`<div class="row" style="align-items:center"><b style="flex:1 1 150px">${UPK[j.id]}</b><span style="flex:1 1 200px" class="${j.due?'off':''}">${j.since_shots} shots since${j.last_epoch?', last done '+new Date(j.last_epoch*1000).toLocaleDateString():''}${j.due?' - due':''}</span><label style="flex:0 0 130px">Remind after<input type="number" min="0" max="5000" step="10" value="${j.every_shots||''}" placeholder="never" onchange="act2('/api/maintenance?job=${j.id}&action=every&every='+(this.value||0))"></label><button onclick="act2('/api/maintenance?job=${j.id}&action=done')">Done today</button></div>`).join('')}
+$('mt_rows').innerHTML=m.jobs.map(j=>`<div class="row" style="align-items:center"><b style="flex:1 1 150px">${UPK[j.id]}</b><span style="flex:1 1 200px" class="${j.due?'off':''}">${j.since_shots} shots since${j.last_epoch?', last done '+new Date(j.last_epoch*1000).toLocaleDateString():''}${j.due?' - due now':j.every_shots?' - next in '+Math.max(0,j.every_shots-j.since_shots)+' shots':''}</span><label style="flex:0 0 130px">Remind after<input type="number" min="0" max="5000" step="10" value="${j.every_shots||''}" placeholder="never" onchange="act2('/api/maintenance?job=${j.id}&action=every&every='+(this.value||0))"></label><button onclick="act2('/api/maintenance?job=${j.id}&action=done')">Done today</button></div>`).join('')}
 function act2(u){post(u).then(r=>{done(r,'');loadUpkeep()})}
-function forget(role,what){if(confirm('Forget '+what+'? It will have to be paired again before it is used.'))pair(role,'',0)}
+async function forget(role,what){if(await ask('Forget '+what+'? It will have to be paired again before it is used.'))pair(role,'',0)}
 async function loadDevices(){let d;try{d=await get('/api/devices')}catch(e){return}
 $('dev').innerHTML=`<b>Scale</b>: ${d.scale_connected?esc(d.scale_name)+' ('+esc(d.scale_protocol)+'), connected':'not connected'} <span class="dim">[${esc(d.pairing.scale||'adopts the first supported scale found')}]</span><br><b>Brew bot</b>${d.bot_label?' ('+esc(d.bot_label)+')':''}: ${d.bot_connected?'connected':(d.pairing.bot?'asleep until Start':'not paired')} <span class="dim">[${esc(d.pairing.bot||'pick one below')}]</span>`+(d.bot_firmware&&d.bot_firmware!='0.0'?`, firmware ${esc(d.bot_firmware)}`:'')+(d.bot_battery!=null?`, battery ${d.bot_battery}%`:'')+(d.bot_problem?` <b style="color:var(--warn)">${esc(d.bot_problem)}</b>`:'')+(d.bot_caps&&d.bot_caps.length&&!d.bot_caps.includes('down_up')?' <span class="dim">This pusher cannot hold the button: held pre-infusion and bloom restarts become plain presses.</span>':'')+`<br><b>Power bot</b>${d.power_label?' ('+esc(d.power_label)+')':''}: ${d.power_connected?'connected':(d.pairing.power?'asleep until needed':'not paired')} <span class="dim">[${esc(d.pairing.power||'optional: pick one below')}]</span>`+(d.power_battery!=null?`, battery ${d.power_battery}%`:'')+(d.power_problem?` <b style="color:var(--warn)">${esc(d.power_problem)}</b>`:'')+(d.pairing.stop||d.stop_connected?`<br><b>Stop bot</b>${d.stop_label?' ('+esc(d.stop_label)+')':''}: ${d.stop_connected?'connected':'asleep until Start'} <span class="dim">[${esc(d.pairing.stop)}]</span>`+(d.stop_battery!=null?`, battery ${d.stop_battery}%`:'')+(d.stop_problem?` <b style="color:var(--warn)">${esc(d.stop_problem)}</b>`:''):'');
 const q=d.scale_data,caps=d.scale_caps||[],no=['timer_control','timer','battery','buttons'].filter(c=>!caps.includes(c)).map(c=>({timer_control:'timer control',timer:'timer readings',battery:'battery level',buttons:'button presses'})[c]);$('scaledata').textContent=d.scale_connected&&q?`Scale link: ${q.weight_frames} readings since it connected`+(caps.includes('timer')?`, ${q.timer_frames} with the scale's timer`:'')+`, ${q.split_frames} frames arrived in two parts, ${q.bad_frames} failed their checksum`+(q.battery!=null?`, scale battery ${q.battery}%`:'')+'.'+(q.zeroes_itself?' <b style="color:var(--warn)">The scale tares itself (an auto-tare mode). A cup taken off can then go unseen, so a shot could start with no cup: set the scale to a mode without auto-tare.</b>':'')+(no.length?` This scale does not offer: ${no.join(', ')}.`:''):'';
@@ -824,7 +891,7 @@ const bytes=new Uint8Array(await new Response(new Blob([JSON.stringify(env)]).st
 const p=b64url(bytes),chunks=p.match(/.{1,400}/g)||[];return 'beanconqueror://ADD_BREW?len='+p.length+'&'+chunks.map((x,i)=>'shareBrew'+i+'='+x).join('&')}
 async function toBeanconqueror(id){const s=SH.find(x=>x.id==id);if(!s)return;let data=null;
 if(s.has_data){try{data=await get('/api/shot/data?id='+id)}catch(e){}}
-let now='';if(!s.timestamp){if(!confirm('This shot has no date (the controller’s clock was not set). Send it to Beanconqueror dated now?'))return;now=new Date().toISOString()}
+let now='';if(!s.timestamp){if(!await ask('This shot has no date (the controller’s clock was not set). Send it to Beanconqueror dated now?'))return;now=new Date().toISOString()}
 const c=L.coffees.find(x=>x.id==s.coffee_id)||(s.coffee?{name:s.coffee,region:s.region,varietal:s.varietal,roastDate:s.roast_date}:null);
 const g=Object.assign({},L.grinder),sh=Object.assign({},s,{grind_text:s.grind_um?fsn(s.grind_um):''});
 let link;try{link=await bcLink(bcEnvelope(sh,data,c,g,now))}catch(e){return say(e.message)}
@@ -904,11 +971,23 @@ if(window.IntersectionObserver)new IntersectionObserver(es=>wrap.classList.toggl
 function sync(){if(jump)[...jump.children].forEach(b=>b.classList.toggle('open',!b._card.classList.contains('closed')))}sync()});
 // The button that was pressed: post() shows it working, then how it went.
 document.addEventListener('click',e=>{const b=e.target.closest('button');if(b){lastBtn=b;lastAt=Date.now()}
-if(e.target.closest('.item,nav a')){const pg=document.querySelector('.page.on');if(pg)pg.querySelectorAll('button.dirty').forEach(x=>x.classList.remove('dirty'))}},true);
+const link=e.target.closest('.item,nav a,#bnav a,#more a');if(link&&!leaving){const pg=document.querySelector('.page.on'),dirty=pg?[...pg.querySelectorAll('button.dirty')]:[];
+const same=link.matches('a')&&pg&&link.getAttribute('href')=='#'+pg.id.slice(2);if(dirty.length&&!same){e.preventDefault();e.stopPropagation();unsavedBar(dirty,link)}}},true);
+// Unsaved changes on this page and somewhere else asked for: save them, drop them, or stay.
+let leaving=false;function unsavedBar(dirty,link){const bar=$('unsaved'),names=[...new Set(dirty.map(b=>{const c=b.closest('.card'),h=c&&c.querySelector('h2');return h?h.textContent:'this page'}))];
+$('unsavedtxt').textContent='Unsaved changes in '+names.join(', ')+'.';bar.classList.add('on');
+const go=()=>{bar.classList.remove('on');leaving=true;try{link.click()}finally{leaving=false}};
+$('unsavedsave').onclick=()=>{dirty.forEach(b=>b.click());setTimeout(go,900)};
+$('unsaveddrop').onclick=()=>{dirty.forEach(b=>b.classList.remove('dirty'));loadSettings().then(loadLibrary);go()};  // forms back to what is stored
+$('unsavedstay').onclick=()=>{bar.classList.remove('on');const c=dirty[0].closest('.card');if(c)c.scrollIntoView({behavior:'smooth',block:'start'})}}
+$('bmore').onclick=e=>{e.stopPropagation();const o=$('more').classList.toggle('open');$('bmore').setAttribute('aria-expanded',o?'true':'false')};
+document.addEventListener('click',e=>{if(!e.target.closest('#more,#bmore'))$('more').classList.remove('open')});
+addEventListener('beforeunload',e=>{if(document.querySelector('button.dirty')){e.preventDefault();e.returnValue=''}});
 // Typed into a form that has a Save button: show that it is not saved yet.
 const mark=e=>{const el=e.target;if(!el.matches||!el.matches('input,select,textarea')||el.type=='search')return;
 const auto=(el.getAttribute('onchange')||'')+(el.getAttribute('oninput')||'');if(/act\(|post\(|draw|load|filter/i.test(auto))return;
-const card=el.closest('.card'),save=card&&card.querySelector('button.pri');if(save)save.classList.add('dirty')};
+const card=el.closest('.card'),save=card&&(card.querySelector('[data-save]')||card.querySelector('button.pri'));if(save)save.classList.add('dirty')};
+document.addEventListener('change',e=>{if(e.target.matches&&e.target.matches('input,select,textarea')){lastIn=e.target;lastInAt=Date.now()}},true);
 document.addEventListener('input',mark);document.addEventListener('change',mark);
 // The controller's state, in sight on every page; and plainly when it cannot be reached.
 const st=$('state'),ns=$('navstate'),off=$('offline');
