@@ -470,17 +470,18 @@ void buildHome() {
   lv_obj_add_event_cb(homeCard, onOpenRecipes, LV_EVENT_CLICKED, nullptr);
   // The coffee across the top, then the recipe with what goes in and comes
   // out, then two columns: grind and advice beside pre-infusion and brew time,
-  // and the roast beneath. Where the coffee comes from is on the COFFEE key.
-  homeName = makeLine(homeCard, &lv_font_montserrat_26, COLOR_ACCENT, 2, CARD_PAD, CARD_W - 24);
-  lv_obj_align(homeName, LV_ALIGN_TOP_LEFT, CARD_PAD + 12, 2);
-  homeYield = makeLine(homeCard, &lv_font_montserrat_24, COLOR_TEXT, 31, CARD_PAD, CARD_W);
-  constexpr int ROW0 = 76, ROW = 40;
+  // The roast and where the coffee comes from are on the COFFEE key. The four
+  // lines are spaced evenly down the card, with equal margins top and bottom.
+  constexpr int NAME_Y = 12, YIELD_Y = 50, ROW0 = 88, ROW = 37;
+  homeName = makeLine(homeCard, &lv_font_montserrat_26, COLOR_ACCENT, NAME_Y, CARD_PAD, CARD_W - 24);
+  lv_obj_align(homeName, LV_ALIGN_TOP_LEFT, CARD_PAD + 12, NAME_Y);
+  homeYield = makeLine(homeCard, &lv_font_montserrat_24, COLOR_TEXT, YIELD_Y, CARD_PAD, CARD_W);
   constexpr int RIGHT_X = CARD_PAD + COL_W + COL_GAP;
   homeGrind = makeLeft(homeCard, COLOR_TEXT, CARD_PAD, ROW0, COL_W);
   homeAdvice = makeLeft(homeCard, COLOR_ACCENT, CARD_PAD, ROW0 + ROW, COL_W);
   homePre = makeLeft(homeCard, COLOR_TEXT, RIGHT_X, ROW0, COL_W);
   homeFoot = makeLeft(homeCard, COLOR_TEXT, RIGHT_X, ROW0 + ROW, COL_W);
-  makeLabel(homeCard, &lv_font_montserrat_20, COLOR_DIM, LV_ALIGN_TOP_RIGHT, -8, 6,
+  makeLabel(homeCard, &lv_font_montserrat_20, COLOR_DIM, LV_ALIGN_TOP_RIGHT, -8, NAME_Y + 4,
             LV_SYMBOL_DOWN);
 
   // The touch key on the glass, at this end of the panel, is the start
