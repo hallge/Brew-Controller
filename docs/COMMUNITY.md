@@ -891,7 +891,7 @@ a stated limit. Now a grinder says how its dial is read (`core/SettingFormat.h`)
 - **TDS and extraction yield**: a refractometer reading per shot (`POST /api/shot/tds`), extraction = TDS x yield / dose,
   shown on the page, in `/api/shots` and appended to the CSV (`tds_pct`, `extraction_pct`). Not shared.
 - **Upkeep counters**: shots (12 s or longer, 2 g or more) since backflush, descale and grinder clean, with optional
-  reminders at an interval the owner sets (none is preset: nothing in the cup says when). `/api/maintenance`; the status
+  reminders at an interval the owner sets (starting at backflush 200, descale off, grinder clean 500; nothing in the cup says when). `/api/maintenance`; the status
   carries `maintenance_due`.
 - **Charts**: a control chart of each shot's time against the target band (with the liked time when refining), and the
   best-rated shot's curve drawn dashed behind the one being looked at.

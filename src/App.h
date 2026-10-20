@@ -95,8 +95,14 @@ uint8_t presetCount();
 uint8_t activePreset();
 bbw::Recipe preset(uint8_t index);
 bbw::Recipe activeRecipe();
-void selectRecipe(uint8_t index);
-void nextRecipe();
+// A preset whose coffee's bag is finished is hidden (bbw::presetVisible): not listed, not selected,
+// skipped by nextRecipe. Presets with no coffee are always shown.
+bool presetVisible(uint8_t index);
+void selectRecipe(uint8_t index);  // a hidden preset is not selected
+void nextRecipe();                 // the next shown preset
+// "Bag finished" for the active preset's coffee (bbw::finishCoffee, dated today by the clock); the
+// next preset by roast age is selected. false: no coffee on it, or a shot is running.
+bool finishActiveCoffee();
 void adjustTarget(float deltaG);
 void resetLearnedOffset(uint8_t presetIndex);
 void resetLearnedFactors();  // every preset back to the baseline learning factor

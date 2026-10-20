@@ -215,6 +215,10 @@ struct Coffee {
   // The Bag in use (Library::bags). roastDate, frozenDate and thawDate above mirror that bag, so
   // everything that only needs the coffee in use reads them from here. 0: no bag yet.
   uint16_t bagId = 0;
+  // The owner said the bag was finished on this day (YYYYMMDD; 0 = on the shelf). Its presets are
+  // hidden from the controller's list until a new bag is started (core/Library.h finishCoffee).
+  // Added at the end of the record: libraries saved before it read it as 0.
+  uint32_t finishedDate = 0;
 };
 
 struct RecipeDef {

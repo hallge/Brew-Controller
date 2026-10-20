@@ -988,10 +988,15 @@ bbw::Recipe activeRecipe() {
   return bbw::resolvePreset(g_library, g_library.activePreset);
 }
 
+bool presetVisible(uint8_t index) {
+  Lock lock;
+  return bbw::presetVisible(g_library, index);
+}
+
 void selectRecipe(uint8_t index) {
   Lock lock;
   if (!editable()) return;
-  if (index < g_library.presetCount) {
+  if (bbw::presetVisible(g_library, index)) {
     g_library.activePreset = index;
     markLibraryDirty();
   }
@@ -1001,9 +1006,20 @@ void nextRecipe() {
   uint8_t next;
   {
     Lock lock;
-    next = (g_library.activePreset + 1) % g_library.presetCount;
+    if (g_library.presetCount == 0) return;
+    next = bbw::nextShownPreset(g_library, g_library.activePreset);
   }
   selectRecipe(next);
+}
+
+bool finishActiveCoffee() {
+  Lock lock;
+  if (g_controller.machineMayBeRunning()) return false;
+  if (g_library.activePreset >= g_library.presetCount) return false;
+  const uint16_t coffeeId = g_library.presets[g_library.activePreset].coffeeId;
+  if (!bbw::finishCoffee(g_library, coffeeId, bbw::dateFromEpoch(epochNow()))) return false;
+  markLibraryDirty();
+  return true;
 }
 
 bool applyPresetEdit(uint8_t index, const bbw::Recipe &edited) {
@@ -1024,6 +1040,7 @@ bool applyPresetList(const bbw::Recipe *flat, const uint8_t *slots, uint8_t coun
   if (g_controller.machineMayBeRunning()) return false;
   (*g_libraryBefore) = g_library;
   if (!bbw::applyPresetList(g_library, (*g_libraryBefore), flat, slots, count, active)) return false;
+  bbw::keepActivePresetShown(g_library);
   markLibraryDirty();
   return true;
 }
