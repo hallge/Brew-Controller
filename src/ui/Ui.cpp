@@ -1031,10 +1031,9 @@ void refreshEdit() {
   fitText(editValue, value, 190, 3, &lv_font_montserrat_30, &lv_font_montserrat_26,
           &lv_font_montserrat_22);
   setText(editHint, hint);
-  // SET whenever the grind advice with its number is shown (the GRIND field), also once the
-  // setting already matches it: the owner sees the key wherever the advice is.
+  // SET while the grind is open and differs from the advised setting.
   uint16_t advised = 0;
-  if (editField == EDIT_FIELD_GRIND && adviceSetting(advised)) {
+  if (editField == EDIT_FIELD_GRIND && adviceSetting(advised) && editRecipe.grindUm != advised) {
     char label[32];
     snprintf(label, sizeof(label), "SET %s %s", gs(advised), grindUnit());
     fitText(editSetAdviceLabel, label, 170, 2, &lv_font_montserrat_22, &lv_font_montserrat_20);
