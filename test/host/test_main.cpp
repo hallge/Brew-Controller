@@ -2401,6 +2401,69 @@ static void testCupPutBackBriefly() {
   }
 }
 
+static void testEmptyScaleZeroed() {
+  printf("empty scale left below zero is zeroed, so the scale can switch itself off\n");
+  // A shot on a scale without auto-tare, then the cup with the coffee lifted:
+  // the reading sits at minus the cup and coffee until something zeroes it.
+  Rig r;
+  r.settings.requireCup = true;
+  r.toReady();
+  r.run(1000);
+  r.sim.trueWeightG += 268.5;
+  r.run(3000);
+  CHECK(r.ctl.status(r.sim.nowMs).cupPresent);
+  r.ctl.requestStart();
+  CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+  r.ctl.acknowledge();
+  r.run(2000);
+  CHECK(r.ctl.state() == State::READY);
+  const int taresBefore = r.sim.tares;
+  r.sim.trueWeightG -= 268.5 + 36.0;            // cup and coffee lifted
+  r.run(3000);
+  CHECK(r.ctl.status(r.sim.nowMs).weightG < -250.0f);
+  CHECK(r.sim.tares == taresBefore);            // not at once: it has to be still for a while
+  r.run(4000);
+  CHECK(r.sim.tares == taresBefore + 1);        // zeroed
+  r.run(5000);
+  CHECK_NEAR(r.ctl.status(r.sim.nowMs).weightG, 0.0, 0.2);
+  CHECK(!r.ctl.status(r.sim.nowMs).cupPresent); // the climb back to 0 is not a cup
+  r.run(30000);
+  CHECK(r.sim.tares == taresBefore + 1);        // once
+
+  // A fresh cup goes on afterwards and is seen and tared as usual.
+  r.sim.trueWeightG += 250.0;
+  r.run(3000);
+  CHECK(r.ctl.status(r.sim.nowMs).cupPresent);
+  CHECK(r.sim.tares == taresBefore + 2);
+
+  // A cup standing on the scale (a positive reading) is never zeroed by this.
+  Rig c;
+  c.settings.requireCup = true;
+  c.toReady();
+  c.run(1000);
+  c.sim.trueWeightG += 250.0;
+  c.run(3000);
+  const int withCup = c.sim.tares;
+  c.run(30000);
+  CHECK(c.sim.tares == withCup);
+
+  // A scale that zeroes itself never sits below zero: nothing extra is sent.
+  Rig a;
+  a.settings.requireCup = true;
+  a.toReady();
+  a.run(1000);
+  a.sim.trueWeightG += 250.0;
+  a.run(500);
+  a.sim.tareOffsetG = a.sim.trueWeightG;        // its own auto-tare
+  a.run(3000);
+  const int beforeLift = a.sim.tares;
+  a.sim.trueWeightG -= 250.0;
+  a.run(500);
+  a.sim.tareOffsetG = a.sim.trueWeightG;        // zeroes itself again
+  a.run(30000);
+  CHECK(a.sim.tares == beforeLift);
+}
+
 static void testCupRemembered() {
   printf("cup remembered across a controller restart\n");
   // A shot, then a fresh cup put on and tared. The scale's timer now holds
@@ -5965,6 +6028,7 @@ int main() {
   testMachineProfiles();
   testShotDataSet();
   testReadingNewerThanTick();
+  testEmptyScaleZeroed();
   testCupRemembered();
   testCupAutoTareScale();
   testCupPutBackBriefly();

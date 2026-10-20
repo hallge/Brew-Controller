@@ -69,6 +69,7 @@ constexpr float CUP_STILL_BAND_G = 0.5f;      // readings this close together ar
 constexpr uint8_t CUP_STILL_SAMPLES = 5;
 constexpr float CUP_ZERO_BAND_G = 1.5f;
 constexpr uint32_t CUP_TARE_WINDOW_MS = 6000; // a fall to zero this soon after placing is the tare
+constexpr uint32_t EMPTY_ZERO_DELAY_MS = 5000; // an empty scale still below zero this long is zeroed
 
 inline uint32_t nonZero(uint32_t ms) { return ms == 0 ? 1 : ms; }
 
@@ -247,13 +248,26 @@ void BrewController::trackCup(const WeightSample &sample) {
   if (runCount_ == 0 || fabsf(sample.weightG - runRefG_) > CUP_STILL_BAND_G) {
     runRefG_ = sample.weightG;
     runCount_ = 1;
+    runSinceMs_ = sample.atMs;
+    emptyZeroSent_ = false;
     return;
   }
   if (runCount_ < 255) ++runCount_;
+  const float cupG = settings_.cupMinWeightG;
+  // Nothing on the scale and it reads a cup's weight or more below zero, still
+  // for a while: a tared cup was taken off and the scale does not zero itself.
+  // Zero it, once for this reading, so that it reads 0 g again.
+  if (runCount_ >= CUP_STILL_SAMPLES && !emptyZeroSent_ && !cupPresent_ &&
+      (state_ == State::READY || state_ == State::SHOT_COMPLETE) && runRefG_ <= -cupG &&
+      static_cast<uint32_t>(sample.atMs - runSinceMs_) >= EMPTY_ZERO_DELAY_MS) {
+    emptyZeroSent_ = true;
+    haveEmptyZero_ = true;
+    emptyZeroAtMs_ = sample.atMs;
+    scale_.tare();
+  }
   if (runCount_ != CUP_STILL_SAMPLES) return;  // act once, when a reading has just become still
 
   const float level = sample.weightG;
-  const float cupG = settings_.cupMinWeightG;
   auto placed = [&]() {
     cupPresent_ = true;
     cupPlacedAtMs_ = sample.atMs;
@@ -302,7 +316,9 @@ void BrewController::trackCup(const WeightSample &sample) {
   if (step >= cupG) {
     // Settled higher by a cup's weight. Straight after a cup came off, a
     // climb back to 0 is the scale zeroing itself, not a cup.
-    if (!(nearZero && haveRemoved_ && sinceRemoved <= CUP_TARE_WINDOW_MS)) placed();
+    // Nor is one straight after the controller zeroed the empty scale itself.
+    const bool emptyZero = haveEmptyZero_ && static_cast<uint32_t>(sample.atMs - emptyZeroAtMs_) <= CUP_TARE_WINDOW_MS;
+    if (!(nearZero && ((haveRemoved_ && sinceRemoved <= CUP_TARE_WINDOW_MS) || emptyZero))) placed();
   } else if (step <= -cupG) {
     // Settled lower. Straight after a cup went on, a fall to 0 is its tare
     // (ours, or the scale's own).

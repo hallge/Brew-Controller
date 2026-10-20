@@ -240,6 +240,13 @@ class BrewController {
   float excursionMaxG_ = 0.0f, excursionMinG_ = 0.0f;  // since the last still reading
   uint32_t excursionMaxAtMs_ = 0, excursionMinAtMs_ = 0;
   CupMemory cupMemory_;
+  // An empty scale left reading below zero (a tared cup taken off, on a scale
+  // without auto-tare) is zeroed once: a Lunar showing a weight never switches
+  // itself off, and the links follow the scale.
+  uint32_t runSinceMs_ = 0;        // when the reading became still at runRefG_
+  bool emptyZeroSent_ = false;     // for this still reading
+  bool haveEmptyZero_ = false;
+  uint32_t emptyZeroAtMs_ = 0;
 
   // Shot
   ShotCurve curve_;
