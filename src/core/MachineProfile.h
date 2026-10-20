@@ -158,7 +158,7 @@ inline void sanitizeMachine(MachineProfile &m) {
   m.control[sizeof(m.control) - 1] = m.libraryId[sizeof(m.libraryId) - 1] = '\0';
   m.reviewNote[sizeof(m.reviewNote) - 1] = '\0';
   if (m.style > MACHINE_STYLE_LAST) m = MachineProfile();
-  if (m.shareState > 5) m.shareState = 0;
+  if (m.shareState > 6) m.shareState = 0;  // ShareState::REFUSED
   if (m.manualStart > static_cast<uint8_t>(ManualStart::FIRST_DRIP)) m.manualStart = 0;
   m.holdPreinfusion = m.holdPreinfusion ? 1 : 0;
   m.tapPreinfusion = m.tapPreinfusion ? 1 : 0;
@@ -196,7 +196,8 @@ inline bool machineChangedSinceShared(const MachineProfile &m) {
 // one that came with the firmware needs no entry.
 inline bool machineCanBeShared(const MachineProfile &m) {
   return m.builtin == 0 && m.maker[0] != '\0' && m.model[0] != '\0' &&
-         (m.shareState == 0 || machineChangedSinceShared(m));
+         (m.shareState == 0 || m.shareState == 6 /* ShareState::REFUSED: send again */ ||
+          machineChangedSinceShared(m));
 }
 
 // QUEUED = 1 and PUBLISHED = 4 of ShareState (core/Share.h).

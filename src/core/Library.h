@@ -367,7 +367,7 @@ inline void sanitizeCoffee(Coffee &c) {
   if (c.frozenDate == 0) c.thawDate = 0;
   if (c.thawDate != 0 && c.thawDate < c.frozenDate) c.thawDate = 0;
   c.reviewNote[NOTES_LEN - 1] = c.libraryId[LIBRARY_ID_LEN - 1] = '\0';
-  if (c.shareState > 5) c.shareState = 0;  // ShareState::DECLINED
+  if (c.shareState > 6) c.shareState = 0;  // ShareState::REFUSED
   if (!validRoastDate(c.finishedDate)) c.finishedDate = 0;
 }
 
@@ -436,7 +436,7 @@ inline void sanitizeGrinder(Grinder &g) {
   sanitizeSettingFormat(g);
   if (!validRoastDate(g.zeroDate)) g.zeroDate = 0;
   g.reviewNote[NOTES_LEN - 1] = g.libraryId[LIBRARY_ID_LEN - 1] = '\0';
-  if (g.shareState > 5) g.shareState = 0;
+  if (g.shareState > 6) g.shareState = 0;  // ShareState::REFUSED
 }
 
 // A model from the bundled registry brings its own name, unit and microns

@@ -219,7 +219,12 @@ bool copyCoffee(uint16_t id) {  // into g_shareCoffee
 // version of it.
 bool queueCoffee(uint16_t id) {
   if (!copyCoffee(id)) return false;
-  if (g_shareCoffee.shareState != 0 && !bbw::coffeeChangedSinceShared(g_shareCoffee)) return false;
+  // Sent before and unchanged: nothing new to send, unless the library refused it (then it may go again).
+  if (g_shareCoffee.shareState != 0 &&
+      g_shareCoffee.shareState != static_cast<uint8_t>(bbw::ShareState::REFUSED) &&
+      !bbw::coffeeChangedSinceShared(g_shareCoffee)) {
+    return false;
+  }
   if (!ensureKeyQueued()) return false;
   char kid[bbw::KEY_ID_LEN];
   bbw::keyId(bbw::deviceSigner().publicKey(), kid);
@@ -316,6 +321,7 @@ void shareReadStatus(bool idle) {
       const bbw::ShareState state = !strcmp(name, "review") ? bbw::ShareState::IN_REVIEW
                                     : !strcmp(name, "published") ? bbw::ShareState::PUBLISHED
                                     : !strcmp(name, "declined") ? bbw::ShareState::DECLINED
+                                    : !strcmp(name, "refused") ? bbw::ShareState::REFUSED
                                     : bbw::ShareState::LOCAL;
       any |= bbw::applyCoffeeReview(lib, entry["local_id"] | 0, entry["record"] | 0u, state,
                                     entry["note"] | "", entry["library_id"] | "");
@@ -325,6 +331,7 @@ void shareReadStatus(bool idle) {
       const bbw::ShareState state = !strcmp(name, "review") ? bbw::ShareState::IN_REVIEW
                                     : !strcmp(name, "published") ? bbw::ShareState::PUBLISHED
                                     : !strcmp(name, "declined") ? bbw::ShareState::DECLINED
+                                    : !strcmp(name, "refused") ? bbw::ShareState::REFUSED
                                     : bbw::ShareState::LOCAL;
       any |= bbw::applyGrinderReview(lib, entry["local_id"] | 0, entry["record"] | 0u, state,
                                      entry["note"] | "", entry["library_id"] | "");
@@ -337,6 +344,7 @@ void shareReadStatus(bool idle) {
     const bbw::ShareState state = !strcmp(name, "review") ? bbw::ShareState::IN_REVIEW
                                   : !strcmp(name, "published") ? bbw::ShareState::PUBLISHED
                                   : !strcmp(name, "declined") ? bbw::ShareState::DECLINED
+                                  : !strcmp(name, "refused") ? bbw::ShareState::REFUSED
                                   : bbw::ShareState::LOCAL;
     if ((entry["local_id"] | 0) != 1) continue;
     bool news = false;

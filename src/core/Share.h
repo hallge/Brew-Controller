@@ -401,6 +401,7 @@ enum class ShareState : uint8_t {
   IN_REVIEW,   // the library has it; a reviewer has not decided
   PUBLISHED,   // approved: in everyone's search
   DECLINED,    // not accepted; reviewNote says why
+  REFUSED,     // the library's checks turned the record away (reviewNote says why): it may be sent again
 };
 
 inline const char *shareStateName(ShareState state) {
@@ -410,6 +411,7 @@ inline const char *shareStateName(ShareState state) {
     case ShareState::IN_REVIEW: return "review";
     case ShareState::PUBLISHED: return "published";
     case ShareState::DECLINED: return "declined";
+    case ShareState::REFUSED: return "refused";
     default: return "local";
   }
 }
@@ -480,7 +482,7 @@ template <typename T>
 inline bool applyReviewTo(T *item, uint32_t seq, ShareState state, const char *note,
                           const char *libraryId) {
   if (state != ShareState::IN_REVIEW && state != ShareState::PUBLISHED &&
-      state != ShareState::DECLINED) {
+      state != ShareState::DECLINED && state != ShareState::REFUSED) {
     return false;
   }
   if (!item || item->shareState == 0 || item->shareSeq != seq) return false;
@@ -554,7 +556,8 @@ inline bool grinderChangedSinceShared(const Grinder &g) {
 // already listed, has anything to tell.
 inline bool grinderCanBeShared(const Grinder &g) {
   return g.model[0] != '\0' && g.modelId == 0 &&
-         (g.shareState == 0 || grinderChangedSinceShared(g));
+         (g.shareState == 0 || g.shareState == static_cast<uint8_t>(ShareState::REFUSED) ||
+          grinderChangedSinceShared(g));
 }
 
 inline void markGrinderQueued(Grinder &g, uint32_t seq) {

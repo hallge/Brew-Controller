@@ -2305,6 +2305,21 @@ static void testMachineProfiles() {
   CHECK(machineCanBeShared(mine));         // changed since: it can be sent again
   markMachineQueued(mine, 9);
   CHECK(machineShareState(mine, 9) == ShareState::QUEUED && machineShareState(mine, 10) == ShareState::SENT);
+  // The library's checks turned record 9 away: the reason is kept, and the same version may go again.
+  CHECK(!machineCanBeShared(mine));
+  CHECK(applyReviewTo(&mine, 9, ShareState::REFUSED, "unknown record type 'machine'", ""));
+  CHECK(mine.shareState == static_cast<uint8_t>(ShareState::REFUSED) &&
+        strcmp(mine.reviewNote, "unknown record type 'machine'") == 0);
+  CHECK(strcmp(shareStateName(ShareState::REFUSED), "refused") == 0);
+  CHECK(machineCanBeShared(mine));         // refused: send again, unchanged
+  markMachineQueued(mine, 10);
+  CHECK(!machineCanBeShared(mine) && mine.reviewNote[0] == '\0');
+  {
+    MachineProfile kept = mine;
+    kept.shareState = static_cast<uint8_t>(ShareState::REFUSED);
+    sanitizeMachine(kept);
+    CHECK(kept.shareState == static_cast<uint8_t>(ShareState::REFUSED));  // survives a reload
+  }
   MachineProfile picked = machineBuiltin(3);
   picked.builtin = 0;
   markMachineFromLibrary(picked, "la-pavoni-europiccola-lever");
@@ -4868,6 +4883,14 @@ static void testGrinders() {
   markGrinderQueued(*typed, 21);
   CHECK(grinderShareState(*typed, 21) == ShareState::QUEUED &&
         grinderShareState(*typed, 22) == ShareState::SENT && !grinderCanBeShared(*typed));
+  {
+    // Refused by the library's checks: it may be sent again as it is; declined it may not.
+    Grinder refused = *typed, declined = *typed;
+    CHECK(applyReviewTo(&refused, 21, ShareState::REFUSED, "burrs is not text of 1 to 23 characters", ""));
+    CHECK(grinderCanBeShared(refused) && grinderShareState(refused, 22) == ShareState::REFUSED);
+    CHECK(applyReviewTo(&declined, 21, ShareState::DECLINED, "already listed", ""));
+    CHECK(!grinderCanBeShared(declined));
+  }
   CHECK(!applyGrinderReview(lib, dialId, 20, ShareState::PUBLISHED, "", "home-built-64"));   // an older version
   CHECK(applyGrinderReview(lib, dialId, 21, ShareState::IN_REVIEW, "", ""));
   CHECK(applyGrinderReview(lib, dialId, 21, ShareState::PUBLISHED, "", "home-built-64"));
