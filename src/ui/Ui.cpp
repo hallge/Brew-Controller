@@ -68,14 +68,15 @@ constexpr int KEY_X = -12;
 constexpr int KEY_W = 180;
 constexpr int WIFI_W = 536 - 28;  // the Wi-Fi lines under the settings keys
 
-enum class Panel : uint8_t { HOME, BREW, RESULT, FAULT, SETTINGS, RECIPES, EDIT };
+enum class Panel : uint8_t { HOME, BREW, RESULT, FAULT, SETTINGS, RECIPES, EDIT, COFFEE };
 
-lv_obj_t *panels[7];
+lv_obj_t *panels[8];
 constexpr int EDIT_FIELDS = 5;
 Panel shown = Panel::HOME;
 bool settingsOpen = false;
 bool recipesOpen = false;
 bool editOpen = false;
+bool coffeeOpen = false;
 constexpr int EDIT_FIELD_GRIND = 2;  // index in the field list on the edit screen
 int editField = EDIT_FIELD_GRIND;
 bbw::Recipe editRecipe;         // working copy on the edit panel
@@ -96,7 +97,12 @@ char wifiText[128] = "Wi-Fi starting";
 // Home
 lv_obj_t *homeStatus, *homeScaleBattery, *homeBotBattery, *homeScaleDot, *homeBotDot, *homeCard, *homeHint, *homeEditLabel;
 lv_obj_t *homeName, *homeYield, *homeGrind, *homeAdvice, *homePre;
-lv_obj_t *homeCoffee, *homeRegion, *homeVarietal, *homeRoast, *homeFoot;
+lv_obj_t *homeRoast, *homeAge, *homeFoot;
+// The hint under the card is also a key: it starts the shot while it says so.
+lv_obj_t *homeStartKey;
+bool homeCanStart = false;
+// The coffee screen: its name, and everything else about it in a scrolling column.
+lv_obj_t *coffeeTitle, *coffeeBody;
 lv_obj_t *recipeBar;
 lv_obj_t *editFieldBtn[EDIT_FIELDS], *editTitle, *editValue, *editHint;
 lv_obj_t *recipeList;
@@ -210,10 +216,11 @@ void fitText(lv_obj_t *label, const char *text, int width, int count, ...) {
   setText(label, text);
 }
 
-// A full-width line on the result screen: 22 pt if it fits, smaller if not.
+void scrollIfLong(lv_obj_t *label, const char *text, int width);
+
+// A full-width line on the result screen: 22 pt if it fits, 20 if not.
 void fitLine(lv_obj_t *label, const char *text) {
-  fitText(label, text, LEFT_W, 4, &lv_font_montserrat_22, &lv_font_montserrat_20,
-          &lv_font_montserrat_18, &lv_font_montserrat_16);
+  fitText(label, text, LEFT_W, 2, &lv_font_montserrat_22, &lv_font_montserrat_20);
 }
 
 // The same for the result screen's detail lines.
@@ -223,8 +230,8 @@ void fitDetail(lv_obj_t *label, const char *fmt, ...) {
   va_start(args, fmt);
   vsnprintf(buffer, sizeof(buffer), fmt, args);
   va_end(args);
-  fitText(label, buffer, LEFT_W, 3, &lv_font_montserrat_18, &lv_font_montserrat_16,
-          &lv_font_montserrat_14);
+  fitText(label, buffer, LEFT_W, 1, &lv_font_montserrat_20);
+  scrollIfLong(label, buffer, LEFT_W);
 }
 
 // Text that is still too wide in the smallest font (a long coffee name typed
@@ -388,6 +395,14 @@ void onVoteIgnore(lv_event_t *) {
 void onVoteCount(lv_event_t *) {
   app::setShotGrindVote(resShotId, static_cast<uint8_t>(bbw::GrindVote::COUNT));
 }
+void onOpenCoffee(lv_event_t *) { coffeeOpen = true; }
+void onCloseCoffee(lv_event_t *) { coffeeOpen = false; }
+// The hint under the card, pressed while it says TOUCH KEY TO BREW: the same
+// start as the touch key. A tap on a dimmed screen only brightens it.
+void onHomeStart(lv_event_t *) {
+  if (dimmed || !homeCanStart) return;
+  if (app::status().state == State::READY) app::start();
+}
 void onOpenSettings(lv_event_t *) { settingsOpen = true; }
 void onCloseSettings(lv_event_t *) { settingsOpen = false; }
 void onPairBot(lv_event_t *) {
@@ -439,34 +454,61 @@ void buildHome() {
   lv_obj_set_style_shadow_width(homeCard, 0, 0);
   lv_obj_set_style_pad_all(homeCard, 0, 0);
   lv_obj_add_event_cb(homeCard, onOpenRecipes, LV_EVENT_CLICKED, nullptr);
-  // Name and yield across the top, then two columns: how it is brewed on the
-  // left, what coffee it is on the right, and a footer line.
+  // The coffee across the top, then the recipe with what goes in and comes
+  // out, then two columns: grind and advice beside pre-infusion and brew time,
+  // and the roast beneath. Where the coffee comes from is on the COFFEE key.
   homeName = makeLine(homeCard, &lv_font_montserrat_26, COLOR_ACCENT, 2, CARD_PAD, CARD_W - 24);
   lv_obj_align(homeName, LV_ALIGN_TOP_LEFT, CARD_PAD + 12, 2);
   homeYield = makeLine(homeCard, &lv_font_montserrat_24, COLOR_TEXT, 31, CARD_PAD, CARD_W);
-  constexpr int ROW0 = 60, ROW = 24;
+  constexpr int ROW0 = 64, ROW = 31;
   constexpr int RIGHT_X = CARD_PAD + COL_W + COL_GAP;
   homeGrind = makeLeft(homeCard, COLOR_TEXT, CARD_PAD, ROW0, COL_W);
   homeAdvice = makeLeft(homeCard, COLOR_ACCENT, CARD_PAD, ROW0 + ROW, COL_W);
-  homePre = makeLeft(homeCard, COLOR_TEXT, CARD_PAD, ROW0 + 2 * ROW, COL_W);
-  homeFoot = makeLeft(homeCard, COLOR_DIM, CARD_PAD, ROW0 + 3 * ROW, COL_W);
-  homeCoffee = makeLeft(homeCard, COLOR_TEXT, RIGHT_X, ROW0, COL_W);
-  homeRegion = makeLeft(homeCard, COLOR_DIM, RIGHT_X, ROW0 + ROW, COL_W);
-  homeVarietal = makeLeft(homeCard, COLOR_DIM, RIGHT_X, ROW0 + 2 * ROW, COL_W);
-  homeRoast = makeLeft(homeCard, COLOR_DIM, RIGHT_X, ROW0 + 3 * ROW, COL_W);
+  homeRoast = makeLeft(homeCard, COLOR_DIM, CARD_PAD, ROW0 + 2 * ROW, COL_W);
+  homePre = makeLeft(homeCard, COLOR_TEXT, RIGHT_X, ROW0, COL_W);
+  homeFoot = makeLeft(homeCard, COLOR_TEXT, RIGHT_X, ROW0 + ROW, COL_W);
+  homeAge = makeLeft(homeCard, COLOR_DIM, RIGHT_X, ROW0 + 2 * ROW, COL_W);
   makeLabel(homeCard, &lv_font_montserrat_20, COLOR_DIM, LV_ALIGN_TOP_RIGHT, -8, 6,
             LV_SYMBOL_DOWN);
 
-  // No start key on the screen: the touch key on the glass, at this end of
-  // the panel, is the start button.
-  homeHint = makeLine(p, &lv_font_montserrat_20, COLOR_OK, 206, 12, CARD_BOX_W);
+  // The touch key on the glass, at this end of the panel, is the start
+  // button. The hint under the card names it, and while it does it is a key
+  // that starts the shot too; otherwise it is only text.
+  homeStartKey = makeButton(p, "", &lv_font_montserrat_20, COLOR_PANEL, CARD_BOX_W, 36,
+                            LV_ALIGN_TOP_LEFT, 12, 200, onHomeStart, &homeHint);
+  lv_obj_set_style_text_color(homeHint, lv_color_hex(COLOR_OK), 0);
 
   // The keys start under the status line, beside the card.
-  makeButton(p, "EDIT\nRECIPE", &lv_font_montserrat_20, COLOR_PANEL, 100, 94,
+  makeButton(p, "EDIT\nRECIPE", &lv_font_montserrat_20, COLOR_PANEL, 100, 62,
              LV_ALIGN_TOP_RIGHT, KEY_X, 34, onOpenEdit, &homeEditLabel);
   lv_obj_set_style_text_align(homeEditLabel, LV_TEXT_ALIGN_CENTER, 0);
-  makeButton(p, LV_SYMBOL_SETTINGS, &lv_font_montserrat_28, COLOR_PANEL, 100, 96,
+  makeButton(p, "COFFEE", &lv_font_montserrat_20, COLOR_PANEL, 100, 62, LV_ALIGN_TOP_RIGHT, KEY_X,
+             34 + 62 + 7, onOpenCoffee);
+  makeButton(p, LV_SYMBOL_SETTINGS, &lv_font_montserrat_28, COLOR_PANEL, 100, 62,
              LV_ALIGN_BOTTOM_RIGHT, KEY_X, -8, onOpenSettings);
+}
+
+// The coffee being brewed, in full: everything the shelf knows about it.
+void buildCoffee() {
+  lv_obj_t *p = panels[static_cast<int>(Panel::COFFEE)] = makePanel();
+  coffeeTitle = makeLine(p, &lv_font_montserrat_24, COLOR_ACCENT, 12, 16, 536 - 16 - 12 - 104 - 12);
+  lv_obj_set_style_text_align(coffeeTitle, LV_TEXT_ALIGN_LEFT, 0);
+  makeButton(p, LV_SYMBOL_LEFT " BACK", &lv_font_montserrat_20, COLOR_PANEL, 104, 40,
+             LV_ALIGN_TOP_RIGHT, -12, 6, onCloseCoffee);
+  // Drag to scroll when there is more than fits.
+  lv_obj_t *box = lv_obj_create(p);
+  lv_obj_set_size(box, 536 - 24, 240 - 54);
+  lv_obj_align(box, LV_ALIGN_TOP_LEFT, 12, 52);
+  lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(box, 0, 0);
+  lv_obj_set_style_pad_all(box, 4, 0);
+  lv_obj_set_scroll_dir(box, LV_DIR_VER);
+  coffeeBody = lv_label_create(box);
+  lv_obj_set_width(coffeeBody, lv_pct(100));
+  lv_obj_set_style_text_font(coffeeBody, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_color(coffeeBody, lv_color_hex(COLOR_TEXT), 0);
+  lv_label_set_long_mode(coffeeBody, LV_LABEL_LONG_WRAP);
+  lv_label_set_text(coffeeBody, "");
 }
 
 // Quick edits to the selected recipe. Everything else is on the web page.
@@ -566,10 +608,11 @@ void buildResult() {
   lv_obj_t *p = panels[static_cast<int>(Panel::RESULT)] = makePanel();
   resTop = makeLine(p, &lv_font_montserrat_26, COLOR_OK, 6);          // "OVER +0.2 g"
   resWeight = makeLine(p, &lv_font_montserrat_48, COLOR_TEXT, 38);    // final weight
-  resLine1 = makeLine(p, &lv_font_montserrat_18, COLOR_TEXT, 98);     // times
-  resLine2 = makeLine(p, &lv_font_montserrat_18, COLOR_DIM, 124);     // flow, drip, auto adjust
-  resGrind = makeLine(p, &lv_font_montserrat_22, COLOR_ACCENT, 162);  // "BREW FAST  GRIND FINER"
-  resGrindSub = makeLine(p, &lv_font_montserrat_16, COLOR_DIM, 192);  // amount or where to look
+  // Nothing on this screen is smaller than 20 pt, as on the home screen.
+  resLine1 = makeLine(p, &lv_font_montserrat_20, COLOR_TEXT, 96);     // times
+  resLine2 = makeLine(p, &lv_font_montserrat_20, COLOR_DIM, 120);     // flow, drip, auto adjust
+  resGrind = makeLine(p, &lv_font_montserrat_22, COLOR_ACCENT, 148);  // "BREW FAST  GRIND FINER"
+  resGrindSub = makeLine(p, &lv_font_montserrat_20, COLOR_DIM, 176);  // amount or where to look
   lv_label_set_long_mode(resGrindSub, LV_LABEL_LONG_WRAP);  // two lines rather than "..."
   resReadyBtn = makeButton(p, "READY", &lv_font_montserrat_28, COLOR_PANEL, KEY_W, 216,
                            LV_ALIGN_RIGHT_MID, KEY_X, 0, onAck);
@@ -577,7 +620,7 @@ void buildResult() {
   // An unusual shot (a one-off, or one that ran out of time) is put to the
   // user instead of being quietly set aside: three lines of advice in place
   // of the grind verdict, and two keys in place of READY.
-  resReview = makeLine(p, &lv_font_montserrat_16, COLOR_ACCENT, 150);
+  resReview = makeLine(p, &lv_font_montserrat_20, COLOR_ACCENT, 148);
   lv_label_set_long_mode(resReview, LV_LABEL_LONG_WRAP);
   lv_obj_t *label = nullptr;
   resReadyHalfBtn = makeButton(p, "READY", &lv_font_montserrat_24, COLOR_PANEL, KEY_W, 104,
@@ -908,6 +951,75 @@ void refreshEdit() {
   show(Panel::EDIT);
 }
 
+// The coffee screen, one fact to a line; what was never entered is left out.
+struct CoffeeLookup {
+  uint16_t id;
+  bbw::Coffee coffee;
+  bool found;
+};
+
+void refreshCoffee() {
+  const bbw::Recipe r = app::activeRecipe();
+  CoffeeLookup look{r.coffeeId, {}, false};
+  if (r.coffeeId) {
+    app::readLibrary([](const bbw::Library &lib, void *context) {
+      CoffeeLookup &l = *static_cast<CoffeeLookup *>(context);
+      for (uint8_t i = 0; i < lib.coffeeCount; ++i) {
+        if (lib.coffees[i].id == l.id) {
+          l.coffee = lib.coffees[i];
+          l.found = true;
+          return;
+        }
+      }
+    }, &look);
+  }
+  setText(coffeeTitle, r.coffee[0] ? r.coffee : "No coffee");
+  scrollIfLong(coffeeTitle, r.coffee[0] ? r.coffee : "No coffee", 536 - 16 - 12 - 104 - 12);
+  if (!r.coffee[0] && !look.found) {
+    setText(coffeeBody, "No coffee is attached to this recipe.\nAdd one on the web page: Coffees.");
+    show(Panel::COFFEE);
+    return;
+  }
+  static char body[640];
+  size_t n = 0;
+  auto add = [&](const char *name, const char *value) {
+    if (!value || !value[0] || n >= sizeof(body)) return;
+    const int w = snprintf(body + n, sizeof(body) - n, "%s%s: %s", n ? "\n" : "", name, value);
+    if (w > 0) n += static_cast<size_t>(w);
+  };
+  const bbw::Coffee &c = look.coffee;
+  char line[96];
+  if (look.found) {
+    add("Roaster", c.roaster);
+    if (c.name[0] && strcmp(c.name, r.coffee) != 0) add("Coffee", c.name);
+    add("Country", c.origin);
+  }
+  add("Region", look.found ? c.region : r.region);
+  if (look.found) add("Producer", c.producer);
+  add("Varietal", look.found ? c.varietal : r.varietal);
+  if (look.found) {
+    add("Process", c.process);
+    if (c.altitudeM) {
+      snprintf(line, sizeof(line), "%u m", static_cast<unsigned>(c.altitudeM));
+      add("Altitude", line);
+    }
+  }
+  add("Roast", r.roastLevel ? bbw::roastLevelName(r.roastLevel) : "");
+  char age[32];
+  describeRoastAge(r, false, age, sizeof(age));
+  if (r.roastDate) {
+    snprintf(line, sizeof(line), "%04u-%02u-%02u%s%s%s", static_cast<unsigned>(r.roastDate / 10000),
+             static_cast<unsigned>((r.roastDate / 100) % 100), static_cast<unsigned>(r.roastDate % 100),
+             strncmp(age, "roasted", 7) != 0 ? " (" : "", strncmp(age, "roasted", 7) != 0 ? age : "",
+             strncmp(age, "roasted", 7) != 0 ? ")" : "");
+    add("Roasted", line);
+  }
+  if (look.found) add("Notes", c.notes);
+  if (n == 0) snprintf(body, sizeof(body), "Nothing more is known about this coffee.\nAdd details on the web page: Coffees.");
+  setText(coffeeBody, body);
+  show(Panel::COFFEE);
+}
+
 void refreshHome(const bbw::LiveStatus &st) {
   const bool ready = st.state == State::READY;
   if (!ready) {
@@ -943,14 +1055,19 @@ void refreshHome(const bbw::LiveStatus &st) {
   fitText(homeName, r.coffee[0] ? r.coffee : r.name, CARD_W - 24, 3, &lv_font_montserrat_26, &lv_font_montserrat_22,
           &lv_font_montserrat_20);
   scrollIfLong(homeName, r.coffee[0] ? r.coffee : r.name, CARD_W - 24);
-  if (r.useRatio) {
-    snprintf(text, sizeof(text), "%.1f g in  ->  %.1f g out  1:%.1f", r.doseG, r.targetWeightG,
-             r.ratio);
-  } else {
-    snprintf(text, sizeof(text), "%.1f g in  ->  %.1f g out", r.doseG, r.targetWeightG);
+  // With the coffee as the heading, this line names the recipe: "Triple - 24.0 in -> 48.0 out",
+  // with the ratio after it when there is room.
+  char yield[64];
+  if (r.coffee[0]) snprintf(yield, sizeof(yield), "%s - %.1f in -> %.1f out", r.name, r.doseG, r.targetWeightG);
+  else snprintf(yield, sizeof(yield), "%.1f g in -> %.1f g out", r.doseG, r.targetWeightG);
+  snprintf(text, sizeof(text), "%s  1:%.1f", yield, r.ratio);
+  if (!r.useRatio || lv_txt_get_width(text, strlen(text), &lv_font_montserrat_20, 0,
+                                      LV_TEXT_FLAG_NONE) > CARD_W) {
+    snprintf(text, sizeof(text), "%s", yield);
   }
   fitText(homeYield, text, CARD_W, 3, &lv_font_montserrat_24, &lv_font_montserrat_22,
           &lv_font_montserrat_20);
+  scrollIfLong(homeYield, text, CARD_W);
 
   // Left column: grind, the advisor's verdict, pre-infusion. Each has a
   // shorter wording for when the full one is too wide for the column.
@@ -1011,26 +1128,20 @@ void refreshHome(const bbw::LiveStatus &st) {
   snprintf(text, sizeof(text), "brew time %.0f s", r.targetTimeS);
   fitSmall(homeFoot, text);
 
-  // Right column: the coffee, each fact on its own line.
-  const bool anyCoffee = r.coffee[0] || r.region[0] || r.varietal[0] || r.roastLevel || r.roastDate;
-  // With the coffee as the heading, this line is the recipe.
-  fitSmall(homeCoffee, r.coffee[0] ? r.name : (anyCoffee ? "" : "no coffee attached"),
-           r.coffee[0] ? r.name : (anyCoffee ? "" : "no coffee"));
-  setColor(homeCoffee, r.coffee[0] ? COLOR_TEXT : COLOR_DIM);
-  fitSmall(homeRegion, r.region);
-  fitSmall(homeVarietal, r.varietal);
-  // Roast level and age share a line: "medium-light, 129 d", or "med-light"
-  // when that is too wide.
-  char age[32];
-  describeRoastAge(r, r.roastLevel != 0, age, sizeof(age));
+  // Bottom row: the roast level under the grind, its age under the brew time.
+  const bool anyCoffee = r.coffee[0] || r.roastLevel || r.roastDate;
   const char *level = bbw::roastLevelName(r.roastLevel);
-  snprintf(text, sizeof(text), "%s%s%s", level, r.roastLevel && age[0] ? ", " : "", age);
-  if (strncmp(level, "medium-", 7) == 0) {
-    snprintf(shorter, sizeof(shorter), "med-%s%s%s", level + 7, age[0] ? ", " : "", age);
+  if (r.roastLevel) {
+    snprintf(shorter, sizeof(shorter), strncmp(level, "medium-", 7) == 0 ? "med-%s" : "%s",
+             strncmp(level, "medium-", 7) == 0 ? level + 7 : level);
+    fitSmall(homeRoast, level, shorter);
   } else {
-    snprintf(shorter, sizeof(shorter), "%s", text);
+    fitSmall(homeRoast, anyCoffee ? "" : "no coffee attached", anyCoffee ? "" : "no coffee");
   }
-  fitSmall(homeRoast, text, shorter);
+  char age[32];
+  describeRoastAge(r, false, age, sizeof(age));
+  describeRoastAge(r, true, shorter, sizeof(shorter));
+  fitSmall(homeAge, age, shorter);
 
   if (!ready) {
     setText(homeHint, "SWITCH ON THE SCALE");
@@ -1047,6 +1158,16 @@ void refreshHome(const bbw::LiveStatus &st) {
   } else {
     setText(homeHint, LV_SYMBOL_LEFT "  TOUCH KEY TO BREW");
     setColor(homeHint, COLOR_OK);
+  }
+  // A key only while it offers the start; plain text, as before, otherwise.
+  const bool canStart = ready && (st.botPaired || st.machineStyle == static_cast<uint8_t>(bbw::MachineStyle::MANUAL)) &&
+                        st.weightFresh && !(st.cupRequired && !st.cupPresent);
+  if (canStart != homeCanStart || !lv_obj_has_flag(homeStartKey, LV_OBJ_FLAG_USER_1)) {
+    homeCanStart = canStart;
+    lv_obj_add_flag(homeStartKey, LV_OBJ_FLAG_USER_1);  // styled at least once
+    lv_obj_set_style_bg_opa(homeStartKey, canStart ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    if (canStart) lv_obj_add_flag(homeStartKey, LV_OBJ_FLAG_CLICKABLE);
+    else lv_obj_clear_flag(homeStartKey, LV_OBJ_FLAG_CLICKABLE);
   }
   show(Panel::HOME);
 }
@@ -1186,7 +1307,7 @@ void refreshResult(State state) {
         default: break;
       }
       fitText(resTop, heading, LEFT_W, 3, &lv_font_montserrat_26, &lv_font_montserrat_22,
-              &lv_font_montserrat_18);
+              &lv_font_montserrat_20);
       setColor(resTop, COLOR_BAD);
     } else {
       // How far off the weight, and how far off the brew time.
@@ -1219,8 +1340,20 @@ void refreshResult(State state) {
     const float change = shot.nextStopOffsetG - shot.stopOffsetG;
     if ((shot.flags & bbw::SHOT_FLAG_LEARNED) && fabsf(change) >= 0.005f) {
       // A larger offset means the next shot is stopped earlier.
-      fitDetail(resLine2, "%.2f g/s  drip %.1f g  auto %s %.2f", flow, shot.dripWeightG,
-                change > 0 ? "earlier" : "later", fabsf(change));
+      // The longest line on the screen: tighter wordings until one fits at 20 pt.
+      const char *way = change > 0 ? "earlier" : "later";
+      char line[64];
+      snprintf(line, sizeof(line), "%.2f g/s  drip %.1f g  auto %s %.2f", flow, shot.dripWeightG,
+               way, fabsf(change));
+      if (lv_txt_get_width(line, strlen(line), &lv_font_montserrat_20, 0, LV_TEXT_FLAG_NONE) > LEFT_W) {
+        snprintf(line, sizeof(line), "%.1f g/s  drip %.1f g  auto %s %.2f", flow, shot.dripWeightG,
+                 way, fabsf(change));
+      }
+      if (lv_txt_get_width(line, strlen(line), &lv_font_montserrat_20, 0, LV_TEXT_FLAG_NONE) > LEFT_W) {
+        snprintf(line, sizeof(line), "%.1f g/s drip %.1f g %s %.2f", flow, shot.dripWeightG, way,
+                 fabsf(change));
+      }
+      fitDetail(resLine2, "%s", line);
     } else {
       fitDetail(resLine2, "%.2f g/s   drip %.1f g", flow, shot.dripWeightG);
     }
@@ -1277,22 +1410,22 @@ void refreshResult(State state) {
   setColor(resGrind, COLOR_ACCENT);
   if (g.action == GrindAction::NO_GRIND_SET) {
     setText(resGrind, "");
-    setText(resGrindSub, "set the grind in EDIT RECIPE\nto get grind advice");
+    setText(resGrindSub, "set the grind in EDIT\nfor grind advice");
   } else if (!counted) {
     // Say why, in each case.
     const char *why = "this shot is not counted\nfor grind advice";
     switch (use) {
       case bbw::GrindUse::IGNORED_BY_USER: why = "ignored for grind advice,\nas you chose"; break;
       case bbw::GrindUse::NO_TIME: why = "no first drops detected:\nnot counted for grind advice"; break;
-      case bbw::GrindUse::OTHER_BASIS: why = "brew time basis was changed:\nnot counted for grind advice"; break;
-      case bbw::GrindUse::NOT_SETTLED: why = "weight did not settle (cup lifted):\nnot counted for grind advice"; break;
+      case bbw::GrindUse::OTHER_BASIS: why = "time basis was changed:\nnot counted for grind advice"; break;
+      case bbw::GrindUse::NOT_SETTLED: why = "cup lifted, weight unsettled:\nnot counted for grind advice"; break;
       case bbw::GrindUse::STOP_RETRIED: why = "stop had to be repeated:\nnot counted for grind advice"; break;
       case bbw::GrindUse::NOT_WEIGHT_STOP:
         switch (ended) {
           case bbw::EndReason::USER: why = "stopped with STOP:\nnot counted for grind advice"; break;
           case bbw::EndReason::CUP_REMOVED: why = "cup lifted during the shot:\nnot counted for grind advice"; break;
-          case bbw::EndReason::RECOVERED: why = "controller restarted mid-shot:\nnot counted for grind advice"; break;
-          default: why = "did not end on the target weight:\nnot counted for grind advice"; break;
+          case bbw::EndReason::RECOVERED: why = "restarted during the shot:\nnot counted for grind advice"; break;
+          default: why = "did not stop on its weight:\nnot counted for grind advice"; break;
         }
         break;
       default: break;
@@ -1302,7 +1435,7 @@ void refreshResult(State state) {
   } else if (g.newestIgnored) {
     fitLine(resGrind, thisTime < shot.targetTimeS ? "BREW FAST   ONE-OFF?"
                                                   : "BREW SLOW   ONE-OFF?");
-    setTextF(resGrindSub, "%.1f s against %.0f s. grind kept:\nadvice follows if it repeats",
+    setTextF(resGrindSub, "%.1f s vs %.0f s: grind kept,\nadvice if it repeats",
              thisTime, shot.targetTimeS);
   } else if (g.action == GrindAction::FINER || g.action == GrindAction::COARSER) {
     const bool finer = g.action == GrindAction::FINER;
@@ -1317,16 +1450,16 @@ void refreshResult(State state) {
     }
   } else if (g.action == GrindAction::INCONSISTENT) {
     fitLine(resGrind, "BREW TIMES VARY   NO ADVICE");
-    setTextF(resGrindSub, "%.0f to %.0f s at %s %s. review preparation;\nif the grinder was changed, set it in EDIT",
+    setTextF(resGrindSub, "%.0f to %.0f s at %s %s:\ncheck the preparation",
              g.minTimeS, g.maxTimeS, gs(g.currentUm), grindUnit());
   } else if (g.action == GrindAction::HOLD) {
     fitLine(resGrind, "BREW TIME OK   KEEP GRIND");
     setColor(resGrind, COLOR_OK);
     if (g.shotsUsed > 1) {
-      setTextF(resGrindSub, "this shot %.1f s, last %u average\n%.1f s against %.0f s target",
+      setTextF(resGrindSub, "this shot %.1f s, last %u\naverage %.1f s, target %.0f s",
                thisTime, g.shotsUsed, g.averageTimeS, g.targetTimeS);
     } else {
-      setTextF(resGrindSub, "%.1f s against %.0f s target", thisTime, g.targetTimeS);
+      setTextF(resGrindSub, "%.1f s, target %.0f s", thisTime, g.targetTimeS);
     }
   } else {
     setText(resGrind, "");
@@ -1366,7 +1499,7 @@ void refresh() {
     if (scaleLostAtMs == 0) scaleLostAtMs = now ? now : 1;
     if (!screenOff && now - scaleLostAtMs >= SCALE_OFF_SLEEP_MS &&
         lv_disp_get_inactive_time(nullptr) >= SCALE_OFF_SLEEP_MS) {
-      settingsOpen = recipesOpen = editOpen = false;
+      settingsOpen = recipesOpen = editOpen = coffeeOpen = false;
       setStandby(true);
     }
   } else {
@@ -1407,6 +1540,11 @@ void refresh() {
     return;
   }
   settingsOpen = false;
+  if (coffeeOpen && idle) {
+    refreshCoffee();
+    return;
+  }
+  coffeeOpen = false;
 
   switch (st.state) {
     case State::BOOT:
@@ -1489,6 +1627,7 @@ bool begin() {
   buildSettings();
   buildRecipes();
   buildEdit();
+  buildCoffee();
   // The CST816T reports the key on the glass as a touch at a fixed point off
   // the end of the panel; the library turns that into this callback.
   amoled.setHomeButtonCallback(onTouchKey, nullptr);
@@ -1545,8 +1684,8 @@ void loop() {
     wake();
     if (wasOff) {
       // a press on a dark screen only wakes it
-    } else if (settingsOpen || recipesOpen || editOpen) {
-      settingsOpen = recipesOpen = editOpen = false;
+    } else if (settingsOpen || recipesOpen || editOpen || coffeeOpen) {
+      settingsOpen = recipesOpen = editOpen = coffeeOpen = false;
     } else {
       const State state = app::status().state;
       if (state == State::READY || state == State::READY_TO_BREW) app::start();
@@ -1575,8 +1714,8 @@ void bootShortPress() {
   } else if (state == State::SHOT_COMPLETE || bbw::isFault(state)) {
     app::acknowledge();
   } else if (state == State::READY) {
-    if (settingsOpen || recipesOpen || editOpen) {
-      settingsOpen = recipesOpen = editOpen = false;  // back to the home screen
+    if (settingsOpen || recipesOpen || editOpen || coffeeOpen) {
+      settingsOpen = recipesOpen = editOpen = coffeeOpen = false;  // back to the home screen
     } else {
       app::start();  // spare start button, should the touch key ever fail
     }

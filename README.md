@@ -152,13 +152,18 @@ Controls:
   spare should the touch key ever fail.
 - **STOP on the screen** during a shot is a single touch.
 
-The home screen has no start, tare or grind keys. It shows the selected
-recipe in full (dose in, target out, grind setting and any grind advice,
-pre-infusion, coffee with roast level and age, target brew time and stop
-offset) and two keys:
+The home screen has no tare or grind keys. Its card shows the coffee, then
+the recipe with dose in and target out, then the grind setting and any grind
+advice beside the pre-infusion and target brew time, and the roast level
+beside the days off roast. Under the card, `< TOUCH KEY TO BREW` is shown
+once a shot can start; while it is shown it is also a key that starts the
+shot, as the touch key does (a tap on a dimmed screen only brightens it).
+Three keys sit beside the card:
 
 - **EDIT RECIPE**: target (or ratio), dose, grind setting, target brew time
   and pre-infusion of the selected recipe. Everything else is on the web page.
+- **COFFEE**: everything known about the coffee: roaster, country, region,
+  producer, varietal, process, altitude, roast level and date, notes.
 - **Gear**: offset learning, Bot pairing, forget scale, TARE SCALE and the
   Wi-Fi details.
 
