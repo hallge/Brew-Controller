@@ -293,9 +293,9 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <div class="sm dim">Shots are only compared with others made at the same setting.</div></section>
 <section class="card"><h2>Advice</h2><div><span class="pill" id="gadv" style="font-size:16px"></span></div>
 <div class="sm mid" id="gwhy"></div><div class="sm mid" id="gage"></div><div class="sm mid" id="grate"></div><div class="row"><button class="pri" id="gapply" style="display:none" onclick="setGrind(G.suggested_um)"></button></div></section></div>
-<section class="card"><div class="head"><h2>Brew time against grind setting</h2><span class="sm dim" id="gsens"></span></div>
+<section class="card"><div class="head"><h2>Brew time against grind setting</h2><div class="row"><span class="sm dim" id="gsens"></span><label class="chk sm"><input type="checkbox" id="gall" onchange="drawScatter()">All coffees</label></div></div>
 <canvas id="gchart" width="900" height="220" style="height:220px"></canvas><div class="row sm" id="gleg"></div><div class="sm mid" id="gnote"></div></section>
-<section class="card"><div class="head"><h2>Each shot's time</h2><span class="sm dim" id="cnote"></span></div><canvas id="cchart" width="900" height="200" style="height:200px"></canvas><div class="row sm" id="cleg"></div><details class="note"><summary>One dot per shot that stopped on weight on this grinder, every coffee and recipe, oldest on the left.</summary><ul><li>Each coffee has its own colour (named below the chart); the one being brewed now is orange.</li><li>Green band: the target time and its tolerance, for the recipe being brewed now.</li><li>Dashed line and narrower band: the time of the shots you rated 4 or 5, when the advice is refining towards it.</li><li>Thin lines: where the grind setting changed.</li><li>White rings: shots you rated 4 or 5.</li></ul></details></section>
+<section class="card"><div class="head"><h2>Grind setting, shot by shot</h2><span class="sm dim" id="cnote"></span></div><canvas id="cchart" width="900" height="220" style="height:220px"></canvas><div class="row sm" id="cleg"></div><details class="note"><summary>The setting each shot was pulled at, oldest on the left: how each coffee was dialled in, and how it drifted as the beans aged.</summary><ul><li>A line per coffee, in its colour (named below the chart); the one being brewed now is orange.</li><li>Dots: green on time, yellow fast, red slow, each against that shot's own target and the tolerance.</li><li>Dashed lines: a new bag of that coffee. Dates along the bottom mark the first shot of each day.</li><li>White rings: shots you rated 4 or 5. Hover or tap a dot to see the shot; click it to open it.</li></ul></details></section>
 <section class="card"><h2>How advice is worked out</h2><div class="grid">
 <label>Brew time tolerance (&plusmn; s)<input id="grindToleranceS" type="number" step="0.5" min="0.5" max="10"></label>
 <label>Shots averaged<input id="grindWindow" type="number" min="1" max="10"></label>
@@ -699,7 +699,7 @@ function setGrind(um){if(um==null||!(um>=1&&um<=2000))return say('That is not a 
 // the one being brewed now is orange and drawn on top. The legend under each chart names them. The
 // green band is the target of the recipe being brewed now.
 const CCOL=['#f59e0b','#38bdf8','#a78bfa','#f472b6','#34d399','#facc15','#fb7185','#60a5fa','#2dd4bf','#c084fc'];
-function grindShots(){return SH.filter(s=>(s.grinder_calibration||0)==L.grinder.calibration&&/^weight/.test(s.end_reason)&&s.grind_vote!='ignore').map(s=>({id:s.id,t:S.grindTimeBasis==1?s.pour_time_s:s.shot_time_s,u:s.grind_um,r:s.rating,c:s.coffee_id||0,n:s.coffee||'no coffee',rc:s.recipe||'',w:when(s)})).filter(q=>q.t>0)}
+function grindShots(){return SH.filter(s=>(s.grinder_calibration||0)==L.grinder.calibration&&/^weight/.test(s.end_reason)&&s.grind_vote!='ignore').map(s=>({id:s.id,t:S.grindTimeBasis==1?s.pour_time_s:s.shot_time_s,u:s.grind_um,r:s.rating,c:s.coffee_id||0,n:s.coffee||'no coffee',rc:s.recipe||'',w:when(s),tt:s.target_time_s||0,rd:s.roast_date||0,day:s.timestamp?new Date(s.timestamp).toDateString():''})).filter(q=>q.t>0)}
 // A coffee keeps its colour on both charts: the one being brewed gets the first, the others follow in
 // the order of their ids among all shots on this grinder. The legend counts the shots on its own chart.
 function coffeeColours(pts){const cur=(L.presets[L.activePreset]||{}).coffeeId||0,ids=[...new Set(grindShots().map(q=>q.c))].sort((a,b)=>(b==cur)-(a==cur)||a-b),off=ids.includes(cur)?0:1,col=new Map(ids.map((id,i)=>[id,CCOL[(i+off)%CCOL.length]])),m=new Map();
@@ -725,37 +725,58 @@ tip._for=null;tip.style.display='none';openShot(d.q.id)})}
 // A shot from a chart, opened on the Shots page with nothing filtered away.
 function openShot(id){$('fcoffee').value='';$('fshow').selectedIndex=0;const i=SH.findIndex(s=>s.id==id);if(i<0)return;SHOWN=Math.max(SHOWN,i+1);
 location.hash='#shots';SEL=id;SOPEN=true;showShot(id,'s');drawShots();setTimeout(()=>{const d=$('sdetail');if(d)d.scrollIntoView({behavior:'smooth',block:'center'})},250)}
+// Chart 2: the setting each shot was pulled at, in order. One step line per coffee, dots coloured by how
+// that shot ran against its own target; new bags and new days marked.
+const STC={ok:'#4cc38a',fast:'#f5c451',slow:'#ff6b5e'};
 function drawControl(){const c=$('cchart');if(!c)return;const x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);$('cnote').textContent='';$('cleg').innerHTML='';c._dots=[];if(!L||!G||!S)return;
-let pts=grindShots().reverse().slice(-100);
+// This coffee only, as the chart above, unless All coffees is ticked there (settings of different
+// coffees can be far apart, which flattens every line).
+const cur=(L.presets[L.activePreset]||{}).coffeeId||0,allP=grindShots().filter(q=>q.u),mine=allP.filter(q=>q.c==cur);
+const pts=($('gall').checked||mine.length<2?allP:mine).reverse().slice(-100);
 if(pts.length<2){$('cnote').textContent='needs two shots';return}
-const cc=coffeeColours(pts);drawLegend('cleg',cc);
-const tg=G.target_time_s,tol=G.tolerance_s,aim=G.aim_time_s>0?G.aim_time_s:0,band=G.rated_band_s||0;
-const L0=50,R0=c.width-20,ts=pts.map(q=>q.t),t0=Math.min(...ts,tg-tol)-2,t1=Math.max(...ts,tg+tol)+2,X=i=>L0+i/(pts.length-1)*(R0-L0),Y=t=>c.height-24-(t-t0)/(t1-t0)*(c.height-38);
-gridTimes(x,Y,t0,t1,L0,R0);
-x.fillStyle='rgba(76,195,138,.16)';x.fillRect(L0,Y(tg+tol),R0-L0,Y(tg-tol)-Y(tg+tol));
-if(aim){x.fillStyle='rgba(76,195,138,.22)';x.fillRect(L0,Y(aim+band),R0-L0,Y(aim-band)-Y(aim+band));x.strokeStyle='#4cc38a';x.setLineDash([4,6]);x.beginPath();x.moveTo(L0,Y(aim));x.lineTo(R0,Y(aim));x.stroke();x.setLineDash([])}
-x.strokeStyle='#3a3f46';x.beginPath();x.moveTo(L0,10);x.lineTo(L0,c.height-24);x.lineTo(R0,c.height-24);x.stroke();
-x.font='12px sans-serif';let lastLabel=-99;pts.forEach((q,i)=>{if(i&&q.u!=pts[i-1].u){const lx=X(i)-0.5*(R0-L0)/(pts.length-1);x.strokeStyle='#4a4f56';x.beginPath();x.moveTo(lx,10);x.lineTo(lx,c.height-24);x.stroke();const label=fsn(q.u);if(lx-lastLabel>x.measureText(label).width+8){x.fillStyle='#9aa3ad';x.fillText(label,lx+3,c.height-8);lastLabel=lx}}});
-x.strokeStyle='#6b7280';x.lineWidth=1;x.beginPath();pts.forEach((q,i)=>i?x.lineTo(X(i),Y(q.t)):x.moveTo(X(i),Y(q.t)));x.stroke();
-// Coffee colour per dot; a white ring marks a shot rated 4 or 5. The coffee being brewed goes on top.
-const order=pts.map((q,i)=>i).sort((a,b)=>(pts[a].c==cc.cur)-(pts[b].c==cc.cur)),dots=[];
-order.forEach(i=>{const q=pts[i],px=X(i),py=Y(q.t);x.fillStyle=cc.m.get(q.c).col;x.beginPath();x.arc(px,py,q.c==cc.cur?5:4,0,7);x.fill();if(q.r>=4){x.strokeStyle='#ffffff';x.lineWidth=2;x.beginPath();x.arc(px,py,7.5,0,7);x.stroke();x.lineWidth=1}dots.push({x:px,y:py,q})});
-chartDots(c,dots);
-const out=pts.filter(q=>Math.abs(q.t-tg)>tol).length;$('cnote').textContent=pts.length+' shots, '+out+' outside the tolerance'}
+const cc=coffeeColours(pts),tol=S.grindToleranceS||2,st=q=>!q.tt?'ok':q.t<q.tt-tol?'fast':q.t>q.tt+tol?'slow':'ok';
+const us=pts.map(q=>q.u),lo=Math.min(...us),hi=Math.max(...us),pad=Math.max(2,(hi-lo)*0.12),u0=lo-pad,u1=hi+pad;
+const L0=50,R0=c.width-20,B0=c.height-24,X=i=>L0+(i+0.5)/pts.length*(R0-L0),Y=u=>B0-(u-u0)/(u1-u0)*(B0-12);
+x.font='12px sans-serif';x.lineWidth=1;
+niceTicks(u0,u1,4,1).forEach(v=>{const y=Math.round(Y(v))+0.5;x.strokeStyle='#22262b';x.beginPath();x.moveTo(L0,y);x.lineTo(R0,y);x.stroke();x.fillStyle='#9aa3ad';x.fillText(fsn(Math.round(v)),6,y+4)});
+// new days along the bottom, new bags as dashed lines
+let lastLab=-99;const lastRd=new Map();pts.forEach((q,i)=>{const px=X(i);
+if(i==0||q.day!=pts[i-1].day){const lab=q.day?new Date(q.day).toLocaleDateString([], {month:'short',day:'numeric'}):'';if(lab&&px-lastLab>x.measureText(lab).width+10){x.fillStyle='#9aa3ad';x.fillText(lab,Math.min(R0-x.measureText(lab).width,px-4),c.height-6);lastLab=px}}
+const prev=lastRd.get(q.c);if(prev!=null&&q.rd&&prev&&q.rd!=prev){x.strokeStyle=cc.m.get(q.c).col;x.globalAlpha=.5;x.setLineDash([4,5]);x.beginPath();x.moveTo(px-0.5*(R0-L0)/pts.length,10);x.lineTo(px-0.5*(R0-L0)/pts.length,B0);x.stroke();x.setLineDash([]);x.globalAlpha=1;
+x.fillStyle='#9aa3ad';x.fillText('new bag',px-0.5*(R0-L0)/pts.length+3,22)}lastRd.set(q.c,q.rd)});
+x.strokeStyle='#3a3f46';x.beginPath();x.moveTo(L0,10);x.lineTo(L0,B0);x.lineTo(R0,B0);x.stroke();
+// a step line per coffee: the setting holds until it is changed
+[...cc.m.keys()].forEach(id=>{const idx=pts.map((q,i)=>i).filter(i=>pts[i].c==id);if(idx.length<2)return;x.strokeStyle=cc.m.get(id).col;x.lineWidth=id==cc.cur?2:1.5;x.globalAlpha=id==cc.cur?.9:.6;x.beginPath();
+idx.forEach((i,k)=>{const px=X(i),py=Y(pts[i].u);if(!k)x.moveTo(px,py);else{x.lineTo(px,Y(pts[idx[k-1]].u));x.lineTo(px,py)}});x.stroke();x.globalAlpha=1;x.lineWidth=1});
+const dots=[],n={ok:0,fast:0,slow:0};pts.forEach((q,i)=>{const px=X(i),py=Y(q.u),k=st(q);n[k]++;x.fillStyle=STC[k];x.beginPath();x.arc(px,py,q.c==cc.cur?4.5:3.5,0,7);x.fill();
+if(q.r>=4){x.strokeStyle='#ffffff';x.lineWidth=2;x.beginPath();x.arc(px,py,7,0,7);x.stroke();x.lineWidth=1}dots.push({x:px,y:py,q})});
+chartDots(c,dots);drawLegend('cleg',cc);
+$('cleg').innerHTML+=`<span class="dim" style="margin-left:auto">${['ok','fast','slow'].map(k=>`<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${STC[k]};margin:0 4px 0 10px"></span>${k=='ok'?'on time':k}`).join('')}</span>`;
+$('cnote').textContent=pts.length+' shots: '+n.ok+' on time, '+n.fast+' fast, '+n.slow+' slow'}
 function drawScatter(){drawControl();drawGrinderUpkeep();const c=$('gchart'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);$('gleg').innerHTML='';c._dots=[];if(!L||!G||!S)return;
-const pts=grindShots().filter(q=>q.u);
+const cur=(L.presets[L.activePreset]||{}).coffeeId||0,allP=grindShots().filter(q=>q.u),mine=allP.filter(q=>q.c==cur),pts=$('gall').checked||!mine.length?allP:mine;
 const tg=G.target_time_s,tol=G.tolerance_s;if(!pts.length){$('gnote').textContent='No shots stopped by weight on this grinder yet.';return}
 const cc=coffeeColours(pts);drawLegend('gleg',cc);
-const us=pts.map(q=>q.u),lo=Math.min(...us,G.current_um||us[0])-10,hi=Math.max(...us,G.current_um||us[0])+10,ts=pts.map(q=>q.t),t0=Math.min(...ts,tg-tol)-3,t1=Math.max(...ts,tg+tol)+3;
+const adv=G.has_number&&(G.action=='finer'||G.action=='coarser')&&G.suggested_um?G.suggested_um:0;
+const us=pts.map(q=>q.u),lo=Math.min(...us,G.current_um||us[0],adv||us[0])-10,hi=Math.max(...us,G.current_um||us[0],adv||us[0])+10,ts=pts.map(q=>q.t),t0=Math.min(...ts,tg-tol)-3,t1=Math.max(...ts,tg+tol)+3;
 const L0=50,R0=c.width-20,B0=c.height-26,X=u=>L0+(u-lo)/(hi-lo)*(R0-L0),Y=t=>B0-(t-t0)/(t1-t0)*(c.height-40);
 gridTimes(x,Y,t0,t1,L0,R0);
 // Vertical gridlines at round settings, labelled as the dial reads.
 x.font='12px sans-serif';niceTicks(lo,hi,6,1).forEach(v=>{const gx=Math.round(X(v))+0.5;x.strokeStyle='#22262b';x.beginPath();x.moveTo(gx,10);x.lineTo(gx,B0);x.stroke();const lab=fsn(Math.round(v));x.fillStyle='#9aa3ad';x.fillText(lab,Math.min(R0-x.measureText(lab).width,gx-x.measureText(lab).width/2),c.height-8)});
 x.fillStyle='rgba(76,195,138,.16)';x.fillRect(L0,Y(tg+tol),R0-L0,Y(tg-tol)-Y(tg+tol));x.strokeStyle='#4cc38a';x.setLineDash([4,6]);x.beginPath();x.moveTo(L0,Y(tg));x.lineTo(R0,Y(tg));x.stroke();x.setLineDash([]);
 x.strokeStyle='#3a3f46';x.beginPath();x.moveTo(L0,10);x.lineTo(L0,B0);x.lineTo(R0,B0);x.stroke();
+// The advisor's line: the average time at the setting now, and how many seconds a step moves it (its
+// sensitivity); where it meets the target is where the grind should go. The advice itself is marked.
+const ups=G.um_per_s,tc=G.average_time_s,uc=G.current_um,inT=t=>t>=t0&&t<=t1;
+if(ups>0&&tc>0&&uc){const tAt=u=>tc-(u-uc)/ups;let ua=lo,ub=hi;const ta=tAt(ua),tb=tAt(ub);
+if(!inT(ta))ua=uc+(tc-(ta>t1?t1:t0))*ups;if(!inT(tb))ub=uc+(tc-(tb<t0?t0:t1))*ups;
+x.save();x.strokeStyle='#eceef0';x.globalAlpha=.55;x.setLineDash([6,5]);x.lineWidth=1.5;x.beginPath();x.moveTo(X(ua),Y(tAt(ua)));x.lineTo(X(ub),Y(tAt(ub)));x.stroke();x.restore();
+x.strokeStyle='#4a4f56';x.beginPath();x.moveTo(X(uc),10);x.lineTo(X(uc),B0);x.stroke();x.fillStyle='#9aa3ad';x.fillText('now '+fsn(uc),X(uc)+4,22)}
+if(adv){const ax=X(adv),ay=Y(tg);x.fillStyle='#f08a24';x.beginPath();x.moveTo(ax,ay-8);x.lineTo(ax+8,ay);x.lineTo(ax,ay+8);x.lineTo(ax-8,ay);x.closePath();x.fill();
+const lab='advice '+fs(adv);x.font='bold 12px sans-serif';x.fillText(lab,Math.min(R0-x.measureText(lab).width,ax+10),ay-10);x.font='12px sans-serif'}
 const dots=[];pts.map((q,i)=>i).sort((a,b)=>(pts[a].c==cc.cur)-(pts[b].c==cc.cur)).forEach(i=>{const q=pts[i],px=X(q.u)+((i*37)%13-6),py=Y(q.t);x.fillStyle=cc.m.get(q.c).col;x.globalAlpha=q.c==cc.cur?1:0.85;x.beginPath();x.arc(px,py,q.c==cc.cur?5.5:4.5,0,7);x.fill();x.globalAlpha=1;dots.push({x:px,y:py,q})});
 chartDots(c,dots);
-const set=new Set(us);$('gnote').textContent=pts.length+' shot'+(pts.length==1?'':'s')+' stopped by weight, '+cc.m.size+' coffee'+(cc.m.size==1?'':'s')+', at '+set.size+' setting'+(set.size==1?'. With one setting there is no slope to measure: once shots exist at two settings at least 4 '+U+' apart, the line through them replaces the starting guess.':'s.')+' Green band, the recipe being brewed now: '+tg+' s ± '+tol+' s. Hover or tap a dot to see the shot.'}
+const set=new Set(us);$('gnote').textContent=pts.length+' shot'+(pts.length==1?'':'s')+' stopped by weight, '+cc.m.size+' coffee'+(cc.m.size==1?'':'s')+', at '+set.size+' setting'+(set.size==1?'. With one setting there is no slope to measure: once shots exist at two settings at least 4 '+U+' apart, the line through them replaces the starting guess.':'s.')+' Green band, the recipe being brewed now: '+tg+' s ± '+tol+' s.'+(ups>0&&tc>0?' Dashed: the advisor\'s line, '+fdf(ups)+' '+fdu()+' per second.':'')+(adv?' Orange diamond: the advice.':'')+(pts===allP||$('gall').checked?'':' This coffee only; tick All coffees for the rest.')}
 // Several shots' curves on one chart, each in its own colour: weight solid, flow dashed on its own scale.
 // Readings are fetched once per shot and kept while the page is open.
 let CMP=[];const CMPD=new Map();
