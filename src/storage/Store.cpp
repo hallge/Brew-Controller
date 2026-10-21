@@ -49,6 +49,17 @@ struct ContextHeader {
   uint32_t capacity;
 };
 
+// The power presses: a header saying how many were ever logged, then a fixed ring of slots.
+constexpr const char *POWER_PATH = "/power.bin";
+constexpr uint32_t POWER_MAGIC = 0x31455750;  // "PWE1"
+struct PowerHeader {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t recordSize;  // sizeof(PowerEvent) when the file was made
+  uint32_t capacity;
+  uint32_t logged;      // events ever written; the next goes into slot logged % capacity
+};
+
 void curvePath(uint32_t id, char *out, size_t size) {
   snprintf(out, size, "/c%u.bin", static_cast<unsigned>(id));
 }
@@ -441,6 +452,72 @@ bool Store::prepareContexts() {
   file.close();
   if (!ok) LittleFS.remove(CONTEXT_PATH);
   return ok;
+}
+
+bool Store::preparePowerLog() {
+  if (!fsOk_) return false;
+  if (bbw::fileExists(POWER_PATH)) {
+    File file = LittleFS.open(POWER_PATH, "r");
+    PowerHeader header = {};
+    const bool ok = file && file.read(reinterpret_cast<uint8_t *>(&header), sizeof(header)) == sizeof(header) &&
+                    header.magic == POWER_MAGIC && header.version == 1 &&
+                    header.recordSize == sizeof(PowerEvent) && header.capacity == POWER_EVENT_CAPACITY &&
+                    file.size() == sizeof(header) + POWER_EVENT_CAPACITY * sizeof(PowerEvent);
+    if (file) file.close();
+    if (ok) return true;
+    LittleFS.remove(POWER_PATH);  // another layout: start again
+  }
+  File file = LittleFS.open(POWER_PATH, "w");
+  if (!file) return false;
+  const PowerHeader header = {POWER_MAGIC, 1, static_cast<uint16_t>(sizeof(PowerEvent)), POWER_EVENT_CAPACITY, 0};
+  bool ok = file.write(reinterpret_cast<const uint8_t *>(&header), sizeof(header)) == sizeof(header);
+  const PowerEvent blank;
+  for (uint32_t i = 0; ok && i < POWER_EVENT_CAPACITY; ++i) {
+    ok = file.write(reinterpret_cast<const uint8_t *>(&blank), sizeof(blank)) == sizeof(blank);
+  }
+  file.close();
+  if (!ok) LittleFS.remove(POWER_PATH);
+  return ok;
+}
+
+bool Store::appendPowerEvent(const PowerEvent &event) {
+  if (!preparePowerLog()) return false;
+  File file = LittleFS.open(POWER_PATH, "r+");
+  if (!file) return false;
+  PowerHeader header = {};
+  bool ok = file.read(reinterpret_cast<uint8_t *>(&header), sizeof(header)) == sizeof(header);
+  if (ok) {
+    const size_t offset = sizeof(PowerHeader) + (header.logged % POWER_EVENT_CAPACITY) * sizeof(PowerEvent);
+    ok = file.seek(offset) && file.write(reinterpret_cast<const uint8_t *>(&event), sizeof(event)) == sizeof(event);
+  }
+  if (ok) {
+    ++header.logged;
+    ok = file.seek(0) && file.write(reinterpret_cast<const uint8_t *>(&header), sizeof(header)) == sizeof(header);
+  }
+  file.close();
+  return ok;
+}
+
+void Store::scanPowerEvents(bool (*visit)(const PowerEvent &, void *), void *context) {
+  if (!fsOk_ || !bbw::fileExists(POWER_PATH)) return;
+  File file = LittleFS.open(POWER_PATH, "r");
+  if (!file) return;
+  PowerHeader header = {};
+  if (file.read(reinterpret_cast<uint8_t *>(&header), sizeof(header)) == sizeof(header) &&
+      header.magic == POWER_MAGIC && header.recordSize == sizeof(PowerEvent) &&
+      header.capacity == POWER_EVENT_CAPACITY) {
+    const uint32_t kept = header.logged < POWER_EVENT_CAPACITY ? header.logged : POWER_EVENT_CAPACITY;
+    for (uint32_t i = 0; i < kept; ++i) {
+      const uint32_t slot = (header.logged - 1 - i) % POWER_EVENT_CAPACITY;
+      PowerEvent event;
+      if (!file.seek(sizeof(PowerHeader) + slot * sizeof(PowerEvent)) ||
+          file.read(reinterpret_cast<uint8_t *>(&event), sizeof(event)) != sizeof(event) ||
+          !visit(event, context)) {
+        break;
+      }
+    }
+  }
+  file.close();
 }
 
 bool Store::saveContext(const ShotContext &context) {

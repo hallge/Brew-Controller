@@ -1855,6 +1855,63 @@ struct FakeBot : IActuator {
   void done() { now = next; }
 };
 
+// Each press that ends leaves one event: what it was for, who asked, how it went, and when.
+static void testPowerEvents() {
+  printf("power bot: event log\n");
+  PusherConfig config;
+  PowerControl power;
+  power.begin(&config);
+  FakeBot bot;
+  bot.up = true;
+  uint32_t now = 1000;
+  const uint32_t epoch = 1791763200u;
+  PowerEvent ev;
+  strcpy(config.powerAddress, "aa:bb:cc:dd:ee:ff");
+  // Refusals are not presses.
+  CHECK(!power.request(true, now) && !power.takeEvent(ev));             // not known
+  power.believe(PowerBelief::ON);
+  CHECK(!power.request(true, now) && !power.takeEvent(ev));             // already on
+  // The owner switches off: one event, handed over once.
+  CHECK(power.request(false, now));
+  power.tick(now += 10, epoch, true, bot);
+  CHECK(!power.takeEvent(ev));                                          // still pressing
+  bot.done();
+  power.tick(now += 10, epoch + 5, true, bot);
+  CHECK(power.takeEvent(ev) && ev.epochS == epoch + 5 && ev.on == 0 && ev.bySchedule == 0 &&
+        ev.outcome == static_cast<uint8_t>(PowerControl::Outcome::DONE) && ev.sure == 1);
+  CHECK(!power.takeEvent(ev));
+  CHECK(sizeof(PowerEvent) == 8);
+  // A press the bot refuses ends as failed, with the clock not yet set.
+  bot.next = PressResult::NOT_SENT;
+  CHECK(power.request(true, now));
+  for (int i = 0; i < 20; ++i) {
+    power.tick(now += 10, 0, true, bot);
+    bot.done();
+  }
+  CHECK(power.takeEvent(ev) && ev.on == 1 && ev.epochS == 0 &&
+        ev.outcome == static_cast<uint8_t>(PowerControl::Outcome::PRESS_FAILED));
+  // "Press anyway" while on/off is not known: logged, but not sure which way.
+  bot.next = PressResult::OK;
+  power.believe(PowerBelief::UNKNOWN);
+  CHECK(power.pressAnyway(now));
+  power.tick(now += 10, epoch + 60, true, bot);
+  bot.done();
+  power.tick(now += 10, epoch + 61, true, bot);
+  CHECK(power.takeEvent(ev) && ev.sure == 0 && ev.outcome == static_cast<uint8_t>(PowerControl::Outcome::DONE));
+  // The schedule: on, by schedule.
+  power.believe(PowerBelief::OFF);
+  config.utcOffsetMin = 0;
+  config.schedule[0] = {1, 1, 8 * 60, 0x7f};
+  const uint32_t at0800 = epoch + 8 * 3600;
+  for (uint32_t e = at0800 - 120; e <= at0800 + 120; e += 20) {
+    power.tick(now += 20000, e, true, bot);
+    if (bot.result() == PressResult::BUSY) bot.done();
+  }
+  CHECK(power.takeEvent(ev) && ev.on == 1 && ev.bySchedule == 1 && ev.sure == 1 &&
+        ev.epochS >= at0800 && ev.epochS <= at0800 + 60 &&
+        ev.outcome == static_cast<uint8_t>(PowerControl::Outcome::DONE));
+}
+
 static void testPowerControl() {
   printf("power bot: on, off, belief, schedule\n");
   PusherConfig config;
@@ -6259,6 +6316,7 @@ int main() {
   testPusherDrivers();
   testPusherHold();
   testPowerControl();
+  testPowerEvents();
   testMachineProfiles();
   testShotDataSet();
   testReadingNewerThanTick();

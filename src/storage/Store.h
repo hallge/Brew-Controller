@@ -93,6 +93,13 @@ class Store {
   bool setShotPrep(uint32_t id, uint16_t doseDg, bool purged, bool uneven);
   bool historyOk() const { return fsOk_; }
 
+  // The power presses the controller made (core/PowerControl.h PowerEvent), in a ring file
+  // (/power.bin, 500 x 8 bytes): the oldest goes when it is full.
+  static constexpr uint32_t POWER_EVENT_CAPACITY = 500;
+  bool appendPowerEvent(const PowerEvent &event);
+  // Newest first. The callback returns false to stop early.
+  void scanPowerEvents(bool (*visit)(const PowerEvent &, void *), void *context);
+
   // Small text files: what was last read from the shared library, kept for
   // when it cannot be reached.
   size_t readText(const char *path, char *out, size_t size);  // 0: not there
@@ -127,6 +134,7 @@ class Store {
   bool convertHistoryV9();
   void removeCurve(uint32_t id);
   bool prepareContexts();
+  bool preparePowerLog();
   void makeRoomForCurve(size_t bytes);
 
   struct OutboxState {

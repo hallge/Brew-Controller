@@ -94,7 +94,7 @@ void handleStatus() {
   {
     JsonArray caps = doc["capabilities"].to<JsonArray>();
     for (const char *c : {"status_v1", "shots_v1", "shot_data_v1", "shot_csv_v1", "grind_advice_v1",
-                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1"}) {
+                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1"}) {
       caps.add(c);
     }
   }
@@ -1516,6 +1516,45 @@ void handleGetPower() {
   sendJson(doc);
 }
 
+// The power presses the controller made in the last `days` days (default 30), oldest first.
+void handleGetPowerEvents() {
+  long days = server.hasArg("days") ? server.arg("days").toInt() : 30;
+  if (days < 1) days = 1;
+  if (days > 400) days = 400;
+  const uint32_t now = app::epochNow();
+  struct Gather {
+    bbw::PowerEvent *events;
+    uint32_t count;
+    uint32_t since;
+  };
+  Gather gather = {new bbw::PowerEvent[bbw::Store::POWER_EVENT_CAPACITY], 0,
+                   now > static_cast<uint32_t>(days) * 86400u ? now - static_cast<uint32_t>(days) * 86400u : 0};
+  app::store().scanPowerEvents(
+      [](const bbw::PowerEvent &e, void *ctx) {
+        Gather &g = *static_cast<Gather *>(ctx);
+        if (e.epochS == 0) return true;            // the clock was not set: no place on a calendar
+        if (e.epochS < g.since) return false;      // older than asked for: the rest is older still
+        g.events[g.count++] = e;
+        return g.count < bbw::Store::POWER_EVENT_CAPACITY;
+      },
+      &gather);
+  JsonDocument doc;
+  JsonArray out = doc.to<JsonArray>();
+  for (uint32_t i = gather.count; i-- > 0;) {
+    const bbw::PowerEvent &e = gather.events[i];
+    const auto outcome = static_cast<bbw::PowerControl::Outcome>(e.outcome);
+    JsonObject o = out.add<JsonObject>();
+    o["t"] = e.epochS;
+    o["on"] = e.on != 0;
+    o["by"] = e.bySchedule ? "schedule" : "owner";
+    o["ok"] = outcome == bbw::PowerControl::Outcome::DONE;
+    o["sure"] = e.sure != 0;
+    o["outcome"] = bbw::PowerControl::outcomeText(outcome);
+  }
+  delete[] gather.events;
+  sendJson(doc);
+}
+
 void handlePostPower() {
   JsonDocument doc;
   if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
@@ -1991,6 +2030,7 @@ void begin() {
   server.on("/api/pusher", HTTP_POST, handlePostPusher);
   server.on("/api/power", HTTP_GET, handleGetPower);
   server.on("/api/power", HTTP_POST, handlePostPower);
+  server.on("/api/power/events", HTTP_GET, handleGetPowerEvents);
   server.on("/api/net", HTTP_POST, handleNet);
   server.on("/api/time", HTTP_POST, []() {
     const uint32_t epoch = strtoul(server.arg("epoch").c_str(), nullptr, 10);

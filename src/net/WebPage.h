@@ -324,7 +324,7 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 
 <div class="page" id="p-insights">
 <div class="head"><h1>Insights</h1><label class="sm">Coffee<select id="icoffee" onchange="drawInsights()"></select></label></div>
-<section class="card"><div class="head"><h2>Roast level against grind setting</h2><span class="sm dim" id="irnote"></span></div><canvas id="irchart" width="900" height="240" style="height:240px"></canvas><div class="row sm" id="irleg"></div><details class="note"><summary>One dot per shot stopped by weight on this grinder: the setting it was pulled at, its coffee's roast level, coloured by how old the coffee was.</summary><ul><li>Blue is fresh, red is old; grey: no roast date. A larger dot poured faster.</li><li>Hover or tap a dot to see the shot; click it to open it.</li></ul></details></section>
+<section class="card"><div class="head"><h2>Roast level against grind setting</h2><span class="sm dim" id="irnote"></span></div><canvas id="irchart" width="900" height="240" style="height:240px"></canvas><div class="row sm" id="irleg"></div><details class="note"><summary>One dot per shot stopped by weight on this grinder: the setting it was pulled at, its coffee's roast level, coloured by how old the coffee was.</summary><ul><li>Blue is fresh, red is old; grey: no roast date. A larger dot poured faster.</li><li>The green band on each roast level: the settings whose shots ran on time (within the tolerance of their target time); the line marks the middle one.</li><li>Hover or tap a dot to see the shot; click it to open it.</li></ul></details></section>
 <section class="card"><div class="head"><h2>Coffee age against brew time</h2><span class="sm dim" id="ianote"></span></div><canvas id="iachart" width="900" height="260" style="height:260px"></canvas><div class="row sm" id="ialeg"></div><details class="note"><summary>How far each shot's brew time was from its target, by how many days the coffee was off roast. The darker the square, the more shots.</summary><ul><li>Rows above the outlined band ran slow, rows below ran fast.</li><li>Shots without a roast date or a target time are left out.</li></ul></details></section>
 <section class="card"><div class="head"><h2>Brewing calendar</h2><div class="row" id="icmode" role="group" aria-label="What the calendar shows"><button data-m="shots" onclick="CALMODE='shots';drawCalendar()">Shots</button><button data-m="brew" onclick="CALMODE='brew';drawCalendar()">Coffee &amp; recipe</button><button data-m="drift" onclick="CALMODE='drift';drawCalendar()">Drift</button><button data-m="hours" onclick="CALMODE='hours';drawCalendar()">Time of day</button></div></div><div class="scroll"><canvas id="icchart" width="900" height="180" style="height:180px;min-width:620px"></canvas></div><div class="row sm" id="icleg"></div></section>
 <section class="card"><div class="head"><h2>Dial-in shots per bag</h2><span class="sm dim" id="idnote"></span></div><canvas id="idchart" width="900" height="240" style="height:240px"></canvas><div class="row sm" id="idleg"></div><details class="note"><summary>For each bag (a coffee and its roast date), how many shots it took to pull the first one on time, and how many came after.</summary><ul><li>On time: within the tolerance of that shot's target. Only shots stopped by weight count.</li><li>A bag with no shot on time yet is shown in red.</li></ul></details></section>
@@ -823,7 +823,9 @@ const show=(q,e)=>{const t=q&&c._text(q);if(!t){tip.style.display='none';c.style
 tip.style.left=Math.max(8,Math.min(innerWidth-tip.offsetWidth-8,e.clientX+12))+'px';tip.style.top=Math.min(innerHeight-tip.offsetHeight-8,e.clientY+14)+'px';c.style.cursor=c._click&&q.click?'pointer':''};
 c.addEventListener('pointermove',e=>{if(e.pointerType=='mouse')show(at(e),e)});c.addEventListener('pointerleave',e=>{if(e.pointerType=='mouse')tip.style.display='none'});
 c.addEventListener('click',e=>{const q=at(e);if(!q)return show(null);if(e.pointerType!=='mouse'&&tip._for!==q){tip._for=q;show(q,e);return}tip._for=null;tip.style.display='none';if(c._click&&q.click)c._click(q)})}
-function drawInsights(){if(!L||!Array.isArray(SH))return;const sel=$('icoffee'),cur=sel.value,ids=[...new Map(SH.filter(s=>s.coffee).map(s=>[String(s.coffee_id||0),s.coffee])).entries()];
+let PWR=null,PWRAT=0;
+function loadPowerEvents(){if(Date.now()-PWRAT<60000)return;PWRAT=Date.now();get('/api/power/events?days=90').then(a=>{PWR=Array.isArray(a)?a:null;if(CALMODE=='hours'&&location.hash=='#insights')drawCalendar()}).catch(()=>{PWR=null})}
+function drawInsights(){if(!L||!Array.isArray(SH))return;loadPowerEvents();const sel=$('icoffee'),cur=sel.value,ids=[...new Map(SH.filter(s=>s.coffee).map(s=>[String(s.coffee_id||0),s.coffee])).entries()];
 sel.innerHTML='<option value="">All coffees</option>'+ids.map(([id,n])=>`<option value="${id}" ${id==cur?'selected':''}>${esc(n)}</option>`).join('');
 drawRoastGrind();drawAgeHeat();drawCalendar();drawDialIn()}
 function emptyNote(c,id,text){const x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);c._dots=[];c._cells=[];x.fillStyle='#9aa3ad';x.font='14px sans-serif';x.fillText(text,20,40);$(id).textContent=''}
@@ -839,11 +841,18 @@ x.font='12px sans-serif';x.lineWidth=1;
 lv.forEach(l=>{const y=Math.round(Y(l))+.5;x.strokeStyle='#22262b';x.beginPath();x.moveTo(L0,y);x.lineTo(R0,y);x.stroke();x.fillStyle='#9aa3ad';x.fillText(RL[l],6,y+4)});
 niceTicks(u0,u1,6,1).forEach(v=>{const gx=Math.round(X(v))+.5;x.strokeStyle='#1c1f23';x.beginPath();x.moveTo(gx,T0);x.lineTo(gx,B0);x.stroke();const lab=fsn(Math.round(v));x.fillStyle='#9aa3ad';x.fillText(lab,Math.min(R0-x.measureText(lab).width,gx-x.measureText(lab).width/2),c.height-8)});
 x.strokeStyle='#3a3f46';x.beginPath();x.moveTo(L0,T0);x.lineTo(L0,B0);x.lineTo(R0,B0);x.stroke();
+// On each roast level, the settings whose shots ran on time (brew time within the tolerance of its
+// target): a band from the lowest to the highest (10th to 90th percentile from five shots on), and
+// a line at the middle one.
+const tol=S?S.grindToleranceS:2,bands=[];lv.forEach(l=>{const g=pts.filter(s=>RL.indexOf(s.roast_level)==l&&s.target_time_s>0&&btime(s)>0&&Math.abs(btime(s)-s.target_time_s)<=tol).map(s=>s.grind_um).sort((a,b)=>a-b);if(!g.length)return;
+const q=f=>g[Math.min(g.length-1,Math.max(0,Math.round(f*(g.length-1))))],lo=g.length>=5?q(.1):g[0],hi=g.length>=5?q(.9):g[g.length-1],md=q(.5),y=Y(l),bx=X(lo)-4,bw=Math.max(8,X(hi)-X(lo)+8);
+x.fillStyle='rgba(76,195,138,.16)';x.fillRect(bx,y-rowH*.38,bw,rowH*.76);x.strokeStyle='rgba(76,195,138,.55)';x.strokeRect(bx+.5,y-rowH*.38+.5,bw-1,rowH*.76-1);
+x.strokeStyle=STC.ok;x.lineWidth=2;x.beginPath();x.moveTo(X(md),y-rowH*.38);x.lineTo(X(md),y+rowH*.38);x.stroke();x.lineWidth=1;bands.push({l,lo,hi,md,n:g.length})});
 const dots=[];pts.forEach((s,i)=>{const a=ageDays(s),px=X(s.grind_um),py=Y(RL.indexOf(s.roast_level))+(((i*37)%17)-8)*rowH/40,rad=3+4*Math.min(1,(s.pour_flow_g_s||0)/fmax);
 x.fillStyle=a==null?'#6b7280':ramp(a/amax);x.globalAlpha=.85;x.beginPath();x.arc(px,py,rad,0,7);x.fill();x.globalAlpha=1;
 dots.push({x:px,y:py,q:{id:s.id,n:s.coffee||'no coffee',rc:(a!=null?a+' days off roast, ':'')+s.roast_level,w:when(s),u:s.grind_um,t:btime(s)||0,r:s.rating}})});
 chartDots(c,dots);
-$('irleg').innerHTML='<span class="dim">Days off roast:</span>'+[0,.25,.5,.75,1].map(t=>`<span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px"><span style="display:inline-block;width:18px;height:10px;border-radius:2px;background:${ramp(t)}"></span>${Math.round(t*amax)}</span>`).join('')+'<span class="dim" style="margin-left:14px">larger dot: faster pour</span>';
+$('irleg').innerHTML='<span class="dim">Days off roast:</span>'+[0,.25,.5,.75,1].map(t=>`<span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px"><span style="display:inline-block;width:18px;height:10px;border-radius:2px;background:${ramp(t)}"></span>${Math.round(t*amax)}</span>`).join('')+'<span class="dim" style="margin-left:14px">larger dot: faster pour</span>'+(bands.length?'<br><span style="display:inline-block;width:18px;height:10px;border-radius:2px;background:rgba(76,195,138,.3);border:1px solid rgba(76,195,138,.7);margin-right:6px"></span><span class="dim">ran on time at </span>'+bands.map(b=>`${RL[b.l]} ${b.lo==b.hi?fsn(b.lo):fsn(b.lo)+'–'+fsn(b.hi)} <span class="dim">(middle ${fsn(b.md)}, ${b.n} shot${b.n==1?'':'s'})</span>`).join(', '):'<br><span class="dim">No shot on this grinder ran on time yet: no band.</span>');
 $('irnote').textContent=pts.length+' shots, '+lv.length+' roast level'+(lv.length==1?'':'s')}
 
 // Days off roast (columns, a week each) against brew time minus target (rows, 2 s each): shot counts.
@@ -873,16 +882,11 @@ let CALMODE='shots';
 function recipeTags(sh){const k=new Map();sh.forEach(s=>{const n=s.recipe||'';k.set(n,(k.get(n)||0)+1)});const used=new Set(),m=new Map();
 [...k.keys()].sort((a,b)=>k.get(b)-k.get(a)).forEach(n=>{const w=n.replace(/[^A-Za-z0-9]/g,'').toUpperCase()||'?';let t=[w[0],w.slice(0,2),w.slice(0,3)].find(c=>c&&!used.has(c));for(let i=2;!t;i++)if(!used.has(w[0]+i))t=w[0]+i;used.add(t);m.set(n,t)});return m}
 const WD=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'],dkey=d=>d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate();
-function drawCalendar(){const c=$('icchart'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);c._cells=[];$('icleg').innerHTML='';
+function drawCalendar(){const c=$('icchart');if(CALMODE!='hours'&&c.height!=180){c.height=180;c.style.height='180px'}const x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);c._cells=[];$('icleg').innerHTML='';
 document.querySelectorAll('#icmode button').forEach(b=>b.classList.toggle('on',b.dataset.m==CALMODE));
 const tol=S?S.grindToleranceS:2,sh=insShots().filter(s=>s.timestamp);if(!sh.length)return emptyNote(c,'icleg','No dated shots yet.');
 x.font='12px sans-serif';const L0=40,T0=22,cells=[];
-if(CALMODE=='hours'){const g=[...Array(7)].map(()=>Array(24).fill(0));sh.forEach(s=>{const d=new Date(s.timestamp);g[(d.getDay()+6)%7][d.getHours()]++});
-const mx=Math.max(1,...g.flat()),cw=(c.width-L0-8)/24,ch=(c.height-T0-6)/7;
-for(let h=0;h<24;h+=3){x.fillStyle='#9aa3ad';x.fillText(String(h).padStart(2,'0')+':00',L0+h*cw,14)}
-for(let r=0;r<7;r++){x.fillStyle='#9aa3ad';x.fillText(WD[r],4,T0+r*ch+ch/2+4);for(let h=0;h<24;h++){const v=g[r][h],cx=L0+h*cw,cy=T0+r*ch;x.fillStyle=v?heat(.2+.8*v/mx):'#15171a';x.fillRect(cx+1,cy+1,cw-2,ch-2);
-cells.push({x:cx,y:cy,w:cw,h:ch,txt:`<b>${v} shot${v==1?'':'s'}</b><br>${WD[r]}, ${String(h).padStart(2,'0')}:00 to ${String(h+1).padStart(2,'0')}:00`})}}
-chartCells(c,cells,q=>q.txt);$('icleg').innerHTML='<span class="dim">When you brew: shots by weekday and hour, all dated shots</span>';return}
+if(CALMODE=='hours')return drawDayTimes(c,x,sh);
 const today=new Date();today.setHours(0,0,0,0);const start=new Date(today);start.setDate(start.getDate()-((today.getDay()+6)%7)-25*7);
 const days=new Map();sh.forEach(s=>{const d=new Date(s.timestamp);if(d<start)return;const k=dkey(d);let o=days.get(k);if(!o){o={n:0,es:0,en:0,ids:[],sh:[]};days.set(k,o)}o.n++;o.ids.push(s.id);o.sh.push(s);
 if(byWeight(s)&&s.target_time_s&&btime(s)>0){o.es+=btime(s)-s.target_time_s;o.en++}});
@@ -905,6 +909,46 @@ if(CALMODE=='brew'){$('icleg').innerHTML=cids.map(id=>{const q=inR.find(s=>(s.co
 $('icleg').innerHTML=CALMODE=='shots'?'<span class="dim">Shots a day:</span>'+sw(heat(.2+.8/mx))+'1'+sw(heat(1))+mx:'<span class="dim">Average brew time against target:</span>'+sw(STC.ok)+'on time'+sw(STC.fast)+'fast'+sw(STC.slow)+'slow'+sw('#4a4f56')+'not timed'}
 
 // Bags in order: shots until the first one on time (dial-in), then the rest.
+// Time of day: a row a day, newest at the top, across the hours brewed in. A dot a shot in its
+// coffee's colour with its recipe's letter; the machine's power presses as markers, with a band
+// while it was on.
+let DAYSPAN=14;
+function drawDayTimes(c,x,sh){
+const rows=DAYSPAN,RH=rows<=14?24:rows<=30?19:12,T0=24,L0=92,R0=c.width-12,H=T0+rows*RH+6;
+if(c.height!=H){c.height=H;c.style.height='auto'}x.clearRect(0,0,c.width,c.height);x.font='12px sans-serif';
+const today=new Date();today.setHours(0,0,0,0);const first=new Date(today);first.setDate(first.getDate()-rows+1);
+const inR=sh.filter(s=>new Date(s.timestamp)>=first),pw=(PWR||[]).filter(e=>e.t*1000>=+first);
+const hrs=[...inR.map(s=>new Date(s.timestamp)),...pw.map(e=>new Date(e.t*1000))].map(d=>d.getHours()+d.getMinutes()/60);
+let h0=hrs.length?Math.floor(Math.min(...hrs)):6,h1=hrs.length?Math.ceil(Math.max(...hrs)+.01):22;if(h1-h0<6){const m=(h0+h1)/2;h0=Math.max(0,Math.floor(m-3));h1=Math.min(24,h0+6)}
+const X=h=>L0+(h-h0)/(h1-h0)*(R0-L0),hod=d=>d.getHours()+d.getMinutes()/60+d.getSeconds()/3600,rowOf=d=>{const k=new Date(d);k.setHours(0,0,0,0);return Math.round((today-k)/864e5)};
+const cur=(L.presets[L.activePreset]||{}).coffeeId||0,cids=[...new Set(inR.map(s=>s.coffee_id||0))].sort((a,b)=>(b==cur)-(a==cur)||a-b),cc=new Map(cids.map((id,i)=>[id,CCOL[i%CCOL.length]])),tg=recipeTags(inR);
+const hm=d=>d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}),cells=[];
+// hour lines and labels
+const step=h1-h0>12?2:1;for(let h=h0;h<=h1;h+=step){const gx=Math.round(X(h))+.5;x.strokeStyle='#1c1f23';x.beginPath();x.moveTo(gx,T0-4);x.lineTo(gx,T0+rows*RH);x.stroke();
+const t=String(h%24).padStart(2,'0')+':00';x.fillStyle='#9aa3ad';x.fillText(t,Math.max(L0,Math.min(R0-x.measureText(t).width,gx-x.measureText(t).width/2)),14)}
+for(let r=0;r<rows;r++){const d=new Date(today);d.setDate(d.getDate()-r);const y=T0+r*RH;if(r%2==0){x.fillStyle='#121417';x.fillRect(L0,y,R0-L0,RH)}
+if(RH>=19||r%2==0){x.fillStyle=d.getDay()==0||d.getDay()==6?'#c3c9d0':'#9aa3ad';x.fillText(WD[(d.getDay()+6)%7]+' '+d.toLocaleDateString([], {day:'numeric',month:'short'}),4,y+RH/2+4)}}
+// machine on: from an on press to the next off press the same day (to the end of the hours if none)
+const byRow=new Map();pw.forEach(e=>{const r=rowOf(new Date(e.t*1000));if(r<0||r>=rows)return;if(!byRow.has(r))byRow.set(r,[]);byRow.get(r).push(e)});
+byRow.forEach((es,r)=>{es.sort((a,b)=>a.t-b.t);let from=null;es.forEach(e=>{if(!e.ok)return;const h=hod(new Date(e.t*1000));if(e.on)from=from??h;else if(from!=null){x.fillStyle='rgba(76,195,138,.13)';x.fillRect(X(from),T0+r*RH+2,X(h)-X(from),RH-4);from=null}});
+if(from!=null){const endH=r==0?Math.min(h1,hod(new Date())):h1;if(endH>from){x.fillStyle='rgba(76,195,138,.13)';x.fillRect(X(from),T0+r*RH+2,X(endH)-X(from),RH-4)}}});
+pw.forEach(e=>{const d=new Date(e.t*1000),r=rowOf(d);if(r<0||r>=rows)return;const px=X(hod(d)),cy=T0+r*RH+RH/2,z=Math.min(6,RH/2-2);
+x.beginPath();if(e.on){x.moveTo(px,cy-z);x.lineTo(px-z,cy+z);x.lineTo(px+z,cy+z)}else{x.moveTo(px,cy+z);x.lineTo(px-z,cy-z);x.lineTo(px+z,cy-z)}x.closePath();
+const col=e.on?STC.ok:'#9aa3ad';if(e.ok){x.fillStyle=col;x.fill()}else{x.strokeStyle=col;x.lineWidth=1.5;x.stroke();x.lineWidth=1}
+cells.push({x:px-z-2,y:cy-z-2,w:2*z+4,h:2*z+4,txt:`<b>Machine ${e.on?'on':'off'}${e.ok?'':': not done'}</b><br>${hm(d)}, ${e.by=='schedule'?'by the schedule':'by you'}${e.ok?'':'<br>'+esc(e.outcome)}${e.sure===false?'<br>pressed while on/off was not known':''}`})});
+// shots: dots in time order on each row, nudged apart when they would touch
+const rad=Math.max(3,Math.min(9,RH/2-2)),gap=2*rad+1,lastX=new Map();
+inR.map(s=>({s,d:new Date(s.timestamp)})).sort((a,b)=>a.d-b.d).forEach(({s,d})=>{const r=rowOf(d);if(r<0||r>=rows)return;let px=X(hod(d));const lx=lastX.get(r);if(lx!=null&&px-lx<gap)px=lx+gap;px=Math.min(px,R0-rad);lastX.set(r,px);
+const cy=T0+r*RH+RH/2;x.fillStyle=cc.get(s.coffee_id||0);x.beginPath();x.arc(px,cy,rad,0,7);x.fill();
+if(rad>=6){const t=tg.get(s.recipe||'');x.font='bold '+Math.round(rad*1.15)+'px sans-serif';x.fillStyle='#111';x.fillText(t,px-x.measureText(t).width/2,cy+rad*.42);x.font='12px sans-serif'}
+cells.push({x:px-rad,y:cy-rad,w:2*rad,h:2*rad,click:s.id,txt:`<b>${hm(d)}</b> ${esc(s.coffee||'no coffee')}<br>${esc(s.recipe||'no recipe')}${s.final_weight_g?', '+f1(s.final_weight_g)+' g':''}<br><span class="dim">Click to open it</span>`})});
+// later cells win: a shot over a power marker
+chartCells(c,cells.reverse(),q=>q.txt,q=>openShot(q.click));
+const sw=v=>`<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${v};margin:0 4px 0 10px;vertical-align:middle"></span>`;
+$('icleg').innerHTML='<span class="dim">Days:</span>'+[14,30,90].map(n=>` <button class="sm${n==DAYSPAN?' on':''}" onclick="DAYSPAN=${n};drawCalendar()">${n}</button>`).join('')+
+(inR.length?cids.map(id=>{const q=inR.find(s=>(s.coffee_id||0)==id);return sw(cc.get(id))+esc(q.coffee||'no coffee')}).join('')+'<span class="dim" style="margin-left:12px">Recipes:</span>'+[...tg].map(([n,t])=>` <b>${esc(t)}</b> ${esc(n||'no recipe')}`).join(','):'<span class="dim" style="margin-left:10px">No shots in these days</span>')+
+(PWR==null?'':'<span style="margin-left:12px;color:'+STC.ok+'">▲</span> machine on <span style="color:#9aa3ad">▼</span> off'+(pw.length?'':' <span class="dim">(none logged in these days)</span>'))}
+
 function drawDialIn(){const c=$('idchart'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);c._cells=[];$('idleg').innerHTML='';
 const tol=S?S.grindToleranceS:2,sh=insShots().filter(s=>byWeight(s)&&s.target_time_s&&btime(s)>0&&s.timestamp).sort((a,b)=>new Date(a.timestamp)-new Date(b.timestamp));
 const bags=new Map();sh.forEach(s=>{const k=(s.coffee_id||0)+'|'+(s.roast_date||0);let b=bags.get(k);if(!b){b={n:s.coffee||'no coffee',rd:s.roast_date,shots:[]};bags.set(k,b)}b.shots.push(s)});
