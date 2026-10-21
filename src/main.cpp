@@ -368,6 +368,45 @@ void shareReadStatus(bool idle) {
     g_libraryReadSoon = true;  // a coffee just published has figures to fetch
   }
 }
+// A coffee rating just saved, sent to the library when ratings are shared. A changed rating goes again
+// under the same name, so the library keeps the latest.
+void shareRating(uint32_t id) {
+  const bbw::Settings s = app::settings();
+  if (!s.shareEnabled || !s.shareRatings || !bbw::deviceSigner().ready()) return;
+  struct Find {
+    uint32_t id;
+    bbw::CoffeeRating r;
+    bool have;
+  } find = {id, bbw::CoffeeRating(), false};
+  g_store.scanRatings([](const bbw::CoffeeRating &r, void *c) {
+    Find &f = *static_cast<Find *>(c);
+    if (r.id != f.id) return true;
+    f.r = r;
+    f.have = true;
+    return false;
+  }, &find);
+  if (!find.have || !copyCoffee(find.r.coffeeId)) return;
+  uint32_t roastDate = g_shareCoffee.roastDate;
+  {
+    Lock lock;
+    for (uint8_t i = 0; i < g_library.bagCount; ++i) {
+      if (g_library.bags[i].id == find.r.bagId) roastDate = g_library.bags[i].roastDate;
+    }
+  }
+  if (!ensureKeyQueued()) return;
+  if (bbw::buildTasteRecord(find.r, g_shareCoffee, roastDate, g_shareBody, bbw::SHARE_BODY_MAX) == 0) return;
+  char kid[bbw::KEY_ID_LEN];
+  bbw::keyId(bbw::deviceSigner().publicKey(), kid);
+  snprintf(g_sharePath, sizeof(g_sharePath), "tastes/%s-r%u.json", kid, static_cast<unsigned>(id));
+  const uint32_t seq = g_store.outboxNext();
+  if (!shareQueue(g_sharePath)) {
+    LOGW("share: coffee rating %u not queued", static_cast<unsigned>(id));
+    return;
+  }
+  g_store.setRatingShare(id, static_cast<uint8_t>(bbw::ShareState::QUEUED), seq);
+  LOGI("share: coffee rating %u queued", static_cast<unsigned>(id));
+}
+
 // After a shot is stored: the shot itself if shots are shared, and a dial-in
 // if this one settled the preset at a grind setting not sent before.
 void shareAfterShot(const bbw::ShotRecord &shot) {
@@ -461,7 +500,8 @@ constexpr const char *COFFEES_CACHE = "/lcoffees.json";
 constexpr const char *GRINDERS_CACHE = "/lgrinders.json";
 constexpr const char *MACHINES_CACHE = "/lmachines.json";
 constexpr const char *AGE_CACHE = "/lage.json";
-constexpr uint8_t LIBRARY_FIXED_STEPS = 5;  // fit, coffees, grinders, ageing rate, machines; then a dial-in per coffee
+constexpr const char *TASTE_CACHE = "/ltaste.json";   // index/taste.json: coffee ratings from everyone
+constexpr uint8_t LIBRARY_FIXED_STEPS = 6;  // fit, coffees, grinders, ageing rate, machines, taste; then a dial-in per coffee
 uint32_t g_communityStamp = 1;  // goes up when anything cached changes
 
 void dialinCache(uint16_t coffeeId, char *out, size_t size) {
@@ -520,6 +560,10 @@ void libraryRefresh(bool idle) {
   } else if (step == 4) {
     if (fetchLibraryFile("index/machines.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
       g_store.writeTextIfChanged(MACHINES_CACHE, g_libraryText);
+    }
+  } else if (step == 5) {
+    if (fetchLibraryFile("index/taste.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
+      g_store.writeTextIfChanged(TASTE_CACHE, g_libraryText);
     }
   } else if (step - LIBRARY_FIXED_STEPS < count) {
     char file[bbw::LIBRARY_ID_LEN * 2], cache[20];
@@ -1505,6 +1549,13 @@ const char *communityCoffees() {
   return g_libraryText;
 }
 
+// The library's coffee ratings (index/taste.json), cached. Good until the next call that reads the
+// library's cache.
+const char *communityTaste() {
+  g_store.readText(TASTE_CACHE, g_libraryText, LIBRARY_TEXT_SIZE);
+  return g_libraryText;
+}
+
 const char *communityMachines() {
   g_store.readText(MACHINES_CACHE, g_libraryText, LIBRARY_TEXT_SIZE);
   return g_libraryText;
@@ -2305,6 +2356,8 @@ void loop() {
       if (!g_store.appendPowerEvent(events[i])) LOGW("power: the press could not be logged");
     }
   }
+  // A coffee rating just saved: to the library, when ratings are shared.
+  if (const uint32_t ratingId = g_ratingToShare.exchange(0)) shareRating(ratingId);
   if (g_pushersDirty.exchange(false)) {
     bbw::PusherConfig copy;
     {

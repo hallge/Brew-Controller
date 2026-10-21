@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "CoffeeTaste.h"
 #include "Community.h"
 #include "MachineProfile.h"
 #include "GrindAdvisor.h"
@@ -145,6 +146,21 @@ class JsonOut {
     snprintf(digits, sizeof(digits), "%ld", value);
     name(key);
     raw(digits);
+  }
+
+  // An array of strings: openArray, an item each, closeArray.
+  void openArray(const char *key) {
+    name(key);
+    put('[');
+    first_ = true;
+  }
+  void item(const char *value) {
+    name(nullptr);
+    quoted(value);
+  }
+  void closeArray() {
+    put(']');
+    first_ = false;
   }
 
   bool ok() const { return ok_; }
@@ -328,6 +344,38 @@ inline void machineFields(JsonOut &j, const MachineProfile &m) {
 }
 
 // machine: the machine the shot was made on; nullptr leaves it out.
+// How a drinker liked a coffee (core/CoffeeTaste.h). The drinker goes as its number, never its name.
+inline size_t buildTasteRecord(const CoffeeRating &r, const Coffee &coffee, uint32_t roastDate, char *out,
+                               size_t size) {
+  char at[21], roast[11];
+  timeText(r.epochS, at);
+  dateText(roastDate, roast);
+  JsonOut j(out, size);
+  j.open();
+  j.text("t", "taste");
+  j.integer("v", 1);
+  j.integer("id", static_cast<long>(r.id));
+  j.textIf("at", at);
+  j.open("coffee");
+  coffeeFields(j, coffee);
+  j.close();
+  j.textIf("roast_date", roast);
+  j.integer("drinker", r.drinkerId);
+  j.integer("stars", r.stars);
+  j.open("cup");
+  for (uint8_t i = 0; i < TASTE_ATTRS; ++i) {
+    if (r.attr[i]) j.integer(tasteAttrName(i), r.attr[i]);
+  }
+  j.close();
+  j.openArray("flavours");
+  for (uint8_t f = 0; f < FLAVOUR_COUNT; ++f) {
+    if ((r.flavours >> f) & 1u) j.item(flavourName(f));
+  }
+  j.closeArray();
+  j.close();
+  return j.ok() ? j.length() : 0;
+}
+
 inline size_t buildShotRecord(const ShotRecord &s, const Coffee *coffee, const Grinder &grinder,
                               bool withTaste, char *out, size_t size,
                               const MachineProfile *machine = nullptr) {

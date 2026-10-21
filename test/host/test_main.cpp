@@ -2029,6 +2029,27 @@ static void testCoffeeTaste() {
   // Older ratings count less, a 3-star rating pulls only a little.
   CHECK(recencyWeight(now - 2 * 365 * 86400u, now) < 0.5f && recencyWeight(now, now) == 1.0f);
   CHECK(starPull(3) > 0.0f && starPull(3) < 0.3f && starPull(1) < 0.0f);
+  // The shared record: the cup values given, the flavours by name, the drinker by number.
+  {
+    Coffee c = tasteCoffee(5, "grape", "natural", 2);
+    strcpy(c.name, "Fugi Ubumwe");
+    strcpy(c.libraryId, "example/fugi");
+    CoffeeRating sr;
+    sr.id = 12;
+    sr.coffeeId = 5;
+    sr.drinkerId = 2;
+    sr.stars = 4;
+    sr.attr[ACIDITY] = 5;
+    sr.attr[BODY] = 2;
+    sr.flavours = (1u << FRUITY) | (1u << FLORAL);
+    char body[1024];
+    CHECK(buildTasteRecord(sr, c, 20260429, body, sizeof(body)) > 0);
+    CHECK(strstr(body, "\"t\":\"taste\"") && strstr(body, "\"id\":12") && strstr(body, "\"stars\":4"));
+    CHECK(strstr(body, "\"drinker\":2") && strstr(body, "\"library_id\":\"example/fugi\""));
+    CHECK(strstr(body, "\"cup\":{\"acidity\":5,\"body\":2}") && strstr(body, "\"flavours\":[\"fruity\",\"floral\"]"));
+    CHECK(strstr(body, "\"roast_date\":\"2026-04-29\""));
+    CHECK(buildTasteRecord(sr, c, 0, body, 40) == 0);   // does not fit: nothing
+  }
   // Shown from three coffees, settled from eight.
   RatedTaste three[] = {{1, 5, now, lrated}, {2, 1, now, lrated}, {3, 4, now, lrated}};
   CHECK(buildProfile(three, 3, now).shown());

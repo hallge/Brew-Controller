@@ -229,6 +229,7 @@ bool powerRequest(bool on);       // false: refused, powerView().lastOutcome say
 // (it is shared from the main loop when sharing is on).
 bool coffeeExists(uint16_t id);
 void ratingSaved(uint32_t id);
+const char *communityTaste();   // index/taste.json as cached; good until the next library read
 bool powerPressAnyway();
 // One press of the brew bot, to see which pusher it is. False if a shot is in
 // hand or no brew bot is paired. Progress: "none", "waiting", "pressed", "failed".
