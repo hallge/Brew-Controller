@@ -60,6 +60,18 @@ struct PowerHeader {
   uint32_t logged;      // events ever written; the next goes into slot logged % capacity
 };
 
+// Coffee ratings: a header, then a fixed ring of 32-byte slots. Slots with id 0 are empty.
+constexpr const char *RATINGS_PATH = "/ratings.bin";
+constexpr uint32_t RATINGS_MAGIC = 0x31544152;  // "RAT1"
+struct RatingsHeader {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t recordSize;
+  uint32_t capacity;
+  uint32_t logged;   // ratings ever appended; the next goes into slot logged % capacity
+  uint32_t nextId;
+};
+
 void curvePath(uint32_t id, char *out, size_t size) {
   snprintf(out, size, "/c%u.bin", static_cast<unsigned>(id));
 }
@@ -519,6 +531,139 @@ void Store::scanPowerEvents(bool (*visit)(const PowerEvent &, void *), void *con
   }
   file.close();
 }
+
+bool Store::prepareRatings() {
+  if (!fsOk_) return false;
+  if (bbw::fileExists(RATINGS_PATH)) {
+    File file = LittleFS.open(RATINGS_PATH, "r");
+    RatingsHeader header = {};
+    const bool ok = file && file.read(reinterpret_cast<uint8_t *>(&header), sizeof(header)) == sizeof(header) &&
+                    header.magic == RATINGS_MAGIC && header.version == 1 &&
+                    header.recordSize == sizeof(CoffeeRating) && header.capacity == RATING_CAPACITY &&
+                    file.size() == sizeof(header) + RATING_CAPACITY * sizeof(CoffeeRating);
+    if (file) file.close();
+    if (ok) return true;
+    LittleFS.remove(RATINGS_PATH);  // another layout: start again
+  }
+  File file = LittleFS.open(RATINGS_PATH, "w");
+  if (!file) return false;
+  const RatingsHeader header = {RATINGS_MAGIC, 1, static_cast<uint16_t>(sizeof(CoffeeRating)), RATING_CAPACITY, 0, 1};
+  bool ok = file.write(reinterpret_cast<const uint8_t *>(&header), sizeof(header)) == sizeof(header);
+  const CoffeeRating blank;
+  for (uint32_t i = 0; ok && i < RATING_CAPACITY; ++i) {
+    ok = file.write(reinterpret_cast<const uint8_t *>(&blank), sizeof(blank)) == sizeof(blank);
+  }
+  file.close();
+  if (!ok) LittleFS.remove(RATINGS_PATH);
+  return ok;
+}
+
+bool Store::saveRating(CoffeeRating &r) {
+  if (!sanitizeRating(r) || !prepareRatings()) return false;
+  File file = LittleFS.open(RATINGS_PATH, "r+");
+  if (!file) return false;
+  RatingsHeader header = {};
+  bool ok = file.read(reinterpret_cast<uint8_t *>(&header), sizeof(header)) == sizeof(header);
+  // The slot of the rating it replaces: the same id, or the drinker's rating of the same bag.
+  int32_t slot = -1;
+  for (uint32_t i = 0; ok && i < RATING_CAPACITY && slot < 0; ++i) {
+    CoffeeRating old;
+    if (file.read(reinterpret_cast<uint8_t *>(&old), sizeof(old)) != sizeof(old)) {
+      ok = false;
+      break;
+    }
+    if (old.id != 0 && (r.id != 0 ? old.id == r.id : sameRated(old, r))) {
+      slot = static_cast<int32_t>(i);
+      r.id = old.id;
+    }
+  }
+  if (ok && slot < 0) {
+    slot = static_cast<int32_t>(header.logged % RATING_CAPACITY);
+    r.id = header.nextId++;
+    ++header.logged;
+    ok = file.seek(0) && file.write(reinterpret_cast<const uint8_t *>(&header), sizeof(header)) == sizeof(header);
+  }
+  if (ok) {
+    ok = file.seek(sizeof(RatingsHeader) + static_cast<uint32_t>(slot) * sizeof(CoffeeRating)) &&
+         file.write(reinterpret_cast<const uint8_t *>(&r), sizeof(r)) == sizeof(r);
+  }
+  file.close();
+  return ok;
+}
+
+// The slot holding rating `id`, overwritten with *with (or emptied when with is null).
+bool Store::editRatingSlot(uint32_t id, const CoffeeRating *with) {
+  if (id == 0 || !fsOk_ || !bbw::fileExists(RATINGS_PATH)) return false;
+  File file = LittleFS.open(RATINGS_PATH, "r+");
+  if (!file) return false;
+  bool found = false;
+  if (file.seek(sizeof(RatingsHeader))) {
+    for (uint32_t i = 0; i < RATING_CAPACITY; ++i) {
+      CoffeeRating old;
+      if (file.read(reinterpret_cast<uint8_t *>(&old), sizeof(old)) != sizeof(old)) break;
+      if (old.id != id) continue;
+      const CoffeeRating blank;
+      const CoffeeRating &value = with ? *with : blank;
+      found = file.seek(sizeof(RatingsHeader) + i * sizeof(CoffeeRating)) &&
+              file.write(reinterpret_cast<const uint8_t *>(&value), sizeof(value)) == sizeof(value);
+      break;
+    }
+  }
+  file.close();
+  return found;
+}
+
+bool Store::deleteRating(uint32_t id) { return editRatingSlot(id, nullptr); }
+
+bool Store::setRatingShare(uint32_t id, uint8_t shareState, uint32_t shareSeq) {
+  struct Find {
+    uint32_t id;
+    CoffeeRating found;
+    bool have;
+  } find = {id, CoffeeRating(), false};
+  scanRatings([](const CoffeeRating &r, void *ctx) {
+    Find &f = *static_cast<Find *>(ctx);
+    if (r.id != f.id) return true;
+    f.found = r;
+    f.have = true;
+    return false;
+  }, &find);
+  if (!find.have) return false;
+  find.found.shareState = shareState;
+  find.found.shareSeq = shareSeq;
+  return editRatingSlot(id, &find.found);
+}
+
+void Store::scanRatings(bool (*visit)(const CoffeeRating &, void *), void *context) {
+  if (!fsOk_ || !bbw::fileExists(RATINGS_PATH)) return;
+  File file = LittleFS.open(RATINGS_PATH, "r");
+  if (!file) return;
+  RatingsHeader header = {};
+  if (file.read(reinterpret_cast<uint8_t *>(&header), sizeof(header)) == sizeof(header) &&
+      header.magic == RATINGS_MAGIC && header.recordSize == sizeof(CoffeeRating) &&
+      header.capacity == RATING_CAPACITY) {
+    const uint32_t kept = header.logged < RATING_CAPACITY ? header.logged : RATING_CAPACITY;
+    for (uint32_t i = 0; i < kept; ++i) {
+      const uint32_t slot = (header.logged - 1 - i) % RATING_CAPACITY;
+      CoffeeRating r;
+      if (!file.seek(sizeof(RatingsHeader) + slot * sizeof(CoffeeRating)) ||
+          file.read(reinterpret_cast<uint8_t *>(&r), sizeof(r)) != sizeof(r)) {
+        break;
+      }
+      if (r.id != 0 && !visit(r, context)) break;
+    }
+  }
+  file.close();
+}
+
+Drinkers Store::loadDrinkers() {
+  Drinkers d;
+  loadBlob("drinkers", 1, d);
+  sanitizeDrinkers(d);
+  return d;
+}
+
+void Store::saveDrinkers(const Drinkers &drinkers) { saveBlob("drinkers", 1, drinkers); }
 
 bool Store::saveContext(const ShotContext &context) {
   if (context.shotId == 0 || !prepareContexts()) return false;

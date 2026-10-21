@@ -81,6 +81,7 @@ std::atomic<bool> g_machineDirty{false};
 bbw::PowerControl g_powerControl;
 bbw::ScaleRest g_scaleRest;  // control task, under the lock
 std::atomic<bool> g_pushersDirty{false};
+std::atomic<uint32_t> g_ratingToShare{0};  // a coffee rating just saved, for the main loop to share
 // Power presses that ended, waiting to be logged by the main loop (control task, under the lock).
 bbw::PowerEvent g_powerEventQueue[4];
 uint8_t g_powerEventsQueued = 0;
@@ -367,6 +368,45 @@ void shareReadStatus(bool idle) {
     g_libraryReadSoon = true;  // a coffee just published has figures to fetch
   }
 }
+// A coffee rating just saved, sent to the library when ratings are shared. A changed rating goes again
+// under the same name, so the library keeps the latest.
+void shareRating(uint32_t id) {
+  const bbw::Settings s = app::settings();
+  if (!s.shareEnabled || !s.shareRatings || !bbw::deviceSigner().ready()) return;
+  struct Find {
+    uint32_t id;
+    bbw::CoffeeRating r;
+    bool have;
+  } find = {id, bbw::CoffeeRating(), false};
+  g_store.scanRatings([](const bbw::CoffeeRating &r, void *c) {
+    Find &f = *static_cast<Find *>(c);
+    if (r.id != f.id) return true;
+    f.r = r;
+    f.have = true;
+    return false;
+  }, &find);
+  if (!find.have || !copyCoffee(find.r.coffeeId)) return;
+  uint32_t roastDate = g_shareCoffee.roastDate;
+  {
+    Lock lock;
+    for (uint8_t i = 0; i < g_library.bagCount; ++i) {
+      if (g_library.bags[i].id == find.r.bagId) roastDate = g_library.bags[i].roastDate;
+    }
+  }
+  if (!ensureKeyQueued()) return;
+  if (bbw::buildTasteRecord(find.r, g_shareCoffee, roastDate, g_shareBody, bbw::SHARE_BODY_MAX) == 0) return;
+  char kid[bbw::KEY_ID_LEN];
+  bbw::keyId(bbw::deviceSigner().publicKey(), kid);
+  snprintf(g_sharePath, sizeof(g_sharePath), "tastes/%s-r%u.json", kid, static_cast<unsigned>(id));
+  const uint32_t seq = g_store.outboxNext();
+  if (!shareQueue(g_sharePath)) {
+    LOGW("share: coffee rating %u not queued", static_cast<unsigned>(id));
+    return;
+  }
+  g_store.setRatingShare(id, static_cast<uint8_t>(bbw::ShareState::QUEUED), seq);
+  LOGI("share: coffee rating %u queued", static_cast<unsigned>(id));
+}
+
 // After a shot is stored: the shot itself if shots are shared, and a dial-in
 // if this one settled the preset at a grind setting not sent before.
 void shareAfterShot(const bbw::ShotRecord &shot) {
@@ -460,7 +500,8 @@ constexpr const char *COFFEES_CACHE = "/lcoffees.json";
 constexpr const char *GRINDERS_CACHE = "/lgrinders.json";
 constexpr const char *MACHINES_CACHE = "/lmachines.json";
 constexpr const char *AGE_CACHE = "/lage.json";
-constexpr uint8_t LIBRARY_FIXED_STEPS = 5;  // fit, coffees, grinders, ageing rate, machines; then a dial-in per coffee
+constexpr const char *TASTE_CACHE = "/ltaste.json";   // index/taste.json: coffee ratings from everyone
+constexpr uint8_t LIBRARY_FIXED_STEPS = 6;  // fit, coffees, grinders, ageing rate, machines, taste; then a dial-in per coffee
 uint32_t g_communityStamp = 1;  // goes up when anything cached changes
 
 void dialinCache(uint16_t coffeeId, char *out, size_t size) {
@@ -520,6 +561,10 @@ void libraryRefresh(bool idle) {
     if (fetchLibraryFile("index/machines.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
       g_store.writeTextIfChanged(MACHINES_CACHE, g_libraryText);
     }
+  } else if (step == 5) {
+    if (fetchLibraryFile("index/taste.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
+      g_store.writeTextIfChanged(TASTE_CACHE, g_libraryText);
+    }
   } else if (step - LIBRARY_FIXED_STEPS < count) {
     char file[bbw::LIBRARY_ID_LEN * 2], cache[20];
     if (bbw::libraryIdToFile(libraryIds[step - LIBRARY_FIXED_STEPS], file, sizeof(file))) {
@@ -561,12 +606,22 @@ void controlTask(void *) {
       // now, it takes a sleeping SwitchBot several seconds to answer.
       static bool cupWasPresent = false;
       const bool cupPresent = g_controller.cupPresent();
+      if (const char *why = g_controller.takeTareReason()) {
+        LOGI("scale: tared (%s; reading %.1f g)", why, static_cast<double>(g_controller.status(now).weightG));
+      }
+      if (g_controller.takeStartRefusedNoCup()) {
+        LOGI("start refused: no cup seen on the scale (reading %.1f g)",
+             static_cast<double>(g_controller.status(now).weightG));
+      }
       if (cupPresent && !cupWasPresent) {
         const uint32_t until = now + BOT_PREWAKE_MS;
         if (static_cast<int32_t>(until - g_botHoldUntilMs.load()) > 0) g_botHoldUntilMs = until;
       }
       if (cupPresent != cupWasPresent) {
-        LOGI("cup: %s (reading %.1f g)", cupPresent ? "on the scale" : "taken off",
+        const bbw::State cupState = g_controller.state();
+        const bool inUse = !cupPresent && cupState != State::READY && cupState != State::CONNECTING_SCALE &&
+                           cupState != State::SHOT_COMPLETE;
+        LOGI("cup: %s (reading %.1f g)", cupPresent ? "on the scale" : inUse ? "in use for the shot" : "taken off",
              static_cast<double>(g_controller.status(now).weightG));
       }
       cupWasPresent = cupPresent;
@@ -639,6 +694,17 @@ void controlTask(void *) {
                                     : "taken back");
         }
         g_ble.setScaleResting(resting);
+        // The scale switched off: the machine too, if the owner asked for that.
+        static bbw::ScaleOffWatch scaleOff;
+        if (scaleOff.update(now, scaleConnected, resting, quietMs, bbw::ScaleRest::QUIET_MS) &&
+            g_settings.powerOffWithScale) {
+          if (g_powerControl.request(false, now, bbw::PowerBy::SCALE_OFF)) {
+            LOGI("power: the scale switched off; switching the machine off");
+          } else {
+            LOGI("power: the scale switched off; machine not switched off: %s",
+                 bbw::PowerControl::outcomeText(g_powerControl.lastOutcome()));
+          }
+        }
         if (g_scaleRest.takeStart(now, state == State::READY, st.weightFresh,
                                   !st.cupRequired || st.cupPresent)) {
           if (bbw::updateBusy()) {
@@ -1483,6 +1549,13 @@ const char *communityCoffees() {
   return g_libraryText;
 }
 
+// The library's coffee ratings (index/taste.json), cached. Good until the next call that reads the
+// library's cache.
+const char *communityTaste() {
+  g_store.readText(TASTE_CACHE, g_libraryText, LIBRARY_TEXT_SIZE);
+  return g_libraryText;
+}
+
 const char *communityMachines() {
   g_store.readText(MACHINES_CACHE, g_libraryText, LIBRARY_TEXT_SIZE);
   return g_libraryText;
@@ -1788,6 +1861,12 @@ PowerView powerView() {
   return v;
 }
 
+bool coffeeExists(uint16_t id) {
+  Lock lock;
+  return id != 0 && bbw::findCoffee(g_library, id) != nullptr;
+}
+void ratingSaved(uint32_t id) { g_ratingToShare = id; }
+
 bool powerRequest(bool on) {
   Lock lock;
   return g_powerControl.request(on, millis());
@@ -2046,7 +2125,11 @@ void setup() {
   g_maintenance = g_store.loadMaintenance();
   bbw::libraryLinkConfigure(g_net.libraryRepo, g_net.libraryToken);
   const bbw::Pairing pairing = g_store.loadPairing();
-  g_controller.restoreCupMemory(g_store.loadCupMemory());
+  // The cup on the scale before a restart is believed again (core/BrewController.h CupMemory), but
+  // not after the power was off: the scale may have been switched off and on meanwhile.
+  if (esp_reset_reason() != ESP_RST_POWERON && esp_reset_reason() != ESP_RST_BROWNOUT) {
+    g_controller.restoreCupMemory(g_store.loadCupMemory());
+  }
 
   LOGI("start-up: settings read, starting the display");
   ui::begin();
@@ -2273,6 +2356,8 @@ void loop() {
       if (!g_store.appendPowerEvent(events[i])) LOGW("power: the press could not be logged");
     }
   }
+  // A coffee rating just saved: to the library, when ratings are shared.
+  if (const uint32_t ratingId = g_ratingToShare.exchange(0)) shareRating(ratingId);
   if (g_pushersDirty.exchange(false)) {
     bbw::PusherConfig copy;
     {

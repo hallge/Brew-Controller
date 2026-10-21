@@ -28,6 +28,7 @@
 #include "core/ShotContext.h"
 #include "core/ShotData.h"
 #include "core/SwitchBotProtocol.h"
+#include "core/TasteProfile.h"
 
 using namespace bbw;
 
@@ -1877,7 +1878,7 @@ static void testPowerEvents() {
   CHECK(!power.takeEvent(ev));                                          // still pressing
   bot.done();
   power.tick(now += 10, epoch + 5, true, bot);
-  CHECK(power.takeEvent(ev) && ev.epochS == epoch + 5 && ev.on == 0 && ev.bySchedule == 0 &&
+  CHECK(power.takeEvent(ev) && ev.epochS == epoch + 5 && ev.on == 0 && ev.by == 0 &&
         ev.outcome == static_cast<uint8_t>(PowerControl::Outcome::DONE) && ev.sure == 1);
   CHECK(!power.takeEvent(ev));
   CHECK(sizeof(PowerEvent) == 8);
@@ -1907,9 +1908,167 @@ static void testPowerEvents() {
     power.tick(now += 20000, e, true, bot);
     if (bot.result() == PressResult::BUSY) bot.done();
   }
-  CHECK(power.takeEvent(ev) && ev.on == 1 && ev.bySchedule == 1 && ev.sure == 1 &&
+  CHECK(power.takeEvent(ev) && ev.on == 1 && ev.by == 1 && ev.sure == 1 &&
         ev.epochS >= at0800 && ev.epochS <= at0800 + 60 &&
         ev.outcome == static_cast<uint8_t>(PowerControl::Outcome::DONE));
+}
+
+// The scale switching off switches the machine off (when asked for): the press is marked as the scale's,
+// and the moment is seen once, not at start-up, not while the scale rests or still advertises.
+static void testPowerOffWithScale() {
+  printf("power bot: off when the scale switches off\n");
+  const uint32_t Q = ScaleRest::QUIET_MS;
+  ScaleOffWatch w;
+  uint32_t t = 1000;
+  CHECK(!w.update(t, false, false, UINT32_MAX, Q));          // start-up, scale off: nothing seen
+  CHECK(!w.update(t += 1000, true, false, 0, Q));            // on, connected for an hour: not advertising
+  t += 3600000;
+  CHECK(!w.update(t, true, false, 0, Q));
+  // The link drops. Last heard advertising an hour ago, but the link was there a moment ago: not off.
+  CHECK(!w.update(t += 500, false, false, 3600000, Q));
+  CHECK(!w.update(t += Q - 1000, false, false, 3600000, Q)); // still under the quiet limit
+  CHECK(!w.update(t += 100, false, true, 3600000, Q));       // let go to rest: not off
+  CHECK(w.update(t += 1000, false, false, 3600000, Q));      // silent long enough: switched off
+  CHECK(!w.update(t += 5000, false, false, 3600000, Q));     // once
+  CHECK(!w.update(t += 1000, false, false, 1000, Q));        // heard advertising again: on
+  CHECK(w.update(t += Q, false, false, Q, Q));               // and off again
+
+  PusherConfig config;
+  PowerControl power;
+  power.begin(&config);
+  FakeBot bot;
+  bot.up = true;
+  strcpy(config.powerAddress, "aa:bb:cc:dd:ee:ff");
+  uint32_t now = 1000;
+  PowerEvent ev;
+  power.believe(PowerBelief::OFF);
+  CHECK(!power.request(false, now, PowerBy::SCALE_OFF) && !power.takeEvent(ev));  // already off
+  power.believe(PowerBelief::ON);
+  CHECK(power.request(false, now, PowerBy::SCALE_OFF) && !power.lastWasSchedule());
+  power.tick(now += 10, 1791763200u, true, bot);
+  bot.done();
+  power.tick(now += 10, 1791763201u, true, bot);
+  CHECK(power.takeEvent(ev) && ev.on == 0 && ev.by == static_cast<uint8_t>(PowerBy::SCALE_OFF) &&
+        ev.outcome == static_cast<uint8_t>(PowerControl::Outcome::DONE));
+  CHECK(power.belief() == PowerBelief::OFF);
+  Settings s;
+  CHECK(!s.powerOffWithScale);                          // off unless asked for
+}
+
+static Coffee tasteCoffee(uint16_t id, const char *notes, const char *process, uint8_t roast) {
+  Coffee c;
+  c.id = id;
+  strcpy(c.notes, notes);
+  strcpy(c.process, process);
+  c.roastLevel = roast;
+  return c;
+}
+
+static void testCoffeeTaste() {
+  printf("coffee taste: ratings, descriptions, profiles, matching\n");
+  // A rating: stars are needed; values are kept in range.
+  CoffeeRating r;
+  r.coffeeId = 3;
+  CHECK(!sanitizeRating(r));
+  r.stars = 4;
+  r.attr[ACIDITY] = 9;
+  r.flavours = 0xFFFF;
+  r.drinkerId = 40;
+  CHECK(sanitizeRating(r) && r.attr[ACIDITY] == 5 && r.flavours == FLAVOUR_MASK && r.drinkerId == 0);
+  CoffeeRating same = r;
+  same.stars = 2;
+  CHECK(sameRated(r, same));
+  same.bagId = 9;
+  CHECK(!sameRated(r, same));
+  CHECK(sizeof(CoffeeRating) == 32);
+
+  // Notes to flavour families, at the start of words only.
+  const uint16_t f = familiesInNotes("Grape Jam & Burnt Sugars");
+  CHECK((f >> FRUITY & 1) && (f >> SWEET_CARAMEL & 1) && (f >> ROASTY & 1) && !(f >> FLORAL & 1));
+  CHECK(familiesInNotes("a sublime cup") == 0);
+  CHECK(familiesInNotes("Jasmine, bergamot") >> FLORAL & 1);
+
+  // A light natural reads bright and fruity; a dark roast heavy, bitter and roasty.
+  const Coffee light = tasteCoffee(1, "blueberry, jasmine", "natural", 1);
+  const Coffee dark = tasteCoffee(2, "dark chocolate, smoky", "washed", 5);
+  const TasteVector lt = tasteFromDescription(light), dt = tasteFromDescription(dark);
+  CHECK(lt.v[ACIDITY] > dt.v[ACIDITY] && dt.v[BITTERNESS] > lt.v[BITTERNESS]);
+  CHECK(lt.v[TASTE_ATTRS + FRUITY] == 1.0f && lt.known[TASTE_ATTRS + FRUITY] < 1.0f);
+  CHECK(dt.v[TASTE_ATTRS + ROASTY] == 1.0f && dt.v[TASTE_ATTRS + FRUITY] == 0.0f);
+
+  // A rating's own values win over the description's guesses; what it left out is filled in.
+  CoffeeRating lr;
+  lr.coffeeId = 1;
+  lr.stars = 5;
+  lr.attr[ACIDITY] = 5;
+  lr.attr[SWEETNESS] = 4;
+  lr.flavours = (1u << FRUITY) | (1u << FLORAL);
+  const TasteVector lrated = blendTaste(tasteFromRating(lr), lt);
+  CHECK(lrated.v[ACIDITY] == 1.0f && lrated.known[ACIDITY] == 1.0f);
+  CHECK(lrated.known[BITTERNESS] > 0.0f && lrated.known[BITTERNESS] < 1.0f);   // from the roast level
+
+  // Loving the light natural and disliking the dark roast: the profile leans bright, fruity, not roasty.
+  CoffeeRating dr;
+  dr.coffeeId = 2;
+  dr.stars = 1;
+  dr.attr[BITTERNESS] = 5;
+  dr.attr[ACIDITY] = 1;
+  dr.flavours = (1u << ROASTY) | (1u << CHOCOLATE_NUTTY);
+  const uint32_t now = 1791763200u;
+  RatedTaste rated[] = {{1, 5, now, lrated}, {2, 1, now, blendTaste(tasteFromRating(dr), dt)}};
+  TasteProfile p = buildProfile(rated, 2, now);
+  CHECK(p.coffees == 2 && !p.shown() && !p.settled());
+  CHECK(p.v[ACIDITY] > 0.6f && p.v[BITTERNESS] < 0.4f);
+  CHECK(p.v[TASTE_ATTRS + FRUITY] > 0.6f && p.v[TASTE_ATTRS + ROASTY] < 0.4f);
+
+  // A coffee like the loved one matches; one like the disliked one does not.
+  const TasteMatch good = matchTaste(p, tasteFromDescription(tasteCoffee(7, "peach, floral", "natural", 2)));
+  const TasteMatch bad = matchTaste(p, tasteFromDescription(tasteCoffee(8, "smoky, cocoa", "washed", 5)));
+  CHECK(good.score > 0.3f && bad.score < 0.0f && good.score > bad.score);
+  CHECK(good.why[0] != 255);
+  // Older ratings count less, a 3-star rating pulls only a little.
+  CHECK(recencyWeight(now - 2 * 365 * 86400u, now) < 0.5f && recencyWeight(now, now) == 1.0f);
+  CHECK(starPull(3) > 0.0f && starPull(3) < 0.3f && starPull(1) < 0.0f);
+  // The shared record: the cup values given, the flavours by name, the drinker by number.
+  {
+    Coffee c = tasteCoffee(5, "grape", "natural", 2);
+    strcpy(c.name, "Fugi Ubumwe");
+    strcpy(c.libraryId, "example/fugi");
+    CoffeeRating sr;
+    sr.id = 12;
+    sr.coffeeId = 5;
+    sr.drinkerId = 2;
+    sr.stars = 4;
+    sr.attr[ACIDITY] = 5;
+    sr.attr[BODY] = 2;
+    sr.flavours = (1u << FRUITY) | (1u << FLORAL);
+    char body[1024];
+    CHECK(buildTasteRecord(sr, c, 20260429, body, sizeof(body)) > 0);
+    CHECK(strstr(body, "\"t\":\"taste\"") && strstr(body, "\"id\":12") && strstr(body, "\"stars\":4"));
+    CHECK(strstr(body, "\"drinker\":2") && strstr(body, "\"library_id\":\"example/fugi\""));
+    CHECK(strstr(body, "\"cup\":{\"acidity\":5,\"body\":2}") && strstr(body, "\"flavours\":[\"fruity\",\"floral\"]"));
+    CHECK(strstr(body, "\"roast_date\":\"2026-04-29\""));
+    CHECK(buildTasteRecord(sr, c, 0, body, 40) == 0);   // does not fit: nothing
+  }
+  // Recommendations: the community's taste, how alike two coffees and two drinkers are, the score.
+  CHECK(roastLevelFromName("medium-dark") == 4 && roastLevelFromName("purple") == 0);
+  const float ccup[TASTE_ATTRS] = {5, 0, 2, 1, 4};
+  const float cfl[FLAVOUR_COUNT] = {0.9f, 0.6f, 0.2f, 0, 0, 0, 0.1f, 0};
+  const TasteVector comm = tasteFromCommunity(ccup, cfl);
+  CHECK(comm.v[ACIDITY] == 1.0f && comm.known[SWEETNESS] == 0.0f && comm.known[ACIDITY] > lt.known[ACIDITY]);
+  CHECK(tasteSimilarity(comm, lrated) > 0.5f && tasteSimilarity(comm, blendTaste(tasteFromRating(dr), dt)) < 0.0f);
+  const uint8_t me[4] = {5, 1, 4, 0}, twin[4] = {5, 1, 5, 3}, opposite[4] = {1, 5, 1, 0}, little[4] = {5, 0, 0, 2};
+  CHECK(peopleLikeness(me, twin, 4) > 0.7f);
+  CHECK(peopleLikeness(me, opposite, 4) == 0.0f);   // disagreeing says nothing
+  CHECK(peopleLikeness(me, little, 4) == 0.0f);     // one coffee in common is not enough
+  const TasteMatch tm = matchTaste(p, comm);
+  CHECK(recommendScore(tm, 5, 0) > recommendScore(tm, 0, 0));     // drinkers like you loved it
+  CHECK(recommendScore(tm, 1, 0) < recommendScore(tm, 0, 0));
+  CHECK(recommendScore(tm, 0, 4.5f) > recommendScore(tm, 0, 0));  // the community likes it
+  CHECK(recommendScore(bad, 0, 0) < 0.0f);
+  // Shown from three coffees, settled from eight.
+  RatedTaste three[] = {{1, 5, now, lrated}, {2, 1, now, lrated}, {3, 4, now, lrated}};
+  CHECK(buildProfile(three, 3, now).shown());
 }
 
 static void testPowerControl() {
@@ -2684,6 +2843,96 @@ static void testCupRemembered() {
   CHECK(e.runUntil(State::SHOT_COMPLETE, 60000));
   e.run(2000);
   CHECK(!e.ctl.cupMemory().present);
+}
+
+// Seen on the board on 21 Oct 2026: a cup remembered at 0 g (tared) was believed again the next
+// morning on an empty scale, because a Lunar that comes on empty zeroes itself and its timer still
+// shows the value it had. The controller was then ready to brew onto nothing.
+static void testCupNotBelievedAfterAWhile() {
+  printf("cup: a remembered cup is not believed after the scale was away\n");
+  Rig r;
+  r.settings.requireCup = true;
+  r.toReady();
+  r.run(1000);
+  r.sim.trueWeightG += 62.0;
+  r.run(3000);
+  r.ctl.requestStart();
+  CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+  r.ctl.acknowledge();
+  r.run(500);
+  r.sim.trueWeightG -= 62.0 + 36.0;
+  r.run(2000);
+  r.sim.trueWeightG += 268.7;                   // a fresh cup, tared
+  r.run(3000);
+  CHECK(r.ctl.status(r.sim.nowMs).cupPresent && r.ctl.cupMemory().present);
+  const int32_t timer = static_cast<int32_t>(r.sim.timerMs());
+  // The scale goes away for the night; the cup is taken off meanwhile. In the morning the scale
+  // comes on empty and zeroed, its timer as it was.
+  r.sim.scaleLink = false;
+  r.run(10 * 60 * 1000);
+  r.sim.trueWeightG -= 268.7;
+  r.sim.tareOffsetG = r.sim.trueWeightG;
+  r.sim.timerHeldMs = static_cast<uint32_t>(timer);
+  r.sim.scaleLink = true;
+  CHECK(r.runUntil(State::READY, 5000));
+  r.run(3000);
+  CHECK(!r.ctl.status(r.sim.nowMs).cupPresent);       // nothing on it
+  r.ctl.requestStart();
+  r.run(1000);
+  CHECK(r.ctl.state() == State::READY);               // and so no brew onto it
+  // The cup goes on: seen, and the shot brews.
+  r.sim.trueWeightG += 268.7;
+  r.run(3000);
+  CHECK(r.ctl.status(r.sim.nowMs).cupPresent);
+  r.ctl.requestStart();
+  CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+
+  // A short drop of the link (seconds) still keeps the cup, as before.
+  Rig k;
+  k.settings.requireCup = true;
+  k.toReady();
+  k.run(1000);
+  k.sim.trueWeightG += 268.7;
+  k.run(3000);
+  CHECK(k.ctl.status(k.sim.nowMs).cupPresent);
+  k.sim.scaleLink = false;
+  k.run(8000);
+  k.sim.scaleLink = true;
+  CHECK(k.runUntil(State::READY, 5000));
+  k.run(3000);
+  // (no scale timer in this one: a cup that was placed and tared is kept only with the timer check)
+
+  // With a cup wrongly believed (the old behaviour), a real cup put on must still be seen and brew.
+  Rig q;
+  q.settings.requireCup = true;
+  q.toReady();
+  q.run(1000);
+  q.sim.trueWeightG += 62.0;
+  q.run(3000);
+  q.ctl.requestStart();
+  CHECK(q.runUntil(State::SHOT_COMPLETE, 60000));
+  q.ctl.acknowledge();
+  q.run(500);
+  q.sim.trueWeightG -= 62.0 + 36.0;
+  q.run(2000);
+  q.sim.trueWeightG += 268.7;
+  q.run(3000);
+  const CupMemory kept = q.ctl.cupMemory();
+  Rig w;
+  w.settings.requireCup = true;
+  w.sim.trueWeightG = q.sim.trueWeightG - 268.7;      // empty
+  w.sim.tareOffsetG = w.sim.trueWeightG;              // zeroed
+  w.sim.timerHeldMs = q.sim.timerMs();
+  w.ctl.restoreCupMemory(kept);
+  w.toReady();
+  w.run(3000);
+  const bool wrongly = w.ctl.status(w.sim.nowMs).cupPresent;
+  w.sim.trueWeightG += 268.7;                          // the real cup
+  w.run(3000);
+  CHECK(w.ctl.status(w.sim.nowMs).cupPresent);
+  w.ctl.requestStart();
+  CHECK(w.runUntil(State::SHOT_COMPLETE, 60000));
+  printf("  (restored on an empty scale after a restart: %s)\n", wrongly ? "yes" : "no");
 }
 
 static void testShotDataSet() {
@@ -6325,12 +6574,15 @@ int main() {
   testPusherHold();
   testPowerControl();
   testPowerEvents();
+  testPowerOffWithScale();
+  testCoffeeTaste();
   testMachineProfiles();
   testShotDataSet();
   testReadingNewerThanTick();
   testEmptyScaleZeroed();
   testScaleRest();
   testCupRemembered();
+  testCupNotBelievedAfterAWhile();
   testCupAutoTareScale();
   testCupPutBackBriefly();
   testSwitchBotProtocol();

@@ -82,12 +82,15 @@ inline void sanitizePusherConfig(PusherConfig &c) {
   }
 }
 
+// Who asked for a power press.
+enum class PowerBy : uint8_t { OWNER = 0, SCHEDULE = 1, SCALE_OFF = 2 };
+
 // One press of the power button the controller made, as it ended: for the owner's record of when
 // the machine was switched (the web page's Insights). 8 bytes, stored as is in a ring file.
 struct PowerEvent {
   uint32_t epochS = 0;     // wall clock when the press ended; 0 if the clock was not set
   uint8_t on = 0;          // 1: to switch on, 0: to switch off
-  uint8_t bySchedule = 0;  // 1: the weekly schedule, 0: the owner (web page or screen)
+  uint8_t by = 0;          // PowerBy: 0 the owner (web page or screen), 1 the schedule, 2 the scale switching off
   uint8_t outcome = 0;     // PowerControl::Outcome: DONE, or why it did not happen
   uint8_t sure = 1;        // 0: "press anyway" while on/off was not known, so the direction is a guess
 };
@@ -110,7 +113,8 @@ class PowerControl {
   PowerBelief belief() const { return static_cast<PowerBelief>(config_->belief); }
   Job job() const { return job_; }
   Outcome lastOutcome() const { return outcome_; }
-  bool lastWasSchedule() const { return bySchedule_; }
+  bool lastWasSchedule() const { return by_ == PowerBy::SCHEDULE; }
+  PowerBy lastBy() const { return by_; }
   // The power bot's link is wanted: a press is waiting for it or in progress.
   bool wantsLink() const { return job_ != Job::IDLE; }
   // The last press that ended, once; false if none ended since the last call. Refusals (already
@@ -136,8 +140,8 @@ class PowerControl {
   }
 
   // Switch the machine on or off. False: refused, lastOutcome() says why.
-  bool request(bool on, uint32_t nowMs, bool bySchedule = false) {
-    bySchedule_ = bySchedule;
+  bool request(bool on, uint32_t nowMs, PowerBy by = PowerBy::OWNER) {
+    by_ = by;
     if (config_->powerAddress[0] == '\0') return refuse(Outcome::NO_BOT);
     if (job_ != Job::IDLE) return refuse(Outcome::BUSY);
     if (belief() == PowerBelief::UNKNOWN) return refuse(Outcome::NOT_KNOWN);
@@ -149,7 +153,7 @@ class PowerControl {
   // Press the power button whatever is believed (the owner sees the machine).
   // The belief flips if it was known.
   bool pressAnyway(uint32_t nowMs) {
-    bySchedule_ = false;
+    by_ = PowerBy::OWNER;
     if (config_->powerAddress[0] == '\0') return refuse(Outcome::NO_BOT);
     if (job_ != Job::IDLE) return refuse(Outcome::BUSY);
     toggle_ = true;
@@ -237,7 +241,7 @@ class PowerControl {
   void end(Outcome outcome) {
     event_.epochS = epochS_ >= 1700000000u ? epochS_ : 0;
     event_.on = target_ ? 1 : 0;
-    event_.bySchedule = bySchedule_ ? 1 : 0;
+    event_.by = static_cast<uint8_t>(by_);
     event_.outcome = static_cast<uint8_t>(outcome);
     event_.sure = toggle_ && belief() == PowerBelief::UNKNOWN ? 0 : 1;
     eventReady_ = true;
@@ -266,7 +270,7 @@ class PowerControl {
       const uint16_t ofDay = static_cast<uint16_t>(ofWeek % 1440);
       for (const PowerScheduleEntry &e : config_->schedule) {
         if (e.enabled && e.minuteOfDay == ofDay && (e.days & (1u << day))) {
-          request(e.turnOn != 0, nowMs, true);
+          request(e.turnOn != 0, nowMs, PowerBy::SCHEDULE);
         }
       }
     }
@@ -277,7 +281,7 @@ class PowerControl {
   Outcome outcome_ = Outcome::NONE;
   bool target_ = false;
   bool toggle_ = false;
-  bool bySchedule_ = false;
+  PowerBy by_ = PowerBy::OWNER;
   bool dirty_ = false;
   uint32_t sinceMs_ = 0;
   uint32_t tries_ = 0;
