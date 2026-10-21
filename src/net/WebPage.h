@@ -334,7 +334,7 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <section class="card"><div class="head"><h2>Roast level against grind setting</h2><span class="sm dim" id="irnote"></span></div><canvas id="irchart" width="900" height="240" style="height:240px"></canvas><div class="row sm" id="irleg"></div><details class="note"><summary>One dot per shot stopped by weight on this grinder: the setting it was pulled at, its coffee's roast level, coloured by how old the coffee was.</summary><ul><li>Blue is fresh, red is old; grey: no roast date. A larger dot poured faster.</li><li>The green band on each roast level: the settings whose shots ran on time (within the tolerance of their target time); the line marks the middle one.</li><li>Hover or tap a dot to see the shot; click it to open it.</li></ul></details></section>
 <section class="card"><div class="head"><h2>Coffee age against brew time</h2><span class="sm dim" id="ianote"></span></div><canvas id="iachart" width="900" height="260" style="height:260px"></canvas><div class="row sm" id="ialeg"></div><details class="note"><summary>How far each shot's brew time was from its target, by how many days the coffee was off roast. The darker the square, the more shots.</summary><ul><li>Rows above the outlined band ran slow, rows below ran fast.</li><li>Shots without a roast date or a target time are left out.</li></ul></details></section>
 <section class="card"><div class="head"><h2>Brewing calendar</h2><div class="row" id="icmode" role="group" aria-label="What the calendar shows"><button data-m="shots" onclick="CALMODE='shots';drawCalendar()">Shots</button><button data-m="brew" onclick="CALMODE='brew';drawCalendar()">Coffee &amp; recipe</button><button data-m="drift" onclick="CALMODE='drift';drawCalendar()">Drift</button><button data-m="hours" onclick="CALMODE='hours';drawCalendar()">Time of day</button></div></div><div class="scroll"><canvas id="icchart" width="900" height="180" style="height:180px;min-width:620px"></canvas></div><div class="row sm" id="icleg"></div></section>
-<section class="card"><div class="head"><h2>Dial-in shots per bag</h2><span class="sm dim" id="idnote"></span></div><canvas id="idchart" width="900" height="240" style="height:240px"></canvas><div class="row sm" id="idleg"></div><details class="note"><summary>For each bag (a coffee and its roast date), how many shots it took to pull the first one on time, and how many came after.</summary><ul><li>On time: within the tolerance of that shot's target. Only shots stopped by weight count.</li><li>A bag with no shot on time yet is shown in red.</li></ul></details></section>
+<section class="card"><div class="head"><h2>Dial-in shots per bag</h2><span class="sm dim" id="idnote"></span></div><canvas id="idchart" width="900" height="240" style="height:240px"></canvas><div class="row sm" id="idleg"></div><details class="note"><summary>For each bag (a coffee and its roast date), how many shots it took to pull the first one on time, and how many came after.</summary><ul><li>On time: within the tolerance of that shot's target. Only shots stopped by weight count.</li><li>The shots after the first on-time one are coloured by how they ran: green on time, yellow fast, red slow. A dashed bar: no shot on time yet.</li></ul></details></section>
 </div>
 <div class="page" id="p-machine">
 <div class="head"><h1>Espresso machine</h1></div>
@@ -971,25 +971,37 @@ $('icleg').innerHTML='<span class="dim">Days:</span>'+[14,30,90].map(n=>` <butto
 (inR.length?cids.map(id=>{const q=inR.find(s=>(s.coffee_id||0)==id);return sw(cc.get(id))+esc(q.coffee||'no coffee')}).join('')+'<span class="dim" style="margin-left:12px">Recipes:</span>'+[...tg].map(([n,t])=>` <b>${esc(t)}</b> ${esc(n||'no recipe')}`).join(','):'<span class="dim" style="margin-left:10px">No shots in these days</span>')+
 (PWR==null?'':'<span style="margin-left:12px;color:'+STC.ok+'">▲</span> machine on <span style="color:#9aa3ad">▼</span> off'+(pw.length?'':' <span class="dim">(none logged in these days)</span>'))}
 
+// Bags in order: shots until the first one on time (dial-in), then the rest, each by how it ran: on
+// time, fast or slow, so a bag that drifted after it was dialled in shows it.
 function drawDialIn(){const c=$('idchart'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);c._cells=[];$('idleg').innerHTML='';
 const tol=S?S.grindToleranceS:2,sh=insShots().filter(s=>byWeight(s)&&s.target_time_s&&btime(s)>0&&s.timestamp).sort((a,b)=>new Date(a.timestamp)-new Date(b.timestamp));
 const bags=new Map();sh.forEach(s=>{const k=(s.coffee_id||0)+'|'+(s.roast_date||0);let b=bags.get(k);if(!b){b={n:s.coffee||'no coffee',rd:s.roast_date,shots:[]};bags.set(k,b)}b.shots.push(s)});
 const list=[...bags.values()].slice(-12);if(!list.length)return emptyNote(c,'idnote','Needs shots stopped by weight with a target time.');
-list.forEach(b=>{const i=b.shots.findIndex(s=>Math.abs(btime(s)-s.target_time_s)<=tol);b.dial=i<0?null:i+1;b.total=b.shots.length});
+const how=s=>{const e=btime(s)-s.target_time_s;return Math.abs(e)<=tol?'ok':e<0?'fast':'slow'};
+list.forEach(b=>{const i=b.shots.findIndex(s=>how(s)=='ok');b.dial=i<0?null:i+1;b.total=b.shots.length;
+const after=i<0?[]:b.shots.slice(i+1);b.after={ok:after.filter(s=>how(s)=='ok').length,fast:after.filter(s=>how(s)=='fast').length,slow:after.filter(s=>how(s)=='slow').length};
+const last=b.shots[b.shots.length-1],e=btime(last)-last.target_time_s;b.last={how:how(last),e}});
 const mx=Math.max(...list.map(b=>b.total)),L0=40,R0=c.width-12,T0=24,B0=c.height-40,bw=(R0-L0)/list.length,Y=v=>B0-v/mx*(B0-T0),cells=[];
 x.font='12px sans-serif';x.lineWidth=1;
 niceTicks(0,mx,4,1).forEach(v=>{const y=Math.round(Y(v))+.5;x.strokeStyle=TC.grid;x.beginPath();x.moveTo(L0,y);x.lineTo(R0,y);x.stroke();x.fillStyle=TC.dim;x.fillText(String(v),8,y+4)});
+const sign=v=>(v>0?'+':v<0?'−':'')+f1(Math.abs(v));
 list.forEach((b,i)=>{const bx=L0+i*bw+bw*.15,w=bw*.7,d=b.dial==null?b.total:b.dial;
-x.fillStyle=b.dial==null?STC.slow:'#f08a24';x.fillRect(bx,Y(d),w,B0-Y(d));if(b.dial!=null&&b.total>d){x.fillStyle=STC.ok;x.globalAlpha=.55;x.fillRect(bx,Y(b.total),w,Y(d)-Y(b.total));x.globalAlpha=1}
+// the dial-in: orange; dashed while no shot has been on time yet
+x.fillStyle='#f08a24';x.fillRect(bx,Y(d),w,B0-Y(d));
+if(b.dial==null){x.save();x.setLineDash([5,4]);x.strokeStyle=TC.fg;x.lineWidth=1.5;x.strokeRect(bx+.75,Y(d)+.75,w-1.5,B0-Y(d)-1.5);x.restore()}
+// then the shots after it, stacked: on time, fast, slow
+let at=d;[['ok',STC.ok],['fast',STC.fast],['slow',STC.slow]].forEach(([k,col])=>{const n=b.after[k];if(!n)return;x.fillStyle=col;x.globalAlpha=.75;x.fillRect(bx,Y(at+n),w,Y(at)-Y(at+n));x.globalAlpha=1;
+if(Y(at)-Y(at+n)>14&&w>16){const t=String(n);x.fillStyle='#111';x.fillText(t,bx+w/2-x.measureText(t).width/2,Y(at+n)+(Y(at)-Y(at+n))/2+4)}at+=n});
 const lab=b.n.length>14?b.n.slice(0,13)+'…':b.n,rd=ymd(b.rd);x.fillStyle=TC.mid;x.fillText(lab,bx+w/2-x.measureText(lab).width/2,B0+14);if(rd){const t=rd.toLocaleDateString([], {month:'short',day:'numeric'});x.fillStyle=TC.dim;x.fillText(t,bx+w/2-x.measureText(t).width/2,B0+28)}
-{const t=String(b.total);x.fillStyle=TC.mid;x.fillText(t,bx+w/2-x.measureText(t).width/2,Y(b.total)-5)}if(b.dial!=null&&B0-Y(d)>16&&w>16){const t=String(b.dial);x.fillStyle='#1d0f00';x.fillText(t,bx+w/2-x.measureText(t).width/2,B0-4)}
-cells.push({x:bx,y:Y(b.total),w,h:B0-Y(b.total),txt:`<b>${esc(b.n)}</b>${rd?', roasted '+rd.toLocaleDateString():''}<br>${b.dial==null?'no shot on time yet, '+b.total+' shot'+(b.total==1?'':'s'):b.dial+' shot'+(b.dial==1?'':'s')+' to the first on time, '+b.total+' in all'}`})});
+{const t=String(b.total);x.fillStyle=TC.mid;x.fillText(t,bx+w/2-x.measureText(t).width/2,Y(b.total)-5)}if(B0-Y(d)>16&&w>16){const t=b.dial==null?'–':String(b.dial);x.fillStyle='#1d0f00';x.fillText(t,bx+w/2-x.measureText(t).width/2,B0-4)}
+const a=b.after,parts=[a.ok&&a.ok+' on time',a.fast&&a.fast+' fast',a.slow&&a.slow+' slow'].filter(Boolean);
+cells.push({x:bx,y:Y(b.total),w,h:B0-Y(b.total),txt:`<b>${esc(b.n)}</b>${rd?', roasted '+rd.toLocaleDateString():''}<br>${b.dial==null?'no shot on time yet, '+b.total+' shot'+(b.total==1?'':'s'):b.dial+' shot'+(b.dial==1?'':'s')+' to the first on time'+(parts.length?'; after it: '+parts.join(', '):'')}<br>latest shot: ${b.last.how=='ok'?'on time':b.last.how} (${sign(b.last.e)} s)`})});
 x.strokeStyle=TC.edge;x.beginPath();x.moveTo(L0,T0);x.lineTo(L0,B0);x.lineTo(R0,B0);x.stroke();
 chartCells(c,cells,q=>q.txt);
 const sw=v=>`<span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:${v};margin:0 4px 0 10px;vertical-align:middle"></span>`;
-$('idleg').innerHTML=sw('#f08a24')+'shots to the first on time'+sw(STC.ok)+'shots after'+sw(STC.slow)+'not on time yet';
-const done=list.filter(b=>b.dial!=null).map(b=>b.dial);$('idnote').textContent=list.length+' bag'+(list.length==1?'':'s')+(done.length?', '+(done.reduce((a,b)=>a+b,0)/done.length).toFixed(1)+' shots to dial in on average':'')}
-
+$('idleg').innerHTML=sw('#f08a24')+'shots to the first on time (dashed: none on time yet)<span class="dim" style="margin-left:12px">after it:</span>'+sw(STC.ok)+'on time'+sw(STC.fast)+'fast'+sw(STC.slow)+'slow';
+const done=list.filter(b=>b.dial!=null).map(b=>b.dial),drift=list.filter(b=>b.dial!=null&&b.last.how!='ok').length;
+$('idnote').textContent=list.length+' bag'+(list.length==1?'':'s')+(done.length?', '+(done.reduce((a,b)=>a+b,0)/done.length).toFixed(1)+' shots to dial in on average':'')+(drift?', '+drift+' drifted off since':'')}
 function drawFilter(){const cur=$('fcoffee').value;$('fcoffee').innerHTML='<option value="">All coffees</option>'+[...new Set(SH.map(s=>s.coffee).filter(x=>x))].map(n=>`<option ${n==cur?'selected':''}>${esc(n)}</option>`).join('')}
 async function loadShots(){let a;try{a=await get('/api/shots?limit=500')}catch(e){return}if(!Array.isArray(a))return;SH=a;drawFilter();drawShots();
 if(SH.length){showShot(SH[0].id,'h');if(!SEL||!SH.some(s=>s.id==SEL))SEL=SH[0].id;showShot(SEL,'s')}drawScatter();loadPrev();if(location.hash=='#insights')drawInsights()}
