@@ -9,11 +9,18 @@ static const char WEB_PAGE[] PROGMEM = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Brew by Weight</title>
+<script>try{const t=localStorage.getItem('bbwTheme');if(t&&t!='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
 <style>
-:root{--bg:#0e0f11;--card:#17191c;--up:#1f2226;--line:#2a2e33;--edge:#3a3f46;--fg:#eceef0;--mid:#c3c9d0;--dim:#9aa3ad;--ok:#4cc38a;--okbg:#14301f;--warn:#f5c451;--warnbg:#33290f;--bad:#ff6b5e;--acc:#f08a24;--accbg:#3a2410;--com:#6cb4ff;--combg:#111a24;--comline:#23374d}
+:root{--bg:#0e0f11;--card:#17191c;--up:#1f2226;--line:#2a2e33;--edge:#3a3f46;--fg:#eceef0;--mid:#c3c9d0;--dim:#9aa3ad;--ok:#4cc38a;--okbg:#14301f;--warn:#f5c451;--warnbg:#33290f;--bad:#ff6b5e;--acc:#f08a24;--accbg:#3a2410;--com:#6cb4ff;--combg:#111a24;--comline:#23374d;--grid:#22262b;--gridlo:#1c1f23;--empty:#15171a;--stripe:#121417;--acctext:#ffd0a3;--comtext:#cfe6ff;--comh:#8cc4ff;--oktext:#7be0aa;--hover:#1a1d21;--hover2:#1b1e22;--badbg:#3b1512;--pairbg:#2a1c0e;--pairline:#6b4118;--delline:#5c2a25;--deltext:#ff8a80;--inhover:#5b6672;--acchover:#ffb061;color-scheme:dark}
+:root[data-theme="light"]{--bg:#f4f3f0;--card:#ffffff;--up:#eceae6;--line:#dcd9d3;--edge:#b9b5ad;--fg:#1a1a1a;--mid:#3d4249;--dim:#646b73;--ok:#1e8e4e;--okbg:#dff3e7;--warn:#9a6a00;--warnbg:#fbf0d2;--bad:#c0392b;--acc:#c2560c;--accbg:#fbe6d4;--com:#1d6fc4;--combg:#e6f0fb;--comline:#b9d3ef;--grid:#e3e0da;--gridlo:#ecebe7;--empty:#f0eeea;--stripe:#f7f6f3;--acctext:#8a3a05;--comtext:#0d4a8c;--comh:#1d6fc4;--oktext:#156b3a;--hover:#eceae6;--hover2:#f0eee9;--badbg:#fbe1dd;--pairbg:#fbe6d4;--pairline:#e2a46e;--delline:#e8b4ae;--deltext:#b0302a;--inhover:#9a958c;--acchover:#a64708;color-scheme:light}
+:root[data-theme="nord"]{--bg:#2e3440;--card:#3b4252;--up:#434c5e;--line:#4c566a;--edge:#5e6a80;--fg:#eceff4;--mid:#d8dee9;--dim:#a3abb9;--ok:#a3be8c;--okbg:#2f3a2f;--warn:#ebcb8b;--warnbg:#3d3a2e;--bad:#bf616a;--acc:#d08770;--accbg:#4a3a33;--com:#88c0d0;--combg:#2f3b45;--comline:#4b6170;--grid:#434c5e;--gridlo:#3e4656;--empty:#353c4a;--stripe:#323946;--acctext:#f1d3c4;--comtext:#d8eef3;--comh:#88c0d0;--oktext:#c4dcb0;--hover:#434c5e;--hover2:#3f4757;--badbg:#4a2e33;--pairbg:#4a3a33;--pairline:#8a6455;--delline:#7a3f45;--deltext:#e8a0a7;--inhover:#7b8394;--acchover:#e3a58d;color-scheme:dark}
+:root[data-theme="solarized"]{--bg:#002b36;--card:#073642;--up:#0d3f4c;--line:#1b4d5a;--edge:#2f6170;--fg:#eee8d5;--mid:#d5d0bd;--dim:#93a1a1;--ok:#859900;--okbg:#1d3a1a;--warn:#b58900;--warnbg:#2f3315;--bad:#dc322f;--acc:#cb4b16;--accbg:#3a2a14;--com:#268bd2;--combg:#08394d;--comline:#1c5a78;--grid:#0f4654;--gridlo:#0a3d4a;--empty:#04313c;--stripe:#03303b;--acctext:#f5c39e;--comtext:#cfe6f7;--comh:#6cb4e6;--oktext:#b5c95e;--hover:#0d3f4c;--hover2:#0a3a46;--badbg:#3a1715;--pairbg:#3a2a14;--pairline:#7a4a1e;--delline:#6b2522;--deltext:#f08a86;--inhover:#4f7380;--acchover:#e2733c;color-scheme:dark}
+:root[data-theme="dracula"]{--bg:#21222c;--card:#282a36;--up:#343746;--line:#44475a;--edge:#5a5e78;--fg:#f8f8f2;--mid:#e2e2dc;--dim:#a9adc8;--ok:#50fa7b;--okbg:#1f3a2a;--warn:#f1fa8c;--warnbg:#3a3b25;--bad:#ff5555;--acc:#ffb86c;--accbg:#47392b;--com:#8be9fd;--combg:#253a44;--comline:#3b5d6a;--grid:#343746;--gridlo:#2e303e;--empty:#2a2c38;--stripe:#262833;--acctext:#ffe0bd;--comtext:#d5f6fd;--comh:#8be9fd;--oktext:#9bfbb4;--hover:#343746;--hover2:#30323f;--badbg:#4a2328;--pairbg:#47392b;--pairline:#8a6a45;--delline:#7a3038;--deltext:#ff9a9a;--inhover:#6a6e8a;--acchover:#ffd09c;color-scheme:dark}
+:root[data-theme="contrast"]{--bg:#000000;--card:#0a0a0a;--up:#1a1a1a;--line:#5a5a5a;--edge:#9a9a9a;--fg:#ffffff;--mid:#f0f0f0;--dim:#d0d0d0;--ok:#00e676;--okbg:#003a1c;--warn:#ffd600;--warnbg:#3a3100;--bad:#ff3b30;--acc:#ffb000;--accbg:#3d2a00;--com:#4fc3f7;--combg:#00243a;--comline:#2a6a90;--grid:#333333;--gridlo:#262626;--empty:#141414;--stripe:#0d0d0d;--acctext:#ffe2a0;--comtext:#e0f5ff;--comh:#4fc3f7;--oktext:#7dffb5;--hover:#1f1f1f;--hover2:#1a1a1a;--badbg:#3a0d0a;--pairbg:#3d2a00;--pairline:#a07000;--delline:#a03028;--deltext:#ff8a80;--inhover:#bdbdbd;--acchover:#ffc940;color-scheme:dark}
 *{box-sizing:border-box}
+.theme{display:inline-flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:120px}.theme.on{outline:2px solid var(--acc);outline-offset:1px}.theme .strip{display:flex;border-radius:4px;overflow:hidden;border:1px solid var(--edge)}.theme .strip i{display:block;width:22px;height:14px}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;font-variant-numeric:tabular-nums}
-a{color:var(--acc);text-decoration:none}a:hover{color:#ffb061}
+a{color:var(--acc);text-decoration:none}a:hover{color:var(--acchover)}
 .app{display:flex;flex-wrap:wrap;align-items:flex-start}
 nav{flex:1 1 190px;padding:20px 14px;display:flex;flex-direction:column;gap:4px}
 nav b{font-size:17px;padding:0 12px 14px}
@@ -26,7 +33,7 @@ h1{margin:0;font-size:26px;font-weight:650;letter-spacing:-.02em}
 h2{margin:0;font-size:12px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
 .head{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 22px;display:flex;flex-direction:column;gap:12px;min-width:0}
-.card.com{background:var(--combg);border-color:var(--comline)}.card.com h2{color:#8cc4ff}
+.card.com{background:var(--combg);border-color:var(--comline)}.card.com h2{color:var(--comh)}
 .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:16px}
 .hstk{display:flex;flex-direction:column;gap:16px;min-width:0}.hstk>.card:last-child{flex:1}.card.tight{gap:8px;padding-top:14px;padding-bottom:14px}.card.tight .num{font-size:24px}.card.tight .head .row{gap:10px}.card.tight>.head{flex-wrap:nowrap;align-items:flex-start}.card.tight>.head>:first-child{min-width:0}.card.tight>.head>a{white-space:nowrap}
 .split{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}.split>.side{flex:1 1 260px;min-width:0}.split>.body{flex:2 1 420px;min-width:0;display:flex;flex-direction:column;gap:16px}
@@ -36,11 +43,11 @@ h2{margin:0;font-size:12px;font-weight:600;letter-spacing:.1em;text-transform:up
 .dim{color:var(--dim)}.mid{color:var(--mid)}.sm{font-size:13px}
 .live{display:flex;flex-wrap:wrap;gap:30px;align-items:baseline}
 .pill{display:inline-block;padding:5px 12px;border-radius:999px;background:var(--up);font-size:13px;font-weight:600;letter-spacing:.05em}
-.pill.ok{background:var(--okbg);color:#7be0aa}
+.pill.ok{background:var(--okbg);color:var(--oktext)}
 button.mstate{border:1px solid var(--edge);cursor:pointer;min-height:0;line-height:normal;font-family:inherit;color:var(--dim)}
 button.mstate.ok{border-color:#2c6b4a}
 button.mstate.warn{border-color:#6b5a24}
-button.mstate:active,button.mstate.hit{border-color:var(--acc)}.pill.warn{background:var(--warnbg);color:var(--warn)}.pill.bad{background:#3b1512;color:var(--bad)}
+button.mstate:active,button.mstate.hit{border-color:var(--acc)}.pill.warn{background:var(--warnbg);color:var(--warn)}.pill.bad{background:var(--badbg);color:var(--bad)}
 .chip{padding:6px 12px;border-radius:8px;background:var(--up);font-size:14px}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--bad);margin-right:6px}.dot.on{background:var(--ok)}.dot.zz{background:#6b7280}.dot.am{background:var(--warn)}
 label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--dim)}
@@ -52,17 +59,17 @@ button{min-height:44px;padding:0 16px;border-radius:10px;border:1px solid var(--
 button.pri{background:var(--acc);border-color:var(--acc);color:#1d0f00;font-weight:600}
 button.go{background:var(--ok);border-color:var(--ok);color:#06210f;font-weight:600}
 button.stop{background:#c6392c;border-color:#c6392c;color:#fff;font-weight:600}
-button.del{background:none;border-color:#5c2a25;color:#ff8a80}
-button.on{border-color:var(--acc);background:var(--accbg);color:#ffd0a3}
-button.as{border:2px solid var(--com);background:var(--combg);color:#cfe6ff;font-weight:600}
-button.pwr{transition:background .15s,border-color .15s}button.pwr:active,button.pwr.hit{background:var(--accbg);border-color:var(--acc);color:#ffd0a3}
+button.del{background:none;border-color:var(--delline);color:var(--deltext)}
+button.on{border-color:var(--acc);background:var(--accbg);color:var(--acctext)}
+button.as{border:2px solid var(--com);background:var(--combg);color:var(--comtext);font-weight:600}
+button.pwr{transition:background .15s,border-color .15s}button.pwr:active,button.pwr.hit{background:var(--accbg);border-color:var(--acc);color:var(--acctext)}
 .list{display:flex;flex-direction:column;gap:6px}
 .item{display:block;width:100%;text-align:left;min-height:56px;padding:8px 12px;background:none;border:1px solid transparent}
 .item.on{background:var(--up);border-color:var(--edge)}.item b{display:block}.item span{display:block;font-size:13px;color:var(--dim)}
 .pair{display:flex;align-items:center;gap:12px;min-height:52px;padding:4px 14px;border-radius:10px;background:var(--up);border:1px solid var(--up)}
-.pair.on{background:#2a1c0e;border-color:#6b4118}.pair .what{flex:1 1 auto;min-width:0}.pair input[type=number]{width:96px}
+.pair.on{background:var(--pairbg);border-color:var(--pairline)}.pair .what{flex:1 1 auto;min-width:0}.pair input[type=number]{width:96px}
 .scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}
-th,td{padding:9px 10px;text-align:right;border-bottom:1px solid #22262b;white-space:nowrap}
+th,td{padding:9px 10px;text-align:right;border-bottom:1px solid var(--grid);white-space:nowrap}
 th{font-size:12px;color:var(--dim);font-weight:500;border-color:var(--line)}
 th.l,td.l{text-align:left}tr.on td{background:var(--up)}tr.pick{cursor:pointer}td.off{color:var(--warn);font-weight:600}
 td a{color:inherit;text-decoration:underline dotted}
@@ -80,10 +87,10 @@ button:hover:not(:disabled){filter:brightness(1.14)}
 button:active:not(:disabled){transform:scale(.96);filter:brightness(.9)}
 button:disabled{opacity:.45;cursor:not-allowed}
 :focus-visible{outline:2px solid var(--acc);outline-offset:2px}
-input:hover:not(:disabled),select:hover:not(:disabled){border-color:#5b6672}
+input:hover:not(:disabled),select:hover:not(:disabled){border-color:var(--inhover)}
 input:focus,select:focus,textarea:focus{border-color:var(--acc);outline:none;box-shadow:0 0 0 3px rgba(240,138,36,.22)}
-nav a:hover{background:#1a1d21;color:var(--fg)}
-.item:hover{background:#1a1d21}tr.pick:hover td{background:#1b1e22}
+nav a:hover{background:var(--hover);color:var(--fg)}
+.item:hover{background:var(--hover)}tr.pick:hover td{background:var(--hover2)}
 .pair:hover{border-color:var(--edge)}
 /* a request in flight, then how it went */
 button.busy{position:relative;color:transparent!important;pointer-events:none}
@@ -105,7 +112,7 @@ button.dirty::before{content:"";display:inline-block;width:7px;height:7px;border
 #bnav{display:none}#more{display:none;position:fixed;right:8px;bottom:72px;z-index:45;flex-direction:column;min-width:210px;background:var(--up);border:1px solid var(--edge);border-radius:12px;padding:6px;box-shadow:0 8px 30px rgba(0,0,0,.5)}
 #more a{padding:13px 14px;border-radius:8px;color:var(--fg)}#more a.on{background:var(--card);font-weight:600}#unsaved span{flex:1 1 220px;font-size:14px}
 /* messages */
-#toast{left:50%;bottom:24px;transform:translateX(-50%);background:#22262b;color:var(--fg);border:1px solid var(--edge);border-left:4px solid var(--dim);padding:12px 18px;border-radius:12px;font-weight:600;max-width:min(90vw,560px);box-shadow:0 10px 30px rgba(0,0,0,.5);z-index:50;animation:rise .18s ease-out}
+#toast{left:50%;bottom:24px;transform:translateX(-50%);background:var(--up);color:var(--fg);border:1px solid var(--edge);border-left:4px solid var(--dim);padding:12px 18px;border-radius:12px;font-weight:600;max-width:min(90vw,560px);box-shadow:0 10px 30px rgba(0,0,0,.5);z-index:50;animation:rise .18s ease-out}
 #toast.ok{border-left-color:var(--ok)}#toast.bad{border-left-color:var(--bad)}
 @keyframes rise{from{opacity:0;transform:translate(-50%,8px)}}
 #offline{display:none;background:var(--warnbg);color:var(--warn);padding:12px 16px;border-radius:10px;font-weight:600;margin-bottom:16px}
@@ -129,7 +136,7 @@ button.dirty::before{content:"";display:inline-block;width:7px;height:7px;border
 .note{font-size:13px;color:var(--dim)}.card.com .note{color:var(--mid)}
 .note summary{display:block;min-height:0;padding:2px 0;color:inherit;list-style:none}.note summary::-webkit-details-marker{display:none}
 .note summary::after{content:"More";margin-left:8px;color:var(--acc);font-weight:600}.note[open] summary::after{content:"Less"}
-.note summary:hover::after{color:#ffb061}.note ul{margin:6px 0 2px;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+.note summary:hover::after{color:var(--acchover)}.note ul{margin:6px 0 2px;padding-left:18px;display:flex;flex-direction:column;gap:4px}
 /* cards that fold away */
 .card.fold>:first-child{cursor:pointer;position:relative;padding-right:30px;user-select:none}
 .card.fold>:first-child::after{content:"";position:absolute;right:6px;top:50%;width:8px;height:8px;border-right:2px solid var(--dim);border-bottom:2px solid var(--dim);transform:translateY(-70%) rotate(45deg);transition:transform .15s}
@@ -158,11 +165,11 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 
 /* ---- shots: a list by day, one shot open at a time ---- */
 .shots{display:flex;flex-direction:column}
-.srow{display:grid;grid-template-columns:70px minmax(0,1fr) 62px 58px 72px;gap:10px;align-items:center;padding:9px 10px;border-bottom:1px solid #22262b;font-size:14px}
+.srow{display:grid;grid-template-columns:70px minmax(0,1fr) 62px 58px 72px;gap:10px;align-items:center;padding:9px 10px;border-bottom:1px solid var(--grid);font-size:14px}
 .srow.shd{font-size:12px;color:var(--dim);border-color:var(--line);padding-top:0}
 .srow .r{text-align:right;white-space:nowrap}.srow .off{color:var(--warn);font-weight:600}
 .srow .nm{min-width:0}.srow .nm b{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.srow .nm>span{display:block;font-size:13px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.srow.pick{cursor:pointer;border-radius:8px;transition:background-color .12s}.srow.pick:hover{background:#1b1e22}.srow.pick:active{background:#22262b}
+.srow.pick{cursor:pointer;border-radius:8px;transition:background-color .12s}.srow.pick:hover{background:var(--hover2)}.srow.pick:active{background:var(--grid)}
 .srow.pick.on{background:var(--up);border-bottom-color:transparent;border-radius:8px 8px 0 0}
 .day{padding:16px 10px 6px;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
 .st{font-style:normal;color:var(--warn)}
@@ -338,6 +345,7 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 
 <div class="page" id="p-setup">
 <div class="head"><h1>Setup</h1></div>
+<section class="card"><h2>Appearance</h2><p class="sm dim">The colour scheme of this page and of the controller's screen. Every browser and the controller follow it.</p><div class="row" id="themes"></div></section>
 <section class="card"><h2>Devices</h2><div id="dev" class="mid"></div><div id="scaledata" class="sm dim"></div><div class="scroll"><table id="seen"></table></div>
 <div class="row"><button onclick="loadDevices()">Refresh</button><button onclick="testPress('brew')">Test press: brew bot</button><button onclick="testPress('power')">Test press: power bot</button><button onclick="swapBots()">Swap brew and power bots</button></div>
 <div class="row"><span class="sm dim">Forget a paired device:</span><button class="del" onclick="forget('scale','the scale')">Scale</button><button class="del" onclick="forget('bot','the brew bot')">Brew bot</button><button class="del" onclick="forget('power','the power bot')">Power bot</button><button class="del" onclick="forget('stop','the stop bot')">Stop bot</button></div>
@@ -413,6 +421,11 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 </div>
 </main></div><div id="toast" role="status" aria-live="polite"></div>
 <script>
+// Chart colours: the scheme's, read from its CSS variables (readTC on a change of scheme).
+let TC={};function readTC(){const st=getComputedStyle(document.documentElement),v=n=>st.getPropertyValue(n).trim(),c=v('--card');
+TC={dim:v('--dim'),mid:v('--mid'),fg:v('--fg'),edge:v('--edge'),grid:v('--grid'),gridLo:v('--gridlo'),empty:v('--empty'),stripe:v('--stripe'),
+cardRgb:c.length==7?[1,3,5].map(k=>parseInt(c.slice(k,k+2),16)):[38,42,47]}}
+readTC();
 const $=id=>document.getElementById(id);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const get=u=>fetch(u).then(r=>r.json());
@@ -477,6 +490,15 @@ const plabel=p=>{const c=coffee(p.coffeeId),r=recipe(p.recipeId);return (c?c.nam
 function show(){const h=(location.hash||'#home').slice(1);document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on',p.id=='p-'+h));
 document.querySelectorAll('nav a,#bnav a,#more a').forEach(a=>a.classList.toggle('on',a.getAttribute('href')=='#'+h));
 $('bmore').classList.toggle('on',['recipes','insights','machine','setup','logs'].includes(h));$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees')loadCommunityCoffees();if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights')drawInsights();}
+// Colour schemes, in the controller's order (bbw::UiTheme): name, and a strip of its colours.
+const THEMES=[['dark','Dark',['#0e0f11','#17191c','#f08a24','#4cc38a']],['light','Light',['#f4f3f0','#ffffff','#c2560c','#1e8e4e']],
+['nord','Nord',['#2e3440','#3b4252','#d08770','#a3be8c']],['solarized','Solarized Dark',['#002b36','#073642','#cb4b16','#859900']],
+['dracula','Dracula',['#21222c','#282a36','#ffb86c','#50fa7b']],['contrast','High contrast',['#000000','#1a1a1a','#ffb000','#00e676']]];
+function themeNow(){const t=document.documentElement.dataset.theme||'dark';return Math.max(0,THEMES.findIndex(x=>x[0]==t))}
+function setTheme(n,save){const t=(THEMES[n]||THEMES[0])[0];if(t=='dark')delete document.documentElement.dataset.theme;else document.documentElement.dataset.theme=t;
+try{localStorage.setItem('bbwTheme',t)}catch(e){}readTC();renderThemes();show();
+if(save)post('/api/settings',{uiTheme:n}).then(r=>{if(r&&r.ok===false)return;if(S)S.uiTheme=n})}
+function renderThemes(){const el=$('themes');if(!el)return;const cur=themeNow();el.innerHTML=THEMES.map(([k,name,cols],i)=>`<button class="theme${i==cur?' on':''}" onclick="setTheme(${i},true)" aria-pressed="${i==cur}"><span class="strip">${cols.map(c=>`<i style="background:${c}"></i>`).join('')}</span>${name}</button>`).join('')}
 window.addEventListener('hashchange',show);loadHomePower();
 let LOGT='',LOGN=0,LOGB=false;
 function drawLog(){const f=$('lg_filter').value.toLowerCase(),v=$('lg_view');v.innerHTML=LOGT.split('\n').filter(l=>l&&(!f||l.toLowerCase().includes(f))).map(l=>{const k=l.charAt(11);return '<span'+(k=='E'||k=='W'?' style="color:var(--warn)"':k=='D'?' class="dim"':'')+'>'+esc(l)+'</span>'}).join('\n');if($('lg_follow').checked)v.scrollTop=v.scrollHeight}
@@ -533,7 +555,7 @@ const a=$('alert');if(s.manual_stop_needed){a.style.display='block';a.textConten
 else if(s.bot_switch_mode){a.style.display='block';a.textContent='The SwitchBot is in Switch mode. Set it to Press mode in the SwitchBot app.'}else a.style.display='none';
 if(lastShotId!==s.last_shot_id){lastShotId=s.last_shot_id;loadShots();loadLibrary();if(S)loadShare()}}
 
-async function loadSettings(){S=await get('/api/settings');F.forEach(k=>{const e=$(k),v=S[k];e.value=typeof v==='boolean'?(v?1:0):v});
+async function loadSettings(){S=await get('/api/settings');if(S&&typeof S.uiTheme=='number'&&S.uiTheme!=themeNow())setTheme(S.uiTheme,false);renderThemes();F.forEach(k=>{const e=$(k),v=S[k];e.value=typeof v==='boolean'?(v?1:0):v});
 SB.forEach(k=>$(k).checked=!!S[k]);loadShare();$('staSsid').value=S.net.staSsid;$('webStartEnabled').checked=S.net.webStartEnabled}
 // Only what was changed on this page: a page left open since a setting was
 // changed elsewhere (the power card, the API, another browser) must not put
@@ -716,7 +738,7 @@ function drawLegend(el,cc){$(el).innerHTML=[...cc.m].map(([id,v])=>`<span class=
 function niceTicks(lo,hi,n,minStep){const span=hi-lo;if(!(span>0))return [lo];const raw=span/n,p=Math.pow(10,Math.floor(Math.log10(raw))),f=raw/p;
 const step=Math.max(minStep||0,(f<1.5?1:f<3?2:f<7?5:10)*p),out=[];for(let v=Math.ceil(lo/step)*step;v<=hi+1e-9;v+=step)out.push(+v.toFixed(6));return out}
 // Horizontal gridlines with the time beside each, from left to right.
-function gridTimes(x,Y,t0,t1,left,right){x.font='12px sans-serif';x.lineWidth=1;niceTicks(t0,t1,4,1).forEach(v=>{const y=Math.round(Y(v))+0.5;x.strokeStyle='#22262b';x.beginPath();x.moveTo(left,y);x.lineTo(right,y);x.stroke();x.fillStyle='#9aa3ad';x.fillText(v+' s',6,y+4)})}
+function gridTimes(x,Y,t0,t1,left,right){x.font='12px sans-serif';x.lineWidth=1;niceTicks(t0,t1,4,1).forEach(v=>{const y=Math.round(Y(v))+0.5;x.strokeStyle=TC.grid;x.beginPath();x.moveTo(left,y);x.lineTo(right,y);x.stroke();x.fillStyle=TC.dim;x.fillText(v+' s',6,y+4)})}
 // The dots a chart drew (canvas pixels): hovering one shows what shot it is, clicking opens it.
 // On a touch screen the first tap shows it and a second tap on the same dot opens it.
 function chartDots(c,dots){c._dots=dots;if(c._wired)return;c._wired=true;const tip=$('ctip');
@@ -745,13 +767,13 @@ const cc=coffeeColours(pts),tol=S.grindToleranceS||2,st=q=>!q.tt?'ok':q.t<q.tt-t
 const us=pts.map(q=>q.u),lo=Math.min(...us),hi=Math.max(...us),pad=Math.max(2,(hi-lo)*0.12),u0=lo-pad,u1=hi+pad;
 const L0=50,R0=c.width-20,B0=c.height-24,X=i=>L0+(i+0.5)/pts.length*(R0-L0),Y=u=>B0-(u-u0)/(u1-u0)*(B0-12);
 x.font='12px sans-serif';x.lineWidth=1;
-niceTicks(u0,u1,4,1).forEach(v=>{const y=Math.round(Y(v))+0.5;x.strokeStyle='#22262b';x.beginPath();x.moveTo(L0,y);x.lineTo(R0,y);x.stroke();x.fillStyle='#9aa3ad';x.fillText(fsn(Math.round(v)),6,y+4)});
+niceTicks(u0,u1,4,1).forEach(v=>{const y=Math.round(Y(v))+0.5;x.strokeStyle=TC.grid;x.beginPath();x.moveTo(L0,y);x.lineTo(R0,y);x.stroke();x.fillStyle=TC.dim;x.fillText(fsn(Math.round(v)),6,y+4)});
 // new days along the bottom, new bags as dashed lines
 let lastLab=-99;const lastRd=new Map();pts.forEach((q,i)=>{const px=X(i);
-if(i==0||q.day!=pts[i-1].day){const lab=q.day?new Date(q.day).toLocaleDateString([], {month:'short',day:'numeric'}):'';if(lab&&px-lastLab>x.measureText(lab).width+10){x.fillStyle='#9aa3ad';x.fillText(lab,Math.min(R0-x.measureText(lab).width,px-4),c.height-6);lastLab=px}}
+if(i==0||q.day!=pts[i-1].day){const lab=q.day?new Date(q.day).toLocaleDateString([], {month:'short',day:'numeric'}):'';if(lab&&px-lastLab>x.measureText(lab).width+10){x.fillStyle=TC.dim;x.fillText(lab,Math.min(R0-x.measureText(lab).width,px-4),c.height-6);lastLab=px}}
 const prev=lastRd.get(q.c);if(prev!=null&&q.rd&&prev&&q.rd!=prev){x.strokeStyle=cc.m.get(q.c).col;x.globalAlpha=.5;x.setLineDash([4,5]);x.beginPath();x.moveTo(px-0.5*(R0-L0)/pts.length,10);x.lineTo(px-0.5*(R0-L0)/pts.length,B0);x.stroke();x.setLineDash([]);x.globalAlpha=1;
-x.fillStyle='#9aa3ad';x.fillText('new bag',px-0.5*(R0-L0)/pts.length+3,22)}lastRd.set(q.c,q.rd)});
-x.strokeStyle='#3a3f46';x.beginPath();x.moveTo(L0,10);x.lineTo(L0,B0);x.lineTo(R0,B0);x.stroke();
+x.fillStyle=TC.dim;x.fillText('new bag',px-0.5*(R0-L0)/pts.length+3,22)}lastRd.set(q.c,q.rd)});
+x.strokeStyle=TC.edge;x.beginPath();x.moveTo(L0,10);x.lineTo(L0,B0);x.lineTo(R0,B0);x.stroke();
 // a step line per coffee: the setting holds until it is changed
 [...cc.m.keys()].forEach(id=>{const idx=pts.map((q,i)=>i).filter(i=>pts[i].c==id);if(idx.length<2)return;x.strokeStyle=cc.m.get(id).col;x.lineWidth=id==cc.cur?2:1.5;x.globalAlpha=id==cc.cur?.9:.6;x.beginPath();
 idx.forEach((i,k)=>{const px=X(i),py=Y(pts[i].u);if(!k)x.moveTo(px,py);else{x.lineTo(px,Y(pts[idx[k-1]].u));x.lineTo(px,py)}});x.stroke();x.globalAlpha=1;x.lineWidth=1});
@@ -769,16 +791,16 @@ const us=pts.map(q=>q.u),lo=Math.min(...us,G.current_um||us[0],adv||us[0])-10,hi
 const L0=50,R0=c.width-20,B0=c.height-26,X=u=>L0+(u-lo)/(hi-lo)*(R0-L0),Y=t=>B0-(t-t0)/(t1-t0)*(c.height-40);
 gridTimes(x,Y,t0,t1,L0,R0);
 // Vertical gridlines at round settings, labelled as the dial reads.
-x.font='12px sans-serif';niceTicks(lo,hi,6,1).forEach(v=>{const gx=Math.round(X(v))+0.5;x.strokeStyle='#22262b';x.beginPath();x.moveTo(gx,10);x.lineTo(gx,B0);x.stroke();const lab=fsn(Math.round(v));x.fillStyle='#9aa3ad';x.fillText(lab,Math.min(R0-x.measureText(lab).width,gx-x.measureText(lab).width/2),c.height-8)});
+x.font='12px sans-serif';niceTicks(lo,hi,6,1).forEach(v=>{const gx=Math.round(X(v))+0.5;x.strokeStyle=TC.grid;x.beginPath();x.moveTo(gx,10);x.lineTo(gx,B0);x.stroke();const lab=fsn(Math.round(v));x.fillStyle=TC.dim;x.fillText(lab,Math.min(R0-x.measureText(lab).width,gx-x.measureText(lab).width/2),c.height-8)});
 x.fillStyle='rgba(76,195,138,.16)';x.fillRect(L0,Y(tg+tol),R0-L0,Y(tg-tol)-Y(tg+tol));x.strokeStyle='#4cc38a';x.setLineDash([4,6]);x.beginPath();x.moveTo(L0,Y(tg));x.lineTo(R0,Y(tg));x.stroke();x.setLineDash([]);
-x.strokeStyle='#3a3f46';x.beginPath();x.moveTo(L0,10);x.lineTo(L0,B0);x.lineTo(R0,B0);x.stroke();
+x.strokeStyle=TC.edge;x.beginPath();x.moveTo(L0,10);x.lineTo(L0,B0);x.lineTo(R0,B0);x.stroke();
 // The advisor's line: the average time at the setting now, and how many seconds a step moves it (its
 // sensitivity); where it meets the target is where the grind should go. The advice itself is marked.
 const ups=G.um_per_s,tc=G.average_time_s,uc=G.current_um,inT=t=>t>=t0&&t<=t1;
 if(ups>0&&tc>0&&uc){const tAt=u=>tc-(u-uc)/ups;let ua=lo,ub=hi;const ta=tAt(ua),tb=tAt(ub);
 if(!inT(ta))ua=uc+(tc-(ta>t1?t1:t0))*ups;if(!inT(tb))ub=uc+(tc-(tb<t0?t0:t1))*ups;
-x.save();x.strokeStyle='#eceef0';x.globalAlpha=.55;x.setLineDash([6,5]);x.lineWidth=1.5;x.beginPath();x.moveTo(X(ua),Y(tAt(ua)));x.lineTo(X(ub),Y(tAt(ub)));x.stroke();x.restore();
-x.strokeStyle='#4a4f56';x.beginPath();x.moveTo(X(uc),10);x.lineTo(X(uc),B0);x.stroke();x.fillStyle='#9aa3ad';x.fillText('now '+fsn(uc),X(uc)+4,22)}
+x.save();x.strokeStyle=TC.fg;x.globalAlpha=.55;x.setLineDash([6,5]);x.lineWidth=1.5;x.beginPath();x.moveTo(X(ua),Y(tAt(ua)));x.lineTo(X(ub),Y(tAt(ub)));x.stroke();x.restore();
+x.strokeStyle=TC.edge;x.beginPath();x.moveTo(X(uc),10);x.lineTo(X(uc),B0);x.stroke();x.fillStyle=TC.dim;x.fillText('now '+fsn(uc),X(uc)+4,22)}
 if(adv){const ax=X(adv),ay=Y(tg);x.fillStyle='#f08a24';x.beginPath();x.moveTo(ax,ay-8);x.lineTo(ax+8,ay);x.lineTo(ax,ay+8);x.lineTo(ax-8,ay);x.closePath();x.fill();
 const lab='advice '+fs(adv);x.font='bold 12px sans-serif';x.fillText(lab,Math.min(R0-x.measureText(lab).width,ax+10),ay-10);x.font='12px sans-serif'}
 const dots=[];pts.map((q,i)=>i).sort((a,b)=>(pts[a].c==cc.cur)-(pts[b].c==cc.cur)).forEach(i=>{const q=pts[i],px=X(q.u)+((i*37)%13-6),py=Y(q.t);x.fillStyle=cc.m.get(q.c).col;x.globalAlpha=q.c==cc.cur?1:0.85;x.beginPath();x.arc(px,py,q.c==cc.cur?5.5:4.5,0,7);x.fill();x.globalAlpha=1;dots.push({x:px,y:py,q})});
@@ -798,11 +820,11 @@ const off=r=>align&&r.s.first_drop_s>0?r.s.first_drop_s:0;
 let t0=0,t1=1,wm=1,fm=1;rows.forEach(r=>{if(!r.d)return;const o=off(r);t0=Math.min(t0,-o);t1=Math.max(t1,r.d.T[r.d.T.length-1]-o);wm=Math.max(wm,...r.d.W);if(r.d.F)fm=Math.max(fm,...r.d.F.filter(v=>v!=null))});
 wm*=1.05;fm*=1.1;const L0=50,R0=c.width-(flow?50:20),B0=c.height-24,X=t=>L0+(t-t0)/(t1-t0)*(R0-L0),Y=w=>B0-Math.max(w,0)/wm*(B0-10),YF=v=>B0-Math.max(v,0)/fm*(B0-10);
 x.font='12px sans-serif';x.lineWidth=1;
-niceTicks(0,wm,4,1).forEach(v=>{const y=Math.round(Y(v))+0.5;x.strokeStyle='#22262b';x.beginPath();x.moveTo(L0,y);x.lineTo(R0,y);x.stroke();x.fillStyle='#9aa3ad';x.fillText(v+' g',6,y+4)});
-niceTicks(t0,t1,6,1).forEach(v=>{const gx=Math.round(X(v))+0.5;x.strokeStyle='#22262b';x.beginPath();x.moveTo(gx,10);x.lineTo(gx,B0);x.stroke();const lab=v+' s';x.fillStyle='#9aa3ad';x.fillText(lab,Math.min(R0-x.measureText(lab).width,Math.max(L0,gx-x.measureText(lab).width/2)),c.height-6)});
-if(flow)niceTicks(0,fm,4,0.5).forEach(v=>{x.fillStyle='#9aa3ad';x.fillText(v+' g/s',R0+6,Math.round(YF(v))+4)});
-if(align){x.strokeStyle='#4a4f56';x.setLineDash([3,5]);x.beginPath();x.moveTo(X(0),10);x.lineTo(X(0),B0);x.stroke();x.setLineDash([]);x.fillStyle='#9aa3ad';x.fillText('first drops',X(0)+4,22)}
-x.strokeStyle='#3a3f46';x.beginPath();x.moveTo(L0,10);x.lineTo(L0,B0);x.lineTo(R0,B0);x.stroke();
+niceTicks(0,wm,4,1).forEach(v=>{const y=Math.round(Y(v))+0.5;x.strokeStyle=TC.grid;x.beginPath();x.moveTo(L0,y);x.lineTo(R0,y);x.stroke();x.fillStyle=TC.dim;x.fillText(v+' g',6,y+4)});
+niceTicks(t0,t1,6,1).forEach(v=>{const gx=Math.round(X(v))+0.5;x.strokeStyle=TC.grid;x.beginPath();x.moveTo(gx,10);x.lineTo(gx,B0);x.stroke();const lab=v+' s';x.fillStyle=TC.dim;x.fillText(lab,Math.min(R0-x.measureText(lab).width,Math.max(L0,gx-x.measureText(lab).width/2)),c.height-6)});
+if(flow)niceTicks(0,fm,4,0.5).forEach(v=>{x.fillStyle=TC.dim;x.fillText(v+' g/s',R0+6,Math.round(YF(v))+4)});
+if(align){x.strokeStyle=TC.edge;x.setLineDash([3,5]);x.beginPath();x.moveTo(X(0),10);x.lineTo(X(0),B0);x.stroke();x.setLineDash([]);x.fillStyle=TC.dim;x.fillText('first drops',X(0)+4,22)}
+x.strokeStyle=TC.edge;x.beginPath();x.moveTo(L0,10);x.lineTo(L0,B0);x.lineTo(R0,B0);x.stroke();
 const line=(T,V,o,f)=>{x.beginPath();let on=false;T.forEach((t,i)=>{const v=V[i];if(v==null){on=false;return}const px=X(t-o),py=f(v);if(on)x.lineTo(px,py);else{x.moveTo(px,py);on=true}});x.stroke()};
 rows.forEach(r=>{if(!r.d)return;const col=CCOL[r.k%CCOL.length],o=off(r);x.strokeStyle=col;x.lineWidth=2;x.setLineDash([]);line(r.d.T,r.d.W,o,Y);
 if(flow&&r.d.F){x.lineWidth=1.5;x.setLineDash([5,4]);line(r.d.T,r.d.F,o,YF);x.setLineDash([])}});x.lineWidth=1;
@@ -815,7 +837,7 @@ const btime=s=>s.time_basis=='pour'?s.pour_time_s:s.shot_time_s,byWeight=s=>/^we
 function insShots(){const f=$('icoffee').value;return SH.filter(s=>!f||String(s.coffee_id||0)==f)}
 // Fresh (blue) to old (red); and a count, from the card colour to the accent.
 function ramp(t){t=Math.max(0,Math.min(1,t));const a=[[56,189,248],[52,211,153],[250,204,21],[249,115,22],[239,68,68]],v=t*(a.length-1),i=Math.min(a.length-2,Math.floor(v)),f=v-i;return 'rgb('+a[i].map((c,k)=>Math.round(c+(a[i+1][k]-c)*f))+')'}
-function heat(t){const a=[38,42,47],b=[240,138,36];t=Math.max(0,Math.min(1,t));return 'rgb('+a.map((c,k)=>Math.round(c+(b[k]-c)*t))+')'}
+function heat(t){const a=TC.cardRgb,b=[240,138,36];t=Math.max(0,Math.min(1,t));return 'rgb('+a.map((c,k)=>Math.round(c+(b[k]-c)*t))+')'}
 // Rectangles a chart drew: hovering one says what it holds, clicking it may open something.
 function chartCells(c,cells,text,click){c._cells=cells;c._text=text;c._click=click;if(c._cwired)return;c._cwired=true;const tip=$('ctip');
 const at=e=>{const r=c.getBoundingClientRect(),px=(e.clientX-r.left)*c.width/r.width,py=(e.clientY-r.top)*c.height/r.height;return (c._cells||[]).find(q=>px>=q.x&&px<q.x+q.w&&py>=q.y&&py<q.y+q.h)};
@@ -828,7 +850,7 @@ function loadPowerEvents(){if(Date.now()-PWRAT<60000)return;PWRAT=Date.now();get
 function drawInsights(){if(!L||!Array.isArray(SH))return;loadPowerEvents();const sel=$('icoffee'),cur=sel.value,ids=[...new Map(SH.filter(s=>s.coffee).map(s=>[String(s.coffee_id||0),s.coffee])).entries()];
 sel.innerHTML='<option value="">All coffees</option>'+ids.map(([id,n])=>`<option value="${id}" ${id==cur?'selected':''}>${esc(n)}</option>`).join('');
 drawRoastGrind();drawAgeHeat();drawCalendar();drawDialIn()}
-function emptyNote(c,id,text){const x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);c._dots=[];c._cells=[];x.fillStyle='#9aa3ad';x.font='14px sans-serif';x.fillText(text,20,40);$(id).textContent=''}
+function emptyNote(c,id,text){const x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);c._dots=[];c._cells=[];x.fillStyle=TC.dim;x.font='14px sans-serif';x.fillText(text,20,40);$(id).textContent=''}
 
 // Roast level (rows) against the grind setting; colour by days off roast, size by pour flow.
 function drawRoastGrind(){const c=$('irchart'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);c._dots=[];$('irleg').innerHTML='';
@@ -838,9 +860,9 @@ const lv=[...new Set(pts.map(s=>RL.indexOf(s.roast_level)))].sort((a,b)=>a-b),us
 const ages=pts.map(ageDays).filter(a=>a!=null),amax=Math.max(30,...ages),fmax=Math.max(.1,...pts.map(s=>s.pour_flow_g_s||0));
 const L0=110,R0=c.width-20,T0=12,B0=c.height-26,X=u=>L0+(u-u0)/(u1-u0)*(R0-L0),rowH=(B0-T0)/lv.length,Y=l=>T0+rowH*(lv.indexOf(l)+.5);
 x.font='12px sans-serif';x.lineWidth=1;
-lv.forEach(l=>{const y=Math.round(Y(l))+.5;x.strokeStyle='#22262b';x.beginPath();x.moveTo(L0,y);x.lineTo(R0,y);x.stroke();x.fillStyle='#9aa3ad';x.fillText(RL[l],6,y+4)});
-niceTicks(u0,u1,6,1).forEach(v=>{const gx=Math.round(X(v))+.5;x.strokeStyle='#1c1f23';x.beginPath();x.moveTo(gx,T0);x.lineTo(gx,B0);x.stroke();const lab=fsn(Math.round(v));x.fillStyle='#9aa3ad';x.fillText(lab,Math.min(R0-x.measureText(lab).width,gx-x.measureText(lab).width/2),c.height-8)});
-x.strokeStyle='#3a3f46';x.beginPath();x.moveTo(L0,T0);x.lineTo(L0,B0);x.lineTo(R0,B0);x.stroke();
+lv.forEach(l=>{const y=Math.round(Y(l))+.5;x.strokeStyle=TC.grid;x.beginPath();x.moveTo(L0,y);x.lineTo(R0,y);x.stroke();x.fillStyle=TC.dim;x.fillText(RL[l],6,y+4)});
+niceTicks(u0,u1,6,1).forEach(v=>{const gx=Math.round(X(v))+.5;x.strokeStyle=TC.gridLo;x.beginPath();x.moveTo(gx,T0);x.lineTo(gx,B0);x.stroke();const lab=fsn(Math.round(v));x.fillStyle=TC.dim;x.fillText(lab,Math.min(R0-x.measureText(lab).width,gx-x.measureText(lab).width/2),c.height-8)});
+x.strokeStyle=TC.edge;x.beginPath();x.moveTo(L0,T0);x.lineTo(L0,B0);x.lineTo(R0,B0);x.stroke();
 // On each roast level, the settings whose shots ran on time (brew time within the tolerance of its
 // target): a band from the lowest to the highest (10th to 90th percentile from five shots on), and
 // a line at the middle one.
@@ -864,10 +886,10 @@ const lab=k=>k==0?'≤ −6 s':k==ny-1?'≥ +6 s':(edges[k]>0?'+':'')+edges[k]+'
 const cnt=[...Array(nx)].map(()=>Array(ny).fill(0));pts.forEach(s=>{const a=Math.min(nx-1,Math.floor(ageDays(s)/7)),e=btime(s)-s.target_time_s;let k=0;while(k<ny-1&&e>=edges[k+1])k++;cnt[a][k]++});
 const mx=Math.max(1,...cnt.flat()),L0=96,R0=c.width-12,T0=8,B0=c.height-26,cw=(R0-L0)/nx,ch=(B0-T0)/ny,cells=[];
 x.font='12px sans-serif';
-for(let k=0;k<ny;k++){const y=B0-(k+1)*ch;x.fillStyle='#9aa3ad';x.fillText(lab(k),4,y+ch/2+4)}
-for(let a=0;a<nx;a++){if(nx<=10||a%2==0){const l=(a*7)+'-'+(a*7+6)+' d';x.fillStyle='#9aa3ad';x.fillText(l,L0+a*cw+cw/2-x.measureText(l).width/2,c.height-8)}
-for(let k=0;k<ny;k++){const v=cnt[a][k],cx=L0+a*cw,cy=B0-(k+1)*ch;x.fillStyle=v?heat(.2+.8*v/mx):'#15171a';x.fillRect(cx+1,cy+1,cw-2,ch-2);
-if(v&&cw>18){const t=String(v);x.fillStyle=v/mx>.55?'#1d0f00':'#eceef0';x.fillText(t,cx+cw/2-x.measureText(t).width/2,cy+ch/2+4)}
+for(let k=0;k<ny;k++){const y=B0-(k+1)*ch;x.fillStyle=TC.dim;x.fillText(lab(k),4,y+ch/2+4)}
+for(let a=0;a<nx;a++){if(nx<=10||a%2==0){const l=(a*7)+'-'+(a*7+6)+' d';x.fillStyle=TC.dim;x.fillText(l,L0+a*cw+cw/2-x.measureText(l).width/2,c.height-8)}
+for(let k=0;k<ny;k++){const v=cnt[a][k],cx=L0+a*cw,cy=B0-(k+1)*ch;x.fillStyle=v?heat(.2+.8*v/mx):TC.empty;x.fillRect(cx+1,cy+1,cw-2,ch-2);
+if(v&&cw>18){const t=String(v);x.fillStyle=v/mx>.55?'#1d0f00':TC.fg;x.fillText(t,cx+cw/2-x.measureText(t).width/2,cy+ch/2+4)}
 cells.push({x:cx,y:cy,w:cw,h:ch,txt:`<b>${v} shot${v==1?'':'s'}</b><br>${a*7} to ${a*7+6} days off roast<br>brew time ${lab(k).replace(' s','')} s from target`})}}
 // the rows within the tolerance: on time
 const rows=[];for(let k=0;k<ny;k++)if(edges[k]>=-tol-1e-9&&edges[k+1]<=tol+1e-9)rows.push(k);
@@ -894,19 +916,19 @@ const mx=Math.max(1,...[...days.values()].map(o=>o.n)),cw=(c.width-L0-8)/26,ch=(
 // Coffee & recipe: the coffee being brewed now keeps the first colour, as on the grinder charts.
 const inR=[...days.values()].flatMap(o=>o.sh),cur=(L.presets[L.activePreset]||{}).coffeeId||0,cids=[...new Set(inR.map(s=>s.coffee_id||0))].sort((a,b)=>(b==cur)-(a==cur)||a-b),
 cc=new Map(cids.map((id,i)=>[id,CCOL[i%CCOL.length]])),tg=recipeTags(inR),hm=s=>new Date(s.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-for(let w=0;w<26;w++){const first=new Date(start);first.setDate(first.getDate()+w*7);if(first.getMonth()!=lastM){lastM=first.getMonth();x.fillStyle='#9aa3ad';x.fillText(first.toLocaleDateString([], {month:'short'}),L0+w*cw,14)}
-for(let r=0;r<7;r++){const d=new Date(first);d.setDate(d.getDate()+r);if(d>today)continue;const o=days.get(dkey(d)),cx=L0+w*cw,cy=T0+r*ch;let col='#15171a',what='no shots';
-if(o){if(CALMODE=='brew'){what=o.sh.map(s=>hm(s)+' '+esc(s.coffee||'no coffee')+' · '+esc(s.recipe||'no recipe')).join('<br>')}else if(CALMODE=='shots'){col=heat(.2+.8*o.n/mx);what=o.n+' shot'+(o.n==1?'':'s')}else if(o.en){const e=o.es/o.en;col=Math.abs(e)<=tol?STC.ok:e<0?STC.fast:STC.slow;x.globalAlpha=.35+.65*Math.min(1,Math.abs(e)/(3*tol)+(Math.abs(e)<=tol?.6:0));what=o.n+' shot'+(o.n==1?'':'s')+', brew time '+(e>0?'+':'')+f1(e)+' s from target on average'}else{col='#4a4f56';what=o.n+' shot'+(o.n==1?'':'s')+', none timed against a target'}}
+for(let w=0;w<26;w++){const first=new Date(start);first.setDate(first.getDate()+w*7);if(first.getMonth()!=lastM){lastM=first.getMonth();x.fillStyle=TC.dim;x.fillText(first.toLocaleDateString([], {month:'short'}),L0+w*cw,14)}
+for(let r=0;r<7;r++){const d=new Date(first);d.setDate(d.getDate()+r);if(d>today)continue;const o=days.get(dkey(d)),cx=L0+w*cw,cy=T0+r*ch;let col=TC.empty,what='no shots';
+if(o){if(CALMODE=='brew'){what=o.sh.map(s=>hm(s)+' '+esc(s.coffee||'no coffee')+' · '+esc(s.recipe||'no recipe')).join('<br>')}else if(CALMODE=='shots'){col=heat(.2+.8*o.n/mx);what=o.n+' shot'+(o.n==1?'':'s')}else if(o.en){const e=o.es/o.en;col=Math.abs(e)<=tol?STC.ok:e<0?STC.fast:STC.slow;x.globalAlpha=.35+.65*Math.min(1,Math.abs(e)/(3*tol)+(Math.abs(e)<=tol?.6:0));what=o.n+' shot'+(o.n==1?'':'s')+', brew time '+(e>0?'+':'')+f1(e)+' s from target on average'}else{col=TC.edge;what=o.n+' shot'+(o.n==1?'':'s')+', none timed against a target'}}
 if(CALMODE=='brew'&&o){const l=o.sh.slice(0,4).reverse(),sw=(cw-2)/l.length;l.forEach((s,i)=>{x.fillStyle=cc.get(s.coffee_id||0);x.fillRect(cx+1+i*sw,cy+1,sw,ch-2)});
 const t=[...new Set(o.sh.map(s=>tg.get(s.recipe||'')))].join(' ');x.font='bold 11px sans-serif';x.fillStyle='#111';x.fillText(t,cx+cw/2-x.measureText(t).width/2,cy+ch/2+4);x.font='12px sans-serif'}
 else{x.fillStyle=col;x.fillRect(cx+1,cy+1,cw-2,ch-2)}x.globalAlpha=1;
 cells.push({x:cx,y:cy,w:cw,h:ch,click:o?o.ids[0]:0,txt:`<b>${d.toLocaleDateString([], {weekday:'short',month:'short',day:'numeric'})}</b><br>${what}${o?'<br><span class="dim">'+(o.n>1?'Click to open the last of them':'Click to open it')+'</span>':''}`})}}
-for(let r=0;r<7;r+=2){x.fillStyle='#9aa3ad';x.fillText(WD[r],4,T0+r*ch+ch/2+4)}
+for(let r=0;r<7;r+=2){x.fillStyle=TC.dim;x.fillText(WD[r],4,T0+r*ch+ch/2+4)}
 chartCells(c,cells,q=>q.txt,q=>openShot(q.click));c.parentElement.scrollLeft=c.parentElement.scrollWidth;
 const sw=v=>`<span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:${v};margin:0 4px 0 10px;vertical-align:middle"></span>`;
 if(CALMODE=='brew'){$('icleg').innerHTML=cids.map(id=>{const q=inR.find(s=>(s.coffee_id||0)==id);return sw(cc.get(id))+esc(q.coffee||'no coffee')+(id==cur&&id?' <span class="dim">(brewing now)</span>':'')}).join('')+
 '<span class="dim" style="margin-left:14px">Recipes:</span>'+[...tg].map(([n,t])=>` <b>${esc(t)}</b> ${esc(n||'no recipe')}`).join(',')+'<span class="dim" style="margin-left:10px">one stripe per shot, up to 4 a day</span>';return}
-$('icleg').innerHTML=CALMODE=='shots'?'<span class="dim">Shots a day:</span>'+sw(heat(.2+.8/mx))+'1'+sw(heat(1))+mx:'<span class="dim">Average brew time against target:</span>'+sw(STC.ok)+'on time'+sw(STC.fast)+'fast'+sw(STC.slow)+'slow'+sw('#4a4f56')+'not timed'}
+$('icleg').innerHTML=CALMODE=='shots'?'<span class="dim">Shots a day:</span>'+sw(heat(.2+.8/mx))+'1'+sw(heat(1))+mx:'<span class="dim">Average brew time against target:</span>'+sw(STC.ok)+'on time'+sw(STC.fast)+'fast'+sw(STC.slow)+'slow'+sw(TC.edge)+'not timed'}
 
 // Bags in order: shots until the first one on time (dial-in), then the rest.
 // Time of day: a row a day, newest at the top, across the hours brewed in. A dot a shot in its
@@ -924,17 +946,17 @@ const X=h=>L0+(h-h0)/(h1-h0)*(R0-L0),hod=d=>d.getHours()+d.getMinutes()/60+d.get
 const cur=(L.presets[L.activePreset]||{}).coffeeId||0,cids=[...new Set(inR.map(s=>s.coffee_id||0))].sort((a,b)=>(b==cur)-(a==cur)||a-b),cc=new Map(cids.map((id,i)=>[id,CCOL[i%CCOL.length]])),tg=recipeTags(inR);
 const hm=d=>d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}),cells=[];
 // hour lines and labels
-const step=h1-h0>12?2:1;for(let h=h0;h<=h1;h+=step){const gx=Math.round(X(h))+.5;x.strokeStyle='#1c1f23';x.beginPath();x.moveTo(gx,T0-4);x.lineTo(gx,T0+rows*RH);x.stroke();
-const t=String(h%24).padStart(2,'0')+':00';x.fillStyle='#9aa3ad';x.fillText(t,Math.max(L0,Math.min(R0-x.measureText(t).width,gx-x.measureText(t).width/2)),14)}
-for(let r=0;r<rows;r++){const d=new Date(today);d.setDate(d.getDate()-r);const y=T0+r*RH;if(r%2==0){x.fillStyle='#121417';x.fillRect(L0,y,R0-L0,RH)}
-if(RH>=19||r%2==0){x.fillStyle=d.getDay()==0||d.getDay()==6?'#c3c9d0':'#9aa3ad';x.fillText(WD[(d.getDay()+6)%7]+' '+d.toLocaleDateString([], {day:'numeric',month:'short'}),4,y+RH/2+4)}}
+const step=h1-h0>12?2:1;for(let h=h0;h<=h1;h+=step){const gx=Math.round(X(h))+.5;x.strokeStyle=TC.gridLo;x.beginPath();x.moveTo(gx,T0-4);x.lineTo(gx,T0+rows*RH);x.stroke();
+const t=String(h%24).padStart(2,'0')+':00';x.fillStyle=TC.dim;x.fillText(t,Math.max(L0,Math.min(R0-x.measureText(t).width,gx-x.measureText(t).width/2)),14)}
+for(let r=0;r<rows;r++){const d=new Date(today);d.setDate(d.getDate()-r);const y=T0+r*RH;if(r%2==0){x.fillStyle=TC.stripe;x.fillRect(L0,y,R0-L0,RH)}
+if(RH>=19||r%2==0){x.fillStyle=d.getDay()==0||d.getDay()==6?TC.mid:TC.dim;x.fillText(WD[(d.getDay()+6)%7]+' '+d.toLocaleDateString([], {day:'numeric',month:'short'}),4,y+RH/2+4)}}
 // machine on: from an on press to the next off press the same day (to the end of the hours if none)
 const byRow=new Map();pw.forEach(e=>{const r=rowOf(new Date(e.t*1000));if(r<0||r>=rows)return;if(!byRow.has(r))byRow.set(r,[]);byRow.get(r).push(e)});
 byRow.forEach((es,r)=>{es.sort((a,b)=>a.t-b.t);let from=null;es.forEach(e=>{if(!e.ok)return;const h=hod(new Date(e.t*1000));if(e.on)from=from??h;else if(from!=null){x.fillStyle='rgba(76,195,138,.13)';x.fillRect(X(from),T0+r*RH+2,X(h)-X(from),RH-4);from=null}});
 if(from!=null){const endH=r==0?Math.min(h1,hod(new Date())):h1;if(endH>from){x.fillStyle='rgba(76,195,138,.13)';x.fillRect(X(from),T0+r*RH+2,X(endH)-X(from),RH-4)}}});
 pw.forEach(e=>{const d=new Date(e.t*1000),r=rowOf(d);if(r<0||r>=rows)return;const px=X(hod(d)),cy=T0+r*RH+RH/2,z=Math.min(6,RH/2-2);
 x.beginPath();if(e.on){x.moveTo(px,cy-z);x.lineTo(px-z,cy+z);x.lineTo(px+z,cy+z)}else{x.moveTo(px,cy+z);x.lineTo(px-z,cy-z);x.lineTo(px+z,cy-z)}x.closePath();
-const col=e.on?STC.ok:'#9aa3ad';if(e.ok){x.fillStyle=col;x.fill()}else{x.strokeStyle=col;x.lineWidth=1.5;x.stroke();x.lineWidth=1}
+const col=e.on?STC.ok:TC.dim;if(e.ok){x.fillStyle=col;x.fill()}else{x.strokeStyle=col;x.lineWidth=1.5;x.stroke();x.lineWidth=1}
 cells.push({x:px-z-2,y:cy-z-2,w:2*z+4,h:2*z+4,txt:`<b>Machine ${e.on?'on':'off'}${e.ok?'':': not done'}</b><br>${hm(d)}, ${e.by=='schedule'?'by the schedule':'by you'}${e.ok?'':'<br>'+esc(e.outcome)}${e.sure===false?'<br>pressed while on/off was not known':''}`})});
 // shots: dots in time order on each row, nudged apart when they would touch
 const rad=Math.max(3,Math.min(9,RH/2-2)),gap=2*rad+1,lastX=new Map();
@@ -956,13 +978,13 @@ const list=[...bags.values()].slice(-12);if(!list.length)return emptyNote(c,'idn
 list.forEach(b=>{const i=b.shots.findIndex(s=>Math.abs(btime(s)-s.target_time_s)<=tol);b.dial=i<0?null:i+1;b.total=b.shots.length});
 const mx=Math.max(...list.map(b=>b.total)),L0=40,R0=c.width-12,T0=24,B0=c.height-40,bw=(R0-L0)/list.length,Y=v=>B0-v/mx*(B0-T0),cells=[];
 x.font='12px sans-serif';x.lineWidth=1;
-niceTicks(0,mx,4,1).forEach(v=>{const y=Math.round(Y(v))+.5;x.strokeStyle='#22262b';x.beginPath();x.moveTo(L0,y);x.lineTo(R0,y);x.stroke();x.fillStyle='#9aa3ad';x.fillText(String(v),8,y+4)});
+niceTicks(0,mx,4,1).forEach(v=>{const y=Math.round(Y(v))+.5;x.strokeStyle=TC.grid;x.beginPath();x.moveTo(L0,y);x.lineTo(R0,y);x.stroke();x.fillStyle=TC.dim;x.fillText(String(v),8,y+4)});
 list.forEach((b,i)=>{const bx=L0+i*bw+bw*.15,w=bw*.7,d=b.dial==null?b.total:b.dial;
 x.fillStyle=b.dial==null?STC.slow:'#f08a24';x.fillRect(bx,Y(d),w,B0-Y(d));if(b.dial!=null&&b.total>d){x.fillStyle=STC.ok;x.globalAlpha=.55;x.fillRect(bx,Y(b.total),w,Y(d)-Y(b.total));x.globalAlpha=1}
-const lab=b.n.length>14?b.n.slice(0,13)+'…':b.n,rd=ymd(b.rd);x.fillStyle='#c3c9d0';x.fillText(lab,bx+w/2-x.measureText(lab).width/2,B0+14);if(rd){const t=rd.toLocaleDateString([], {month:'short',day:'numeric'});x.fillStyle='#9aa3ad';x.fillText(t,bx+w/2-x.measureText(t).width/2,B0+28)}
-{const t=String(b.total);x.fillStyle='#c3c9d0';x.fillText(t,bx+w/2-x.measureText(t).width/2,Y(b.total)-5)}if(b.dial!=null&&B0-Y(d)>16&&w>16){const t=String(b.dial);x.fillStyle='#1d0f00';x.fillText(t,bx+w/2-x.measureText(t).width/2,B0-4)}
+const lab=b.n.length>14?b.n.slice(0,13)+'…':b.n,rd=ymd(b.rd);x.fillStyle=TC.mid;x.fillText(lab,bx+w/2-x.measureText(lab).width/2,B0+14);if(rd){const t=rd.toLocaleDateString([], {month:'short',day:'numeric'});x.fillStyle=TC.dim;x.fillText(t,bx+w/2-x.measureText(t).width/2,B0+28)}
+{const t=String(b.total);x.fillStyle=TC.mid;x.fillText(t,bx+w/2-x.measureText(t).width/2,Y(b.total)-5)}if(b.dial!=null&&B0-Y(d)>16&&w>16){const t=String(b.dial);x.fillStyle='#1d0f00';x.fillText(t,bx+w/2-x.measureText(t).width/2,B0-4)}
 cells.push({x:bx,y:Y(b.total),w,h:B0-Y(b.total),txt:`<b>${esc(b.n)}</b>${rd?', roasted '+rd.toLocaleDateString():''}<br>${b.dial==null?'no shot on time yet, '+b.total+' shot'+(b.total==1?'':'s'):b.dial+' shot'+(b.dial==1?'':'s')+' to the first on time, '+b.total+' in all'}`})});
-x.strokeStyle='#3a3f46';x.beginPath();x.moveTo(L0,T0);x.lineTo(L0,B0);x.lineTo(R0,B0);x.stroke();
+x.strokeStyle=TC.edge;x.beginPath();x.moveTo(L0,T0);x.lineTo(L0,B0);x.lineTo(R0,B0);x.stroke();
 chartCells(c,cells,q=>q.txt);
 const sw=v=>`<span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:${v};margin:0 4px 0 10px;vertical-align:middle"></span>`;
 $('idleg').innerHTML=sw('#f08a24')+'shots to the first on time'+sw(STC.ok)+'shots after'+sw(STC.slow)+'not on time yet';
@@ -1025,11 +1047,11 @@ if(!big){const d=r.data;$('sdata').innerHTML=`White: weight. Orange: flow.${REF?
 function draw(id,s,T,W,F,REF){const c=$(id),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);if(!T||T.length<2)return;
 const fv=F?F.filter(v=>v!=null):[],tm=Math.max(T[T.length-1],REF?REF.T[REF.T.length-1]:0,1),wm=Math.max(s.target_weight_g*1.1,...W,...(REF?REF.W:[0])),fm=Math.max(1,...fv),R=52,X=t=>34+t/tm*(c.width-34-R),Y=w=>c.height-20-Math.max(w,0)/wm*(c.height-32),YF=v=>c.height-20-Math.max(v,0)/fm*(c.height-32);
 x.lineWidth=1;x.strokeStyle='#6b7280';x.setLineDash([4,6]);x.beginPath();x.moveTo(34,Y(s.target_weight_g));x.lineTo(c.width-R,Y(s.target_weight_g));x.stroke();
-x.fillStyle='#9aa3ad';x.font='12px sans-serif';x.strokeStyle='#3a3f46';[[s.first_drop_s,'first drops'],[s.shot_time_s,'stop']].forEach(m=>{if(!(m[0]>0&&m[0]<=tm))return;x.beginPath();x.moveTo(X(m[0]),10);x.lineTo(X(m[0]),c.height-20);x.stroke();x.fillText(m[1],X(m[0])+4,c.height-26)});x.setLineDash([]);
+x.fillStyle=TC.dim;x.font='12px sans-serif';x.strokeStyle=TC.edge;[[s.first_drop_s,'first drops'],[s.shot_time_s,'stop']].forEach(m=>{if(!(m[0]>0&&m[0]<=tm))return;x.beginPath();x.moveTo(X(m[0]),10);x.lineTo(X(m[0]),c.height-20);x.stroke();x.fillText(m[1],X(m[0])+4,c.height-26)});x.setLineDash([]);
 if(F){x.strokeStyle='#f08a24';x.lineWidth=2;x.beginPath();let pen=false;T.forEach((t,i)=>{if(F[i]==null){pen=false;return}pen?x.lineTo(X(t),YF(F[i])):x.moveTo(X(t),YF(F[i]));pen=true});x.stroke()}
 if(REF){x.strokeStyle='#4cc38a';x.lineWidth=1.5;x.setLineDash([6,5]);x.beginPath();REF.T.forEach((t,i)=>i?x.lineTo(X(t),Y(REF.W[i])):x.moveTo(X(t),Y(REF.W[i])));x.stroke();x.setLineDash([])}
-x.strokeStyle='#eceef0';x.lineWidth=2.5;x.beginPath();T.forEach((t,i)=>i?x.lineTo(X(t),Y(W[i])):x.moveTo(X(t),Y(W[i])));x.stroke();
-x.fillStyle='#eceef0';x.fillText(wm.toFixed(0)+' g',2,16);x.fillStyle='#9aa3ad';x.fillText(tm.toFixed(0)+' s',c.width-R-28,c.height-4);x.fillStyle='#f08a24';x.fillText(fm.toFixed(1)+' g/s',c.width-R+6,16)}
+x.strokeStyle=TC.fg;x.lineWidth=2.5;x.beginPath();T.forEach((t,i)=>i?x.lineTo(X(t),Y(W[i])):x.moveTo(X(t),Y(W[i])));x.stroke();
+x.fillStyle=TC.fg;x.fillText(wm.toFixed(0)+' g',2,16);x.fillStyle=TC.dim;x.fillText(tm.toFixed(0)+' s',c.width-R-28,c.height-4);x.fillStyle='#f08a24';x.fillText(fm.toFixed(1)+' g/s',c.width-R+6,16)}
 
 const UPK={backflush:'Backflush',descale:'Descale',grinder_clean:'Clean the grinder'};
 async function loadUpkeep(){let m;try{m=await get('/api/maintenance')}catch(e){return}$('mt_total').textContent=m.shots_total+' shots counted';

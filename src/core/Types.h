@@ -426,7 +426,14 @@ struct Settings {
   // off (core/ScaleRest.h). 0, as a record saved before this field reads, means the default (5);
   // 255 keeps it connected all the time.
   uint8_t scaleRestMin = 5;
+  // The colour scheme of the web page and the controller's screen (UiTheme). 0, as a record saved
+  // before this field reads, is Dark.
+  uint8_t uiTheme = 0;
 };
+
+// The colour schemes, in the order the web page lists them.
+enum class UiTheme : uint8_t { DARK = 0, LIGHT, NORD, SOLARIZED_DARK, DRACULA, HIGH_CONTRAST };
+constexpr uint8_t UI_THEME_COUNT = 6;
 
 struct WeightSample {
   float weightG = 0.0f;

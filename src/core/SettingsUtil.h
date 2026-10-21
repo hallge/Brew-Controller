@@ -71,6 +71,7 @@ inline void sanitize(Settings &s) {
   if (s.grindTimeBasis != GrindTimeBasis::POUR) s.grindTimeBasis = GrindTimeBasis::TOTAL;
   s.grindMaxStepUm = clampTo<uint8_t>(s.grindMaxStepUm, 1, 100);
   s.scaleRestMin = sanitizeScaleRestMin(s.scaleRestMin);
+  if (s.uiTheme >= UI_THEME_COUNT) s.uiTheme = 0;
 }
 
 inline Settings defaultSettings() {
