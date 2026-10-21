@@ -82,6 +82,16 @@ inline void sanitizePusherConfig(PusherConfig &c) {
   }
 }
 
+// One press of the power button the controller made, as it ended: for the owner's record of when
+// the machine was switched (the web page's Insights). 8 bytes, stored as is in a ring file.
+struct PowerEvent {
+  uint32_t epochS = 0;     // wall clock when the press ended; 0 if the clock was not set
+  uint8_t on = 0;          // 1: to switch on, 0: to switch off
+  uint8_t bySchedule = 0;  // 1: the weekly schedule, 0: the owner (web page or screen)
+  uint8_t outcome = 0;     // PowerControl::Outcome: DONE, or why it did not happen
+  uint8_t sure = 1;        // 0: "press anyway" while on/off was not known, so the direction is a guess
+};
+
 class PowerControl {
  public:
   enum class Job : uint8_t { IDLE, WAITING, PRESSING };
@@ -103,6 +113,14 @@ class PowerControl {
   bool lastWasSchedule() const { return bySchedule_; }
   // The power bot's link is wanted: a press is waiting for it or in progress.
   bool wantsLink() const { return job_ != Job::IDLE; }
+  // The last press that ended, once; false if none ended since the last call. Refusals (already
+  // in that state, not known, busy, no bot) are not presses and give none.
+  bool takeEvent(PowerEvent &out) {
+    if (!eventReady_) return false;
+    eventReady_ = false;
+    out = event_;
+    return true;
+  }
   // The configuration changed (belief): the caller saves it.
   bool takeDirty() {
     const bool dirty = dirty_;
@@ -142,6 +160,7 @@ class PowerControl {
   // epochS: wall clock in seconds, 0 if not known. idle: no shot is running
   // or being set up, so the machine may be switched.
   void tick(uint32_t nowMs, uint32_t epochS, bool idle, IActuator &bot) {
+    epochS_ = epochS;
     schedule(nowMs, epochS);
     switch (job_) {
       case Job::IDLE:
@@ -216,6 +235,12 @@ class PowerControl {
     outcome_ = Outcome::NONE;
   }
   void end(Outcome outcome) {
+    event_.epochS = epochS_ >= 1700000000u ? epochS_ : 0;
+    event_.on = target_ ? 1 : 0;
+    event_.bySchedule = bySchedule_ ? 1 : 0;
+    event_.outcome = static_cast<uint8_t>(outcome);
+    event_.sure = toggle_ && belief() == PowerBelief::UNKNOWN ? 0 : 1;
+    eventReady_ = true;
     job_ = Job::IDLE;
     toggle_ = false;
     outcome_ = outcome;
@@ -258,6 +283,9 @@ class PowerControl {
   uint32_t tries_ = 0;
   bool haveMinute_ = false;
   uint32_t lastMinute_ = 0;
+  uint32_t epochS_ = 0;
+  PowerEvent event_;
+  bool eventReady_ = false;
 };
 
 }  // namespace bbw

@@ -47,6 +47,7 @@ described; the rest are as the page uses them.
 | `/api/update/boot` | POST | `?slot=factory` (the safe version flashed over USB) or `?slot=previous` (the other update slot): start from it at the restart that follows |
 | `/api/update/config` | POST | `{"repo":"owner/name","token":"...","auto_check":true}`; the token (a private repository only) is write-only: blank keeps it, `-` forgets it |
 | `/api/update` | POST | install a `firmware.bin` uploaded as a form file (no internet needed) |
+| `/api/power/events?days=` | GET | the power presses the controller made (schedule, web page or screen) in the last `days` days (default 30, at most 400), oldest first: `t` (epoch seconds), `on` (switching on or off), `by` (`schedule` or `owner`), `ok` (the press went out), `sure` (false: "press anyway" while on/off was not known), `outcome` (text). Presses made by hand on the machine are not seen. Kept for the last 500 presses. Capability `power_events_v1` |
 | others | | `/api/cmd`, `/api/devices`, `/api/pair`, `/api/pusher`, `/api/power`, `/api/machine`, `/api/recipe`, `/api/share*`, `/api/net`, `/api/time`, `/api/log*`, `/api/update`, `/api/history/clear`, `/api/offset/reset`, `/api/last`, `/api/bot/test`, `/api/shot/grind`, `/api/shot/vote`, `/api/coffee/adopt` |
 
 ## Settings are stored steps

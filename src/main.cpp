@@ -81,6 +81,9 @@ std::atomic<bool> g_machineDirty{false};
 bbw::PowerControl g_powerControl;
 bbw::ScaleRest g_scaleRest;  // control task, under the lock
 std::atomic<bool> g_pushersDirty{false};
+// Power presses that ended, waiting to be logged by the main loop (control task, under the lock).
+bbw::PowerEvent g_powerEventQueue[4];
+uint8_t g_powerEventsQueued = 0;
 std::atomic<uint32_t> g_powerHoldUntilMs{0};  // keep the power bot's link up until then
 std::atomic<uint32_t> g_stopHoldUntilMs{0};   // and the stop bot's (pairing check, new key)
 bbw::BleManager g_ble(g_scale, g_bot, g_power, g_stop);
@@ -600,6 +603,10 @@ void controlTask(void *) {
                         (state == State::READY || state == State::CONNECTING_SCALE);
       g_powerControl.tick(now, static_cast<uint32_t>(time(nullptr)), idle, g_power);
       if (g_powerControl.takeDirty()) g_pushersDirty = true;
+      bbw::PowerEvent powerEvent;
+      if (g_powerControl.takeEvent(powerEvent) && g_powerEventsQueued < 4) {
+        g_powerEventQueue[g_powerEventsQueued++] = powerEvent;
+      }
       g_ble.setPowerKept(g_settings.keepPowerBotConnected);
       g_ble.setPowerWanted(!shotPhase &&
                            (g_powerControl.wantsLink() ||
@@ -2252,6 +2259,19 @@ void loop() {
       copy = g_stopBot;
     }
     g_store.saveStopBot(copy);
+  }
+  {
+    bbw::PowerEvent events[4];
+    uint8_t count = 0;
+    {
+      Lock lock;
+      count = g_powerEventsQueued;
+      for (uint8_t i = 0; i < count; ++i) events[i] = g_powerEventQueue[i];
+      g_powerEventsQueued = 0;
+    }
+    for (uint8_t i = 0; i < count; ++i) {
+      if (!g_store.appendPowerEvent(events[i])) LOGW("power: the press could not be logged");
+    }
   }
   if (g_pushersDirty.exchange(false)) {
     bbw::PusherConfig copy;
