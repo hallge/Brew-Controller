@@ -35,6 +35,32 @@ inline uint8_t sanitizeScaleRestMin(uint8_t stored) {
   return stored > SCALE_REST_MAX_MIN ? SCALE_REST_MAX_MIN : stored;
 }
 
+// The scale switching itself off (or being switched off): it was on (connected, let go to rest, or
+// heard advertising) and is now none of these, silent for ScaleRest::QUIET_MS. True once, at that
+// change. A scale already off when the controller starts gives nothing: no change was seen.
+// quietMs: since the scale was last heard advertising. The silence is also counted from the link going
+// down: a connected scale does not advertise, so a dropped link must not look like a scale switched off.
+class ScaleOffWatch {
+ public:
+  bool update(uint32_t nowMs, bool connected, bool resting, uint32_t quietMs, uint32_t quietLimitMs) {
+    if (connected) {
+      linkSeenMs_ = nowMs;
+      haveLink_ = true;
+    } else if (haveLink_ && static_cast<uint32_t>(nowMs - linkSeenMs_) < quietMs) {
+      quietMs = static_cast<uint32_t>(nowMs - linkSeenMs_);
+    }
+    const bool off = !connected && !resting && quietMs >= quietLimitMs;
+    const bool switched = wasOn_ && off;
+    wasOn_ = !off;
+    return switched;
+  }
+
+ private:
+  bool wasOn_ = false;
+  bool haveLink_ = false;
+  uint32_t linkSeenMs_ = 0;
+};
+
 class ScaleRest {
  public:
   static constexpr float STILL_BAND_G = 0.5f;          // a reading moving less than this is still

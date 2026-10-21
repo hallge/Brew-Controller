@@ -649,6 +649,17 @@ void controlTask(void *) {
                                     : "taken back");
         }
         g_ble.setScaleResting(resting);
+        // The scale switched off: the machine too, if the owner asked for that.
+        static bbw::ScaleOffWatch scaleOff;
+        if (scaleOff.update(now, scaleConnected, resting, quietMs, bbw::ScaleRest::QUIET_MS) &&
+            g_settings.powerOffWithScale) {
+          if (g_powerControl.request(false, now, bbw::PowerBy::SCALE_OFF)) {
+            LOGI("power: the scale switched off; switching the machine off");
+          } else {
+            LOGI("power: the scale switched off; machine not switched off: %s",
+                 bbw::PowerControl::outcomeText(g_powerControl.lastOutcome()));
+          }
+        }
         if (g_scaleRest.takeStart(now, state == State::READY, st.weightFresh,
                                   !st.cupRequired || st.cupPresent)) {
           if (bbw::updateBusy()) {

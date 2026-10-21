@@ -1877,7 +1877,7 @@ static void testPowerEvents() {
   CHECK(!power.takeEvent(ev));                                          // still pressing
   bot.done();
   power.tick(now += 10, epoch + 5, true, bot);
-  CHECK(power.takeEvent(ev) && ev.epochS == epoch + 5 && ev.on == 0 && ev.bySchedule == 0 &&
+  CHECK(power.takeEvent(ev) && ev.epochS == epoch + 5 && ev.on == 0 && ev.by == 0 &&
         ev.outcome == static_cast<uint8_t>(PowerControl::Outcome::DONE) && ev.sure == 1);
   CHECK(!power.takeEvent(ev));
   CHECK(sizeof(PowerEvent) == 8);
@@ -1907,9 +1907,51 @@ static void testPowerEvents() {
     power.tick(now += 20000, e, true, bot);
     if (bot.result() == PressResult::BUSY) bot.done();
   }
-  CHECK(power.takeEvent(ev) && ev.on == 1 && ev.bySchedule == 1 && ev.sure == 1 &&
+  CHECK(power.takeEvent(ev) && ev.on == 1 && ev.by == 1 && ev.sure == 1 &&
         ev.epochS >= at0800 && ev.epochS <= at0800 + 60 &&
         ev.outcome == static_cast<uint8_t>(PowerControl::Outcome::DONE));
+}
+
+// The scale switching off switches the machine off (when asked for): the press is marked as the scale's,
+// and the moment is seen once, not at start-up, not while the scale rests or still advertises.
+static void testPowerOffWithScale() {
+  printf("power bot: off when the scale switches off\n");
+  const uint32_t Q = ScaleRest::QUIET_MS;
+  ScaleOffWatch w;
+  uint32_t t = 1000;
+  CHECK(!w.update(t, false, false, UINT32_MAX, Q));          // start-up, scale off: nothing seen
+  CHECK(!w.update(t += 1000, true, false, 0, Q));            // on, connected for an hour: not advertising
+  t += 3600000;
+  CHECK(!w.update(t, true, false, 0, Q));
+  // The link drops. Last heard advertising an hour ago, but the link was there a moment ago: not off.
+  CHECK(!w.update(t += 500, false, false, 3600000, Q));
+  CHECK(!w.update(t += Q - 1000, false, false, 3600000, Q)); // still under the quiet limit
+  CHECK(!w.update(t += 100, false, true, 3600000, Q));       // let go to rest: not off
+  CHECK(w.update(t += 1000, false, false, 3600000, Q));      // silent long enough: switched off
+  CHECK(!w.update(t += 5000, false, false, 3600000, Q));     // once
+  CHECK(!w.update(t += 1000, false, false, 1000, Q));        // heard advertising again: on
+  CHECK(w.update(t += Q, false, false, Q, Q));               // and off again
+
+  PusherConfig config;
+  PowerControl power;
+  power.begin(&config);
+  FakeBot bot;
+  bot.up = true;
+  strcpy(config.powerAddress, "aa:bb:cc:dd:ee:ff");
+  uint32_t now = 1000;
+  PowerEvent ev;
+  power.believe(PowerBelief::OFF);
+  CHECK(!power.request(false, now, PowerBy::SCALE_OFF) && !power.takeEvent(ev));  // already off
+  power.believe(PowerBelief::ON);
+  CHECK(power.request(false, now, PowerBy::SCALE_OFF) && !power.lastWasSchedule());
+  power.tick(now += 10, 1791763200u, true, bot);
+  bot.done();
+  power.tick(now += 10, 1791763201u, true, bot);
+  CHECK(power.takeEvent(ev) && ev.on == 0 && ev.by == static_cast<uint8_t>(PowerBy::SCALE_OFF) &&
+        ev.outcome == static_cast<uint8_t>(PowerControl::Outcome::DONE));
+  CHECK(power.belief() == PowerBelief::OFF);
+  Settings s;
+  CHECK(!s.powerOffWithScale);                          // off unless asked for
 }
 
 static void testPowerControl() {
@@ -6415,6 +6457,7 @@ int main() {
   testPusherHold();
   testPowerControl();
   testPowerEvents();
+  testPowerOffWithScale();
   testMachineProfiles();
   testShotDataSet();
   testReadingNewerThanTick();
