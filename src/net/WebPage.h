@@ -18,6 +18,7 @@ static const char WEB_PAGE[] PROGMEM = R"HTML(<!doctype html>
 :root[data-theme="dracula"]{--bg:#21222c;--card:#282a36;--up:#343746;--line:#44475a;--edge:#5a5e78;--fg:#f8f8f2;--mid:#e2e2dc;--dim:#a9adc8;--ok:#50fa7b;--okbg:#1f3a2a;--warn:#f1fa8c;--warnbg:#3a3b25;--bad:#ff5555;--acc:#ffb86c;--accbg:#47392b;--com:#8be9fd;--combg:#253a44;--comline:#3b5d6a;--grid:#343746;--gridlo:#2e303e;--empty:#2a2c38;--stripe:#262833;--acctext:#ffe0bd;--comtext:#d5f6fd;--comh:#8be9fd;--oktext:#9bfbb4;--hover:#343746;--hover2:#30323f;--badbg:#4a2328;--pairbg:#47392b;--pairline:#8a6a45;--delline:#7a3038;--deltext:#ff9a9a;--inhover:#6a6e8a;--acchover:#ffd09c;color-scheme:dark}
 :root[data-theme="contrast"]{--bg:#000000;--card:#0a0a0a;--up:#1a1a1a;--line:#5a5a5a;--edge:#9a9a9a;--fg:#ffffff;--mid:#f0f0f0;--dim:#d0d0d0;--ok:#00e676;--okbg:#003a1c;--warn:#ffd600;--warnbg:#3a3100;--bad:#ff3b30;--acc:#ffb000;--accbg:#3d2a00;--com:#4fc3f7;--combg:#00243a;--comline:#2a6a90;--grid:#333333;--gridlo:#262626;--empty:#141414;--stripe:#0d0d0d;--acctext:#ffe2a0;--comtext:#e0f5ff;--comh:#4fc3f7;--oktext:#7dffb5;--hover:#1f1f1f;--hover2:#1a1a1a;--badbg:#3a0d0a;--pairbg:#3d2a00;--pairline:#a07000;--delline:#a03028;--deltext:#ff8a80;--inhover:#bdbdbd;--acchover:#ffc940;color-scheme:dark}
 *{box-sizing:border-box}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:700px){.two{grid-template-columns:1fr}}
 .theme{display:inline-flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:120px}.theme.on{outline:2px solid var(--acc);outline-offset:1px}.theme .strip{display:flex;border-radius:4px;overflow:hidden;border:1px solid var(--edge)}.theme .strip i{display:block;width:22px;height:14px}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;font-variant-numeric:tabular-nums}
 a{color:var(--acc);text-decoration:none}a:hover{color:var(--acchover)}
@@ -339,6 +340,10 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 
 <div class="page" id="p-insights">
 <div class="head"><h1>Insights</h1><label class="sm">Coffee<select id="icoffee" onchange="drawInsights()"></select></label></div>
+<section class="card" id="itaste"><div class="head"><h2>Your coffee taste</h2><div class="row" id="itwho" style="margin:0"></div></div>
+<div class="two"><div><div class="sm dim">The cup</div><canvas id="itcup" width="440" height="340" style="height:auto"></canvas></div><div><div class="sm dim">Flavours</div><canvas id="itfl" width="440" height="340" style="height:auto"></canvas></div></div>
+<div class="sm" id="itnote"></div><div class="list" id="itbest"></div>
+<details class="note"><summary>Built from your coffee ratings (Coffees page): the coffees you loved pull it towards their taste, the ones you disliked push it away.</summary><ul><li>The middle ring is no lean either way; further out is more of it, further in less.</li><li>A pale point says little is known about it yet. The profile shows from 3 rated coffees and is settled from 8.</li><li>Values you did not give are filled in from each coffee's tasting notes, process and roast level, with less weight.</li></ul></details></section>
 <section class="card"><div class="head"><h2>Roast level against grind setting</h2><span class="sm dim" id="irnote"></span></div><canvas id="irchart" width="900" height="240" style="height:240px"></canvas><div class="row sm" id="irleg"></div><details class="note"><summary>One dot per shot stopped by weight on this grinder: the setting it was pulled at, its coffee's roast level, coloured by how old the coffee was.</summary><ul><li>Blue is fresh, red is old; grey: no roast date. A larger dot poured faster.</li><li>The green band on each roast level: the settings whose shots ran on time (within the tolerance of their target time); the line marks the middle one.</li><li>Hover or tap a dot to see the shot; click it to open it.</li></ul></details></section>
 <section class="card"><div class="head"><h2>Coffee age against brew time</h2><span class="sm dim" id="ianote"></span></div><canvas id="iachart" width="900" height="260" style="height:260px"></canvas><div class="row sm" id="ialeg"></div><details class="note"><summary>How far each shot's brew time was from its target, by how many days the coffee was off roast. The darker the square, the more shots.</summary><ul><li>Rows above the outlined band ran slow, rows below ran fast.</li><li>Shots without a roast date or a target time are left out.</li></ul></details></section>
 <section class="card"><div class="head"><h2>Brewing calendar</h2><div class="row" id="icmode" role="group" aria-label="What the calendar shows"><button data-m="shots" onclick="CALMODE='shots';drawCalendar()">Shots</button><button data-m="brew" onclick="CALMODE='brew';drawCalendar()">Coffee &amp; recipe</button><button data-m="drift" onclick="CALMODE='drift';drawCalendar()">Drift</button><button data-m="hours" onclick="CALMODE='hours';drawCalendar()">Time of day</button></div></div><div class="scroll"><canvas id="icchart" width="900" height="180" style="height:180px;min-width:620px"></canvas></div><div class="row sm" id="icleg"></div></section>
@@ -627,6 +632,25 @@ function saveRating(){const c=coffee(C);if(!c||!RS)return;if(!RS.stars)return sa
 post('/api/coffee/rate',{id:RS.id||0,coffee:C,bag:RS.bag!=null?RS.bag:(c.bagId||0),drinker:RS.drinker,stars:RS.stars,attr:RS.attr,flavours:RS.fl}).then(r=>{done(r,'Rating saved');if(r.ok){RS.id=r.id;loadRatings()}})}
 async function delRating(id){if(!await ask('Delete this rating?','Delete'))return;post('/api/coffee/rate/delete?id='+id).then(r=>{done(r,'Deleted');if(RS&&RS.id==id)RS=null;loadRatings()})}
 
+// ---- Insights: the taste profile as two radar charts
+let TPD=0,TPBUSY=false;
+function radar(c,labels,vals,known){const x=c.getContext('2d'),W=c.width,H=c.height,cx=W/2,cy=H/2+4,R=Math.min(W,H)/2-46,n=labels.length;x.clearRect(0,0,W,H);x.font='13px sans-serif';
+const P=(i,r)=>[cx+r*Math.sin(2*Math.PI*i/n),cy-r*Math.cos(2*Math.PI*i/n)];
+[.25,.5,.75,1].forEach(f=>{x.beginPath();for(let i=0;i<=n;i++){const[a,b]=P(i%n,R*f);i?x.lineTo(a,b):x.moveTo(a,b)}x.strokeStyle=f==.5?TC.edge:TC.grid;x.lineWidth=f==.5?1.5:1;x.stroke()});x.lineWidth=1;
+labels.forEach((l,i)=>{const[a,b]=P(i,R);x.strokeStyle=TC.grid;x.beginPath();x.moveTo(cx,cy);x.lineTo(a,b);x.stroke();const[lx,ly]=P(i,R+22);x.fillStyle=known[i]>.05?TC.mid:TC.dim;const w=x.measureText(l).width;x.fillText(l,Math.max(2,Math.min(W-w-2,lx-w/2)),ly+5)});
+x.beginPath();vals.forEach((v,i)=>{const[a,b]=P(i,R*v);i?x.lineTo(a,b):x.moveTo(a,b)});x.closePath();x.fillStyle='rgba(240,138,36,.22)';x.fill();x.strokeStyle='#f08a24';x.lineWidth=2;x.stroke();x.lineWidth=1;
+vals.forEach((v,i)=>{const[a,b]=P(i,R*v);x.globalAlpha=.35+.65*Math.min(1,known[i]);x.fillStyle='#f08a24';x.beginPath();x.arc(a,b,4,0,7);x.fill();x.globalAlpha=1})}
+async function drawTaste(){const el=$('itaste');if(!el||TPBUSY)return;TPBUSY=true;try{if(!RT){try{RT=await get('/api/coffee/ratings')}catch(e){}}
+const named=RT&&RT.named,people=named?RT.drinkers.map((n,i)=>[i+1,n]).filter(x=>x[1]):[];if(!named)TPD=0;
+$('itwho').innerHTML=named&&people.length?[[0,'Household'],...people].map(([id,n])=>`<button class="${id==TPD?'on':''}" onclick="TPD=${id};drawTaste()">${esc(n)}</button>`).join(''):'';
+let t;try{t=await get('/api/taste/profile?drinker='+TPD)}catch(e){el.style.display='none';return}el.style.display='';
+const p=t.profile,lab=t.dims.map(d=>d[0].toUpperCase()+d.slice(1));radar($('itcup'),lab.slice(0,5),p.v.slice(0,5),p.known.slice(0,5));radar($('itfl'),lab.slice(5),p.v.slice(5),p.known.slice(5));
+const lean=t.dims.map((d,i)=>({d,i,s:(p.v[i]-.5)*Math.min(1,p.known[i]*1.5)})).filter(o=>Math.abs(o.s)>.06),name=o=>o.i<5?(o.s>0?'more ':'less ')+o.d:o.d;
+const to=lean.filter(o=>o.s>0).sort((a,b)=>b.s-a.s).slice(0,4).map(name),from=lean.filter(o=>o.s<0&&o.i>=5).sort((a,b)=>a.s-b.s).slice(0,3).map(name);
+$('itnote').innerHTML=!p.coffees?'<span class="dim">No coffees rated yet. Rate the coffees you drink on the Coffees page (How you liked it) and your taste shows here.</span>':
+(!p.shown?`<span class="dim">Early days: ${p.coffees} coffee${p.coffees==1?'':'s'} rated; the profile shows from 3.</span> `:'')+(to.length?`You lean towards <b>${to.join(', ')}</b>`:'')+(from.length?`${to.length?'; ':'You lean '}away from <b>${from.join(', ')}</b>`:'')+(to.length||from.length?'.':'')+(p.shown&&!p.settled?` <span class="dim">(${p.coffees} coffees rated: settles from 8)</span>`:'');
+$('itbest').innerHTML=(t.best||[]).length?'<div class="sm dim" style="margin-top:8px">Liked best</div>'+t.best.map(b=>{const c=coffee(b.coffee);return c?`<a class="item" href="#coffees" onclick="C=${c.id}"><span>${esc(c.name)}${c.roaster?' <span class="dim">'+esc(c.roaster)+'</span>':''}</span><b style="color:var(--acc)">${starTxt(b.stars)}</b></a>`:''}).join(''):''}finally{TPBUSY=false}}
+
 function drawCoffees(){drawCoffeeList();drawRating();const c=coffee(C)||{roastLevel:0};$('ctitle').textContent=C?'Coffee':'New coffee';
 CF.forEach(k=>{$('c_'+k).value=DK.includes(k)?i2d(c[k]):(c[k]==null?'':c[k])});drawBags(c);if(!c.altitudeM)$('c_altitudeM').value='';
 $('cdel').style.display=$('cbag').style.display=C?'':'none';$('cbagrow').style.display='none';
@@ -886,7 +910,7 @@ c.addEventListener('pointermove',e=>{if(e.pointerType=='mouse')show(at(e),e)});c
 c.addEventListener('click',e=>{const q=at(e);if(!q)return show(null);if(e.pointerType!=='mouse'&&tip._for!==q){tip._for=q;show(q,e);return}tip._for=null;tip.style.display='none';if(c._click&&q.click)c._click(q)})}
 let PWR=null,PWRAT=0;
 function loadPowerEvents(){if(Date.now()-PWRAT<60000)return;PWRAT=Date.now();get('/api/power/events?days=90').then(a=>{PWR=Array.isArray(a)?a:null;if(CALMODE=='hours'&&location.hash=='#insights')drawCalendar()}).catch(()=>{PWR=null})}
-function drawInsights(){if(!L||!Array.isArray(SH))return;loadPowerEvents();const sel=$('icoffee'),cur=sel.value,ids=[...new Map(SH.filter(s=>s.coffee).map(s=>[String(s.coffee_id||0),s.coffee])).entries()];
+function drawInsights(){if(!L||!Array.isArray(SH))return;loadPowerEvents();drawTaste();const sel=$('icoffee'),cur=sel.value,ids=[...new Map(SH.filter(s=>s.coffee).map(s=>[String(s.coffee_id||0),s.coffee])).entries()];
 sel.innerHTML='<option value="">All coffees</option>'+ids.map(([id,n])=>`<option value="${id}" ${id==cur?'selected':''}>${esc(n)}</option>`).join('');
 drawRoastGrind();drawAgeHeat();drawCalendar();drawDialIn()}
 function emptyNote(c,id,text){const x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);c._dots=[];c._cells=[];x.fillStyle=TC.dim;x.font='14px sans-serif';x.fillText(text,20,40);$(id).textContent=''}

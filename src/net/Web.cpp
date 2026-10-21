@@ -17,6 +17,7 @@
 #include "Version.h"
 #include "ShotFormat.h"
 #include "WebPage.h"
+#include "core/TasteProfile.h"
 #include "core/SettingsUtil.h"
 #include "platform/BigMem.h"
 #include "platform/FirmwareUpdate.h"
@@ -1622,6 +1623,87 @@ void handlePostRating() {
   sendJson(out);
 }
 
+// The rated coffees of one drinker (0: the household, everyone's), each as a taste: the rating's
+// values, filled in from the coffee's description. Heap, freed by the caller.
+struct RatedSet {
+  bbw::RatedTaste *items = nullptr;
+  size_t n = 0;
+  uint8_t drinker = 0;
+  bool all = true;
+};
+RatedSet collectRated(uint8_t drinker) {
+  RatedSet set;
+  set.drinker = drinker;
+  set.all = drinker == 0 || !app::settings().namedDrinkers;
+  set.items = new bbw::RatedTaste[bbw::Store::RATING_CAPACITY];
+  struct Ctx {
+    RatedSet *set;
+    bbw::CoffeeRating *raw;
+  };
+  bbw::CoffeeRating *raw = new bbw::CoffeeRating[bbw::Store::RATING_CAPACITY];
+  Ctx ctx = {&set, raw};
+  app::store().scanRatings([](const bbw::CoffeeRating &r, void *c) {
+    Ctx &x = *static_cast<Ctx *>(c);
+    if (!x.set->all && r.drinkerId != x.set->drinker) return true;
+    x.raw[x.set->n++] = r;
+    return x.set->n < bbw::Store::RATING_CAPACITY;
+  }, &ctx);
+  app::readLibrary([](const bbw::Library &lib, void *c) {
+    Ctx &x = *static_cast<Ctx *>(c);
+    size_t kept = 0;
+    for (size_t i = 0; i < x.set->n; ++i) {
+      const bbw::CoffeeRating &r = x.raw[i];
+      const bbw::Coffee *coffee = bbw::findCoffee(lib, r.coffeeId);
+      if (!coffee) continue;  // deleted since
+      bbw::TasteVector t = bbw::tasteFromRating(r);
+      t = bbw::blendTaste(t, bbw::tasteFromDescription(*coffee));
+      x.set->items[kept++] = {r.coffeeId, r.stars, r.epochS, t};
+    }
+    x.set->n = kept;
+  }, &ctx);
+  delete[] raw;
+  return set;
+}
+
+void profileJson(JsonObject o, const bbw::TasteProfile &p) {
+  o["coffees"] = p.coffees;
+  o["ratings"] = p.ratings;
+  o["shown"] = p.shown();
+  o["settled"] = p.settled();
+  JsonArray v = o["v"].to<JsonArray>(), k = o["known"].to<JsonArray>();
+  for (uint8_t d = 0; d < bbw::TASTE_DIMS; ++d) {
+    v.add(roundf(p.v[d] * 1000) / 1000);
+    k.add(roundf(p.known[d] * 1000) / 1000);
+  }
+}
+
+// A drinker's taste profile (?drinker=N; 0 or none: the household).
+void handleGetTasteProfile() {
+  const uint8_t drinker = static_cast<uint8_t>(server.arg("drinker").toInt());
+  RatedSet set = collectRated(drinker);
+  const bbw::TasteProfile p = bbw::buildProfile(set.items, set.n, app::epochNow());
+  JsonDocument doc;
+  doc["drinker"] = set.all ? 0 : drinker;
+  JsonArray dims = doc["dims"].to<JsonArray>();
+  for (uint8_t d = 0; d < bbw::TASTE_DIMS; ++d) dims.add(bbw::tasteDimName(d));
+  profileJson(doc["profile"].to<JsonObject>(), p);
+  // The coffees liked best: each coffee's best rating, highest first.
+  JsonArray best = doc["best"].to<JsonArray>();
+  for (uint8_t stars = 5; stars >= 4; --stars) {
+    for (size_t i = 0; i < set.n && best.size() < 5; ++i) {
+      if (set.items[i].stars != stars) continue;
+      bool listed = false;
+      for (JsonObject b : best) listed = listed || b["coffee"] == set.items[i].coffeeId;
+      if (listed) continue;
+      JsonObject b = best.add<JsonObject>();
+      b["coffee"] = set.items[i].coffeeId;
+      b["stars"] = stars;
+    }
+  }
+  delete[] set.items;
+  sendJson(doc);
+}
+
 void handleDeleteRating() {
   const uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 10);
   if (!app::store().deleteRating(id)) return sendError(404, "no such rating");
@@ -2122,6 +2204,7 @@ void begin() {
   server.on("/api/coffee/rate", HTTP_POST, handlePostRating);
   server.on("/api/coffee/rate/delete", HTTP_POST, handleDeleteRating);
   server.on("/api/drinkers", HTTP_POST, handlePostDrinkers);
+  server.on("/api/taste/profile", HTTP_GET, handleGetTasteProfile);
   server.on("/api/net", HTTP_POST, handleNet);
   server.on("/api/time", HTTP_POST, []() {
     const uint32_t epoch = strtoul(server.arg("epoch").c_str(), nullptr, 10);

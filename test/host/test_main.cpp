@@ -28,6 +28,7 @@
 #include "core/ShotContext.h"
 #include "core/ShotData.h"
 #include "core/SwitchBotProtocol.h"
+#include "core/TasteProfile.h"
 
 using namespace bbw;
 
@@ -1952,6 +1953,85 @@ static void testPowerOffWithScale() {
   CHECK(power.belief() == PowerBelief::OFF);
   Settings s;
   CHECK(!s.powerOffWithScale);                          // off unless asked for
+}
+
+static Coffee tasteCoffee(uint16_t id, const char *notes, const char *process, uint8_t roast) {
+  Coffee c;
+  c.id = id;
+  strcpy(c.notes, notes);
+  strcpy(c.process, process);
+  c.roastLevel = roast;
+  return c;
+}
+
+static void testCoffeeTaste() {
+  printf("coffee taste: ratings, descriptions, profiles, matching\n");
+  // A rating: stars are needed; values are kept in range.
+  CoffeeRating r;
+  r.coffeeId = 3;
+  CHECK(!sanitizeRating(r));
+  r.stars = 4;
+  r.attr[ACIDITY] = 9;
+  r.flavours = 0xFFFF;
+  r.drinkerId = 40;
+  CHECK(sanitizeRating(r) && r.attr[ACIDITY] == 5 && r.flavours == FLAVOUR_MASK && r.drinkerId == 0);
+  CoffeeRating same = r;
+  same.stars = 2;
+  CHECK(sameRated(r, same));
+  same.bagId = 9;
+  CHECK(!sameRated(r, same));
+  CHECK(sizeof(CoffeeRating) == 32);
+
+  // Notes to flavour families, at the start of words only.
+  const uint16_t f = familiesInNotes("Grape Jam & Burnt Sugars");
+  CHECK((f >> FRUITY & 1) && (f >> SWEET_CARAMEL & 1) && (f >> ROASTY & 1) && !(f >> FLORAL & 1));
+  CHECK(familiesInNotes("a sublime cup") == 0);
+  CHECK(familiesInNotes("Jasmine, bergamot") >> FLORAL & 1);
+
+  // A light natural reads bright and fruity; a dark roast heavy, bitter and roasty.
+  const Coffee light = tasteCoffee(1, "blueberry, jasmine", "natural", 1);
+  const Coffee dark = tasteCoffee(2, "dark chocolate, smoky", "washed", 5);
+  const TasteVector lt = tasteFromDescription(light), dt = tasteFromDescription(dark);
+  CHECK(lt.v[ACIDITY] > dt.v[ACIDITY] && dt.v[BITTERNESS] > lt.v[BITTERNESS]);
+  CHECK(lt.v[TASTE_ATTRS + FRUITY] == 1.0f && lt.known[TASTE_ATTRS + FRUITY] < 1.0f);
+  CHECK(dt.v[TASTE_ATTRS + ROASTY] == 1.0f && dt.v[TASTE_ATTRS + FRUITY] == 0.0f);
+
+  // A rating's own values win over the description's guesses; what it left out is filled in.
+  CoffeeRating lr;
+  lr.coffeeId = 1;
+  lr.stars = 5;
+  lr.attr[ACIDITY] = 5;
+  lr.attr[SWEETNESS] = 4;
+  lr.flavours = (1u << FRUITY) | (1u << FLORAL);
+  const TasteVector lrated = blendTaste(tasteFromRating(lr), lt);
+  CHECK(lrated.v[ACIDITY] == 1.0f && lrated.known[ACIDITY] == 1.0f);
+  CHECK(lrated.known[BITTERNESS] > 0.0f && lrated.known[BITTERNESS] < 1.0f);   // from the roast level
+
+  // Loving the light natural and disliking the dark roast: the profile leans bright, fruity, not roasty.
+  CoffeeRating dr;
+  dr.coffeeId = 2;
+  dr.stars = 1;
+  dr.attr[BITTERNESS] = 5;
+  dr.attr[ACIDITY] = 1;
+  dr.flavours = (1u << ROASTY) | (1u << CHOCOLATE_NUTTY);
+  const uint32_t now = 1791763200u;
+  RatedTaste rated[] = {{1, 5, now, lrated}, {2, 1, now, blendTaste(tasteFromRating(dr), dt)}};
+  TasteProfile p = buildProfile(rated, 2, now);
+  CHECK(p.coffees == 2 && !p.shown() && !p.settled());
+  CHECK(p.v[ACIDITY] > 0.6f && p.v[BITTERNESS] < 0.4f);
+  CHECK(p.v[TASTE_ATTRS + FRUITY] > 0.6f && p.v[TASTE_ATTRS + ROASTY] < 0.4f);
+
+  // A coffee like the loved one matches; one like the disliked one does not.
+  const TasteMatch good = matchTaste(p, tasteFromDescription(tasteCoffee(7, "peach, floral", "natural", 2)));
+  const TasteMatch bad = matchTaste(p, tasteFromDescription(tasteCoffee(8, "smoky, cocoa", "washed", 5)));
+  CHECK(good.score > 0.3f && bad.score < 0.0f && good.score > bad.score);
+  CHECK(good.why[0] != 255);
+  // Older ratings count less, a 3-star rating pulls only a little.
+  CHECK(recencyWeight(now - 2 * 365 * 86400u, now) < 0.5f && recencyWeight(now, now) == 1.0f);
+  CHECK(starPull(3) > 0.0f && starPull(3) < 0.3f && starPull(1) < 0.0f);
+  // Shown from three coffees, settled from eight.
+  RatedTaste three[] = {{1, 5, now, lrated}, {2, 1, now, lrated}, {3, 4, now, lrated}};
+  CHECK(buildProfile(three, 3, now).shown());
 }
 
 static void testPowerControl() {
@@ -6458,6 +6538,7 @@ int main() {
   testPowerControl();
   testPowerEvents();
   testPowerOffWithScale();
+  testCoffeeTaste();
   testMachineProfiles();
   testShotDataSet();
   testReadingNewerThanTick();
