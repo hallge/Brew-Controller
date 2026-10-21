@@ -561,12 +561,22 @@ void controlTask(void *) {
       // now, it takes a sleeping SwitchBot several seconds to answer.
       static bool cupWasPresent = false;
       const bool cupPresent = g_controller.cupPresent();
+      if (const char *why = g_controller.takeTareReason()) {
+        LOGI("scale: tared (%s; reading %.1f g)", why, static_cast<double>(g_controller.status(now).weightG));
+      }
+      if (g_controller.takeStartRefusedNoCup()) {
+        LOGI("start refused: no cup seen on the scale (reading %.1f g)",
+             static_cast<double>(g_controller.status(now).weightG));
+      }
       if (cupPresent && !cupWasPresent) {
         const uint32_t until = now + BOT_PREWAKE_MS;
         if (static_cast<int32_t>(until - g_botHoldUntilMs.load()) > 0) g_botHoldUntilMs = until;
       }
       if (cupPresent != cupWasPresent) {
-        LOGI("cup: %s (reading %.1f g)", cupPresent ? "on the scale" : "taken off",
+        const bbw::State cupState = g_controller.state();
+        const bool inUse = !cupPresent && cupState != State::READY && cupState != State::CONNECTING_SCALE &&
+                           cupState != State::SHOT_COMPLETE;
+        LOGI("cup: %s (reading %.1f g)", cupPresent ? "on the scale" : inUse ? "in use for the shot" : "taken off",
              static_cast<double>(g_controller.status(now).weightG));
       }
       cupWasPresent = cupPresent;
@@ -2046,7 +2056,11 @@ void setup() {
   g_maintenance = g_store.loadMaintenance();
   bbw::libraryLinkConfigure(g_net.libraryRepo, g_net.libraryToken);
   const bbw::Pairing pairing = g_store.loadPairing();
-  g_controller.restoreCupMemory(g_store.loadCupMemory());
+  // The cup on the scale before a restart is believed again (core/BrewController.h CupMemory), but
+  // not after the power was off: the scale may have been switched off and on meanwhile.
+  if (esp_reset_reason() != ESP_RST_POWERON && esp_reset_reason() != ESP_RST_BROWNOUT) {
+    g_controller.restoreCupMemory(g_store.loadCupMemory());
+  }
 
   LOGI("start-up: settings read, starting the display");
   ui::begin();

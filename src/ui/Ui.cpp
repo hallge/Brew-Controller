@@ -1951,6 +1951,9 @@ void loop() {
   if (touchKeyPressed) {
     touchKeyPressed = false;
     const bool wasOff = screenOff;
+    LOGI("ui: touch key (%s%s)", bbw::stateName(app::status().state),
+         wasOff ? ", screen off: only wakes it" : (settingsOpen || recipesOpen || editOpen || coffeeOpen)
+                                                     ? ", a menu was open: back to home" : "");
     wake();
     if (wasOff) {
       // a press on a dark screen only wakes it (and takes a resting scale back)

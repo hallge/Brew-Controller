@@ -2686,6 +2686,96 @@ static void testCupRemembered() {
   CHECK(!e.ctl.cupMemory().present);
 }
 
+// Seen on the board on 21 Oct 2026: a cup remembered at 0 g (tared) was believed again the next
+// morning on an empty scale, because a Lunar that comes on empty zeroes itself and its timer still
+// shows the value it had. The controller was then ready to brew onto nothing.
+static void testCupNotBelievedAfterAWhile() {
+  printf("cup: a remembered cup is not believed after the scale was away\n");
+  Rig r;
+  r.settings.requireCup = true;
+  r.toReady();
+  r.run(1000);
+  r.sim.trueWeightG += 62.0;
+  r.run(3000);
+  r.ctl.requestStart();
+  CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+  r.ctl.acknowledge();
+  r.run(500);
+  r.sim.trueWeightG -= 62.0 + 36.0;
+  r.run(2000);
+  r.sim.trueWeightG += 268.7;                   // a fresh cup, tared
+  r.run(3000);
+  CHECK(r.ctl.status(r.sim.nowMs).cupPresent && r.ctl.cupMemory().present);
+  const int32_t timer = static_cast<int32_t>(r.sim.timerMs());
+  // The scale goes away for the night; the cup is taken off meanwhile. In the morning the scale
+  // comes on empty and zeroed, its timer as it was.
+  r.sim.scaleLink = false;
+  r.run(10 * 60 * 1000);
+  r.sim.trueWeightG -= 268.7;
+  r.sim.tareOffsetG = r.sim.trueWeightG;
+  r.sim.timerHeldMs = static_cast<uint32_t>(timer);
+  r.sim.scaleLink = true;
+  CHECK(r.runUntil(State::READY, 5000));
+  r.run(3000);
+  CHECK(!r.ctl.status(r.sim.nowMs).cupPresent);       // nothing on it
+  r.ctl.requestStart();
+  r.run(1000);
+  CHECK(r.ctl.state() == State::READY);               // and so no brew onto it
+  // The cup goes on: seen, and the shot brews.
+  r.sim.trueWeightG += 268.7;
+  r.run(3000);
+  CHECK(r.ctl.status(r.sim.nowMs).cupPresent);
+  r.ctl.requestStart();
+  CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+
+  // A short drop of the link (seconds) still keeps the cup, as before.
+  Rig k;
+  k.settings.requireCup = true;
+  k.toReady();
+  k.run(1000);
+  k.sim.trueWeightG += 268.7;
+  k.run(3000);
+  CHECK(k.ctl.status(k.sim.nowMs).cupPresent);
+  k.sim.scaleLink = false;
+  k.run(8000);
+  k.sim.scaleLink = true;
+  CHECK(k.runUntil(State::READY, 5000));
+  k.run(3000);
+  // (no scale timer in this one: a cup that was placed and tared is kept only with the timer check)
+
+  // With a cup wrongly believed (the old behaviour), a real cup put on must still be seen and brew.
+  Rig q;
+  q.settings.requireCup = true;
+  q.toReady();
+  q.run(1000);
+  q.sim.trueWeightG += 62.0;
+  q.run(3000);
+  q.ctl.requestStart();
+  CHECK(q.runUntil(State::SHOT_COMPLETE, 60000));
+  q.ctl.acknowledge();
+  q.run(500);
+  q.sim.trueWeightG -= 62.0 + 36.0;
+  q.run(2000);
+  q.sim.trueWeightG += 268.7;
+  q.run(3000);
+  const CupMemory kept = q.ctl.cupMemory();
+  Rig w;
+  w.settings.requireCup = true;
+  w.sim.trueWeightG = q.sim.trueWeightG - 268.7;      // empty
+  w.sim.tareOffsetG = w.sim.trueWeightG;              // zeroed
+  w.sim.timerHeldMs = q.sim.timerMs();
+  w.ctl.restoreCupMemory(kept);
+  w.toReady();
+  w.run(3000);
+  const bool wrongly = w.ctl.status(w.sim.nowMs).cupPresent;
+  w.sim.trueWeightG += 268.7;                          // the real cup
+  w.run(3000);
+  CHECK(w.ctl.status(w.sim.nowMs).cupPresent);
+  w.ctl.requestStart();
+  CHECK(w.runUntil(State::SHOT_COMPLETE, 60000));
+  printf("  (restored on an empty scale after a restart: %s)\n", wrongly ? "yes" : "no");
+}
+
 static void testShotDataSet() {
   printf("full data set of a shot\n");
   Rig r;
@@ -6331,6 +6421,7 @@ int main() {
   testEmptyScaleZeroed();
   testScaleRest();
   testCupRemembered();
+  testCupNotBelievedAfterAWhile();
   testCupAutoTareScale();
   testCupPutBackBriefly();
   testSwitchBotProtocol();

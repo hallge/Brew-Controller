@@ -70,6 +70,10 @@ constexpr uint8_t CUP_STILL_SAMPLES = 5;
 constexpr float CUP_ZERO_BAND_G = 1.5f;
 constexpr uint32_t CUP_TARE_WINDOW_MS = 6000; // a fall to zero this soon after placing is the tare
 constexpr uint32_t EMPTY_ZERO_DELAY_MS = 5000; // an empty scale still below zero this long is zeroed
+// A remembered cup is believed again only if the scale is back this soon after its last reading (a
+// dropped link, a controller restart). After longer the scale may have been off: a Lunar that comes
+// on empty zeroes itself and still shows the timer it had, which looks just like a tared cup.
+constexpr uint32_t CUP_MEMORY_MAX_GAP_MS = 120000;
 
 inline uint32_t nonZero(uint32_t ms) { return ms == 0 ? 1 : ms; }
 
@@ -263,6 +267,7 @@ void BrewController::trackCup(const WeightSample &sample) {
     emptyZeroSent_ = true;
     haveEmptyZero_ = true;
     emptyZeroAtMs_ = sample.atMs;
+    tareWhy_ = "the empty scale read below zero";
     scale_.tare();
   }
   if (runCount_ != CUP_STILL_SAMPLES) return;  // act once, when a reading has just become still
@@ -272,7 +277,10 @@ void BrewController::trackCup(const WeightSample &sample) {
     cupPresent_ = true;
     cupPlacedAtMs_ = sample.atMs;
     // Zero it, unless the scale's own auto-tare already has.
-    if (fabsf(level) > CUP_ZERO_BAND_G) scale_.tare();
+    if (fabsf(level) > CUP_ZERO_BAND_G) {
+      tareWhy_ = "a cup went on";
+      scale_.tare();
+    }
   };
   auto remember = [&]() {
     cupMemory_.present = cupPresent_;
@@ -437,6 +445,8 @@ void BrewController::tick(uint32_t nowMs) {
   // from the future would come out 49 days old and be taken for a scale gone
   // silent. Time never runs behind the newest reading.
   if (haveSample_ && static_cast<int32_t>(nowMs - lastRxMs_) < 0) nowMs = lastRxMs_;
+  // When the scale was last heard while in use (not while it is being connected again).
+  if (state_ != State::CONNECTING_SCALE && scale_.connected()) lastGoodRxMs_ = lastRxMs_;
 
   if (recoveryUntilMs_ != 0 && static_cast<int32_t>(nowMs - recoveryUntilMs_) >= 0) {
     recoveryUntilMs_ = 0;
@@ -460,6 +470,9 @@ void BrewController::tick(uint32_t nowMs) {
     case State::CONNECTING_SCALE:
       if (scaleUsable(nowMs)) {
         // Nothing is known about what is on a scale that has just connected.
+        if (cupMemory_.present && static_cast<uint32_t>(nowMs - lastGoodRxMs_) > CUP_MEMORY_MAX_GAP_MS) {
+          cupMemory_.present = false;  // away too long: the remembered cup proves nothing
+        }
         cupPresent_ = false;
         cupInitPending_ = true;
         haveStable_ = false;
@@ -497,6 +510,7 @@ void BrewController::tick(uint32_t nowMs) {
         }
       }
       if (intent == Intent::TARE && scaleUsable(nowMs)) {
+        tareWhy_ = "asked for";
         scale_.tare();
       } else if (intent == Intent::START) {
         if (!scale_.connected()) {
@@ -506,6 +520,7 @@ void BrewController::tick(uint32_t nowMs) {
         } else if (settings_.requireCup && !cupPresent_) {
           // No cup has been seen going onto the scale: do not brew onto it.
           // The home screen is already asking for one.
+          startRefusedNoCup_ = true;
         } else {
           // The Bot is asleep between shots. It is woken now and has until
           // shortly after the tare to connect (see READY_TO_BREW).
@@ -548,6 +563,7 @@ void BrewController::sendTare(uint32_t nowMs) {
   ++tareAttempts_;
   zeroSamples_ = 0;
   tareSentAtMs_ = nowMs;
+  tareWhy_ = "the shot is starting";
   scale_.tare();
 }
 
