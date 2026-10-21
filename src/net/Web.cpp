@@ -151,7 +151,8 @@ void handleGetSettings() {
   doc["requireCup"] = s.requireCup;
   doc["keepPowerBotConnected"] = s.keepPowerBotConnected;
   doc["displayFlipped"] = s.displayFlipped;
-  doc["uiTheme"] = s.uiTheme;  // colour scheme, 0 Dark .. 5 High contrast (bbw::UiTheme)
+  doc["uiTheme"] = s.uiTheme;
+  doc["powerOffWithScale"] = s.powerOffWithScale;  // colour scheme, 0 Dark .. 5 High contrast (bbw::UiTheme)
   // Minutes idle before the scale is let go so that it can switch itself off; 0: kept connected.
   doc["scaleRestMin"] = s.scaleRestMin == bbw::SCALE_REST_NEVER ? 0 : s.scaleRestMin;
   doc["actuationMode"] = static_cast<int>(s.actuationMode);
@@ -241,6 +242,7 @@ void handlePostSettings() {
   s.requireCup = doc["requireCup"] | s.requireCup;
   s.keepPowerBotConnected = doc["keepPowerBotConnected"] | s.keepPowerBotConnected;
   s.displayFlipped = doc["displayFlipped"] | s.displayFlipped;
+  s.powerOffWithScale = doc["powerOffWithScale"] | s.powerOffWithScale;
   if (doc["uiTheme"].is<int>()) {
     const int theme = doc["uiTheme"].as<int>();
     if (theme >= 0 && theme < bbw::UI_THEME_COUNT) s.uiTheme = static_cast<uint8_t>(theme);
@@ -1551,7 +1553,9 @@ void handleGetPowerEvents() {
     JsonObject o = out.add<JsonObject>();
     o["t"] = e.epochS;
     o["on"] = e.on != 0;
-    o["by"] = e.bySchedule ? "schedule" : "owner";
+    o["by"] = e.by == static_cast<uint8_t>(bbw::PowerBy::SCHEDULE)    ? "schedule"
+              : e.by == static_cast<uint8_t>(bbw::PowerBy::SCALE_OFF) ? "scale"
+                                                                       : "owner";
     o["ok"] = outcome == bbw::PowerControl::Outcome::DONE;
     o["sure"] = e.sure != 0;
     o["outcome"] = bbw::PowerControl::outcomeText(outcome);
