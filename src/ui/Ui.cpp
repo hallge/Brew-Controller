@@ -110,7 +110,10 @@ lv_obj_t *coffeeFinishKey, *coffeeFinishLabel;
 uint32_t finishConfirmUntilMs = 0;  // 0: not asking
 constexpr uint32_t FINISH_CONFIRM_MS = 5000;
 constexpr int COFFEE_LIST_Y = 72, COFFEE_LIST_H = 240 - COFFEE_LIST_Y - 6;
-constexpr int FINISH_KEY_H = 40, FINISH_KEY_GAP = 6;
+// BAG FINISHED floats over the bottom corner of the coffee card; while it shows, the card keeps
+// this much room under its last row so the rows scroll up clear of it.
+constexpr int FINISH_KEY_W = 180, FINISH_KEY_H = 52, FINISH_KEY_BOTTOM = 8;
+constexpr int FINISH_ROOM = COFFEE_LIST_Y + COFFEE_LIST_H - (240 - FINISH_KEY_BOTTOM - FINISH_KEY_H) + 6;
 lv_obj_t *recipeBar;
 lv_obj_t *editFieldBtn[EDIT_FIELDS], *editTitle, *editValue, *editHint;
 lv_obj_t *editSetAdviceBtn, *editSetAdviceLabel;
@@ -464,9 +467,68 @@ void onPairBot(lv_event_t *) {
 void onForgetScale(lv_event_t *) { app::pairScale("", 0); }
 // The screen the right way up for how the controller is mounted.
 bool flippedShown = false;
+
+// Turned half a turn, the touch key is at the other end of the panel, so a screen in MIRRORED is
+// laid out mirror-wise: the keys move to the far end and the rest to the key's end. Each object on
+// the screen keeps its own content; its offset from one side becomes the same offset from the
+// other. Objects marked keepPlace (the home status line, which reads left to right) stay put.
+constexpr Panel MIRRORED[] = {Panel::HOME};
+struct Placed {
+  lv_obj_t *obj;
+  lv_align_t align;
+  lv_coord_t x, y;
+};
+Placed placed[96];
+uint8_t placedCount = 0;
+
+void keepPlace(lv_obj_t *obj) { lv_obj_add_flag(obj, LV_OBJ_FLAG_USER_2); }
+
+lv_align_t mirrorAlign(lv_align_t align) {
+  switch (align) {
+    case LV_ALIGN_DEFAULT:
+    case LV_ALIGN_TOP_LEFT: return LV_ALIGN_TOP_RIGHT;
+    case LV_ALIGN_TOP_RIGHT: return LV_ALIGN_TOP_LEFT;
+    case LV_ALIGN_LEFT_MID: return LV_ALIGN_RIGHT_MID;
+    case LV_ALIGN_RIGHT_MID: return LV_ALIGN_LEFT_MID;
+    case LV_ALIGN_BOTTOM_LEFT: return LV_ALIGN_BOTTOM_RIGHT;
+    case LV_ALIGN_BOTTOM_RIGHT: return LV_ALIGN_BOTTOM_LEFT;
+    default: return align;  // the middle ones: only x changes sign
+  }
+}
+
+// Where everything on the mirrored screens was put, as built (the unturned layout).
+void recordLayout() {
+  for (Panel panel : MIRRORED) {
+    lv_obj_t *p = panels[static_cast<int>(panel)];
+    for (uint32_t i = 0; i < lv_obj_get_child_cnt(p); ++i) {
+      lv_obj_t *obj = lv_obj_get_child(p, i);
+      if (lv_obj_has_flag(obj, LV_OBJ_FLAG_USER_2)) continue;
+      if (placedCount == sizeof(placed) / sizeof(placed[0])) {
+        LOGW("ui: too many objects to mirror");
+        return;
+      }
+      placed[placedCount++] = {obj, static_cast<lv_align_t>(lv_obj_get_style_align(obj, LV_PART_MAIN)),
+                               lv_obj_get_style_x(obj, LV_PART_MAIN), lv_obj_get_style_y(obj, LV_PART_MAIN)};
+    }
+  }
+}
+
+void placeLayout(bool flipped) {
+  for (uint8_t i = 0; i < placedCount; ++i) {
+    const Placed &q = placed[i];
+    lv_obj_align(q.obj, flipped ? mirrorAlign(q.align) : q.align, flipped ? -q.x : q.x, q.y);
+  }
+}
+
+// The hint that names the touch key points at it, at whichever end it is.
+const char *touchHint() {
+  return flippedShown ? "TOUCH KEY TO BREW  " LV_SYMBOL_RIGHT : LV_SYMBOL_LEFT "  TOUCH KEY TO BREW";
+}
+
 void applyRotation(bool flipped) {
   flippedShown = flipped;
   amoled.setRotation(flipped ? ROTATION_USB_RIGHT : ROTATION_USB_LEFT);
+  placeLayout(flipped);
   lv_obj_invalidate(lv_scr_act());  // redraw everything the new way up
 }
 
@@ -496,6 +558,7 @@ void buildHome() {
   makeLabel(p, &lv_font_montserrat_20, COLOR_DIM, LV_ALIGN_TOP_LEFT, 404, 5, "BOT");
   homeBotDot = makeDot(p, 452, 10);
   homeBotBattery = makeLabel(p, &lv_font_montserrat_20, COLOR_DIM, LV_ALIGN_TOP_LEFT, 470, 5, "");
+  for (uint32_t i = 0; i < lv_obj_get_child_cnt(p); ++i) keepPlace(lv_obj_get_child(p, i));
 
   // The selected recipe, in full: what goes in, what comes out, the grind,
   // the pre-infusion and the coffee. Tapping it opens the recipe list.
@@ -565,10 +628,16 @@ void buildCoffee() {
   lv_obj_set_flex_flow(coffeeList, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_scroll_dir(coffeeList, LV_DIR_VER);
   lv_obj_set_style_bg_color(coffeeList, lv_color_hex(COLOR_ACCENT), LV_PART_SCROLLBAR);
-  // Across the bottom, under a shorter card, when the entry has a coffee (refreshCoffee).
-  coffeeFinishKey = makeButton(p, "BAG FINISHED", &lv_font_montserrat_20, COLOR_PANEL, 536 - 24,
-                               FINISH_KEY_H, LV_ALIGN_BOTTOM_LEFT, 12, -6, onBagFinished,
-                               &coffeeFinishLabel);
+  // A narrow key over the card's bottom right corner, when the entry has a coffee (refreshCoffee),
+  // clear of the scroll bar. The card stays full height and scrolls under it. Outlined so it stands
+  // off the card. It stays on the right whichever way up the screen is.
+  coffeeFinishKey = makeButton(p, "BAG FINISHED", &lv_font_montserrat_20, COLOR_TRACK, FINISH_KEY_W,
+                               FINISH_KEY_H, LV_ALIGN_BOTTOM_RIGHT, -24, -FINISH_KEY_BOTTOM,
+                               onBagFinished, &coffeeFinishLabel);
+  keepPlace(coffeeFinishKey);
+  lv_obj_set_style_border_width(coffeeFinishKey, 2, 0);
+  lv_obj_set_style_border_color(coffeeFinishKey, lv_color_hex(COLOR_BG), 0);
+  lv_obj_set_style_text_align(coffeeFinishLabel, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_add_flag(coffeeFinishKey, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -1094,9 +1163,9 @@ void refreshCoffee() {
     keyShown = keyNow;
     if (keyNow == 0) lv_obj_add_flag(coffeeFinishKey, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_clear_flag(coffeeFinishKey, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_height(coffeeList, keyNow == 0 ? COFFEE_LIST_H : COFFEE_LIST_H - FINISH_KEY_H - FINISH_KEY_GAP);
-    lv_label_set_text(coffeeFinishLabel, keyNow == 2 ? "TAP AGAIN TO CONFIRM" : "BAG FINISHED");
-    lv_obj_set_style_bg_color(coffeeFinishKey, lv_color_hex(keyNow == 2 ? COLOR_BAD : COLOR_PANEL), 0);
+    lv_obj_set_style_pad_bottom(coffeeList, keyNow == 0 ? 8 : FINISH_ROOM, 0);
+    lv_label_set_text(coffeeFinishLabel, keyNow == 2 ? "TAP AGAIN\nTO CONFIRM" : "BAG FINISHED");
+    lv_obj_set_style_bg_color(coffeeFinishKey, lv_color_hex(keyNow == 2 ? COLOR_BAD : COLOR_TRACK), 0);
   }
 
   // The rows are built once each time the screen is opened.
@@ -1259,7 +1328,7 @@ void refreshHome(const bbw::LiveStatus &st) {
     setText(homeHint, "CONNECTING TO THE SCALE");
     setColor(homeHint, COLOR_DIM);
   } else if (scaleNear) {
-    setText(homeHint, LV_SYMBOL_LEFT "  TOUCH KEY TO BREW");
+    setText(homeHint, touchHint());
     setColor(homeHint, COLOR_OK);
   } else if (!ready) {
     setText(homeHint, "SWITCH ON THE SCALE");
@@ -1274,7 +1343,7 @@ void refreshHome(const bbw::LiveStatus &st) {
     setText(homeHint, "PLACE CUP ON SCALE");
     setColor(homeHint, COLOR_ACCENT);
   } else {
-    setText(homeHint, LV_SYMBOL_LEFT "  TOUCH KEY TO BREW");
+    setText(homeHint, touchHint());
     setColor(homeHint, COLOR_OK);
   }
   // A key only while it offers the start; plain text, as before, otherwise.
@@ -1756,6 +1825,8 @@ bool begin() {
   buildRecipes();
   buildEdit();
   buildCoffee();
+  recordLayout();
+  placeLayout(flippedShown);
   // The CST816T reports the key on the glass as a touch at a fixed point off
   // the end of the panel; the library turns that into this callback.
   amoled.setHomeButtonCallback(onTouchKey, nullptr);
