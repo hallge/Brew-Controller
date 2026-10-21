@@ -1,6 +1,6 @@
 # Coffee taste: ratings, taste profiles and recommendations
 
-Status: **design, not built yet.** Built in four phases, each released on its own.
+Status: **built** (all four phases), not yet released.
 
 The controller already judges each shot: stars, and whether it tasted sour, balanced or bitter. That
 is about the extraction. This adds the question of whether you liked the **coffee**. The answers build

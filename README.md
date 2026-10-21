@@ -275,10 +275,12 @@ to a network); shots made before that are stored with an empty timestamp.
 There is no login on the web page. Anyone on the same network can change
 settings and stop a shot. Starting a shot from the page is off by default.
 
-### Coffee taste (planned)
+### Coffee taste
 
-Rating the coffee itself, not just the shot, to build a taste profile per household or per drinker,
-show it as radar charts on Insights, and recommend coffees: see [docs/COFFEE-TASTE.md](docs/COFFEE-TASTE.md).
+Rate the coffee itself, not just the shot (Coffees › How you liked it): stars, acidity, sweetness,
+body, bitterness, finish and the flavour families you tasted. Insights shows your taste as two radar
+charts and recommends coffees from your shelf and the shared library. One household profile by
+default; Setup › Drinkers turns on named drinkers. See [docs/COFFEE-TASTE.md](docs/COFFEE-TASTE.md).
 
 ### Grinder tracking and grind advice
 

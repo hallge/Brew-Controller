@@ -15,6 +15,10 @@ Sharing is off until the owner turns it on in Setup (`docs/COMMUNITY.md`). Each 
 | dial-in | where a coffee and recipe settled: setting, average time, spread, roast date, days frozen, recipe, grinder | "settled dial-ins" | any individual shot |
 | shot | one shot that counts for advice: times, weight, flow shape, recipe | "every shot" (off by default) | the curve itself; name, address, network details, MAC |
 | taste | rating and verdict, with the shot | "taste ratings" (off by default) | free text |
+| coffee rating | how a coffee was liked: stars, acidity, sweetness, body, bitterness, finish, flavour families; the coffee's description and roast date; the drinker as a number (0 household, 1 to 8) | "taste ratings" (off by default) | drinkers' names, free text |
+
+The library publishes a coffee's average rating only once two or more controllers have rated it, and lists anonymous drinkers'
+stars (a hash in place of the controller and drinker) only for those coffees and only for drinkers with three or more of them.
 
 A random per-controller key (not the Wi-Fi or Bluetooth address) signs each record. A signature shows a record has not been altered
 and comes from one controller; it does not show who owns it, and records are **signed, not encrypted**: anyone who can read the library can read them.

@@ -269,4 +269,75 @@ inline TasteMatch matchTaste(const TasteProfile &p, const TasteVector &c) {
   return m;
 }
 
+// ---- Recommendations (docs/COFFEE-TASTE.md).
+
+// The controller's roast level names (core/Types.h roastLevelName) back to their numbers; 0 = none.
+inline uint8_t roastLevelFromName(const char *name) {
+  static const char *const NAMES[] = {"light", "medium-light", "medium", "medium-dark", "dark"};
+  for (uint8_t i = 0; i < 5; ++i) {
+    if (name && strcmp(name, NAMES[i]) == 0) return static_cast<uint8_t>(i + 1);
+  }
+  return 0;
+}
+
+// A coffee's taste as the community rated it: cup means 1..5 (0 = not enough), flavour shares 0..1
+// (negative = not enough). Surer than a description, less sure than your own rating.
+inline TasteVector tasteFromCommunity(const float cup[TASTE_ATTRS], const float flavours[FLAVOUR_COUNT]) {
+  TasteVector t;
+  t.source = TasteSource::COMMUNITY;
+  for (uint8_t i = 0; i < TASTE_ATTRS; ++i) {
+    if (cup[i] < 1.0f) continue;
+    t.v[i] = fminf(1.0f, fmaxf(0.0f, (cup[i] - 1.0f) / 4.0f));
+    t.known[i] = 0.7f;
+  }
+  for (uint8_t f = 0; f < FLAVOUR_COUNT; ++f) {
+    if (flavours[f] < 0.0f) continue;
+    t.v[TASTE_ATTRS + f] = fminf(1.0f, flavours[f]);
+    t.known[TASTE_ATTRS + f] = 0.6f;
+  }
+  return t;
+}
+
+// How alike two coffees taste: -1..1 over what both say, measured from the middle.
+inline float tasteSimilarity(const TasteVector &a, const TasteVector &b) {
+  float dot = 0, aa = 0, bb = 0;
+  for (uint8_t d = 0; d < TASTE_DIMS; ++d) {
+    const float k = a.known[d] * b.known[d];
+    if (k <= 0.0f) continue;
+    const float x = a.v[d] - 0.5f, y = b.v[d] - 0.5f;
+    dot += k * x * y;
+    aa += k * x * x;
+    bb += k * y * y;
+  }
+  return aa > 0.0f && bb > 0.0f ? dot / sqrtf(aa * bb) : 0.0f;
+}
+
+// How much another drinker's stars say about yours: 0..1. mine[i] and theirs[i] are stars 1..5 for
+// the same coffees, 0 where not rated. Two or more coffees in common are needed; three or more count
+// fully. Drinkers who disagree say nothing (0), rather than the opposite.
+inline float peopleLikeness(const uint8_t *mine, const uint8_t *theirs, size_t n) {
+  float agree = 0;
+  size_t common = 0;
+  for (size_t i = 0; i < n; ++i) {
+    if (!mine[i] || !theirs[i]) continue;
+    agree += 1.0f - fabsf(static_cast<float>(mine[i]) - theirs[i]) / 4.0f;
+    ++common;
+  }
+  if (common < 2) return 0.0f;
+  const float alike = agree / common;   // 1: the same stars everywhere
+  return fmaxf(0.0f, (alike - 0.5f) * 2.0f) * fminf(1.0f, common / 3.0f);
+}
+
+// The score a candidate coffee is ranked by: mostly how its taste matches the profile (discounted by
+// how sure that is), then what drinkers like you gave it, then a little for good community stars.
+// peopleStars / communityStars: 1..5, or 0 when there is none.
+inline float recommendScore(const TasteMatch &m, float peopleStars, float communityStars) {
+  const float content = m.score * (0.4f + 0.6f * m.confidence);
+  const bool people = peopleStars >= 1.0f, community = communityStars >= 1.0f;
+  float score = (people ? 0.6f : 0.85f) * content;
+  if (people) score += 0.3f * (peopleStars - 3.0f) / 2.0f;
+  if (community) score += (people ? 0.1f : 0.15f) * (communityStars - 3.0f) / 2.0f;
+  return score;
+}
+
 }  // namespace bbw

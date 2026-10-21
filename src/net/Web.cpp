@@ -1704,6 +1704,253 @@ void handleGetTasteProfile() {
   sendJson(doc);
 }
 
+// ---- Recommendations (docs/COFFEE-TASTE.md)
+constexpr size_t COFFEE_KEY_PART = 24;
+// A coffee's name in the library: its entry, else "~roaster/name" in lower case (the library tools'
+// taste_key does the same).
+void tasteKey(const char *libraryId, const char *roaster, const char *name, char *out, size_t size) {
+  if (libraryId && libraryId[0]) {
+    strlcpy(out, libraryId, size);
+    return;
+  }
+  char r[COFFEE_KEY_PART], n[COFFEE_KEY_PART];
+  auto squeeze = [](const char *in, char *o) {
+    size_t k = 0;
+    bool space = false;
+    for (; in && *in && k + 1 < COFFEE_KEY_PART; ++in) {
+      if (isspace(static_cast<unsigned char>(*in))) {
+        space = k > 0;
+        continue;
+      }
+      if (space && k + 2 < COFFEE_KEY_PART) o[k++] = ' ';
+      space = false;
+      o[k++] = static_cast<char>(tolower(static_cast<unsigned char>(*in)));
+    }
+    o[k] = '\0';
+  };
+  squeeze(roaster, r);
+  squeeze(name, n);
+  snprintf(out, size, "~%s/%s", r, n);
+}
+
+struct Candidate {
+  char key[bbw::LIBRARY_ID_LEN + 8];
+  char name[32], roaster[32], origin[24], process[16];
+  uint16_t localId = 0;     // on the shelf: the coffee's id
+  uint8_t from = 0;         // 0 shelf, 1 library, 2 community only
+  bbw::TasteVector taste;
+  float communityStars = 0;
+  uint16_t communityN = 0;
+  float peopleNum = 0, peopleDen = 0;
+  float score = 0;
+  bbw::TasteMatch match;
+};
+
+// Coffees for a drinker (?drinker=N): from the shelf they have not rated, the library's catalogue and
+// the library's coffee ratings, ranked by how they match the drinker's profile.
+void handleGetRecommend() {
+  const uint8_t drinker = static_cast<uint8_t>(server.arg("drinker").toInt());
+  RatedSet set = collectRated(drinker);
+  const bbw::TasteProfile profile = bbw::buildProfile(set.items, set.n, app::epochNow());
+  JsonDocument doc;
+  doc["drinker"] = set.all ? 0 : drinker;
+  doc["shown"] = profile.shown();
+  doc["coffees"] = profile.coffees;
+  JsonArray items = doc["items"].to<JsonArray>();
+  JsonArray again = doc["buy_again"].to<JsonArray>();
+  if (!profile.shown()) {
+    delete[] set.items;
+    return sendJson(doc);
+  }
+  // The library's coffee ratings and catalogue (each read into its own document: they share a buffer).
+  JsonDocument taste, catalog;
+  if (deserializeJson(taste, app::communityTaste())) taste.clear();
+  if (deserializeJson(catalog, app::communityCoffees())) catalog.clear();
+  JsonObjectConst tasteCoffees = taste["coffees"];
+
+  Candidate *cands = new Candidate[64];
+  size_t nc = 0;
+  // My stars per coffee key, for "drinkers like you".
+  struct Mine {
+    char key[bbw::LIBRARY_ID_LEN + 8];
+    uint8_t stars;
+  };
+  Mine *mine = new Mine[bbw::MAX_COFFEES];
+  size_t nm = 0;
+  struct Ctx {
+    RatedSet *set;
+    Candidate *cands;
+    size_t *nc;
+    Mine *mine;
+    size_t *nm;
+    JsonArray *again;
+    JsonObjectConst *tasteCoffees;
+  } ctx = {&set, cands, &nc, mine, &nm, &again, &tasteCoffees};
+  app::readLibrary([](const bbw::Library &lib, void *c) {
+    Ctx &x = *static_cast<Ctx *>(c);
+    for (uint8_t i = 0; i < lib.coffeeCount; ++i) {
+      const bbw::Coffee &coffee = lib.coffees[i];
+      uint8_t best = 0;
+      for (size_t k = 0; k < x.set->n; ++k) {
+        if (x.set->items[k].coffeeId == coffee.id && x.set->items[k].stars > best) best = x.set->items[k].stars;
+      }
+      char key[bbw::LIBRARY_ID_LEN + 8];
+      tasteKey(coffee.libraryId, coffee.roaster, coffee.name, key, sizeof(key));
+      if (best) {
+        strlcpy(x.mine[*x.nm].key, key, sizeof(x.mine[*x.nm].key));
+        x.mine[(*x.nm)++].stars = best;
+        if (coffee.finishedDate && best >= 4 && x.again->size() < 3) {
+          JsonObject a = x.again->add<JsonObject>();
+          a["coffee"] = coffee.id;
+          a["name"] = coffee.name;
+          a["stars"] = best;
+        }
+        continue;
+      }
+      if (coffee.finishedDate || *x.nc >= 64) continue;
+      Candidate &cd = x.cands[(*x.nc)++];
+      strlcpy(cd.key, key, sizeof(cd.key));
+      strlcpy(cd.name, coffee.name, sizeof(cd.name));
+      strlcpy(cd.roaster, coffee.roaster, sizeof(cd.roaster));
+      strlcpy(cd.origin, coffee.origin, sizeof(cd.origin));
+      strlcpy(cd.process, coffee.process, sizeof(cd.process));
+      cd.localId = coffee.id;
+      cd.from = 0;
+      cd.taste = bbw::tasteFromDescription(coffee);
+    }
+  }, &ctx);
+  auto known = [&](const char *key) {
+    for (size_t i = 0; i < nc; ++i) if (strcmp(cands[i].key, key) == 0) return true;
+    for (size_t i = 0; i < nm; ++i) if (strcmp(mine[i].key, key) == 0) return true;
+    return false;
+  };
+  // The library's catalogue: published coffees not on the shelf.
+  for (JsonObjectConst e : catalog["coffees"].as<JsonArrayConst>()) {
+    const char *id = e["id"] | "";
+    if (!id[0] || known(id) || nc >= 64) continue;
+    bbw::Coffee c;
+    strlcpy(c.name, e["name"] | "", sizeof(c.name));
+    strlcpy(c.roaster, e["roaster"] | "", sizeof(c.roaster));
+    strlcpy(c.origin, e["origin"] | "", sizeof(c.origin));
+    strlcpy(c.process, e["process"] | "", sizeof(c.process));
+    strlcpy(c.notes, e["notes"] | "", sizeof(c.notes));
+    c.roastLevel = bbw::roastLevelFromName(e["roast_level"] | "");
+    Candidate &cd = cands[nc++];
+    strlcpy(cd.key, id, sizeof(cd.key));
+    strlcpy(cd.name, c.name, sizeof(cd.name));
+    strlcpy(cd.roaster, c.roaster, sizeof(cd.roaster));
+    strlcpy(cd.origin, c.origin, sizeof(cd.origin));
+    strlcpy(cd.process, c.process, sizeof(cd.process));
+    cd.from = 1;
+    cd.taste = bbw::tasteFromDescription(c);
+  }
+  // Coffees only the library's ratings know.
+  for (JsonPairConst kv : tasteCoffees) {
+    if (known(kv.key().c_str()) || nc >= 64) continue;
+    Candidate &cd = cands[nc++];
+    strlcpy(cd.key, kv.key().c_str(), sizeof(cd.key));
+    strlcpy(cd.name, kv.value()["name"] | "", sizeof(cd.name));
+    strlcpy(cd.roaster, kv.value()["roaster"] | "", sizeof(cd.roaster));
+    cd.origin[0] = cd.process[0] = '\0';
+    cd.from = 2;
+  }
+  // Each candidate's community taste and stars, over its own description.
+  for (size_t i = 0; i < nc; ++i) {
+    JsonObjectConst t = tasteCoffees[cands[i].key];
+    if (t.isNull()) continue;
+    float cup[bbw::TASTE_ATTRS], fl[bbw::FLAVOUR_COUNT];
+    for (uint8_t a = 0; a < bbw::TASTE_ATTRS; ++a) cup[a] = t["cup"][bbw::tasteAttrName(a)] | 0.0f;
+    JsonObjectConst flv = t["flavours"];
+    for (uint8_t f = 0; f < bbw::FLAVOUR_COUNT; ++f) fl[f] = flv.isNull() ? -1.0f : (flv[bbw::flavourName(f)] | 0.0f);
+    cands[i].taste = bbw::blendTaste(bbw::tasteFromCommunity(cup, fl), cands[i].taste);
+    cands[i].communityStars = t["stars"] | 0.0f;
+    cands[i].communityN = t["n"] | 0;
+  }
+  // Drinkers like this one: how alike their stars are, then what they gave each candidate.
+  for (JsonObjectConst person : taste["people"].as<JsonArrayConst>()) {
+    JsonObjectConst r = person["r"];
+    uint8_t a[bbw::MAX_COFFEES], b[bbw::MAX_COFFEES];
+    for (size_t i = 0; i < nm; ++i) {
+      a[i] = mine[i].stars;
+      b[i] = r[mine[i].key] | 0;
+    }
+    const float w = bbw::peopleLikeness(a, b, nm);
+    if (w <= 0.0f) continue;
+    for (size_t i = 0; i < nc; ++i) {
+      const uint8_t st = r[cands[i].key] | 0;
+      if (!st) continue;
+      cands[i].peopleNum += w * st;
+      cands[i].peopleDen += w;
+    }
+  }
+  for (size_t i = 0; i < nc; ++i) {
+    Candidate &cd = cands[i];
+    cd.match = bbw::matchTaste(profile, cd.taste);
+    const float people = cd.peopleDen > 0.3f ? cd.peopleNum / cd.peopleDen : 0.0f;
+    cd.score = bbw::recommendScore(cd.match, people, cd.communityStars);
+  }
+  // The five best, best first; only those that lean towards the profile.
+  for (uint8_t pick = 0; pick < 5; ++pick) {
+    int best = -1;
+    for (size_t i = 0; i < nc; ++i) {
+      if (cands[i].score > 0.05f && (best < 0 || cands[i].score > cands[best].score)) best = static_cast<int>(i);
+    }
+    if (best < 0) break;
+    Candidate &cd = cands[best];
+    JsonObject o = items.add<JsonObject>();
+    o["name"] = cd.name;
+    o["roaster"] = cd.roaster;
+    if (cd.origin[0]) o["origin"] = cd.origin;
+    if (cd.process[0]) o["process"] = cd.process;
+    o["key"] = cd.key;
+    if (cd.localId) o["coffee"] = cd.localId;
+    o["from"] = cd.from == 0 ? "shelf" : cd.from == 1 ? "library" : "community";
+    o["score"] = roundf(cd.score * 100) / 100;
+    o["sure"] = roundf(cd.match.confidence * 100) / 100;
+    JsonArray why = o["why"].to<JsonArray>();
+    for (uint8_t w : cd.match.why) {
+      if (w == 255) continue;
+      // A cup value is named for which way it leans; a flavour family by its name.
+      if (w < bbw::TASTE_ATTRS) {
+        char t[24];
+        snprintf(t, sizeof(t), "%s %s", profile.v[w] > 0.5f ? "more" : "less", bbw::tasteDimName(w));
+        why.add(t);
+      } else if (profile.v[w] < 0.5f) {
+        char t[24];  // agreeing on a flavour's absence: one you steer away from, and it has none
+        snprintf(t, sizeof(t), "no %s", bbw::tasteDimName(w));
+        why.add(t);
+      } else {
+        why.add(bbw::tasteDimName(w));
+      }
+    }
+    // The rated coffee it is most like, if that one was loved.
+    float like = 0.35f;
+    int likeIdx = -1;
+    for (size_t k = 0; k < set.n; ++k) {
+      if (set.items[k].stars < 4) continue;
+      const float sim = bbw::tasteSimilarity(cd.taste, set.items[k].taste);
+      if (sim > like) {
+        like = sim;
+        likeIdx = static_cast<int>(k);
+      }
+    }
+    if (likeIdx >= 0) {
+      o["like"] = set.items[likeIdx].coffeeId;
+      o["like_stars"] = set.items[likeIdx].stars;
+    }
+    if (cd.peopleDen > 0.3f) o["people_stars"] = roundf(cd.peopleNum / cd.peopleDen * 10) / 10;
+    if (cd.communityN) {
+      o["community_stars"] = roundf(cd.communityStars * 10) / 10;
+      o["community_n"] = cd.communityN;
+    }
+    cd.score = -1e9f;  // taken
+  }
+  delete[] cands;
+  delete[] mine;
+  delete[] set.items;
+  sendJson(doc);
+}
+
 void handleDeleteRating() {
   const uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 10);
   if (!app::store().deleteRating(id)) return sendError(404, "no such rating");
@@ -2205,6 +2452,7 @@ void begin() {
   server.on("/api/coffee/rate/delete", HTTP_POST, handleDeleteRating);
   server.on("/api/drinkers", HTTP_POST, handlePostDrinkers);
   server.on("/api/taste/profile", HTTP_GET, handleGetTasteProfile);
+  server.on("/api/taste/recommend", HTTP_GET, handleGetRecommend);
   server.on("/api/net", HTTP_POST, handleNet);
   server.on("/api/time", HTTP_POST, []() {
     const uint32_t epoch = strtoul(server.arg("epoch").c_str(), nullptr, 10);

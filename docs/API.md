@@ -48,6 +48,12 @@ described; the rest are as the page uses them.
 | `/api/update/config` | POST | `{"repo":"owner/name","token":"...","auto_check":true}`; the token (a private repository only) is write-only: blank keeps it, `-` forgets it |
 | `/api/update` | POST | install a `firmware.bin` uploaded as a form file (no internet needed) |
 | `/api/power/events?days=` | GET | the power presses the controller made (schedule, web page or screen) in the last `days` days (default 30, at most 400), oldest first: `t` (epoch seconds), `on` (switching on or off), `by` (`schedule`, `owner`, or `scale`: the scale switched off with the setting `powerOffWithScale` on), `ok` (the press went out), `sure` (false: "press anyway" while on/off was not known), `outcome` (text). Presses made by hand on the machine are not seen. Kept for the last 500 presses. Capability `power_events_v1` |
+| `/api/coffee/ratings` | GET | coffee ratings, newest first: `id`, `coffee`, `bag`, `drinker` (0 household), `t` (epoch), `stars`, `attr` (acidity, sweetness, body, bitterness, finish: 0 not given, 1 to 5), `flavours` (a bit per family, in the order of `families`), `share`; with `named` and the 8 `drinkers` names. Capability `coffee_taste_v1` (docs/COFFEE-TASTE.md) |
+| `/api/coffee/rate` | POST | `{id?, coffee, bag, drinker, stars, attr:[5], flavours}`: a new rating, or a change to one; one per drinker per bag, a later one replaces it. Answers `{ok, id}` |
+| `/api/coffee/rate/delete?id=` | POST | delete a rating |
+| `/api/drinkers` | POST | `{names:[up to 8]}`: a drinker's id is its place in the list; turn named drinkers on with the setting `namedDrinkers` |
+| `/api/taste/profile?drinker=` | GET | a drinker's taste profile (0: the household): `dims` (5 cup values, 8 flavour families), `profile` (`v` 0 to 1 with 0.5 no lean, `known` 0 to 1, `coffees`, `shown` from 3, `settled` from 8), `best` (liked best) |
+| `/api/taste/recommend?drinker=` | GET | up to 5 coffees not yet rated, from the shelf and the shared library: `name`, `roaster`, `from` (`shelf`, `library`, `community`), `score`, `sure`, `why`, `like` (a coffee rated 4 or 5 it is like), `people_stars`, `community_stars`; and `buy_again` (finished coffees rated 4 or 5) |
 | others | | `/api/cmd`, `/api/devices`, `/api/pair`, `/api/pusher`, `/api/power`, `/api/machine`, `/api/recipe`, `/api/share*`, `/api/net`, `/api/time`, `/api/log*`, `/api/update`, `/api/history/clear`, `/api/offset/reset`, `/api/last`, `/api/bot/test`, `/api/shot/grind`, `/api/shot/vote`, `/api/coffee/adopt` |
 
 ## Settings are stored steps

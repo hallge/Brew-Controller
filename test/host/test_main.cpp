@@ -2050,6 +2050,22 @@ static void testCoffeeTaste() {
     CHECK(strstr(body, "\"roast_date\":\"2026-04-29\""));
     CHECK(buildTasteRecord(sr, c, 0, body, 40) == 0);   // does not fit: nothing
   }
+  // Recommendations: the community's taste, how alike two coffees and two drinkers are, the score.
+  CHECK(roastLevelFromName("medium-dark") == 4 && roastLevelFromName("purple") == 0);
+  const float ccup[TASTE_ATTRS] = {5, 0, 2, 1, 4};
+  const float cfl[FLAVOUR_COUNT] = {0.9f, 0.6f, 0.2f, 0, 0, 0, 0.1f, 0};
+  const TasteVector comm = tasteFromCommunity(ccup, cfl);
+  CHECK(comm.v[ACIDITY] == 1.0f && comm.known[SWEETNESS] == 0.0f && comm.known[ACIDITY] > lt.known[ACIDITY]);
+  CHECK(tasteSimilarity(comm, lrated) > 0.5f && tasteSimilarity(comm, blendTaste(tasteFromRating(dr), dt)) < 0.0f);
+  const uint8_t me[4] = {5, 1, 4, 0}, twin[4] = {5, 1, 5, 3}, opposite[4] = {1, 5, 1, 0}, little[4] = {5, 0, 0, 2};
+  CHECK(peopleLikeness(me, twin, 4) > 0.7f);
+  CHECK(peopleLikeness(me, opposite, 4) == 0.0f);   // disagreeing says nothing
+  CHECK(peopleLikeness(me, little, 4) == 0.0f);     // one coffee in common is not enough
+  const TasteMatch tm = matchTaste(p, comm);
+  CHECK(recommendScore(tm, 5, 0) > recommendScore(tm, 0, 0));     // drinkers like you loved it
+  CHECK(recommendScore(tm, 1, 0) < recommendScore(tm, 0, 0));
+  CHECK(recommendScore(tm, 0, 4.5f) > recommendScore(tm, 0, 0));  // the community likes it
+  CHECK(recommendScore(bad, 0, 0) < 0.0f);
   // Shown from three coffees, settled from eight.
   RatedTaste three[] = {{1, 5, now, lrated}, {2, 1, now, lrated}, {3, 4, now, lrated}};
   CHECK(buildProfile(three, 3, now).shown());
