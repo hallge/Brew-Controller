@@ -173,10 +173,10 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 @media(max-width:760px){.srow{grid-template-columns:58px minmax(0,1fr) 56px 50px}.srow .g{display:none}#sdetail .tiles{grid-template-columns:1fr 1fr}}
 </style></head><body><div class="app">
 <nav aria-label="Sections"><b>Brew by Weight</b><span class="pill" id="navstate" title="What the controller is doing">--</span>
-<a href="#home">Home</a><a href="#shots">Shots</a><a href="#coffees">Coffees</a><a href="#recipes">Recipes</a><a href="#grinder">Grinder</a><a href="#insights">Insights</a><a href="#machine">Espresso machine</a><a href="#setup">Setup</a><a href="#logs">Logs</a>
+<a href="#home">Home</a><a href="#shots">Shots</a><a href="#insights">Insights</a><a href="#coffees">Coffees</a><a href="#recipes">Recipes</a><a href="#grinder">Grinder</a><a href="#machine">Espresso machine</a><a href="#setup">Setup</a><a href="#logs">Logs</a>
 <div id="link"></div></nav>
 <div id="bnav" role="navigation" aria-label="Sections"><a href="#home">Home</a><a href="#shots">Shots</a><a href="#coffees">Coffees</a><a href="#grinder">Grinder</a><button type="button" id="bmore" aria-expanded="false" aria-controls="more">More</button></div>
-<div id="more" role="menu"><a href="#recipes">Recipes</a><a href="#insights">Insights</a><a href="#machine">Espresso machine</a><a href="#setup">Setup</a><a href="#logs">Logs</a></div>
+<div id="more" role="menu"><a href="#insights">Insights</a><a href="#recipes">Recipes</a><a href="#machine">Espresso machine</a><a href="#setup">Setup</a><a href="#logs">Logs</a></div>
 <main>
 <div id="ctip" role="tooltip"></div>
 <div id="askbox" role="dialog" aria-modal="true" aria-labelledby="asktxt"><div id="asktxt"></div><div class="row"><button id="askyes" class="pri">Yes</button><button id="askno">Cancel</button></div></div>
