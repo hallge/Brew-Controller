@@ -94,7 +94,7 @@ void handleStatus() {
   {
     JsonArray caps = doc["capabilities"].to<JsonArray>();
     for (const char *c : {"status_v1", "shots_v1", "shot_data_v1", "shot_csv_v1", "grind_advice_v1",
-                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1"}) {
+                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1", "coffee_taste_v1"}) {
       caps.add(c);
     }
   }
@@ -152,7 +152,8 @@ void handleGetSettings() {
   doc["keepPowerBotConnected"] = s.keepPowerBotConnected;
   doc["displayFlipped"] = s.displayFlipped;
   doc["uiTheme"] = s.uiTheme;
-  doc["powerOffWithScale"] = s.powerOffWithScale;  // colour scheme, 0 Dark .. 5 High contrast (bbw::UiTheme)
+  doc["powerOffWithScale"] = s.powerOffWithScale;
+  doc["namedDrinkers"] = s.namedDrinkers;  // colour scheme, 0 Dark .. 5 High contrast (bbw::UiTheme)
   // Minutes idle before the scale is let go so that it can switch itself off; 0: kept connected.
   doc["scaleRestMin"] = s.scaleRestMin == bbw::SCALE_REST_NEVER ? 0 : s.scaleRestMin;
   doc["actuationMode"] = static_cast<int>(s.actuationMode);
@@ -243,6 +244,7 @@ void handlePostSettings() {
   s.keepPowerBotConnected = doc["keepPowerBotConnected"] | s.keepPowerBotConnected;
   s.displayFlipped = doc["displayFlipped"] | s.displayFlipped;
   s.powerOffWithScale = doc["powerOffWithScale"] | s.powerOffWithScale;
+  s.namedDrinkers = doc["namedDrinkers"] | s.namedDrinkers;
   if (doc["uiTheme"].is<int>()) {
     const int theme = doc["uiTheme"].as<int>();
     if (theme >= 0 && theme < bbw::UI_THEME_COUNT) s.uiTheme = static_cast<uint8_t>(theme);
@@ -1564,6 +1566,82 @@ void handleGetPowerEvents() {
   sendJson(doc);
 }
 
+// ---- Coffee taste (core/CoffeeTaste.h, docs/COFFEE-TASTE.md)
+void ratingJson(JsonObject o, const bbw::CoffeeRating &r) {
+  o["id"] = r.id;
+  o["coffee"] = r.coffeeId;
+  o["bag"] = r.bagId;
+  o["drinker"] = r.drinkerId;
+  o["t"] = r.epochS;
+  o["stars"] = r.stars;
+  JsonArray attr = o["attr"].to<JsonArray>();
+  for (uint8_t a : r.attr) attr.add(a);
+  o["flavours"] = r.flavours;
+  o["share"] = bbw::shareStateName(static_cast<bbw::ShareState>(r.shareState));
+}
+
+// Every rating, newest first, with the drinkers' names.
+void handleGetRatings() {
+  JsonDocument doc;
+  doc["named"] = app::settings().namedDrinkers;
+  const bbw::Drinkers d = app::store().loadDrinkers();
+  JsonArray names = doc["drinkers"].to<JsonArray>();
+  for (const auto &n : d.names) names.add(n);
+  JsonArray attrs = doc["attrs"].to<JsonArray>();
+  for (uint8_t i = 0; i < bbw::TASTE_ATTRS; ++i) attrs.add(bbw::tasteAttrName(i));
+  JsonArray families = doc["families"].to<JsonArray>();
+  for (uint8_t i = 0; i < bbw::FLAVOUR_COUNT; ++i) families.add(bbw::flavourName(i));
+  JsonArray out = doc["ratings"].to<JsonArray>();
+  app::store().scanRatings([](const bbw::CoffeeRating &r, void *ctx) {
+    ratingJson(static_cast<JsonArray *>(ctx)->add<JsonObject>(), r);
+    return true;
+  }, &out);
+  sendJson(doc);
+}
+
+// {id?, coffee, bag, drinker, stars, attr:[5], flavours}: a new rating, or a change to one.
+void handlePostRating() {
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  bbw::CoffeeRating r;
+  r.id = doc["id"] | 0u;
+  r.coffeeId = doc["coffee"] | 0;
+  r.bagId = doc["bag"] | 0;
+  r.drinkerId = app::settings().namedDrinkers ? (doc["drinker"] | 0) : 0;
+  r.stars = doc["stars"] | 0;
+  JsonArrayConst attr = doc["attr"];
+  for (uint8_t i = 0; i < bbw::TASTE_ATTRS && i < attr.size(); ++i) r.attr[i] = attr[i] | 0;
+  r.flavours = doc["flavours"] | 0;
+  r.epochS = app::epochNow();
+  if (!app::coffeeExists(r.coffeeId)) return sendError(400, "no such coffee");
+  if (!app::store().saveRating(r)) return sendError(400, "stars 1 to 5 are needed (or flash trouble)");
+  app::ratingSaved(r.id);
+  JsonDocument out;
+  out["ok"] = true;
+  out["id"] = r.id;
+  sendJson(out);
+}
+
+void handleDeleteRating() {
+  const uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 10);
+  if (!app::store().deleteRating(id)) return sendError(404, "no such rating");
+  sendOk();
+}
+
+// {names:[up to 8]}: a drinker's id is its place in the list, so a name left empty keeps its ratings.
+void handlePostDrinkers() {
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  bbw::Drinkers d;
+  JsonArrayConst names = doc["names"];
+  for (uint8_t i = 0; i < bbw::MAX_DRINKERS && i < names.size(); ++i) {
+    strlcpy(d.names[i], names[i] | "", bbw::DRINKER_NAME_LEN);
+  }
+  bbw::sanitizeDrinkers(d);
+  app::store().saveDrinkers(d);
+  sendOk();
+}
+
 void handlePostPower() {
   JsonDocument doc;
   if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
@@ -2040,6 +2118,10 @@ void begin() {
   server.on("/api/power", HTTP_GET, handleGetPower);
   server.on("/api/power", HTTP_POST, handlePostPower);
   server.on("/api/power/events", HTTP_GET, handleGetPowerEvents);
+  server.on("/api/coffee/ratings", HTTP_GET, handleGetRatings);
+  server.on("/api/coffee/rate", HTTP_POST, handlePostRating);
+  server.on("/api/coffee/rate/delete", HTTP_POST, handleDeleteRating);
+  server.on("/api/drinkers", HTTP_POST, handlePostDrinkers);
   server.on("/api/net", HTTP_POST, handleNet);
   server.on("/api/time", HTTP_POST, []() {
     const uint32_t epoch = strtoul(server.arg("epoch").c_str(), nullptr, 10);

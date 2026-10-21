@@ -11,6 +11,7 @@
 
 #include <Arduino.h>
 
+#include "core/CoffeeTaste.h"
 #include "core/MachineProfile.h"
 #include "core/PowerControl.h"
 #include "ble/Ble.h"
@@ -96,6 +97,18 @@ class Store {
   // The power presses the controller made (core/PowerControl.h PowerEvent), in a ring file
   // (/power.bin, 500 x 8 bytes): the oldest goes when it is full.
   static constexpr uint32_t POWER_EVENT_CAPACITY = 500;
+
+  // Coffee ratings (core/CoffeeTaste.h), in a ring file (/ratings.bin, 500 x 32 bytes). saveRating
+  // replaces the drinker's rating of the same bag (or the one with r.id) and gives a new one an id;
+  // false: not kept (nothing to keep, or flash trouble).
+  static constexpr uint32_t RATING_CAPACITY = 500;
+  bool saveRating(CoffeeRating &r);
+  bool deleteRating(uint32_t id);
+  bool setRatingShare(uint32_t id, uint8_t shareState, uint32_t shareSeq);
+  // Newest first; the callback returns false to stop early.
+  void scanRatings(bool (*visit)(const CoffeeRating &, void *), void *context);
+  Drinkers loadDrinkers();
+  void saveDrinkers(const Drinkers &drinkers);
   bool appendPowerEvent(const PowerEvent &event);
   // Newest first. The callback returns false to stop early.
   void scanPowerEvents(bool (*visit)(const PowerEvent &, void *), void *context);
@@ -135,6 +148,8 @@ class Store {
   void removeCurve(uint32_t id);
   bool prepareContexts();
   bool preparePowerLog();
+  bool prepareRatings();
+  bool editRatingSlot(uint32_t id, const CoffeeRating *with);
   void makeRoomForCurve(size_t bytes);
 
   struct OutboxState {

@@ -81,6 +81,7 @@ std::atomic<bool> g_machineDirty{false};
 bbw::PowerControl g_powerControl;
 bbw::ScaleRest g_scaleRest;  // control task, under the lock
 std::atomic<bool> g_pushersDirty{false};
+std::atomic<uint32_t> g_ratingToShare{0};  // a coffee rating just saved, for the main loop to share
 // Power presses that ended, waiting to be logged by the main loop (control task, under the lock).
 bbw::PowerEvent g_powerEventQueue[4];
 uint8_t g_powerEventsQueued = 0;
@@ -1808,6 +1809,12 @@ PowerView powerView() {
   v.utcOffsetMin = g_pushers.utcOffsetMin;
   return v;
 }
+
+bool coffeeExists(uint16_t id) {
+  Lock lock;
+  return id != 0 && bbw::findCoffee(g_library, id) != nullptr;
+}
+void ratingSaved(uint32_t id) { g_ratingToShare = id; }
 
 bool powerRequest(bool on) {
   Lock lock;

@@ -257,6 +257,14 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <div id="cbags"></div>
 <details class="note"><summary>A new bag keeps the coffee, its recipes and its grind setting, and starts a fresh run of shots for grind advice.</summary><ul><li>Earlier bags are kept below: put one back in use if you go back to it.</li><li>The dates above are those of the bag in use; correcting them corrects that bag.</li><li>Days in the freezer are not counted as age: enter the day the bag went in and the day it came out.</li></ul></details>
 <div class="row" id="cshrow" style="border-top:1px solid var(--line);padding-top:12px"><span class="pill" id="cshpill" style="background:var(--combg);color:#8cc4ff;border:1px solid var(--comline)"></span><span class="sm mid" id="cshare" style="flex:1 1 260px"></span><button id="csend" onclick="sendCoffee()">Send to the shared library</button></div></section>
+<section class="card" id="crate" style="display:none"><div class="head"><h2>How you liked it</h2><span class="sm dim" id="crinfo"></span></div>
+<div class="row" id="crwho"></div>
+<div class="row" id="crstars" role="group" aria-label="Stars"></div>
+<div class="grid" id="crattr"></div>
+<div class="sm dim" style="margin-top:8px">Flavours you tasted</div><div class="row" id="crfl"></div>
+<div class="row"><button class="pri" onclick="saveRating()">Save rating</button><button onclick="RS=null;drawRating()">Clear</button><span class="sm dim" id="crnote"></span></div>
+<div class="list" id="crlist"></div>
+<details class="note"><summary>A rating is for the coffee, not for one shot: how you liked this bag of it. Rate it once you know it; rating it again changes it.</summary><ul><li>Stars are needed; the sliders and flavours are optional (a slider at 0 means not given).</li><li>Your ratings build your taste profile on Insights, and the coffees recommended to you.</li><li>With Named drinkers on (Setup), each rating says who gave it.</li></ul></details></section>
 <section class="card" id="cpairs"><div class="head"><h2>Brew it with</h2><a class="sm" href="#recipes">Recipes</a></div>
 <div class="list" id="cplist"></div><div class="sm dim" id="cpinfo"></div></section>
 <section class="card"><h2>Add coffees from elsewhere</h2><div class="row"><label style="flex:1 1 240px">Look up a coffee on visualizer.coffee<input id="vzq" placeholder="coffee or roaster" onkeydown="if(event.key==='Enter')vzLookup()"></label><button style="align-self:flex-end" onclick="vzLookup()">Search</button></div><div id="vzres" class="sm mid"></div><details class="note"><summary>Fills the form above with what that shared database knows about the coffee.</summary><ul><li>You add the roast date and your own notes, then Save.</li><li>Needs a phone that is online.</li><li>The data is community-contributed and has its own terms.</li></ul></details><div class="row" style="margin-top:12px"><label style="flex:1 1 240px">Bring in coffees from a Beanconqueror backup<input type="file" accept=".json,application/json" onchange="importBeanconqueror(this)"></label><label class="chk" style="align-self:flex-end"><input type="checkbox" id="bcfin">include finished beans</label></div><details class="note"><summary>Adds the beans in a Beanconqueror export file that you do not have yet.</summary><ul><li>They come with their roast dates, opening dates, weights and any time in the freezer.</li><li>The file stays in your browser.</li><li>Shots are not imported: Beanconqueror does not know this machine's timing, so they would only confuse the grind advice.</li></ul></details></section>
@@ -345,6 +353,8 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 
 <div class="page" id="p-setup">
 <div class="head"><h1>Setup</h1></div>
+<section class="card"><h2>Drinkers</h2><label class="chk"><input type="checkbox" id="namedDrinkers" onchange="post('/api/settings',{namedDrinkers:this.checked}).then(r=>{done(r,'Saved');loadRatings()})">Named drinkers: each coffee rating says who gave it, and each drinker gets their own taste profile and recommendations (off: one household profile)</label>
+<div class="grid" id="drnames"></div><div class="row"><button onclick="saveDrinkers()">Save names</button><span class="sm dim">A drinker keeps their ratings if the name is cleared; the same place given a new name is a new drinker only in name.</span></div></section>
 <section class="card"><h2>Appearance</h2><p class="sm dim">The colour scheme of this page and of the controller's screen. Every browser and the controller follow it.</p><div class="row" id="themes"></div></section>
 <section class="card"><h2>Devices</h2><div id="dev" class="mid"></div><div id="scaledata" class="sm dim"></div><div class="scroll"><table id="seen"></table></div>
 <div class="row"><button onclick="loadDevices()">Refresh</button><button onclick="testPress('brew')">Test press: brew bot</button><button onclick="testPress('power')">Test press: power bot</button><button onclick="swapBots()">Swap brew and power bots</button></div>
@@ -470,7 +480,7 @@ return v>=1&&v<=2000?v:null};
 const fs=v=>fsn(v)+' '+U;
 let U='µm',S=null,L=null,G=null,SH=[],ST=null,C=-1,R=-1,SEL=0,lastShotId=-1;
 const F=["learningEnabled","learningFactor","adaptiveLearning","minValidWeightG","scaleTimeoutMs","dripObserveMs","minShotTimeMs","noFlowTimeoutS","cupMode","cupMinWeightG","autoStartAfterTare","scaleTimer","requireCup","actuationMode","pressDurationMs","releaseSettleMs","botHoldSeconds","grindToleranceS","grindWindow","grindUmPerS","grindMaxStepUm","grindTimeBasis","grindRatedTarget","scaleRestMin"];
-const SB=['shareEnabled','shareCoffees','shareDialIns','shareShots','shareRatings','keepPowerBotConnected','displayFlipped','powerOffWithScale'];
+const SB=['shareEnabled','shareCoffees','shareDialIns','shareShots','shareRatings','keepPowerBotConnected','displayFlipped','powerOffWithScale','namedDrinkers'];
 async function loadShare(){let s;try{s=await get('/api/share')}catch(e){return}SH_=s;if(L){drawCoffees();drawGrinder()}
 $('sh_state').textContent=!S.shareEnabled?'off':s.can_send?'sending':'queueing';$('sh_state').className='pill '+(S.shareEnabled?'ok':'');
 $('sh_key').textContent=s.key_ready?'This controller\'s key id: '+s.key_id+'. '+(s.real_signatures?'Signatures: ES256. Records travel by '+(s.via||'HTTPS')+'.':'This is the PC emulator: it has no real key, and marks what it writes as '+s.algorithm+'. The library will not accept these records; they are for trying the flow.'):'No device key: nothing can be shared.';
@@ -489,7 +499,7 @@ const plabel=p=>{const c=coffee(p.coffeeId),r=recipe(p.recipeId);return (c?c.nam
 
 function show(){const h=(location.hash||'#home').slice(1);document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on',p.id=='p-'+h));
 document.querySelectorAll('nav a,#bnav a,#more a').forEach(a=>a.classList.toggle('on',a.getAttribute('href')=='#'+h));
-$('bmore').classList.toggle('on',['recipes','insights','machine','setup','logs'].includes(h));$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees')loadCommunityCoffees();if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights')drawInsights();}
+$('bmore').classList.toggle('on',['recipes','insights','machine','setup','logs'].includes(h));$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadRatings();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees'){loadCommunityCoffees();loadRatings()}if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights')drawInsights();}
 // Colour schemes, in the controller's order (bbw::UiTheme): name, and a strip of its colours.
 const THEMES=[['dark','Dark',['#0e0f11','#17191c','#f08a24','#4cc38a']],['light','Light',['#f4f3f0','#ffffff','#c2560c','#1e8e4e']],
 ['nord','Nord',['#2e3440','#3b4252','#d08770','#a3be8c']],['solarized','Solarized Dark',['#002b36','#073642','#cb4b16','#859900']],
@@ -588,7 +598,36 @@ const onShelf=L.coffees.filter(c=>!c.finished).length,nf=L.coffees.length-onShel
 $('ccount').textContent=onShelf+(onShelf==1?' coffee':' coffees')+' on the shelf'+(nf?', '+nf+' finished':'')+' (room for '+L.maxCoffees+' in all).';
 const have=new Set(L.coffees.map(c=>c.libraryId).filter(x=>x)),sm=CC.filter(c=>!have.has(c.id)&&(!q||[c.name,c.roaster,c.origin,c.region,c.process,c.varietal].join(' ').toLowerCase().includes(q))).slice(0,8);
 $('cshared').innerHTML=sm.length?'<h2 style="color:#8cc4ff;margin-top:6px">In the shared library</h2>'+sm.map(c=>`<div class="pair" style="background:var(--combg);border-color:var(--comline)"><span class="what"><b>${esc(c.name)}</b> <span class="dim">${esc([c.roaster,c.origin,c.process].filter(x=>x).join(', '))}</span></span><button onclick="adopt('${esc(c.id)}')">Add</button></div>`).join(''):''}
-function drawCoffees(){drawCoffeeList();const c=coffee(C)||{roastLevel:0};$('ctitle').textContent=C?'Coffee':'New coffee';
+// ---- Coffee taste (docs/COFFEE-TASTE.md): ratings of coffees, by the household or named drinkers
+let RT=null,RS=null;
+const ATTR_LABEL=['Acidity','Sweetness','Body','Bitterness','Finish'],FAM_LABEL=['Fruity','Floral','Sweet / caramel','Chocolate / nutty','Spicy','Roasty / smoky','Fermented / winey','Earthy / green'];
+const starTxt=n=>'★'.repeat(n)+'☆'.repeat(5-n);
+function drinkerName(id){return !id?'Household':(RT&&RT.drinkers[id-1])||('Drinker '+id)}
+async function loadRatings(){try{RT=await get('/api/coffee/ratings')}catch(e){RT=null}drawRating();drawDrinkers();if(location.hash=='#insights'&&typeof drawTaste=='function')drawTaste()}
+function drawDrinkers(){const el=$('drnames');if(!el||!RT)return;el.innerHTML=RT.drinkers.map((n,i)=>`<label>Drinker ${i+1}<input id="drn${i}" maxlength="16" value="${esc(n)}"></label>`).join('')}
+function saveDrinkers(){post('/api/drinkers',{names:[...Array(8)].map((_,i)=>($('drn'+i)||{}).value||'')}).then(r=>{done(r,'Names saved');loadRatings()})}
+// The rating being edited: the drinker's rating of the bag in use if there is one.
+function ratingFor(cid,bag,dr){return RT?RT.ratings.find(r=>r.coffee==cid&&r.bag==bag&&r.drinker==dr):null}
+function drawRating(){const el=$('crate');if(!el)return;const c=C&&coffee(C);if(!c||!RT){el.style.display='none';return}el.style.display='';
+const named=RT.named,people=named?RT.drinkers.map((n,i)=>[i+1,n]).filter(x=>x[1]):[];
+if(!RS||RS.coffee!=C){const dr=named&&people.length?(RS&&RS.drinker&&RT.drinkers[RS.drinker-1]?RS.drinker:people[0][0]):0,old=ratingFor(C,c.bagId||0,dr);
+RS=old?{coffee:C,id:old.id,drinker:dr,stars:old.stars,attr:[...old.attr],fl:old.flavours}:{coffee:C,id:0,drinker:dr,stars:0,attr:[0,0,0,0,0],fl:0}}
+$('crwho').innerHTML=named?(people.length?'<span class="sm dim">Who is rating:</span>'+people.map(([id,n])=>`<button class="${id==RS.drinker?'on':''}" onclick="pickDrinker(${id})">${esc(n)}</button>`).join(''):'<span class="sm dim">Named drinkers is on, but no names are set: add them in Setup.</span>'):'';
+$('crstars').innerHTML='<span class="sm dim">Overall</span>'+[1,2,3,4,5].map(n=>`<button class="${n<=RS.stars?'on':''}" style="min-width:44px;font-size:18px" aria-label="${n} star${n>1?'s':''}" onclick="RS.stars=${n};drawRating()">${n<=RS.stars?'★':'☆'}</button>`).join('');
+$('crattr').innerHTML=ATTR_LABEL.map((l,i)=>`<label>${l} <span class="dim">${RS.attr[i]?RS.attr[i]+' / 5':'not given'}</span><input type="range" min="0" max="5" step="1" value="${RS.attr[i]}" oninput="RS.attr[${i}]=+this.value;this.previousElementSibling.textContent=+this.value?this.value+' / 5':'not given'"></label>`).join('');
+$('crfl').innerHTML=FAM_LABEL.map((l,i)=>`<button class="${RS.fl&(1<<i)?'on':''}" aria-pressed="${!!(RS.fl&(1<<i))}" onclick="RS.fl^=${1<<i};drawRating()">${l}</button>`).join('');
+const bag=(L.bags||[]).find(b=>b.id==c.bagId);$('crinfo').textContent=bag&&bag.roastDate?'the bag roasted '+fd(bag.roastDate):'';
+$('crnote').textContent=RS.id?'Changing your rating of this bag'+(named?' ('+drinkerName(RS.drinker)+')':''):'';
+const mine=RT.ratings.filter(r=>r.coffee==C);
+$('crlist').innerHTML=mine.length?mine.map(r=>{const b=(L.bags||[]).find(x=>x.id==r.bag),attrs=r.attr.map((v,i)=>v?ATTR_LABEL[i].toLowerCase()+' '+v:'').filter(Boolean).join(', '),fl=FAM_LABEL.filter((_,i)=>r.flavours&(1<<i)).map(x=>x.toLowerCase()).join(', ');
+return `<div class="item" style="cursor:default"><div><b style="color:var(--acc)">${starTxt(r.stars)}</b> <span class="sm">${named||r.drinker?esc(drinkerName(r.drinker))+' · ':''}${r.t?new Date(r.t*1000).toLocaleDateString():''}${b&&b.roastDate?' · bag roasted '+fd(b.roastDate):''}</span><div class="sm dim">${[attrs,fl].filter(Boolean).join(' · ')||'stars only'}${r.share&&r.share!='local'?' · shared: '+esc(r.share):''}</div></div><div class="row" style="margin:0"><button class="sm" onclick="editRating(${r.id})">Edit</button><button class="del sm" onclick="delRating(${r.id})">Delete</button></div></div>`}).join(''):'<div class="sm dim">Not rated yet.</div>'}
+function pickDrinker(id){RS=null;const c=coffee(C),old=ratingFor(C,(c&&c.bagId)||0,id);RS=old?{coffee:C,id:old.id,drinker:id,stars:old.stars,attr:[...old.attr],fl:old.flavours}:{coffee:C,id:0,drinker:id,stars:0,attr:[0,0,0,0,0],fl:0};drawRating()}
+function editRating(id){const r=RT.ratings.find(x=>x.id==id);if(!r)return;RS={coffee:C,id:r.id,drinker:r.drinker,stars:r.stars,attr:[...r.attr],fl:r.flavours,bag:r.bag};drawRating();$('crate').scrollIntoView({behavior:'smooth'})}
+function saveRating(){const c=coffee(C);if(!c||!RS)return;if(!RS.stars)return say('Give it 1 to 5 stars first',false);
+post('/api/coffee/rate',{id:RS.id||0,coffee:C,bag:RS.bag!=null?RS.bag:(c.bagId||0),drinker:RS.drinker,stars:RS.stars,attr:RS.attr,flavours:RS.fl}).then(r=>{done(r,'Rating saved');if(r.ok){RS.id=r.id;loadRatings()}})}
+async function delRating(id){if(!await ask('Delete this rating?','Delete'))return;post('/api/coffee/rate/delete?id='+id).then(r=>{done(r,'Deleted');if(RS&&RS.id==id)RS=null;loadRatings()})}
+
+function drawCoffees(){drawCoffeeList();drawRating();const c=coffee(C)||{roastLevel:0};$('ctitle').textContent=C?'Coffee':'New coffee';
 CF.forEach(k=>{$('c_'+k).value=DK.includes(k)?i2d(c[k]):(c[k]==null?'':c[k])});drawBags(c);if(!c.altitudeM)$('c_altitudeM').value='';
 $('cdel').style.display=$('cbag').style.display=C?'':'none';$('cbagrow').style.display='none';
 $('cfin').style.display=C&&!c.finished?'':'none';$('cbag').textContent=c.finished?'New bag: back on the shelf...':'New bag...';drawCoffeeShare(c);if(C)drawCommunity('ccom',C);else $('ccom').textContent='';$('cpairs').style.display=C?'':'none';

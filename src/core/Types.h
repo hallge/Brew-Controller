@@ -432,6 +432,9 @@ struct Settings {
   // Switch the espresso machine off with the power bot when the scale switches off (only when the
   // machine is known to be on, never during a shot). false, as a record saved before it reads.
   bool powerOffWithScale = false;
+  // Coffee ratings say which drinker gave them (core/CoffeeTaste.h Drinkers); off: all are the
+  // household's. false, as a record saved before it reads.
+  bool namedDrinkers = false;
 };
 
 // The colour schemes, in the order the web page lists them.
