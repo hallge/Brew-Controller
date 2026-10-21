@@ -121,6 +121,18 @@ class BrewController {
   // and nothing was put on or taken off.
   const CupMemory &cupMemory() const { return cupMemory_; }
   bool cupPresent() const { return cupPresent_; }
+  // For the log: why the scale was last tared (once), and whether a start was refused because no
+  // cup was seen on the scale (once).
+  const char *takeTareReason() {
+    const char *why = tareWhy_;
+    tareWhy_ = nullptr;
+    return why;
+  }
+  bool takeStartRefusedNoCup() {
+    const bool refused = startRefusedNoCup_;
+    startRefusedNoCup_ = false;
+    return refused;
+  }
   // The scale has been seen zeroing itself after a cup went on or came off
   // (an auto-tare mode). It can then zero a cup coming off before reporting
   // it at all, and no reading shows the cup is gone.
@@ -206,6 +218,9 @@ class BrewController {
   // Scale stream
   WeightSample last_;        // last accepted reading
   uint32_t lastRxMs_ = 0;    // last notification, accepted or not
+  uint32_t lastGoodRxMs_ = 0;
+  const char *tareWhy_ = nullptr;
+  bool startRefusedNoCup_ = false;  // the last one while the scale was in use, before it went away
   bool haveSample_ = false;
   bool bleErrorPending_ = false;
   uint16_t samplePeriodMs_ = 0;
