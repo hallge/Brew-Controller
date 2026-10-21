@@ -2603,6 +2603,14 @@ static void testScaleRest() {
   sanitize(s);
   CHECK(s.scaleRestMin == 5);
   CHECK(defaultSettings().scaleRestMin == 5);
+  // The colour scheme: 0 (a record from before it) is Dark; an unknown one falls back to Dark.
+  CHECK(defaultSettings().uiTheme == static_cast<uint8_t>(UiTheme::DARK));
+  s.uiTheme = static_cast<uint8_t>(UiTheme::DRACULA);
+  sanitize(s);
+  CHECK(s.uiTheme == static_cast<uint8_t>(UiTheme::DRACULA));
+  s.uiTheme = UI_THEME_COUNT;
+  sanitize(s);
+  CHECK(s.uiTheme == 0);
 }
 
 static void testCupRemembered() {

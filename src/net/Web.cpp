@@ -151,6 +151,7 @@ void handleGetSettings() {
   doc["requireCup"] = s.requireCup;
   doc["keepPowerBotConnected"] = s.keepPowerBotConnected;
   doc["displayFlipped"] = s.displayFlipped;
+  doc["uiTheme"] = s.uiTheme;  // colour scheme, 0 Dark .. 5 High contrast (bbw::UiTheme)
   // Minutes idle before the scale is let go so that it can switch itself off; 0: kept connected.
   doc["scaleRestMin"] = s.scaleRestMin == bbw::SCALE_REST_NEVER ? 0 : s.scaleRestMin;
   doc["actuationMode"] = static_cast<int>(s.actuationMode);
@@ -240,6 +241,10 @@ void handlePostSettings() {
   s.requireCup = doc["requireCup"] | s.requireCup;
   s.keepPowerBotConnected = doc["keepPowerBotConnected"] | s.keepPowerBotConnected;
   s.displayFlipped = doc["displayFlipped"] | s.displayFlipped;
+  if (doc["uiTheme"].is<int>()) {
+    const int theme = doc["uiTheme"].as<int>();
+    if (theme >= 0 && theme < bbw::UI_THEME_COUNT) s.uiTheme = static_cast<uint8_t>(theme);
+  }
   if (doc["scaleRestMin"].is<int>()) {
     const int minutes = doc["scaleRestMin"].as<int>();
     s.scaleRestMin = minutes <= 0 ? bbw::SCALE_REST_NEVER

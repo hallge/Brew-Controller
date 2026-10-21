@@ -23,15 +23,48 @@ namespace {
 
 LilyGo_Class amoled;
 
-constexpr uint32_t COLOR_BG = 0x000000;  // true black: AMOLED pixels off
-constexpr uint32_t COLOR_TEXT = 0xFFFFFF;
-constexpr uint32_t COLOR_DIM = 0x8A8A8A;
-constexpr uint32_t COLOR_OK = 0x2ECC71;
-constexpr uint32_t COLOR_BAD = 0xE74C3C;
-constexpr uint32_t COLOR_SLEEP = 0x777777;
-constexpr uint32_t COLOR_ACCENT = 0xE67E22;
-constexpr uint32_t COLOR_PANEL = 0x1C1C1C;
-constexpr uint32_t COLOR_TRACK = 0x2A2A2A;
+// The colour schemes (bbw::UiTheme, chosen on the web page): the colours each role on the screens
+// takes. The dark schemes keep a true black background, so AMOLED pixels stay off. Within a palette
+// every colour differs, so a change of scheme can tell each object's colour's role from its value.
+struct Palette {
+  uint32_t bg, text, dim, ok, bad, sleep, accent, panel, track, select;
+};
+constexpr Palette PALETTES[bbw::UI_THEME_COUNT] = {
+    // bg        text      dim       ok        bad       sleep     accent    panel     track     select
+    {0x000000, 0xFFFFFF, 0x8A8A8A, 0x2ECC71, 0xE74C3C, 0x777777, 0xE67E22, 0x1C1C1C, 0x2A2A2A, 0x3A2A12},  // Dark
+    {0xF2F1EE, 0x141414, 0x5E5E5E, 0x1E8E4E, 0xC0392B, 0x8C8C8C, 0xC2560C, 0xFFFFFF, 0xD9D7D2, 0xF5DCC2},  // Light
+    {0x000000, 0xECEFF4, 0xA3ABB9, 0xA3BE8C, 0xBF616A, 0x7B8394, 0xD08770, 0x3B4252, 0x4C566A, 0x5A4A45},  // Nord
+    {0x000000, 0xEEE8D5, 0x93A1A1, 0x859900, 0xDC322F, 0x657B83, 0xCB4B16, 0x073642, 0x0F4654, 0x3D3A1E},  // Solarized Dark
+    {0x000000, 0xF8F8F2, 0xA9ADC8, 0x50FA7B, 0xFF5555, 0x6272A4, 0xFFB86C, 0x282A36, 0x44475A, 0x4D3F3A},  // Dracula
+    {0x000000, 0xFFFFFF, 0xD0D0D0, 0x00E676, 0xFF3B30, 0xA0A0A0, 0xFFB000, 0x1A1A1A, 0x3C3C3C, 0x4A3500},  // High contrast
+};
+// The scheme in use: set before the screens are built, and by applyTheme.
+uint32_t COLOR_BG = PALETTES[0].bg;
+uint32_t COLOR_TEXT = PALETTES[0].text;
+uint32_t COLOR_DIM = PALETTES[0].dim;
+uint32_t COLOR_OK = PALETTES[0].ok;
+uint32_t COLOR_BAD = PALETTES[0].bad;
+uint32_t COLOR_SLEEP = PALETTES[0].sleep;
+uint32_t COLOR_ACCENT = PALETTES[0].accent;
+uint32_t COLOR_PANEL = PALETTES[0].panel;
+uint32_t COLOR_TRACK = PALETTES[0].track;
+uint32_t COLOR_SELECT = PALETTES[0].select;  // the selected row of a list
+uint8_t themeShown = 0;
+
+void setPalette(uint8_t theme) {
+  const Palette &p = PALETTES[theme < bbw::UI_THEME_COUNT ? theme : 0];
+  COLOR_BG = p.bg;
+  COLOR_TEXT = p.text;
+  COLOR_DIM = p.dim;
+  COLOR_OK = p.ok;
+  COLOR_BAD = p.bad;
+  COLOR_SLEEP = p.sleep;
+  COLOR_ACCENT = p.accent;
+  COLOR_PANEL = p.panel;
+  COLOR_TRACK = p.track;
+  COLOR_SELECT = p.select;
+  themeShown = theme < bbw::UI_THEME_COUNT ? theme : 0;
+}
 
 // Landscape with the USB-C connector on the left. On the 1.91" panel
 // rotations 0 and 2 are landscape; 0 puts the connector, and the touch key
@@ -532,6 +565,40 @@ void applyRotation(bool flipped) {
   lv_obj_invalidate(lv_scr_act());  // redraw everything the new way up
 }
 
+// Every colour an object was given takes its role's colour in the new scheme: the object and all
+// below it, each of its own styles (any part or state). Colours set later by the refresh code read
+// the new scheme by themselves.
+void recolour(lv_obj_t *obj, const Palette &from, const Palette &to) {
+  const uint32_t *a = &from.bg, *b = &to.bg;
+  constexpr int ROLES = sizeof(Palette) / sizeof(uint32_t);
+  static const lv_style_prop_t PROPS[] = {LV_STYLE_BG_COLOR, LV_STYLE_TEXT_COLOR, LV_STYLE_BORDER_COLOR,
+                                          LV_STYLE_ARC_COLOR, LV_STYLE_LINE_COLOR, LV_STYLE_OUTLINE_COLOR,
+                                          LV_STYLE_SHADOW_COLOR};
+  for (uint32_t i = 0; i < obj->style_cnt; ++i) {
+    if (!obj->styles[i].is_local) continue;
+    const lv_style_selector_t selector = obj->styles[i].selector;
+    for (lv_style_prop_t prop : PROPS) {
+      lv_style_value_t value;
+      if (lv_style_get_prop(obj->styles[i].style, prop, &value) != LV_STYLE_RES_FOUND) continue;
+      for (int r = 0; r < ROLES; ++r) {
+        if (value.color.full != lv_color_hex(a[r]).full) continue;
+        value.color = lv_color_hex(b[r]);
+        lv_obj_set_local_style_prop(obj, prop, value, selector);
+        break;
+      }
+    }
+  }
+  for (uint32_t i = 0; i < lv_obj_get_child_cnt(obj); ++i) recolour(lv_obj_get_child(obj, i), from, to);
+}
+
+void applyTheme(uint8_t theme) {
+  if (theme >= bbw::UI_THEME_COUNT) theme = 0;
+  const Palette from = PALETTES[themeShown];
+  setPalette(theme);
+  recolour(lv_scr_act(), from, PALETTES[theme]);
+  lv_obj_invalidate(lv_scr_act());
+}
+
 void onRotate(lv_event_t *) {
   bbw::Settings s = app::settings();
   s.displayFlipped = !s.displayFlipped;
@@ -1016,7 +1083,7 @@ void refreshRecipes() {
       // The list's default is a scrolling marquee; show the text still.
       lv_label_set_long_mode(lv_obj_get_child(item, 0), LV_LABEL_LONG_WRAP);
       const bool active = i == activeIndex;
-      lv_obj_set_style_bg_color(item, lv_color_hex(active ? 0x3A2A12 : COLOR_PANEL), 0);
+      lv_obj_set_style_bg_color(item, lv_color_hex(active ? COLOR_SELECT : COLOR_PANEL), 0);
       lv_obj_set_style_text_color(item, lv_color_hex(active ? COLOR_ACCENT : COLOR_TEXT), 0);
       lv_obj_set_style_text_font(item, &lv_font_montserrat_20, 0);
       lv_obj_set_style_radius(item, 10, 0);
@@ -1112,7 +1179,7 @@ void refreshEdit() {
   }
   for (int i = 0; i < EDIT_FIELDS; ++i) {
     lv_obj_set_style_bg_color(editFieldBtn[i],
-                              lv_color_hex(i == editField ? 0x3A2A12 : COLOR_PANEL), 0);
+                              lv_color_hex(i == editField ? COLOR_SELECT : COLOR_PANEL), 0);
   }
   show(Panel::EDIT);
 }
@@ -1815,6 +1882,7 @@ bool begin() {
   flippedShown = app::settings().displayFlipped;
   amoled.setRotation(flippedShown ? ROTATION_USB_RIGHT : ROTATION_USB_LEFT);
   amoled.setBrightness(BRIGHT_ACTIVE);
+  setPalette(app::settings().uiTheme);
   beginLvglHelper(amoled);
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(COLOR_BG), 0);
   buildHome();
@@ -1871,6 +1939,8 @@ void loop() {
     // Turned from the web page: follow it here.
     const bool flipped = app::settings().displayFlipped;
     if (flipped != flippedShown) applyRotation(flipped);
+    const uint8_t theme = app::settings().uiTheme;
+    if (theme != themeShown) applyTheme(theme);
     refresh();
   }
   lv_timer_handler();
