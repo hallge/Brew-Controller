@@ -4,10 +4,9 @@
 // Declared in the manifest for every http page, so it is always there; it does nothing unless the page
 // is a Brew Controller page (<meta name="bbw-controller">). It only relays for a controller the owner
 // connected in the popup: a page cannot connect itself.
-(function () {
+(async function () {
   if (window.__bbwRelay) return;
   window.__bbwRelay = true;
-  if (!document.querySelector('meta[name="bbw-controller"]')) return;
   const version = chrome.runtime.getManifest().version;
   const origin = location.origin;
 
@@ -15,6 +14,8 @@
     const {controllers = [], controller} = await chrome.storage.local.get(['controllers', 'controller']);
     return controllers.includes(origin) || controller === origin;
   }
+  // A Brew Controller page says so; a connected one is taken as it is (firmware from before the marker).
+  if (!document.querySelector('meta[name="bbw-controller"]') && !(await paired())) return;
 
   async function hello() {
     const ok = await paired();
