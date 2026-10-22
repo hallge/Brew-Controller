@@ -25,6 +25,7 @@
 #include "core/SettingsUtil.h"
 #include "core/Share.h"
 #include "core/SimilarCoffee.h"
+#include "core/Subscriptions.h"
 #include "core/ShotContext.h"
 #include "core/ShotData.h"
 #include "core/SwitchBotProtocol.h"
@@ -6559,6 +6560,387 @@ static void testSettingFormat() {
   CHECK(!strstr(body, "divisor") && !strstr(body, "sub_steps"));       // whole numbers: nothing extra said
 }
 
+static void testUnopenedBags() {
+  printf("bags: unopened bags wait on the shelf until put in use\n");
+  Library lib;
+  lib.recipeCount = 1;
+  lib.recipes[0] = RecipeDef{};
+  lib.recipes[0].id = 7;
+  // Coffee A in use (roasted 1 Oct), coffee B on the list too (roasted 5 Oct).
+  Coffee a;
+  copyText(a.name, "A", COFFEE_NAME_LEN);
+  a.roastDate = 20261001;
+  const uint16_t ida = saveCoffee(lib, a);
+  Coffee b;
+  copyText(b.name, "B", COFFEE_NAME_LEN);
+  b.roastDate = 20261005;
+  const uint16_t idb = saveCoffee(lib, b);
+  lib.presetCount = 2;
+  lib.presets[0] = Preset{};
+  lib.presets[0].recipeId = 7;
+  lib.presets[0].coffeeId = ida;
+  lib.presets[1] = Preset{};
+  lib.presets[1].recipeId = 7;
+  lib.presets[1].coffeeId = idb;
+  lib.activePreset = 0;
+  const uint16_t bagA = findCoffee(lib, ida)->bagId;
+
+  // A re-order of A arrives: unopened, A keeps its bag in use, nothing about A changes.
+  const uint16_t a2 = addUnopenedBag(lib, ida, 20261015, 340, 3);
+  CHECK(a2 != 0 && findBag(lib, a2)->unopened == 1 && findBag(lib, a2)->subscriptionId == 3);
+  CHECK(findCoffee(lib, ida)->bagId == bagA && findCoffee(lib, ida)->roastDate == 20261001);
+  CHECK(findBag(lib, a2)->openedDate == 0);
+  CHECK(!addUnopenedBag(lib, 999, 20261015, 0));
+  // Choosing A again does not open it: A has a bag in use.
+  CHECK(!openActiveCoffeeBag(lib, 20261020));
+  // BAG FINISHED on A: the waiting bag of A goes into use from today; A stays on the shelf.
+  CHECK(finishCoffee(lib, ida, 20261020));
+  CHECK(findCoffee(lib, ida)->bagId == a2 && findCoffee(lib, ida)->finishedDate == 0);
+  CHECK(findBag(lib, a2)->unopened == 0 && findBag(lib, a2)->openedDate == 20261020);
+  CHECK(findCoffee(lib, ida)->roastDate == 20261015 && lib.activePreset == 0);
+
+  // A new coffee C arrives unopened (roasted 3 Oct, before B): it has no bag in use and no entry yet.
+  Coffee c;
+  copyText(c.name, "C", COFFEE_NAME_LEN);
+  const uint16_t idc = saveCoffee(lib, c);
+  const uint16_t c1 = addUnopenedBag(lib, idc, 20261003, 250, 4);
+  CHECK(findCoffee(lib, idc)->bagId == 0 && findCoffee(lib, idc)->roastDate == 0);
+  CHECK(shelfRoastDate(lib, *findCoffee(lib, idc)) == 20261003);
+  // A finished with nothing of its own waiting: the next bag by roast date is C's (3 Oct, before B's
+  // 5 Oct). C gets an entry with the same recipe, chosen, and its bag opened today.
+  CHECK(finishCoffee(lib, ida, 20261101));
+  CHECK(lib.presetCount == 3 && lib.presets[2].coffeeId == idc && lib.presets[2].recipeId == 7);
+  CHECK(lib.activePreset == 2 && findCoffee(lib, idc)->bagId == c1 && findBag(lib, c1)->unopened == 0);
+  CHECK(findBag(lib, c1)->openedDate == 20261101 && findCoffee(lib, idc)->roastDate == 20261003);
+  CHECK(coffeeFinished(lib, ida) && !presetVisible(lib, 0));
+
+  // An unopened bag of B, roasted after B's bag in use: finishing C moves on to B's bag in use (5 Oct),
+  // not to the newer unopened one.
+  const uint16_t b2 = addUnopenedBag(lib, idb, 20261025, 0);
+  const uint16_t bagB = findCoffee(lib, idb)->bagId;
+  CHECK(finishCoffee(lib, idc, 20261110));
+  CHECK(lib.activePreset == 1 && findCoffee(lib, idb)->bagId == bagB && findBag(lib, b2)->unopened == 1);
+  // Then B finished: its own waiting bag.
+  CHECK(finishCoffee(lib, idb, 20261120) && findCoffee(lib, idb)->bagId == b2 && findBag(lib, b2)->unopened == 0);
+
+  // A finished coffee with an unopened bag added later is back on the shelf; choosing it opens the bag.
+  const uint16_t a3 = addUnopenedBag(lib, ida, 20261118, 0);
+  CHECK(presetVisible(lib, 0) && !coffeeFinished(lib, ida));
+  lib.activePreset = 0;
+  CHECK(openActiveCoffeeBag(lib, 20261121) && findCoffee(lib, ida)->bagId == a3 &&
+        findCoffee(lib, ida)->finishedDate == 0 && findBag(lib, a3)->openedDate == 20261121);
+  // Opening by hand.
+  const uint16_t a4 = addUnopenedBag(lib, ida, 20261120, 0);
+  CHECK(openBag(lib, a4, 20261122) && findCoffee(lib, ida)->bagId == a4 && !openBag(lib, a4, 20261122));
+
+  // With no room on the list, the other coffee's bag waits: nothing is added, it stays unopened.
+  Library full;
+  full.recipeCount = 1;
+  full.recipes[0] = RecipeDef{};
+  full.recipes[0].id = 1;
+  Coffee f;
+  copyText(f.name, "F", COFFEE_NAME_LEN);
+  f.roastDate = 20261001;
+  const uint16_t idf = saveCoffee(full, f);
+  Coffee g;
+  copyText(g.name, "G", COFFEE_NAME_LEN);
+  const uint16_t idg = saveCoffee(full, g);
+  const uint16_t g1 = addUnopenedBag(full, idg, 20261002, 0);
+  full.presetCount = MAX_PRESETS;
+  for (size_t i = 0; i < MAX_PRESETS; ++i) {
+    full.presets[i] = Preset{};
+    full.presets[i].recipeId = 1;
+    full.presets[i].coffeeId = idf;
+  }
+  CHECK(finishCoffee(full, idf, 20261020) && full.presetCount == MAX_PRESETS && findBag(full, g1)->unopened == 1);
+
+  // Unopened bags are never dropped to make room.
+  Library many;
+  Coffee m;
+  copyText(m.name, "M", COFFEE_NAME_LEN);
+  m.roastDate = 20260101;
+  const uint16_t idm = saveCoffee(many, m);
+  const uint16_t keep = addUnopenedBag(many, idm, 20260102, 0);
+  for (int i = 0; i < 60; ++i) startBag(many, idm, 20260101 + (i % 28));
+  CHECK(findBag(many, keep) && findBag(many, keep)->unopened == 1);
+
+  // Saved and read back with the new fields; a bag record from before them reads them as 0 even
+  // when its padding held something.
+  uint8_t buffer[LIBRARY_MAX_BYTES];
+  size_t written = encodeLibrary(lib, buffer, sizeof(buffer));
+  Library back;
+  CHECK(written > 0 && decodeLibrary(buffer, written, back));
+  const uint16_t u = addUnopenedBag(lib, idb, 20261201, 0, 9);
+  written = encodeLibrary(lib, buffer, sizeof(buffer));
+  CHECK(decodeLibrary(buffer, written, back) && findBag(back, u) && findBag(back, u)->unopened == 1 &&
+        findBag(back, u)->subscriptionId == 9);
+  // The same library written with 24-byte bag records (as before), padding set to 0xFF.
+  {
+    std::vector<uint8_t> old(buffer, buffer + written);
+    // Find the bag header: bagSize equals sizeof(Bag) followed by the count.
+    size_t at = 0;
+    for (size_t i = 0; i + 8 <= written; ++i) {
+      uint16_t size, count;
+      memcpy(&size, &buffer[i], 2);
+      memcpy(&count, &buffer[i + 2], 2);
+      if (size == sizeof(Bag) && count == lib.bagCount && i + 8 + count * sizeof(Bag) == written) at = i;
+    }
+    CHECK(at != 0);
+    std::vector<uint8_t> made(buffer, buffer + at);
+    uint8_t h3[8];
+    memcpy(h3, &buffer[at], 8);
+    const uint16_t oldSize = 24;
+    memcpy(h3, &oldSize, 2);
+    made.insert(made.end(), h3, h3 + 8);
+    for (uint8_t i = 0; i < lib.bagCount; ++i) {
+      uint8_t rec[24];
+      memcpy(rec, &lib.bags[i], 22);
+      rec[22] = rec[23] = 0xFF;
+      made.insert(made.end(), rec, rec + 24);
+    }
+    Library fromOld;
+    CHECK(decodeLibrary(made.data(), made.size(), fromOld) && fromOld.bagCount == lib.bagCount);
+    bool none = true;
+    for (uint8_t i = 0; i < fromOld.bagCount; ++i) none = none && fromOld.bags[i].unopened == 0 && fromOld.bags[i].subscriptionId == 0;
+    CHECK(none);
+  }
+}
+
+static void testSubscriptions() {
+  printf("subscriptions: dates, cost, stock, page preview\n");
+  CHECK(daysBetween(20261022, 20261119) == 28 && addDays(20261231, 1) == 20270101 && addDays(20240228, 1) == 20240229);
+  CHECK(validSubDate(20261022) && !validSubDate(20261131) && !validSubDate(0));
+  Subscription s;
+  s.everyDays = 28;
+  s.nextDate = 20261020;
+  // Arrived two days late: the next is one period on from when it was due.
+  CHECK(nextDateAfter(s, 20261022) == 20261117);
+  // Long overdue: moved on until it is in the future.
+  s.nextDate = 20260801;
+  CHECK(nextDateAfter(s, 20261022) == 20261024);
+  // Not regular: the date stays.
+  Subscription once;
+  once.nextDate = 20261101;
+  CHECK(nextDateAfter(once, 20261022) == 20261101);
+  // No date known: one period from today.
+  Subscription fresh;
+  fresh.everyDays = 14;
+  CHECK(nextDateAfter(fresh, 20261022) == 20261105);
+
+  // Supplies: a delivery adds its count, each shot takes its share, never below 0.
+  Subscription filters;
+  filters.kind = SubKind::SUPPLIES;
+  filters.everyDays = 60;
+  filters.nextDate = 20261201;
+  filters.perShot = 1;
+  filters.perDelivery = 100;
+  filters.stock = 2;
+  CHECK(subscriptionShotTaken(filters) && filters.stock == 1);
+  CHECK(subscriptionShotTaken(filters) && filters.stock == 0 && !subscriptionShotTaken(filters));
+  subscriptionArrived(filters, 20261201);
+  CHECK(filters.stock == 100 && filters.nextDate == 20270130 && filters.lastArrived == 20261201);
+  // Two shots a day: 100 filters last 50 days, past the next delivery in 60? No: short.
+  CHECK(stockDaysLeft(filters, 2.0f) == 50 && stockShort(filters, 2.0f, 20261201));
+  CHECK(!stockShort(filters, 1.0f, 20261201) && stockDaysLeft(filters, 0.0f) == -1);
+  Subscription coffee;
+  CHECK(!subscriptionShotTaken(coffee) && stockDaysLeft(coffee, 2.0f) == -1);
+
+  // Monthly cost: active ones only, scaled to 30.44 days.
+  Subscription list[3];
+  list[0].everyDays = 28;
+  list[0].priceCents = 2200;
+  list[1].everyDays = 14;
+  list[1].priceCents = 1800;
+  list[2].everyDays = 30;
+  list[2].priceCents = 5000;
+  list[2].status = SubStatus::PAUSED;
+  CHECK(monthlyCents(list, 3) == 6305);  // 2391.6 + 3913.4
+  // Reminders: active, within 3 days, or overdue.
+  list[0].nextDate = 20261025;
+  CHECK(subscriptionDueSoon(list[0], 20261022) && !subscriptionDueSoon(list[0], 20261021));
+  list[2].nextDate = 20261023;
+  CHECK(!subscriptionDueSoon(list[2], 20261022));
+  CHECK(daysUntilNext(list[1], 20261022) == INT32_MIN);
+
+  // Shots a day over two weeks.
+  const uint32_t now = 1792688400;
+  const uint32_t shots[] = {now - 3600, now - 86400 * 2, now - 86400 * 13, now - 86400 * 20};
+  CHECK_NEAR(shotsPerDay(shots, 4, now), 3.0f / 14.0f, 0.001);
+
+  // Sanitizing: only web links, a real colour, sane numbers.
+  Subscription bad;
+  subCopy(bad.url, "javascript:alert(1)", sizeof(bad.url));
+  subCopy(bad.manageUrl, "https://shop.example/account", sizeof(bad.manageUrl));
+  subCopy(bad.color, "red", sizeof(bad.color));
+  bad.stock = -5;
+  bad.nextDate = 20261340;
+  sanitizeSubscription(bad);
+  CHECK(bad.url[0] == '\0' && strcmp(bad.manageUrl, "https://shop.example/account") == 0 &&
+        bad.color[0] == '\0' && bad.stock == 0 && bad.nextDate == 0);
+  CHECK(subKindFrom("supplies") == SubKind::SUPPLIES && subStatusFrom("paused") == SubStatus::PAUSED &&
+        strcmp(subStatusName(SubStatus::CANCELLED), "cancelled") == 0);
+
+  // Links resolved against the page.
+  char out[256];
+  resolveUrl("https://shop.example/products/beans?x=1", "/cdn/logo.png", out, sizeof(out));
+  CHECK(strcmp(out, "https://shop.example/cdn/logo.png") == 0);
+  resolveUrl("https://shop.example/products/beans", "//cdn.shop.example/i.jpg", out, sizeof(out));
+  CHECK(strcmp(out, "https://cdn.shop.example/i.jpg") == 0);
+  resolveUrl("https://shop.example/products/beans", "icon.png", out, sizeof(out));
+  CHECK(strcmp(out, "https://shop.example/products/icon.png") == 0);
+  resolveUrl("https://shop.example", "icon.png", out, sizeof(out));
+  CHECK(strcmp(out, "https://shop.example/icon.png") == 0);
+
+  // A Shopify shop on Recharge, written the way such pages are.
+  const char *recharge =
+      "<!doctype html><html><head><meta charset=\"utf-8\">"
+      "<title>Paper Filters &ndash; Example Roasters</title>\n"
+      "<meta name=\"theme-color\" content=\"#3a5f4b\">"
+      "<meta property=\"og:site_name\" content=\"Example Roasters\">"
+      "<meta property=\"og:title\" content=\"Espresso Paper Filters &amp; More\">"
+      "<meta property=\"og:description\" content=\"  Paper filters for\n your portafilter. \">"
+      "<meta property=\"og:image\" content=\"http://shop.example/cdn/shop/files/filters.jpg?v=1\">"
+      "<meta property=\"og:image:secure_url\" content=\"https://shop.example/cdn/shop/files/filters.jpg?v=1\">"
+      "<link rel=\"icon\" type=\"image/png\" href=\"//shop.example/cdn/shop/files/fav.png\">"
+      "<link rel='apple-touch-icon' href='/apple-icon.png'>"
+      "<script src=\"https://static.rechargecdn.com/assets/js/widget.min.js\"></script>"
+      "<script>var Shopify = Shopify || {}; Shopify.shop = \"example.myshopify.com\";</script>"
+      "</head><body><meta property=\"og:title\" content=\"not this\"></body></html>";
+  PageMeta m;
+  parsePageHead(recharge, strlen(recharge), "https://shop.example/products/filters", m);
+  CHECK(strcmp(m.title, "Espresso Paper Filters & More") == 0);
+  CHECK(strcmp(m.site, "Example Roasters") == 0);
+  CHECK(strcmp(m.description, "Paper filters for your portafilter.") == 0);
+  CHECK(strcmp(m.image, "https://shop.example/cdn/shop/files/filters.jpg?v=1") == 0);
+  CHECK(strcmp(m.icon, "https://shop.example/apple-icon.png") == 0);
+  CHECK(strcmp(m.color, "#3a5f4b") == 0);
+  CHECK(strcmp(m.platform, "recharge") == 0);
+  CHECK(strcmp(m.manageUrl, "https://shop.example/tools/recurring/login") == 0);
+
+  // Ordergroove on Shopify; no og:title: the <title> is used; no site name: the host.
+  const char *og =
+      "<html><HEAD><TITLE>Coffee Subscription | Matched to You</TITLE>"
+      "<META NAME=\"description\" CONTENT=\"Roasted to order &#8212; delivered.\">"
+      "<link rel=\"shortcut icon\" href=\"/favicon.ico\">"
+      "<script src=\"https://static.ordergroove.com/x/main.js\"></script>"
+      "<script>Shopify.shop='x';</script></HEAD><body></body></html>";
+  parsePageHead(og, strlen(og), "https://www.coffee.example/", m);
+  CHECK(strcmp(m.title, "Coffee Subscription | Matched to You") == 0);
+  CHECK(strcmp(m.description, "Roasted to order \xE2\x80\x94 delivered.") == 0);
+  CHECK(strcmp(m.site, "coffee.example") == 0);
+  CHECK(strcmp(m.icon, "https://www.coffee.example/favicon.ico") == 0);
+  CHECK(strcmp(m.platform, "ordergroove") == 0 && strcmp(m.manageUrl, "https://www.coffee.example/account") == 0);
+
+  // A page that is not a shop, cut short, or empty: nothing is made up.
+  const char *plain = "<html><head><title>Hello</title><meta property=\"og:image\" content=\"javascript:x\">";
+  parsePageHead(plain, strlen(plain), "https://plain.example/a", m);
+  CHECK(strcmp(m.title, "Hello") == 0 && m.platform[0] == '\0' && m.manageUrl[0] == '\0' && m.image[0] == '\0');
+  parsePageHead("", 0, "https://plain.example/a", m);
+  CHECK(m.title[0] == '\0' && strcmp(m.site, "plain.example") == 0);
+  const char *cut = "<html><head><meta property=\"og:title\" content=\"Never clos";
+  parsePageHead(cut, strlen(cut), "https://cut.example/", m);
+  CHECK(m.title[0] == '\0');
+}
+
+static void testServiceSharing() {
+  printf("subscriptions: shared services, reviews and the service score\n");
+  Subscription s;
+  s.id = 3;
+  subCopy(s.name, "Trade Coffee", sizeof(s.name));
+  subCopy(s.url, "https://www.drinktrade.com/", sizeof(s.url));
+  subCopy(s.manageUrl, "https://www.drinktrade.com/account", sizeof(s.manageUrl));
+  subCopy(s.platform, "ordergroove", sizeof(s.platform));
+  subCopy(s.shipsTo, " us, ca,xyz,G", sizeof(s.shipsTo));
+  subCopy(s.currency, "usd", sizeof(s.currency));
+  subCopy(s.description, "Coffee \xE2\x80\x9Cmatched\xE2\x80\x9D to you \xE2\x80\x94 500+ coffees", sizeof(s.description));
+  s.cadences[0] = 14;
+  s.cadences[1] = 28;
+  s.cadences[2] = 999;
+  s.priceFromCents = 1500;
+  s.styleMask = (1u << 1) | (1u << 3) | (1u << 15);
+  s.sourcingMask = (1u << 0) | (1u << 3);
+  s.priceCents = 2150;           // the owner's own: never in the record
+  s.stock = 5;
+  subCopy(s.note, "my secret note", sizeof(s.note));
+  sanitizeSubscription(s);
+  CHECK(strcmp(s.shipsTo, "US,CA") == 0 && strcmp(s.currency, "USD") == 0 && s.cadences[2] == 0);
+  CHECK(s.styleMask == ((1u << 1) | (1u << 3)));
+  CHECK(shipsTo(s.shipsTo, "CA") && !shipsTo(s.shipsTo, "GB") && shipsTo("", "GB"));
+  Subscription badPlatform = s;
+  subCopy(badPlatform.platform, "evil", sizeof(badPlatform.platform));
+  sanitizeSubscription(badPlatform);
+  CHECK(badPlatform.platform[0] == '\0');
+
+  char out[SHARE_BODY_MAX];
+  const size_t n = buildServiceRecord(s, 41, 1792688400, out, sizeof(out));
+  CHECK(n > 0);
+  const std::string rec(out);
+  CHECK(rec.find("\"t\":\"service\"") != std::string::npos && rec.find("\"local_id\":3") != std::string::npos);
+  CHECK(rec.find("\"ships_to\":[\"US\",\"CA\"]") != std::string::npos);
+  CHECK(rec.find("\"cadences\":[14,28]") != std::string::npos);
+  CHECK(rec.find("\"style\":[\"multi_roaster\",\"matched\"]") != std::string::npos);
+  CHECK(rec.find("\"sourcing\":[\"fair_trade\",\"farm_named\"]") != std::string::npos);
+  CHECK(rec.find("\"price_from_cents\":1500,\"currency\":\"USD\"") != std::string::npos);
+  CHECK(rec.find("\"about\":\"Coffee \\\"matched\\\" to you - 500+ coffees\"") != std::string::npos);
+  CHECK(rec.find("2150") == std::string::npos && rec.find("secret") == std::string::npos &&
+        rec.find("stock") == std::string::npos);
+
+  // Changed since shared: only the shared fields count.
+  markServiceQueued(s, 41);
+  CHECK(s.shareState == static_cast<uint8_t>(ShareState::QUEUED) && !serviceChangedSinceShared(s));
+  s.priceCents = 9999;
+  s.nextDate = 20261201;
+  CHECK(!serviceChangedSinceShared(s));
+  s.sourcingMask |= 1u << 2;
+  CHECK(serviceChangedSinceShared(s));
+  CHECK(serviceShareState(s, 40) == ShareState::QUEUED && serviceShareState(s, 42) == ShareState::SENT);
+  CHECK(applyReviewTo(&s, 41, ShareState::PUBLISHED, "ok", "trade-coffee") && strcmp(s.libraryId, "trade-coffee") == 0);
+  CHECK(!applyReviewTo(&s, 40, ShareState::DECLINED, "old", ""));
+  Subscription none;
+  CHECK(!serviceCanBeShared(none) && serviceCanBeShared(s));
+
+  // A review: stars and the aspects given; the note stays here.
+  ServiceReview r;
+  r.id = 7;
+  r.epochS = 1792688400;
+  r.drinkerId = 2;
+  r.stars = 9;
+  r.aspect[0] = 4;
+  r.aspect[2] = 5;
+  r.aspect[5] = 8;
+  subCopy(r.note, "late twice", sizeof(r.note));
+  sanitizeServiceReview(r);
+  CHECK(r.stars == 5 && r.aspect[5] == 0);
+  CHECK(buildServiceReviewRecord(r, "trade-coffee", out, sizeof(out)) > 0);
+  const std::string rv(out);
+  CHECK(rv.find("\"t\":\"service_review\"") != std::string::npos && rv.find("\"service\":\"trade-coffee\"") != std::string::npos);
+  CHECK(rv.find("\"aspects\":{\"value\":4,\"consistency\":5}") != std::string::npos && rv.find("late") == std::string::npos);
+  CHECK(buildServiceReviewRecord(r, "", out, sizeof(out)) == 0);    // only for a service in the library
+
+  // A coffee rating says which service the bag came with.
+  CoffeeRating cr;
+  cr.id = 1;
+  cr.stars = 4;
+  Coffee c;
+  copyText(c.name, "Alma", COFFEE_NAME_LEN);
+  CHECK(buildTasteRecord(cr, c, 20261018, out, sizeof(out), "trade-coffee") > 0 &&
+        std::string(out).find("\"service\":\"trade-coffee\"") != std::string::npos);
+  CHECK(buildTasteRecord(cr, c, 20261018, out, sizeof(out)) > 0 && std::string(out).find("service") == std::string::npos);
+
+  // The service score: a good taste match leads; values that matter lift; reviews alone still rank.
+  TasteMatch good;
+  good.score = 0.8f;
+  good.confidence = 1.0f;
+  TasteMatch poor;
+  poor.score = -0.4f;
+  poor.confidence = 1.0f;
+  CHECK(serviceScore(good, true, 0, 0, 0) > serviceScore(poor, true, 0, 0, 0));
+  CHECK(serviceScore(poor, true, 0, 0, 2) > serviceScore(poor, true, 0, 0, 0));
+  CHECK_NEAR(serviceScore(good, false, 0, 0, 5) - serviceScore(good, false, 0, 0, 3), 0.0, 1e-6);   // at most three
+  CHECK(serviceScore(good, false, 0, 4.5f, 0) > serviceScore(good, false, 0, 3.5f, 0));
+  CHECK(serviceScore(good, false, 5.0f, 0, 0) == 0.0f);   // people's stars mean nothing without taste
+}
+
 int main() {
   setvbuf(stdout, nullptr, _IONBF, 0);  // keep the output if a test crashes
   testAcaiaProtocol();
@@ -6624,6 +7006,9 @@ int main() {
   testFrozenBeans();
   testSimilarCoffee();
   testBags();
+  testUnopenedBags();
+  testSubscriptions();
+  testServiceSharing();
   testExtraction();
   testUpkeep();
   testUpkeepDefaults();

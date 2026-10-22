@@ -33,7 +33,7 @@ described; the rest are as the page uses them.
 | `/api/library` | GET | coffees, recipes, presets, grinders, **bags**; each coffee's `finished` and each preset's `hidden` (see Bag finished) |
 | `/api/coffee` | POST | save a coffee (edits correct the bag in use) |
 | `/api/bag` | POST | new bag, or correct one; see below |
-| `/api/library/do?what=&a=&b=` | POST | small changes by id; adds `bag_use` (a = coffee, b = bag), `bag_delete` (a = bag) and `coffee_finish` (a = coffee) |
+| `/api/library/do?what=&a=&b=` | POST | small changes by id; adds `bag_use` (a = coffee, b = bag), `bag_delete` (a = bag), `bag_open` (a = an unopened bag: in use from today) and `coffee_finish` (a = coffee) |
 | `/api/grinder` | POST | save the grinder; takes `divisor` and `subSteps` (how a setting is read) |
 | `/api/shot/rate?id=&rating=&taste=` | POST | rating 0 to 5, taste 0 to 3 |
 | `/api/shot/tds?id=&tds=` | POST | percent TDS from a refractometer, 0.5 to 25, or 0 to clear |
@@ -54,6 +54,15 @@ described; the rest are as the page uses them.
 | `/api/drinkers` | POST | `{names:[up to 8]}`: a drinker's id is its place in the list; turn named drinkers on with the setting `namedDrinkers` |
 | `/api/taste/profile?drinker=` | GET | a drinker's taste profile (0: the household): `dims` (5 cup values, 8 flavour families), `profile` (`v` 0 to 1 with 0.5 no lean, `known` 0 to 1, `coffees`, `shown` from 3, `settled` from 8), `best` (liked best) |
 | `/api/taste/recommend?drinker=` | GET | up to 5 coffees not yet rated, from the shelf and the shared library: `name`, `roaster`, `from` (`shelf`, `library`, `community`), `score`, `sure`, `why`, `like` (a coffee rated 4 or 5 it is like), `people_stars`, `community_stars`; and `buy_again` (finished coffees rated 4 or 5) |
+| `/api/subscriptions` | GET, POST | GET: `today`, `monthly_cents`, `shots_per_day` (last 14 days), `country`, `matters`, `sharing`, `share_ratings`, and `subscriptions[]`: `id`, `kind` (`coffee`, `supplies`, `other`), `status` (`active`, `paused`, `cancelled`), `name`, `url`, `manage_url`, `every_days`, `next_date`, `price_cents`, `last_arrived`, `note`, the page's `title`, `site`, `description`, `image`, `icon`, `color`, `platform`; supplies' `item`, `stock`, `per_shot`, `per_delivery`; the shared description's `ships_to`, `cadences`, `price_from_cents`, `currency`, `style`, `sourcing`, `library_id`, `share`, `share_changed`, `can_share`, `review_note`; and worked out: `days_until`, `due_soon`, `stock_days_left`, `stock_short`. POST: one subscription (no `id`: a new one; with `library_id`: added from the library's list). Capability `subscriptions_v1` (docs/SUBSCRIPTIONS.md) |
+| `/api/subscriptions/delete`, `/arrived`, `/skip` | POST | `{id}`: delete (with its reviews); a delivery arrived (supplies: added to the stock); skip one. Both move the next date on |
+| `/api/subscriptions/preview` | POST, GET | POST `{url}`: the controller reads that page while idle. GET: `state` (`none`, `waiting`, `done`, `failed`), `url`, `problem`, `title`, `site`, `description`, `image`, `icon`, `color`, `platform`, `manage_url` |
+| `/api/subscriptions/library` | GET | the shared library's services as cached (`index/services.json`) |
+| `/api/subscriptions/share` | POST | `{id}`: send the service's description for review (sharing on; a name and an https link) |
+| `/api/subscriptions/reviews` | GET | reviews: `id`, `subscription`, `drinker`, `stars`, `aspects`, `note`, `share` |
+| `/api/subscriptions/review`, `/review/delete` | POST | `{subscription, drinker, stars, aspects:{value, quality, consistency, reliability, flexibility, transparency}, note}`: one per drinker per subscription, a later one replaces it; `{id}` deletes |
+| `/api/subscriptions/prefs` | POST | `{country, matters:[sourcing values]}` for recommendations |
+| `/api/subscriptions/recommend?drinker=` | GET | up to 5 services from the library: `service` (its library entry), `why`, `people`; `basis` (`taste`, `reviews`, `none`) |
 | others | | `/api/cmd`, `/api/devices`, `/api/pair`, `/api/pusher`, `/api/power`, `/api/machine`, `/api/recipe`, `/api/share*`, `/api/net`, `/api/time`, `/api/log*`, `/api/update`, `/api/history/clear`, `/api/offset/reset`, `/api/last`, `/api/bot/test`, `/api/shot/grind`, `/api/shot/vote`, `/api/coffee/adopt` |
 
 ## Settings are stored steps
@@ -84,6 +93,10 @@ The base verdict is the Grind-by-Sync-style advice against the recipe's target t
 now. `{ "id": 7, "roastDate": ..., "openedDate": ..., "frozenDate": ..., "thawDate": ..., "weightG": ... }` corrects bag 7.
 Dates are `YYYYMMDD`, 0 for none. Answers `{ "ok": true, "id": <bag id> }`.
 
+`{ "coffeeId": 3, "roastDate": 20261018, "weightG": 340, "unopened": true, "subscriptionId": 1 }` puts a bag on the shelf
+unopened: the coffee keeps the bag it has in use. `/api/library` `bags[]` carries `unopened` and `subscriptionId`. An unopened
+bag goes into use with `bag_open`, when its coffee is chosen and has no other bag in use, or at Bag finished (below).
+
 ## Bag finished
 
 A coffee whose bag is used up is taken off the controller's list without deleting it. `POST /api/library/do?what=coffee_finish&a=<coffee id>`
@@ -98,6 +111,9 @@ such coffee. The controller's COFFEE screen does the same with BAG FINISHED.
   coffee or no roast date after those, ties in list order); `activePreset` says which. With every preset hidden it stays put.
 - A new bag (`POST /api/bag` with `coffeeId`) or `bag_use` puts the coffee back on the shelf: `finished` returns to 0 and its
   presets show again as they were. Saving the coffee's details (`/api/coffee`) does not change `finished`.
+- With unopened bags on the shelf (docs/SUBSCRIPTIONS.md): another bag of the same coffee waiting goes into use instead of the
+  coffee being finished. Otherwise the next bag by roast date may be an unopened one; if its coffee has no preset, one is added
+  with the recipe just used (room permitting) and selected, and the bag is opened.
 
 ## `/api/maintenance`
 

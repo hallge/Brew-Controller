@@ -12,6 +12,7 @@
 #include "core/Library.h"
 #include "core/Community.h"
 #include "core/Share.h"
+#include "core/Subscriptions.h"
 #include "platform/LibraryLink.h"
 #include "core/Types.h"
 #include "storage/Store.h"
@@ -249,6 +250,44 @@ const char *testPressState();
 void restartSoon();
 void powerBelieve(bbw::PowerBelief belief);
 void applyPowerSchedule(const bbw::PowerScheduleEntry *entries, int16_t utcOffsetMin);
+
+// Subscriptions (core/Subscriptions.h), kept in /subs.json.
+// Runs `visit` on the list with the lock held: keep it short.
+void readSubscriptions(void (*visit)(const bbw::Subscription *subs, size_t count, void *), void *context);
+// Adds one (id 0) or replaces it. Returns its id; 0: the list is full, or no such one.
+uint16_t saveSubscription(const bbw::Subscription &s);
+bool deleteSubscription(uint16_t id);
+// A delivery arrived (supplies: added to the stock), or one was skipped: the next date moves on.
+bool subscriptionArrived(uint16_t id);
+bool subscriptionSkipped(uint16_t id);
+// Shots a day over the last 14 days, for how long supplies last. Loop task (reads flash; cached).
+float shotsPerDay();
+// One subscription as JSON (the stored fields), and read back from what the page sent.
+void subscriptionToJson(const bbw::Subscription &s, JsonObject o);
+void subscriptionFromJson(JsonObjectConst o, bbw::Subscription &s);
+// A shop's page for a card: asked for by the web page, read by the loop task while idle.
+enum class PreviewState : uint8_t { NONE, WAITING, DONE, FAILED };
+// The owner's say for recommendations: their country (two letters, "" = not said) and the sourcing
+// values that matter to them (a SERVICE_SOURCING mask).
+struct SubscriptionPrefs {
+  char country[3] = {};
+  uint16_t matters = 0;
+};
+SubscriptionPrefs subscriptionPrefs();
+void setSubscriptionPrefs(const SubscriptionPrefs &p);
+// Sends a service's description to the shared library for review. false: sharing is off, it cannot
+// be shared (no name or https link), or nothing has changed since it was sent.
+bool shareService(uint16_t id);
+uint32_t outboxSent();
+// Reviews of services (core/Subscriptions.h ServiceReview), kept in /svcreviews.json. One per drinker
+// per subscription: saving again replaces it. Shared, when ratings are, for a service in the library.
+void readServiceReviews(void (*visit)(const bbw::ServiceReview *reviews, size_t count, void *), void *context);
+uint32_t saveServiceReview(const bbw::ServiceReview &r);
+bool deleteServiceReview(uint32_t id);
+// The library's list of services (index/services.json) as cached. Good until the next library read.
+const char *communityServices();
+void requestPagePreview(const char *url);
+PreviewState pagePreview(char *url, size_t urlSize, bbw::PageMeta &meta, char *problem, size_t problemSize);
 
 // Network / history
 bbw::NetConfig netConfig();

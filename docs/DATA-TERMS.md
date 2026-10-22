@@ -17,6 +17,11 @@ Sharing is off until the owner turns it on in Setup (`docs/COMMUNITY.md`). Each 
 | taste | rating and verdict, with the shot | "taste ratings" (off by default) | free text |
 | coffee rating | how a coffee was liked: stars, acidity, sweetness, body, bitterness, finish, flavour families; the coffee's description and roast date; the drinker as a number (0 household, 1 to 8) | "taste ratings" (off by default) | drinkers' names, free text |
 
+| subscription service | name, links (shop, where it is managed), subscription system, kind, where it ships, deliveries offered, a typical price, style, sourcing claims, picture, icon, colour, a short description | when the owner sends it | the owner's own price, dates, stock, notes |
+| service review | stars and six aspects (value, quality, consistency, reliability, flexibility, transparency); the service's library id; the drinker as a number | "taste ratings" (off by default) | drinkers' names, the review note |
+
+A coffee rating of a bag that came with a library-listed subscription service also carries that service's id.
+
 The library publishes a coffee's average rating only once two or more controllers have rated it, and lists anonymous drinkers'
 stars (a hash in place of the controller and drinker) only for those coffees and only for drinkers with three or more of them.
 

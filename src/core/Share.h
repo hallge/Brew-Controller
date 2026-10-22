@@ -22,6 +22,7 @@
 #include "GrindAdvisor.h"
 #include "Library.h"
 #include "Sha256.h"
+#include "Subscriptions.h"
 #include "Types.h"
 
 namespace bbw {
@@ -157,6 +158,12 @@ class JsonOut {
   void item(const char *value) {
     name(nullptr);
     quoted(value);
+  }
+  void itemNumber(long value) {
+    char digits[24];
+    snprintf(digits, sizeof(digits), "%ld", value);
+    name(nullptr);
+    raw(digits);
   }
   void closeArray() {
     put(']');
@@ -345,8 +352,9 @@ inline void machineFields(JsonOut &j, const MachineProfile &m) {
 
 // machine: the machine the shot was made on; nullptr leaves it out.
 // How a drinker liked a coffee (core/CoffeeTaste.h). The drinker goes as its number, never its name.
+// service: the shared library's id of the subscription service the bag came with ("" = none).
 inline size_t buildTasteRecord(const CoffeeRating &r, const Coffee &coffee, uint32_t roastDate, char *out,
-                               size_t size) {
+                               size_t size, const char *service = nullptr) {
   char at[21], roast[11];
   timeText(r.epochS, at);
   dateText(roastDate, roast);
@@ -360,6 +368,7 @@ inline size_t buildTasteRecord(const CoffeeRating &r, const Coffee &coffee, uint
   coffeeFields(j, coffee);
   j.close();
   j.textIf("roast_date", roast);
+  j.textIf("service", service);
   j.integer("drinker", r.drinkerId);
   j.integer("stars", r.stars);
   j.open("cup");
@@ -685,6 +694,167 @@ inline size_t buildMachineRecord(const MachineProfile &m, uint32_t record, uint3
   if (m.selfStopS) j.integer("self_stop_s", m.selfStopS);
   j.close();
   return j.ok() ? j.length() : 0;
+}
+
+// ------------------------------------------------------------- services --
+// Text the library takes: printable ASCII, so anything else (a curly quote from a shop's page) is
+// dropped or made plain.
+inline void asciiText(const char *in, char *out, size_t size) {
+  size_t n = 0;
+  for (const unsigned char *p = reinterpret_cast<const unsigned char *>(in); p && *p && n + 1 < size; ++p) {
+    if (*p >= 0x20 && *p <= 0x7e) {
+      out[n++] = static_cast<char>(*p);
+    } else if (p[0] == 0xE2 && p[1] == 0x80 && (p[2] == 0x98 || p[2] == 0x99)) {
+      out[n++] = '\'';
+      p += 2;
+    } else if (p[0] == 0xE2 && p[1] == 0x80 && (p[2] == 0x9C || p[2] == 0x9D)) {
+      out[n++] = '"';
+      p += 2;
+    } else if (p[0] == 0xE2 && p[1] == 0x80 && (p[2] == 0x93 || p[2] == 0x94)) {
+      out[n++] = '-';
+      p += 2;
+    }
+  }
+  while (n > 0 && out[n - 1] == ' ') --n;
+  out[n] = '\0';
+}
+
+// The fields that make up the shared description: when they change, it is a new version.
+inline uint32_t serviceShareHash(const Subscription &s) {
+  Sha256 hash;
+  const char *fields[] = {s.name, s.url, s.manageUrl, s.platform, s.shipsTo, s.currency,
+                          s.image, s.icon, s.color, s.description};
+  for (const char *field : fields) hash.update(field, strlen(field) + 1);
+  uint8_t rest[4 + 2 * SERVICE_CADENCES + 4 + 4];
+  size_t n = 0;
+  rest[n++] = static_cast<uint8_t>(s.kind);
+  rest[n++] = static_cast<uint8_t>(s.priceFromCents >> 16);
+  rest[n++] = static_cast<uint8_t>(s.priceFromCents >> 8);
+  rest[n++] = static_cast<uint8_t>(s.priceFromCents);
+  for (uint8_t i = 0; i < SERVICE_CADENCES; ++i) {
+    rest[n++] = static_cast<uint8_t>(s.cadences[i] >> 8);
+    rest[n++] = static_cast<uint8_t>(s.cadences[i]);
+  }
+  rest[n++] = static_cast<uint8_t>(s.styleMask >> 8);
+  rest[n++] = static_cast<uint8_t>(s.styleMask);
+  rest[n++] = static_cast<uint8_t>(s.sourcingMask >> 8);
+  rest[n++] = static_cast<uint8_t>(s.sourcingMask);
+  rest[n++] = static_cast<uint8_t>(s.priceFromCents >> 24);
+  rest[n++] = 0;
+  rest[n++] = 0;
+  rest[n++] = 0;
+  hash.update(rest, n);
+  uint8_t out[32];
+  hash.finish(out);
+  const uint32_t value = static_cast<uint32_t>(out[0]) << 24 | static_cast<uint32_t>(out[1]) << 16 |
+                         static_cast<uint32_t>(out[2]) << 8 | out[3];
+  return value ? value : 1;
+}
+
+inline bool serviceChangedSinceShared(const Subscription &s) {
+  return s.shareState != 0 && serviceShareHash(s) != s.shareHash;
+}
+
+inline void markServiceQueued(Subscription &s, uint32_t seq) {
+  s.shareState = static_cast<uint8_t>(ShareState::QUEUED);
+  s.shareSeq = seq;
+  s.shareHash = serviceShareHash(s);
+  s.reviewNote[0] = '\0';
+}
+
+// Where a service's description stands, as grinderShareState() for a grinder.
+inline ShareState serviceShareState(const Subscription &s, uint32_t outboxSent) {
+  const ShareState stored = static_cast<ShareState>(s.shareState);
+  if (stored == ShareState::QUEUED || stored == ShareState::SENT) {
+    return s.shareSeq < outboxSent ? ShareState::SENT : ShareState::QUEUED;
+  }
+  return stored;
+}
+
+// A service can be shared when it has a name and a web link of its own.
+inline bool serviceCanBeShared(const Subscription &s) {
+  return s.name[0] && strncmp(s.url, "https://", 8) == 0;
+}
+
+// A subscription service as its owner set it up, for a reviewer: the links and what it offers. Never
+// the owner's own price, dates, stock or notes.
+inline size_t buildServiceRecord(const Subscription &s, uint32_t record, uint32_t epochS, char *out,
+                                 size_t size) {
+  char at[21];
+  timeText(epochS, at);
+  char text[200];
+  JsonOut j(out, size);
+  j.open();
+  j.text("t", "service");
+  j.integer("v", 1);
+  j.textIf("at", at);
+  j.integer("record", static_cast<long>(record));
+  j.integer("local_id", s.id);
+  asciiText(s.name, text, sizeof(text));
+  j.text("name", text[0] ? text : "Subscription");
+  j.text("url", s.url);
+  j.textIf("manage_url", s.manageUrl);
+  j.textIf("platform", s.platform);
+  j.text("kind", subKindName(s.kind));
+  if (s.shipsTo[0]) {
+    j.openArray("ships_to");
+    for (const char *p = s.shipsTo; *p; p += (p[2] == ',' ? 3 : 2)) {
+      const char code[3] = {p[0], p[1], 0};
+      j.item(code);
+      if (!p[2]) break;
+    }
+    j.closeArray();
+  }
+  bool anyCadence = false;
+  for (uint8_t i = 0; i < SERVICE_CADENCES; ++i) anyCadence |= s.cadences[i] != 0;
+  if (anyCadence) {
+    j.openArray("cadences");
+    for (uint8_t i = 0; i < SERVICE_CADENCES; ++i) if (s.cadences[i]) j.itemNumber(s.cadences[i]);
+    j.closeArray();
+  }
+  if (s.priceFromCents && s.currency[0]) {
+    j.integer("price_from_cents", static_cast<long>(s.priceFromCents));
+    j.text("currency", s.currency);
+  }
+  if (s.styleMask) {
+    j.openArray("style");
+    for (uint8_t i = 0; i < SERVICE_STYLE_COUNT; ++i) if ((s.styleMask >> i) & 1u) j.item(SERVICE_STYLES[i]);
+    j.closeArray();
+  }
+  if (s.sourcingMask) {
+    j.openArray("sourcing");
+    for (uint8_t i = 0; i < SERVICE_SOURCING_COUNT; ++i) if ((s.sourcingMask >> i) & 1u) j.item(SERVICE_SOURCING[i]);
+    j.closeArray();
+  }
+  j.textIf("image", s.image);
+  j.textIf("icon", s.icon);
+  j.textIf("color", s.color);
+  asciiText(s.description, text, 161);
+  j.textIf("about", text);
+  j.close();
+  return j.ok() ? j.length() : 0;
+}
+
+// How a drinker rated a service from the library's list. The drinker goes as its number.
+inline size_t buildServiceReviewRecord(const ServiceReview &r, const char *serviceId, char *out, size_t size) {
+  char at[21];
+  timeText(r.epochS, at);
+  JsonOut j(out, size);
+  j.open();
+  j.text("t", "service_review");
+  j.integer("v", 1);
+  j.integer("id", static_cast<long>(r.id));
+  j.textIf("at", at);
+  j.text("service", serviceId);
+  j.integer("drinker", r.drinkerId);
+  j.integer("stars", r.stars);
+  j.open("aspects");
+  for (uint8_t i = 0; i < SERVICE_ASPECTS; ++i) {
+    if (r.aspect[i]) j.integer(SERVICE_ASPECT_NAMES[i], r.aspect[i]);
+  }
+  j.close();
+  j.close();
+  return j.ok() && serviceId && serviceId[0] ? j.length() : 0;
 }
 
 // Forgets what has been sent: every coffee and grinder the owner described is

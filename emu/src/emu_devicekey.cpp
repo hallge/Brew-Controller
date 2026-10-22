@@ -303,6 +303,8 @@ bool libraryPut(const char *path, const char *text) {
   return false;
 }
 
+void libraryLinkRelease() {}
+
 bool libraryGet(const char *path, char *out, size_t size) {
   if (!online()) return folderGet(path, out, size);
   std::string said;

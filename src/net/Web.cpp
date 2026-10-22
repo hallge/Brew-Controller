@@ -95,7 +95,7 @@ void handleStatus() {
   {
     JsonArray caps = doc["capabilities"].to<JsonArray>();
     for (const char *c : {"status_v1", "shots_v1", "shot_data_v1", "shot_csv_v1", "grind_advice_v1",
-                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1", "coffee_taste_v1"}) {
+                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1", "coffee_taste_v1", "subscriptions_v1"}) {
       caps.add(c);
     }
   }
@@ -672,6 +672,8 @@ void handleLibrary() {
       o["weightG"] = b.weightG;
       const bbw::Coffee *owner = bbw::findCoffee(lib, b.coffeeId);
       o["current"] = owner && owner->bagId == b.id;   // the bag in use
+      o["unopened"] = b.unopened != 0;                 // waiting on the shelf, nothing tracked yet
+      o["subscriptionId"] = b.subscriptionId;          // the subscription it came with, 0 = none
     }
     grinderJson(doc["grinder"].to<JsonObject>(), lib.grinder);
     if (lib.hasOtherGrinder) grinderJson(doc["otherGrinder"].to<JsonObject>(), lib.otherGrinder);
@@ -707,6 +709,121 @@ void sendId(uint16_t id) {
   JsonDocument doc;
   doc["ok"] = true;
   doc["id"] = id;
+  sendJson(doc);
+}
+
+// ---- subscriptions (core/Subscriptions.h) --------------------------------
+
+// GET /api/subscriptions: the list, with what the page shows worked out here (days until the next
+// date, reminders, how long supplies last at the recent rate of shots, the monthly total).
+void handleGetSubscriptions() {
+  JsonDocument doc;
+  static uint32_t today, sent;
+  static float perDay;
+  today = bbw::dateFromEpoch(app::epochNow());
+  sent = app::outboxSent();
+  perDay = app::shotsPerDay();
+  doc["today"] = today;
+  doc["shots_per_day"] = bbw::round2(perDay);
+  doc["max"] = bbw::MAX_SUBSCRIPTIONS;
+  static JsonDocument *out;
+  out = &doc;
+  app::readSubscriptions([](const bbw::Subscription *subs, size_t count, void *) {
+    JsonDocument &d = *out;
+    d["monthly_cents"] = bbw::monthlyCents(subs, count);
+    JsonArray list = d["subscriptions"].to<JsonArray>();
+    for (size_t i = 0; i < count; ++i) {
+      JsonObject o = list.add<JsonObject>();
+      app::subscriptionToJson(subs[i], o);
+      const int32_t until = bbw::daysUntilNext(subs[i], today);
+      if (until != INT32_MIN) o["days_until"] = until;
+      o["due_soon"] = bbw::subscriptionDueSoon(subs[i], today);
+      const int32_t left = bbw::stockDaysLeft(subs[i], perDay);
+      if (left >= 0) o["stock_days_left"] = left;
+      o["stock_short"] = bbw::stockShort(subs[i], perDay, today);
+      o["share"] = bbw::shareStateName(bbw::serviceShareState(subs[i], sent));
+      o["share_changed"] = bbw::serviceChangedSinceShared(subs[i]);
+      o["can_share"] = bbw::serviceCanBeShared(subs[i]);
+      o.remove("share_state");
+      o.remove("share_seq");
+      o.remove("share_hash");
+    }
+  }, nullptr);
+  const app::SubscriptionPrefs prefs = app::subscriptionPrefs();
+  doc["country"] = prefs.country;
+  JsonArray matters = doc["matters"].to<JsonArray>();
+  for (uint8_t i = 0; i < bbw::SERVICE_SOURCING_COUNT; ++i) {
+    if ((prefs.matters >> i) & 1u) matters.add(bbw::SERVICE_SOURCING[i]);
+  }
+  doc["sharing"] = app::settings().shareEnabled;
+  doc["share_ratings"] = app::settings().shareEnabled && app::settings().shareRatings;
+  sendJson(doc);
+}
+
+// POST /api/subscriptions {id?, name, url, ...}: adds one (no id) or replaces it.
+void handlePostSubscription() {
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  bbw::Subscription s;
+  app::subscriptionFromJson(doc.as<JsonObjectConst>(), s);
+  if (!s.name[0] && !s.url[0]) return sendError(400, "give it a name or a link");
+  const uint16_t id = app::saveSubscription(s);
+  if (id == 0) return sendError(409, s.id ? "no such subscription" : "the list is full (12)");
+  sendId(id);
+}
+
+uint16_t subscriptionIdArg() {
+  JsonDocument doc;
+  if (!deserializeJson(doc, server.arg("plain"))) return doc["id"] | 0;
+  return static_cast<uint16_t>(server.arg("id").toInt());
+}
+
+void handleDeleteSubscription() {
+  if (!app::deleteSubscription(subscriptionIdArg())) return sendError(404, "no such subscription");
+  sendOk();
+}
+
+void handleSubscriptionArrived() {
+  if (!app::subscriptionArrived(subscriptionIdArg())) return sendError(404, "no such subscription");
+  sendOk();
+}
+
+void handleSubscriptionSkipped() {
+  if (!app::subscriptionSkipped(subscriptionIdArg())) return sendError(404, "no such subscription");
+  sendOk();
+}
+
+// POST /api/subscriptions/preview {url}: the controller reads that page for a card, when it is idle.
+// GET: {state: none|waiting|done|failed, url, problem, and what the page said}.
+void handlePostPreview() {
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  const char *url = doc["url"] | "";
+  if (strncmp(url, "https://", 8) != 0 && strncmp(url, "http://", 7) != 0) {
+    return sendError(400, "a link starting https://");
+  }
+  if (strlen(url) >= 250) return sendError(400, "that link is too long");
+  app::requestPagePreview(url);
+  sendOk();
+}
+
+void handleGetPreview() {
+  static char url[256], problem[80];
+  static bbw::PageMeta meta;
+  const app::PreviewState state = app::pagePreview(url, sizeof(url), meta, problem, sizeof(problem));
+  JsonDocument doc;
+  static const char *names[] = {"none", "waiting", "done", "failed"};
+  doc["state"] = names[static_cast<int>(state)];
+  doc["url"] = url;
+  doc["problem"] = problem;
+  doc["title"] = meta.title;
+  doc["site"] = meta.site;
+  doc["description"] = meta.description;
+  doc["image"] = meta.image;
+  doc["icon"] = meta.icon;
+  doc["color"] = meta.color;
+  doc["platform"] = meta.platform;
+  doc["manage_url"] = meta.manageUrl;
   sendJson(doc);
 }
 
@@ -1021,6 +1138,10 @@ void handleLibraryDo() {
       error = "that is not a bag of this coffee";
       return bbw::useBag(lib, static_cast<uint16_t>(a), static_cast<uint16_t>(b));
     }
+    if (what == "bag_open") {  // a = bag id: an unopened bag put in use from today
+      error = "that is not an unopened bag";
+      return bbw::openBag(lib, static_cast<uint16_t>(a), today);
+    }
     if (what == "bag_delete") {  // a = bag id
       error = "the bag in use cannot be removed: put another in use first";
       return bbw::removeBag(lib, static_cast<uint16_t>(a));
@@ -1052,6 +1173,8 @@ void handleLibraryDo() {
 }
 
 // POST /api/bag {coffeeId, roastDate, openedDate?, weightG?}: a new bag of that coffee, in use from now.
+// {coffeeId, roastDate, weightG?, unopened: true, subscriptionId?}: a bag put on the shelf unopened; the
+// coffee keeps the bag it has in use (core/Library.h addUnopenedBag).
 // {id, roastDate, openedDate, frozenDate, thawDate, weightG}: correct the dates and weight of a bag.
 void handleBag() {
   if (busyBrewing()) return sendError(409, "not while a shot is running");
@@ -1059,7 +1182,10 @@ void handleBag() {
   if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
   static uint16_t bagId, coffeeId, weight;
   static uint32_t roast, opened, frozen, thaw;
-  static uint16_t result;
+  static uint16_t result, subscriptionId;
+  static bool unopened;
+  unopened = doc["unopened"] | false;
+  subscriptionId = doc["subscriptionId"] | 0;
   bagId = doc["id"] | 0;
   coffeeId = doc["coffeeId"] | 0;
   weight = doc["weightG"] | 0;
@@ -1076,7 +1202,8 @@ void handleBag() {
           result = bagId;
           return true;
         }
-        result = bbw::startBag(lib, coffeeId, roast, opened, weight);
+        result = unopened ? bbw::addUnopenedBag(lib, coffeeId, roast, weight, subscriptionId)
+                          : bbw::startBag(lib, coffeeId, roast, opened, weight);
         return result != 0;
       }, nullptr)) {
     return sendError(409, "not saved: no such coffee or bag, or the list holds only bags in use");
@@ -1748,6 +1875,304 @@ struct Candidate {
 
 // Coffees for a drinker (?drinker=N): from the shelf they have not rated, the library's catalogue and
 // the library's coffee ratings, ranked by how they match the drinker's profile.
+// Why a taste matches: the two values it agrees on most, what you lean towards first (a flavour you
+// like, more of a cup value), and a flavour you steer away from that it lacks ("no smoky") only to fill in.
+void tasteWhy(JsonArray why, const bbw::TasteProfile &profile, const bbw::TasteVector &taste) {
+  float score[bbw::TASTE_DIMS];
+  for (uint8_t d = 0; d < bbw::TASTE_DIMS; ++d) {
+    const float agree = profile.known[d] * taste.known[d] * (profile.v[d] - 0.5f) * (taste.v[d] - 0.5f);
+    const bool liked = d < bbw::TASTE_ATTRS || profile.v[d] > 0.5f;
+    score[d] = agree > 0.01f ? agree + (liked ? 1.0f : 0.0f) : -1.0f;
+  }
+  for (uint8_t n = 0; n < 2; ++n) {
+    int best = -1;
+    for (uint8_t d = 0; d < bbw::TASTE_DIMS; ++d) {
+      if (score[d] > 0 && (best < 0 || score[d] > score[best])) best = d;
+    }
+    if (best < 0) break;
+    score[best] = -1.0f;
+    char t[24];
+    if (best < bbw::TASTE_ATTRS) {
+      snprintf(t, sizeof(t), "%s %s", profile.v[best] > 0.5f ? "more" : "less", bbw::tasteDimName(best));
+    } else if (profile.v[best] < 0.5f) {
+      snprintf(t, sizeof(t), "no %s", bbw::tasteDimName(best));
+    } else {
+      strlcpy(t, bbw::tasteDimName(best), sizeof(t));
+    }
+    why.add(t);
+  }
+}
+
+// ---- subscription services: the library's list, reviews, recommendations ----
+
+const char *SOURCING_WORDS[bbw::SERVICE_SOURCING_COUNT] = {"fair trade", "direct trade", "organic", "farms named",
+                                                           "prices published", "sustainable packaging",
+                                                           "carbon neutral", "B Corp"};
+
+// GET /api/subscriptions/library: the library's list of services as cached (index/services.json).
+void handleGetServiceLibrary() {
+  const char *text = app::communityServices();
+  server.send(200, "application/json", text && text[0] ? text : "{\"v\":1,\"services\":[]}");
+}
+
+// POST /api/subscriptions/share {id}: the service's description goes to the library for review.
+void handleShareService() {
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  if (!app::settings().shareEnabled) return sendError(409, "sharing is off (Setup, Shared library)");
+  if (!app::shareService(doc["id"] | 0)) {
+    return sendError(409, "not sent: it needs a name and an https link, or it was sent already unchanged");
+  }
+  sendOk();
+}
+
+// POST /api/subscriptions/prefs {country, matters:[...]}
+void handleSubscriptionPrefs() {
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  app::SubscriptionPrefs p = app::subscriptionPrefs();
+  if (doc["country"].is<const char *>()) strlcpy(p.country, doc["country"] | "", sizeof(p.country));
+  if (doc["matters"].is<JsonArrayConst>()) {
+    p.matters = 0;
+    for (JsonVariantConst v : doc["matters"].as<JsonArrayConst>()) {
+      const int k = bbw::listIndex(bbw::SERVICE_SOURCING, bbw::SERVICE_SOURCING_COUNT, v | "");
+      if (k >= 0) p.matters |= static_cast<uint16_t>(1u << k);
+    }
+  }
+  app::setSubscriptionPrefs(p);
+  sendOk();
+}
+
+// GET /api/subscriptions/reviews: every review on this controller.
+void handleGetServiceReviews() {
+  JsonDocument doc;
+  static JsonArray list;
+  list = doc["reviews"].to<JsonArray>();
+  app::readServiceReviews([](const bbw::ServiceReview *rs, size_t n, void *) {
+    for (size_t i = 0; i < n; ++i) {
+      JsonObject o = list.add<JsonObject>();
+      o["id"] = rs[i].id;
+      o["subscription"] = rs[i].subscriptionId;
+      o["drinker"] = rs[i].drinkerId;
+      o["stars"] = rs[i].stars;
+      o["at"] = rs[i].epochS;
+      JsonObject a = o["aspects"].to<JsonObject>();
+      for (uint8_t k = 0; k < bbw::SERVICE_ASPECTS; ++k) {
+        if (rs[i].aspect[k]) a[bbw::SERVICE_ASPECT_NAMES[k]] = rs[i].aspect[k];
+      }
+      o["note"] = rs[i].note;
+      o["share"] = bbw::shareStateName(static_cast<bbw::ShareState>(rs[i].shareState));
+    }
+  }, nullptr);
+  sendJson(doc);
+}
+
+// POST /api/subscriptions/review {subscription, drinker, stars, aspects:{value:4,...}, note}
+void handlePostServiceReview() {
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  bbw::ServiceReview r;
+  r.subscriptionId = doc["subscription"] | 0;
+  r.drinkerId = doc["drinker"] | 0;
+  if (!app::settings().namedDrinkers) r.drinkerId = 0;
+  const int stars = doc["stars"] | 0;
+  if (stars < 1 || stars > 5) return sendError(400, "give it 1 to 5 stars");
+  r.stars = static_cast<uint8_t>(stars);
+  for (uint8_t k = 0; k < bbw::SERVICE_ASPECTS; ++k) {
+    const int v = doc["aspects"][bbw::SERVICE_ASPECT_NAMES[k]] | 0;
+    r.aspect[k] = v >= 1 && v <= 5 ? static_cast<uint8_t>(v) : 0;
+  }
+  cleanText(doc["note"] | "", r.note, sizeof(r.note));
+  const uint32_t id = app::saveServiceReview(r);
+  if (id == 0) return sendError(409, "not saved: no such subscription, or the list of reviews is full");
+  sendId(static_cast<uint16_t>(id));
+}
+
+void handleDeleteServiceReview() {
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  if (!app::deleteServiceReview(doc["id"] | 0u)) return sendError(404, "no such review");
+  sendOk();
+}
+
+// GET /api/subscriptions/recommend?drinker=N: services from the library's list the owner does not have,
+// that ship to them. Ranked by how the coffees they send taste against the drinker's profile, by
+// drinkers like this one, by reviews, and by the sourcing values the owner said matter.
+void handleGetServiceRecommend() {
+  const uint8_t drinker = static_cast<uint8_t>(server.arg("drinker").toInt());
+  RatedSet set = collectRated(drinker);
+  const bbw::TasteProfile profile = bbw::buildProfile(set.items, set.n, app::epochNow());
+  const app::SubscriptionPrefs prefs = app::subscriptionPrefs();
+  JsonDocument doc, taste, list;
+  if (deserializeJson(taste, app::communityTaste())) taste.clear();
+  if (deserializeJson(list, app::communityServices())) list.clear();
+  doc["shown"] = profile.shown();
+  doc["coffees"] = profile.coffees;
+  doc["country"] = prefs.country;
+  JsonArray matters = doc["matters"].to<JsonArray>();
+  for (uint8_t i = 0; i < bbw::SERVICE_SOURCING_COUNT; ++i) {
+    if ((prefs.matters >> i) & 1u) matters.add(bbw::SERVICE_SOURCING[i]);
+  }
+  // What the owner has: by library id, or by the shop's host.
+  static char haveIds[bbw::MAX_SUBSCRIPTIONS][40], haveHosts[bbw::MAX_SUBSCRIPTIONS][64];
+  static size_t haveN;
+  haveN = 0;
+  auto hostOf = [](const char *url, char *out, size_t size) {
+    const char *p = strstr(url, "://");
+    p = p ? p + 3 : url;
+    if (strncmp(p, "www.", 4) == 0) p += 4;
+    size_t n = 0;
+    while (p[n] && p[n] != '/' && n + 1 < size) {
+      out[n] = p[n];
+      ++n;
+    }
+    out[n] = '\0';
+  };
+  app::readSubscriptions([](const bbw::Subscription *subs, size_t count, void *) {
+    for (size_t i = 0; i < count && haveN < bbw::MAX_SUBSCRIPTIONS; ++i) {
+      strlcpy(haveIds[haveN], subs[i].libraryId, sizeof(haveIds[haveN]));
+      const char *p = strstr(subs[i].url, "://");
+      p = p ? p + 3 : subs[i].url;
+      if (strncmp(p, "www.", 4) == 0) p += 4;
+      size_t n = 0;
+      while (p[n] && p[n] != '/' && n + 1 < sizeof(haveHosts[haveN])) {
+        haveHosts[haveN][n] = p[n];
+        ++n;
+      }
+      haveHosts[haveN][n] = '\0';
+      ++haveN;
+    }
+  }, nullptr);
+  // My stars per coffee key, for "drinkers like you".
+  struct Mine {
+    char key[bbw::LIBRARY_ID_LEN + 8];
+    uint8_t stars;
+  };
+  static Mine mine[bbw::MAX_COFFEES];
+  static size_t nm;
+  static RatedSet *rated;
+  nm = 0;
+  rated = &set;
+  app::readLibrary([](const bbw::Library &lib, void *) {
+    for (uint8_t i = 0; i < lib.coffeeCount && nm < bbw::MAX_COFFEES; ++i) {
+      uint8_t best = 0;
+      for (size_t k = 0; k < rated->n; ++k) {
+        if (rated->items[k].coffeeId == lib.coffees[i].id && rated->items[k].stars > best) best = rated->items[k].stars;
+      }
+      if (!best) continue;
+      tasteKey(lib.coffees[i].libraryId, lib.coffees[i].roaster, lib.coffees[i].name, mine[nm].key, sizeof(mine[nm].key));
+      mine[nm++].stars = best;
+    }
+  }, nullptr);
+  struct Cand {
+    JsonObjectConst entry;
+    bbw::TasteVector taste;
+    bool haveTaste = false;
+    float reviewStars = 0, peopleNum = 0, peopleDen = 0, score = 0;
+    uint16_t reviews = 0;
+    uint16_t sourcing = 0;
+    bbw::TasteMatch match;
+  };
+  Cand *cands = new Cand[32];
+  size_t nc = 0;
+  JsonObjectConst serviceTastes = taste["services"];
+  bool anyTaste = false;
+  for (JsonObjectConst e : list["services"].as<JsonArrayConst>()) {
+    const char *id = e["id"] | "";
+    if (!id[0] || nc >= 32) continue;
+    char host[64];
+    hostOf(e["url"] | "", host, sizeof(host));
+    bool have = false;
+    for (size_t i = 0; i < haveN; ++i) have |= strcmp(haveIds[i], id) == 0 || (host[0] && strcmp(haveHosts[i], host) == 0);
+    if (have) continue;
+    if (prefs.country[0] && e["ships_to"].is<JsonArrayConst>()) {
+      bool ships = false;
+      for (JsonVariantConst c : e["ships_to"].as<JsonArrayConst>()) ships |= strcmp(c | "", prefs.country) == 0;
+      if (!ships) continue;
+    }
+    Cand &cd = cands[nc++];
+    cd.entry = e;
+    for (JsonVariantConst v : e["sourcing"].as<JsonArrayConst>()) {
+      const int k = bbw::listIndex(bbw::SERVICE_SOURCING, bbw::SERVICE_SOURCING_COUNT, v | "");
+      if (k >= 0) cd.sourcing |= static_cast<uint16_t>(1u << k);
+    }
+    cd.reviewStars = e["reviews"]["stars"] | 0.0f;
+    cd.reviews = e["reviews"]["n"] | 0;
+    JsonObjectConst t = serviceTastes[id];
+    if (!t.isNull()) {
+      float cup[bbw::TASTE_ATTRS], fl[bbw::FLAVOUR_COUNT];
+      for (uint8_t a = 0; a < bbw::TASTE_ATTRS; ++a) cup[a] = t["cup"][bbw::tasteAttrName(a)] | 0.0f;
+      JsonObjectConst flv = t["flavours"];
+      for (uint8_t f = 0; f < bbw::FLAVOUR_COUNT; ++f) fl[f] = flv.isNull() ? -1.0f : (flv[bbw::flavourName(f)] | 0.0f);
+      cd.taste = bbw::tasteFromCommunity(cup, fl);
+      cd.haveTaste = profile.shown();
+      anyTaste |= cd.haveTaste;
+    }
+  }
+  // Drinkers like this one: what they made of each service's coffees.
+  for (JsonObjectConst person : taste["people"].as<JsonArrayConst>()) {
+    JsonObjectConst r = person["r"];
+    uint8_t a[bbw::MAX_COFFEES], b[bbw::MAX_COFFEES];
+    for (size_t i = 0; i < nm; ++i) {
+      a[i] = mine[i].stars;
+      b[i] = r[mine[i].key] | 0;
+    }
+    const float w = bbw::peopleLikeness(a, b, nm);
+    if (w <= 0.0f) continue;
+    for (size_t i = 0; i < nc; ++i) {
+      char key[48];
+      snprintf(key, sizeof(key), "svc:%s", cands[i].entry["id"] | "");
+      const uint8_t st = r[key] | 0;
+      if (!st) continue;
+      cands[i].peopleNum += w * st;
+      cands[i].peopleDen += w;
+    }
+  }
+  for (size_t i = 0; i < nc; ++i) {
+    Cand &cd = cands[i];
+    if (cd.haveTaste) cd.match = bbw::matchTaste(profile, cd.taste);
+    const float people = cd.peopleDen > 0.3f ? cd.peopleNum / cd.peopleDen : 0.0f;
+    uint16_t met = cd.sourcing & prefs.matters;
+    uint8_t mattersMet = 0;
+    for (; met; met &= static_cast<uint16_t>(met - 1)) ++mattersMet;
+    cd.score = bbw::serviceScore(cd.match, cd.haveTaste, people, cd.reviewStars, mattersMet);
+  }
+  // By taste once there is any to go on; before that by reviews and the values that matter.
+  doc["basis"] = anyTaste ? "taste" : nc ? "reviews" : "none";
+  JsonArray items = doc["items"].to<JsonArray>();
+  for (uint8_t pick = 0; pick < 5; ++pick) {
+    int best = -1;
+    for (size_t i = 0; i < nc; ++i) {
+      if (cands[i].score > -9.0f && (best < 0 || cands[i].score > cands[best].score)) best = static_cast<int>(i);
+    }
+    if (best < 0 || (anyTaste && cands[best].score <= 0.02f)) break;
+    Cand &cd = cands[best];
+    cd.score = -10.0f;
+    JsonObject o = items.add<JsonObject>();
+    o["service"] = cd.entry;
+    JsonArray why = o["why"].to<JsonArray>();
+    if (cd.haveTaste && cd.match.score > 0.1f) tasteWhy(why, profile, cd.taste);
+    for (uint8_t k = 0; k < bbw::SERVICE_SOURCING_COUNT; ++k) {
+      if (((cd.sourcing & prefs.matters) >> k) & 1u) why.add(SOURCING_WORDS[k]);
+    }
+    if (cd.peopleDen > 0.3f) {
+      char t[48];
+      snprintf(t, sizeof(t), "drinkers like you gave its coffees %.1f\xE2\x98\x85",
+               static_cast<double>(cd.peopleNum / cd.peopleDen));
+      o["people"] = t;
+    }
+    if (cd.reviews) {
+      char t[40];
+      snprintf(t, sizeof(t), "%.1f\xE2\x98\x85 from %u reviews", static_cast<double>(cd.reviewStars),
+               static_cast<unsigned>(cd.reviews));
+      o["reviews"] = t;
+    }
+  }
+  delete[] cands;
+  delete[] set.items;
+  sendJson(doc);
+}
+
 void handleGetRecommend() {
   const uint8_t drinker = static_cast<uint8_t>(server.arg("drinker").toInt());
   RatedSet set = collectRated(drinker);
@@ -1907,34 +2332,8 @@ void handleGetRecommend() {
     o["from"] = cd.from == 0 ? "shelf" : cd.from == 1 ? "library" : "community";
     o["score"] = roundf(cd.score * 100) / 100;
     o["sure"] = roundf(cd.match.confidence * 100) / 100;
-    // Why: the two values it agrees on most, what you lean towards first (a flavour you like, more of a
-    // cup value), and a flavour you steer away from that it lacks ("no smoky") only to fill in.
     JsonArray why = o["why"].to<JsonArray>();
-    {
-      float score[bbw::TASTE_DIMS];
-      for (uint8_t d = 0; d < bbw::TASTE_DIMS; ++d) {
-        const float agree = profile.known[d] * cd.taste.known[d] * (profile.v[d] - 0.5f) * (cd.taste.v[d] - 0.5f);
-        const bool liked = d < bbw::TASTE_ATTRS || profile.v[d] > 0.5f;
-        score[d] = agree > 0.01f ? agree + (liked ? 1.0f : 0.0f) : -1.0f;
-      }
-      for (uint8_t n = 0; n < 2; ++n) {
-        int best = -1;
-        for (uint8_t d = 0; d < bbw::TASTE_DIMS; ++d) {
-          if (score[d] > 0 && (best < 0 || score[d] > score[best])) best = d;
-        }
-        if (best < 0) break;
-        score[best] = -1.0f;
-        char t[24];
-        if (best < bbw::TASTE_ATTRS) {
-          snprintf(t, sizeof(t), "%s %s", profile.v[best] > 0.5f ? "more" : "less", bbw::tasteDimName(best));
-        } else if (profile.v[best] < 0.5f) {
-          snprintf(t, sizeof(t), "no %s", bbw::tasteDimName(best));
-        } else {
-          strlcpy(t, bbw::tasteDimName(best), sizeof(t));
-        }
-        why.add(t);
-      }
-    }
+    tasteWhy(why, profile, cd.taste);
     // The rated coffee it is most like, if that one was loved.
     float like = 0.35f;
     int likeIdx = -1;
@@ -2465,6 +2864,20 @@ void begin() {
   server.on("/api/drinkers", HTTP_POST, handlePostDrinkers);
   server.on("/api/taste/profile", HTTP_GET, handleGetTasteProfile);
   server.on("/api/taste/recommend", HTTP_GET, handleGetRecommend);
+  server.on("/api/subscriptions", HTTP_GET, handleGetSubscriptions);
+  server.on("/api/subscriptions", HTTP_POST, handlePostSubscription);
+  server.on("/api/subscriptions/delete", HTTP_POST, handleDeleteSubscription);
+  server.on("/api/subscriptions/arrived", HTTP_POST, handleSubscriptionArrived);
+  server.on("/api/subscriptions/skip", HTTP_POST, handleSubscriptionSkipped);
+  server.on("/api/subscriptions/preview", HTTP_GET, handleGetPreview);
+  server.on("/api/subscriptions/preview", HTTP_POST, handlePostPreview);
+  server.on("/api/subscriptions/library", HTTP_GET, handleGetServiceLibrary);
+  server.on("/api/subscriptions/share", HTTP_POST, handleShareService);
+  server.on("/api/subscriptions/prefs", HTTP_POST, handleSubscriptionPrefs);
+  server.on("/api/subscriptions/reviews", HTTP_GET, handleGetServiceReviews);
+  server.on("/api/subscriptions/review", HTTP_POST, handlePostServiceReview);
+  server.on("/api/subscriptions/review/delete", HTTP_POST, handleDeleteServiceReview);
+  server.on("/api/subscriptions/recommend", HTTP_GET, handleGetServiceRecommend);
   server.on("/api/net", HTTP_POST, handleNet);
   server.on("/api/time", HTTP_POST, []() {
     const uint32_t epoch = strtoul(server.arg("epoch").c_str(), nullptr, 10);

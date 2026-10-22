@@ -282,6 +282,22 @@ body, bitterness, finish and the flavour families you tasted. Insights shows you
 charts and recommends coffees from your shelf and the shared library. One household profile by
 default; Setup › Drinkers turns on named drinkers. See [docs/COFFEE-TASTE.md](docs/COFFEE-TASTE.md).
 
+### Subscriptions
+
+Coffee, paper filters and other supplies that come by post, in one place (Subscriptions):
+- **Cards:** paste a shop's link and the controller builds a card from its page.
+- **Tracking:** when the next one comes, what it all costs each month, how many filters are left (each
+  shot uses one), and a reminder before a charge.
+- **Manage:** a button that opens the shop's own subscription page. Shops' subscription systems take
+  only the shop's key, so skipping and pausing happen there.
+- **Deliveries:** a coffee that arrives goes on the shelf as an unopened bag. Nothing is tracked until
+  you open it, or until it comes up next by roast date.
+- **Shared:** services are shared like coffees. Define a new one and send it for review; add listed ones
+  in one tap; review the ones you use. Services whose coffees suit your taste, or that match what
+  matters to you (fair trade, farms named, ...), are recommended.
+
+See [docs/SUBSCRIPTIONS.md](docs/SUBSCRIPTIONS.md).
+
 ### Grinder tracking and grind advice
 
 The Grinder section of the web page records the grinder's burr setting in

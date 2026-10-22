@@ -28,6 +28,21 @@ static const char WEB_PAGE[] PROGMEM = R"HTML(<!doctype html>
 .reco{display:block;background:var(--up);border:1px solid var(--line);border-radius:12px;padding:12px 14px;color:var(--fg)}a.reco:hover{border-color:var(--edge)}
 .reco .src{float:right;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
 .likes{display:flex;flex-wrap:wrap;gap:8px}.likes a{background:var(--up);border:1px solid var(--line);border-radius:999px;padding:5px 12px;font-size:13px;color:var(--fg)}.likes a b{color:var(--acc);font-weight:600;margin-left:6px}
+.subs{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:14px}
+.sub{position:relative;background:var(--card);border:1px solid var(--line);border-radius:16px;overflow:hidden;display:flex;flex-direction:column;min-width:0}.sub.off{opacity:.62}
+.sub .ban{position:relative;height:118px;background:var(--up);overflow:hidden}.sub .ban img{width:100%;height:100%;object-fit:cover;display:block}
+.sub .ban .ini{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:44px;font-weight:700;letter-spacing:-.03em;color:rgba(255,255,255,.88)}
+.sub .ico{position:absolute;left:14px;top:92px;width:44px;height:44px;border-radius:12px;background:var(--card);border:3px solid var(--card);overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.25)}.sub .ico img{width:100%;height:100%;object-fit:cover;display:block}
+.sub .tags{position:absolute;right:10px;top:10px;display:flex;gap:6px}.sub .tags .pill{font-size:11px;padding:3px 9px;box-shadow:0 1px 4px rgba(0,0,0,.3)}
+.sub .bd{padding:26px 16px 10px;display:flex;flex-direction:column;gap:5px;flex:1}.sub .bd b{font-size:16px}
+.sub .acts{display:flex;flex-wrap:wrap;gap:6px;padding:4px 12px 14px}.sub .acts button,.sub .acts a.btn{min-height:36px;padding:0 12px;font-size:14px}
+a.btn{display:inline-flex;align-items:center;border-radius:10px;border:1px solid var(--edge);background:var(--up);color:var(--fg)}a.btn.pri{background:var(--acc);border-color:var(--acc);color:#1d0f00;font-weight:600}
+.meter{height:6px;border-radius:3px;background:var(--up);overflow:hidden;margin-top:4px}.meter i{display:block;height:100%;background:var(--ok);border-radius:3px}.meter.warn i{background:var(--warn)}
+.stat{background:var(--up);border-radius:12px;padding:12px 14px;min-width:0}.stat b{display:block;font-size:22px;font-weight:600;letter-spacing:-.02em;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chips{display:flex;flex-wrap:wrap;gap:6px}.chips button{min-height:34px;padding:0 12px;border-radius:999px;font-size:13px}.chips button.on{border-color:var(--acc);background:var(--accbg);color:var(--acctext)}
+.sub .why{display:flex;flex-wrap:wrap;gap:4px}.sub .why span{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--up);color:var(--mid)}
+.sub .lib{position:absolute;left:10px;top:10px}.sub .lib .pill{font-size:11px;padding:3px 9px;background:var(--combg);color:var(--comtext);border:1px solid var(--comline)}
+.remind{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;background:var(--warnbg);border:1px solid var(--line);border-left:4px solid var(--warn);border-radius:12px;padding:10px 14px}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:700px){.two{grid-template-columns:1fr}}
 .theme{display:inline-flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:120px}.theme.on{outline:2px solid var(--acc);outline-offset:1px}.theme .strip{display:flex;border-radius:4px;overflow:hidden;border:1px solid var(--edge)}.theme .strip i{display:block;width:22px;height:14px}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;font-variant-numeric:tabular-nums}
@@ -191,10 +206,10 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 @media(max-width:760px){.srow{grid-template-columns:58px minmax(0,1fr) 56px 50px}.srow .g{display:none}#sdetail .tiles{grid-template-columns:1fr 1fr}}
 </style></head><body><div class="app">
 <nav aria-label="Sections"><b>Brew by Weight</b><span class="pill" id="navstate" title="What the controller is doing">--</span>
-<a href="#home">Home</a><a href="#shots">Shots</a><a href="#insights">Insights</a><a href="#coffees">Coffees</a><a href="#recipes">Recipes</a><a href="#grinder">Grinder</a><a href="#machine">Espresso machine</a><a href="#setup">Setup</a><a href="#logs">Logs</a>
+<a href="#home">Home</a><a href="#shots">Shots</a><a href="#insights">Insights</a><a href="#coffees">Coffees</a><a href="#recipes">Recipes</a><a href="#grinder">Grinder</a><a href="#machine">Espresso machine</a><a href="#subscriptions">Subscriptions</a><a href="#setup">Setup</a><a href="#logs">Logs</a>
 <div id="link"></div></nav>
 <div id="bnav" role="navigation" aria-label="Sections"><a href="#home">Home</a><a href="#shots">Shots</a><a href="#coffees">Coffees</a><a href="#grinder">Grinder</a><button type="button" id="bmore" aria-expanded="false" aria-controls="more">More</button></div>
-<div id="more" role="menu"><a href="#insights">Insights</a><a href="#recipes">Recipes</a><a href="#machine">Espresso machine</a><a href="#setup">Setup</a><a href="#logs">Logs</a></div>
+<div id="more" role="menu"><a href="#insights">Insights</a><a href="#recipes">Recipes</a><a href="#machine">Espresso machine</a><a href="#subscriptions">Subscriptions</a><a href="#setup">Setup</a><a href="#logs">Logs</a></div>
 <main>
 <div id="ctip" role="tooltip"></div>
 <div id="askbox" role="dialog" aria-modal="true" aria-labelledby="asktxt"><div id="asktxt"></div><div class="row"><button id="askyes" class="pri">Yes</button><button id="askno">Cancel</button></div></div>
@@ -380,6 +395,49 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <section class="card"><div class="head"><h2>Upkeep</h2><span class="sm dim" id="mt_total"></span></div><div id="mt_rows"></div><details class="note"><summary>Shots counted since each job was last done.</summary><ul><li>A shot counts from 12 s and 2 g.</li><li>The controller cannot tell from the cup when a machine needs descaling or a grinder cleaning, so it counts.</li><li>You choose how often to be reminded; no interval is set until you set one.</li></ul></details></section>
 <section class="card"><div class="head"><h2>Make and model</h2></div><div id="mc" class="mid"></div><div class="grid"><label>Machine<select id="mc_pick" onchange="pickMachine()"></select></label><label>Maker<input id="mc_maker" maxlength="23"></label><label>Model<input id="mc_model" maxlength="31"></label><label>Control<input id="mc_control" maxlength="31"></label><label>How a shot is run<select id="mc_style"><option value="toggle_button">One button: press to start, press to stop</option><option value="start_button">A button starts; the machine stops itself</option><option value="start_stop_buttons">Two buttons: start and stop (adds a stop bot)</option><option value="hold_button">One button held for the whole shot (SwitchBot)</option><option value="manual">By hand: lever, knob or paddle</option></select></label><label>By hand, the clock starts<select id="mc_start"><option value="tap">when Start is tapped</option><option value="first_drip">with the first coffee on the scale</option></select></label><label>Holding the button pre-infuses<select id="mc_hold"><option value="0">No</option><option value="1">Yes</option></select></label><label>A tap uses its own pre-infusion<select id="mc_tap"><option value="0">No</option><option value="1">Yes</option></select></label><label>Power button toggles<select id="mc_pow"><option value="0">No</option><option value="1">Yes</option></select></label><label>Stops a shot itself after (s, 0 never)<input id="mc_self" type="number" min="0" max="600"></label></div><div class="row"><button class="pri" data-save onclick="saveMachine()">Save</button><button id="mc_send" onclick="shareMachine()">Send to the shared library</button></div><details class="note"><summary>Change anything and Save; a changed listed machine becomes your own version.</summary><ul><li>Set a machine up once and send it: the next owner of the same machine picks it from the list.</li><li>The same machine worked by another button is another entry.</li><li>Where the bot does not stop the machine, the target weight is a cue: the screen says STOP NOW (and the scale sounds, if it can be told to) and the shot ends when the pour does.</li><li>Held pre-infusion and bloom in a recipe are only used on a machine whose button holds pre-infusion.</li></ul></details></section>
 </div>
+<div class="page" id="p-subscriptions">
+<div class="head"><h1>Subscriptions</h1><button class="pri" onclick="subEdit(0)">Add a subscription</button></div>
+<div class="grid" id="subsum"></div>
+<div class="list" id="subrem"></div>
+<div class="subs" id="sublist"></div>
+<section class="card" id="subreco"><div class="head"><h2>Services you might like</h2><span class="sm dim" id="srbasis"></span></div>
+<div class="row" style="align-items:flex-end"><label style="flex:0 0 130px">Your country<input id="sr_country" maxlength="2" placeholder="e.g. US" onchange="subPrefs()"></label><div style="flex:1 1 300px"><div class="sm dim" style="margin-bottom:6px">What matters to you</div><div class="chips" id="srmatters"></div></div></div>
+<div class="subs" id="srlist"></div></section>
+<section class="card com" id="sublib"><div class="head"><h2>From the shared library</h2><span class="sm" id="slcount"></span></div>
+<label>Search services<input type="search" id="slq" oninput="drawLib()" placeholder="name, style, sourcing"></label>
+<div class="subs" id="sllist"></div></section>
+<section class="card" id="subform" style="display:none"><div class="head"><h2 id="sftitle">Add a subscription</h2><button class="tbtn" onclick="subClose()">Close</button></div>
+<div class="row"><label style="flex:1 1 280px">Link to the shop or the subscription<input id="sf_url" type="url" placeholder="https://" onkeydown="if(event.key==='Enter')subRead()"></label><button style="align-self:flex-end" onclick="subRead()">Read the page</button></div>
+<div class="sm dim" id="sfread"></div>
+<div class="two"><div class="subs" id="sfprev" style="grid-template-columns:1fr"></div><div class="grid" style="align-content:start">
+<label>Name<input id="sf_name" maxlength="47" oninput="subPrev()"></label>
+<label>What it is<select id="sf_kind" onchange="subKind();subPrev()"><option value="coffee">Coffee</option><option value="supplies">Supplies (filters...)</option><option value="other">Other</option></select></label>
+<label>Status<select id="sf_status" onchange="subPrev()"><option value="active">Active</option><option value="paused">Paused</option><option value="cancelled">Cancelled</option></select></label>
+<label>Every<span class="row" style="flex-wrap:nowrap"><input id="sf_every" type="number" min="0" max="366" style="width:90px" oninput="subPrev()"><select id="sf_unit" onchange="subPrev()"><option value="7">weeks</option><option value="1">days</option><option value="30.44">months</option></select></span></label>
+<label>Next charge or delivery<input id="sf_next" type="date" onchange="subPrev()"></label>
+<label>Price each time ($)<input id="sf_price" type="number" min="0" step="0.01" oninput="subPrev()"></label></div></div>
+<div class="grid" id="sfsup"><label>Item<input id="sf_item" maxlength="39" placeholder="e.g. paper filters"></label><label>In stock now<input id="sf_stock" type="number" min="0"></label><label>Used per shot<input id="sf_pershot" type="number" min="0" max="10" placeholder="1"></label><label>Each delivery brings<input id="sf_perdel" type="number" min="0"></label></div>
+<label>Where you manage it (the shop's subscription page)<input id="sf_manage" type="url" placeholder="https://"></label>
+<details class="note" id="sfshared"><summary>For the shared library: what it offers, where it ships, how it sources</summary><div class="grid" style="margin-top:8px">
+<label>Ships to (country codes)<input id="sf_ships" placeholder="e.g. US, CA"></label><label>Deliveries offered (every N weeks)<input id="sf_cad" placeholder="e.g. 1, 2, 4"></label>
+<label>Typical price each delivery<input id="sf_pfrom" type="number" min="0" step="0.01"></label><label>Currency<input id="sf_cur" maxlength="3" placeholder="USD"></label></div>
+<div class="subh">Style</div><div class="chips" id="sf_style"></div><div class="subh">Sourcing it claims</div><div class="chips" id="sf_sourcing"></div>
+<div class="sm dim" style="margin-top:6px">Claims are checked against the shop's site by the library's reviewer before it is listed. Your own price, dates, stock and notes are never sent.</div></details>
+<div class="row" id="sfsharerow" style="border-top:1px solid var(--line);padding-top:12px"><span class="pill" id="sfsharepill" style="background:var(--combg);color:var(--comtext);border:1px solid var(--comline)"></span><span class="sm mid" id="sfsharetxt" style="flex:1 1 240px"></span><button id="sfsend" onclick="subShare()">Send to the shared library</button></div>
+<div id="sfreview" style="border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:10px"><div class="head"><h2>Your review</h2><span class="sm dim" id="svinfo"></span></div>
+<div class="row" id="svwho"></div><div class="row" id="svstars"></div><div class="grid" id="svasp"></div>
+<label>Note (stays on this controller)<input id="sv_note" maxlength="39"></label>
+<div class="row"><button class="pri" onclick="subReviewSave()">Save review</button><button class="del" id="svdel" onclick="subReviewDel()">Delete review</button></div><div class="list sm" id="svlist"></div></div>
+<label>Note<input id="sf_note" maxlength="95" placeholder="e.g. 2 bags, whole bean"></label>
+<details class="note"><summary>Card look</summary><div class="grid" style="margin-top:8px"><label>Picture<input id="sf_image" type="url" oninput="subPrev()"></label><label>Icon<input id="sf_icon" type="url" oninput="subPrev()"></label><label>Colour<input id="sf_color" type="color" value="#5b6470" oninput="subPrev()"></label></div></details>
+<div class="row"><button class="pri" data-save onclick="subSave()">Save</button><button onclick="subClose()">Cancel</button><button class="del" id="sfdel" style="margin-left:auto" onclick="subDel()">Delete</button></div></section>
+<section class="card" id="subarr" style="display:none"><div class="head"><h2 id="satitle">A delivery arrived</h2><button class="tbtn" onclick="$('subarr').style.display='none'">Close</button></div>
+<div class="grid"><label>Which coffee<select id="sa_coffee" onchange="subArrKind()"></select></label>
+<label>Roast date printed on the bag<input id="sa_roast" type="date"></label><label>Weight (g, optional)<input id="sa_weight" type="number" min="0" max="5000"></label></div>
+<div class="grid" id="sanew"><label>Name<input id="sa_name" maxlength="23"></label><label>Roaster<input id="sa_roaster" maxlength="23"></label><label>Tasting notes<input id="sa_notes" maxlength="47"></label></div>
+<div class="row"><button class="pri" data-save onclick="subArrSave()">Put it on the shelf</button><span class="sm dim">Unopened: nothing is tracked until you open it, or it comes up next by roast date when a bag is finished.</span></div></section>
+<details class="note"><summary>Why skip and pause happen on the shop's page.</summary><ul><li>Shops run subscriptions on systems (Recharge, Ordergroove and the like) that only the shop can reach: there is no way in for your controller.</li><li>So the card links to where you manage it, and keeps its own track here: when it comes, what it costs, how much is left.</li><li>Arrived and Skip move the date on here. Skipping at the shop is still yours to do.</li><li>The picture and name come from the shop's page, read once by the controller when you add the link.</li></ul></details>
+</div>
 <div class="page" id="p-setup">
 <div class="head"><h1>Setup</h1></div>
 <section class="card"><h2>Appearance</h2><p class="sm dim">For this page and the controller's screen; every browser follows it.</p><div class="row" id="themes"></div></section>
@@ -528,7 +586,7 @@ const plabel=p=>{const c=coffee(p.coffeeId),r=recipe(p.recipeId);return (c?c.nam
 
 function show(){const h=(location.hash||'#home').slice(1);document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on',p.id=='p-'+h));
 document.querySelectorAll('nav a,#bnav a,#more a').forEach(a=>a.classList.toggle('on',a.getAttribute('href')=='#'+h));
-$('bmore').classList.toggle('on',['recipes','insights','machine','setup','logs'].includes(h));$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadRatings();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees'){loadCommunityCoffees();loadRatings()}if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights')drawInsights();}
+$('bmore').classList.toggle('on',['recipes','insights','machine','subscriptions','setup','logs'].includes(h));$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadRatings();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees'){loadCommunityCoffees();loadRatings()}if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights')drawInsights();if(h=='subscriptions')loadSubs();}
 // Colour schemes, in the controller's order (bbw::UiTheme): name, and a strip of its colours.
 const THEMES=[['dark','Dark',['#0e0f11','#17191c','#f08a24','#4cc38a']],['light','Light',['#f4f3f0','#ffffff','#c2560c','#1e8e4e']],
 ['nord','Nord',['#2e3440','#3b4252','#d08770','#a3be8c']],['solarized','Solarized Dark',['#002b36','#073642','#cb4b16','#859900']],
@@ -538,7 +596,7 @@ function setTheme(n,save){const t=(THEMES[n]||THEMES[0])[0];if(t=='dark')delete 
 try{localStorage.setItem('bbwTheme',t)}catch(e){}readTC();renderThemes();show();
 if(save)post('/api/settings',{uiTheme:n}).then(r=>{if(r&&r.ok===false)return;if(S)S.uiTheme=n})}
 function renderThemes(){const el=$('themes');if(!el)return;const cur=themeNow();el.innerHTML=THEMES.map(([k,name,cols],i)=>`<button class="theme${i==cur?' on':''}" onclick="setTheme(${i},true)" aria-pressed="${i==cur}"><span class="strip">${cols.map(c=>`<i style="background:${c}"></i>`).join('')}</span>${name}</button>`).join('')}
-window.addEventListener('hashchange',show);loadHomePower();
+window.addEventListener('hashchange',show);loadHomePower();loadSubs();
 let LOGT='',LOGN=0,LOGB=false;
 function drawLog(){const f=$('lg_filter').value.toLowerCase(),v=$('lg_view');v.innerHTML=LOGT.split('\n').filter(l=>l&&(!f||l.toLowerCase().includes(f))).map(l=>{const k=l.charAt(11);return '<span'+(k=='E'||k=='W'?' style="color:var(--warn)"':k=='D'?' class="dim"':'')+'>'+esc(l)+'</span>'}).join('\n');if($('lg_follow').checked)v.scrollTop=v.scrollHeight}
 async function pollLog(){if(LOGB||!$('p-logs').classList.contains('on'))return;LOGB=true;try{for(let i=0;i<8;i++){const r=await fetch('/api/log?from='+LOGN),t=await r.text(),n=+r.headers.get('X-Log-Next');if(n<LOGN)LOGT='';LOGN=n;if(!t)break;LOGT=(LOGT+t).slice(-200000)}drawLog()}catch(e){}LOGB=false}
@@ -619,8 +677,8 @@ const d=c?age(c.roastDate):null;$('pinfo').textContent=(c?[c.roaster,c.origin,c.
 // Coffees on the shelf first; those whose bag was finished below, folded away but kept with all
 // their data (a new bag puts one back on the shelf and on the controller).
 function drawCoffeeList(){const q=$('csearch').value.toLowerCase();const hit=c=>!q||[c.name,c.roaster,c.origin,c.region,c.process,c.varietal].join(' ').toLowerCase().includes(q);
-const m=L.coffees.filter(c=>!c.finished&&hit(c)),fin=L.coffees.filter(c=>c.finished&&hit(c));
-$('clist').innerHTML=m.map(c=>{const n=L.presets.filter(p=>p.coffeeId==c.id).length,d=age(c.roastDate);return `<button class="item ${c.id==C?'on':''}" onclick="C=${c.id};drawCoffees()"><b>${esc(c.name)}</b><span>${esc([c.roaster,n?n+(n==1?' recipe':' recipes'):'not on the controller',d!=null?d+' days off roast':'',c.share&&c.share!='local'?(c.share=='sent'&&!lib()?'not sent':SHN[c.share])+(c.shareChanged?', changed since':''):''].filter(x=>x).join(' · '))}</span></button>`}).join('')||'<div class="dim sm">'+(q?'No coffee on the shelf matches.':'No coffee on the shelf.')+'</div>';
+const m=L.coffees.filter(c=>(!c.finished||waitingBag(c))&&hit(c)),fin=L.coffees.filter(c=>c.finished&&!waitingBag(c)&&hit(c));
+$('clist').innerHTML=m.map(c=>{const n=L.presets.filter(p=>p.coffeeId==c.id).length,w=waitingBag(c),u=L.bags.filter(b=>b.coffeeId==c.id&&b.unopened).length,d=c.finished||!c.bagId?null:age(c.roastDate);return `<button class="item ${c.id==C?'on':''}" onclick="C=${c.id};drawCoffees()"><b>${esc(c.name)}</b><span>${esc([c.roaster,n?n+(n==1?' recipe':' recipes'):'not on the controller',d!=null?d+' days off roast':'',u?(u==1?'1 unopened bag':u+' unopened bags')+(w&&w.roastDate&&(c.finished||!c.bagId)?', roasted '+fd(w.roastDate):''):'',c.share&&c.share!='local'?(c.share=='sent'&&!lib()?'not sent':SHN[c.share])+(c.shareChanged?', changed since':''):''].filter(x=>x).join(' · '))}</span></button>`}).join('')||'<div class="dim sm">'+(q?'No coffee on the shelf matches.':'No coffee on the shelf.')+'</div>';
 const fo=$('cfinished')&&$('cfinished').open;
 $('clist').innerHTML+=fin.length?`<details id="cfinished" ${fo||fin.some(c=>c.id==C)||q?'open':''} style="margin-top:10px"><summary class="sm mid">Finished bags (${fin.length})</summary>`+fin.map(c=>`<button class="item ${c.id==C?'on':''}" style="opacity:.8" onclick="C=${c.id};drawCoffees()"><b>${esc(c.name)}</b><span>${esc([c.roaster,'finished '+fd(c.finished)].filter(x=>x).join(' · '))}</span></button>`).join('')+'</details>':'';
 const onShelf=L.coffees.filter(c=>!c.finished).length,nf=L.coffees.length-onShelf;
@@ -688,8 +746,8 @@ $('iragain').innerHTML=(r.buy_again||[]).length?'<span class="dim">Buy again:</s
 function drawCoffees(){drawCoffeeList();drawRating();const c=coffee(C)||{roastLevel:0};$('ctitle').textContent=C?'Coffee':'New coffee';
 CF.forEach(k=>{$('c_'+k).value=DK.includes(k)?i2d(c[k]):(c[k]==null?'':c[k])});drawBags(c);if(!c.altitudeM)$('c_altitudeM').value='';
 $('cdel').style.display=$('cbag').style.display=C?'':'none';$('cbagrow').style.display='none';
-$('cfin').style.display=C&&!c.finished?'':'none';$('cbag').textContent=c.finished?'New bag: back on the shelf...':'New bag...';drawCoffeeShare(c);if(C)drawCommunity('ccom',C);else $('ccom').textContent='';$('cpairs').style.display=C?'':'none';
-$('cinfo').textContent=c.finished?'Bag finished '+fd(c.finished)+'. Off the controller until a new bag is started.':'';
+$('cfin').style.display=C&&!c.finished&&c.bagId?'':'none';$('cbag').textContent=c.finished?'New bag: back on the shelf...':'New bag...';drawCoffeeShare(c);if(C)drawCommunity('ccom',C);else $('ccom').textContent='';$('cpairs').style.display=C?'':'none';
+const wb=C?waitingBag(c):null;$('cinfo').textContent=wb&&(c.finished||!c.bagId)?'Waiting unopened: open it below when you start it.':c.finished?'Bag finished '+fd(c.finished)+'. Off the controller until a new bag is started.':'';
 if(!C)return;
 $('cplist').innerHTML=L.recipes.map(r=>{const i=L.presets.findIndex(p=>p.coffeeId==C&&p.recipeId==r.id),on=i>=0,p=on?L.presets[i]:null;
 return `<div class="pair ${on?'on':''}"><input type="checkbox" aria-label="Brew ${esc(c.name)} with ${esc(r.name)}" ${on?'checked':''} ${c.finished?'disabled title="Bag finished: start a new bag first"':''} onchange="${on?`act('preset_delete',${i})`:`act('preset_add',${r.id},${C})`}"><span class="what"><b>${esc(r.name)}</b> <span class="dim">${r.doseG} g in, ${r.targetWeightG} g out, ${r.targetTimeS} s${r.bloomPauseS?', bloom '+r.bloomPauseS+' s':''}</span></span>`+(on?`<input type="number" aria-label="Grind setting in microns" min="0" max="2000" value="${p.grindUm||''}" placeholder="${U}" onchange="act('preset_grind',${i},+this.value||0)"><span class="dim sm">${U}</span>`:'')+'</div>'}).join('');
@@ -725,9 +783,154 @@ async function saveCoffee(extra){const b={id:C||0};CF.forEach(k=>{const v=$('c_'
 if(!b.name)return say('A coffee needs a name',false);
 if(!C&&L.coffees.some(c=>c.name.toLowerCase()==b.name.toLowerCase()&&c.roaster.toLowerCase()==b.roaster.toLowerCase())&&!await ask('"'+b.name+'" is already on the shelf. Add it again?'))return;
 post('/api/coffee',b).then(r=>{if(done(r,'Coffee saved')){C=r.id;loadLibrary()}})}
+// The unopened bag a coffee would open next (oldest roast first), or null.
+const waitingBag=c=>L.bags.filter(b=>b.coffeeId==c.id&&b.unopened).sort((a,b)=>(a.roastDate||9e9)-(b.roastDate||9e9))[0]||null;
 function drawBags(c){const el=$('cbags');if(!el)return;const bs=c?L.bags.filter(b=>b.coffeeId==c.id).sort((a,b)=>b.id-a.id):[];if(!bs.length){el.innerHTML='';return}
 el.innerHTML='<h3 style="margin:14px 0 6px">Bags of '+esc(c.name)+'</h3>'+bs.map(b=>{const f=frozenFor({frozenDate:b.frozenDate,thawDate:b.thawDate});const bits=[b.roastDate?'roasted '+i2d(b.roastDate):'roast date not entered',b.openedDate?'opened '+i2d(b.openedDate):'',f?f+' days frozen'+(b.frozenDate&&!b.thawDate?' (still there)':''):'',b.weightG?b.weightG+' g':''].filter(x=>x).join(', ');
+const from=b.subscriptionId&&SUBS?SUBS.subscriptions.find(x=>x.id==b.subscriptionId):null;
+if(b.unopened)return `<div class="row" style="align-items:center"><span style="flex:1 1 220px">${esc(bits)} <span class="pill warn">unopened</span>${from?' <span class="sm dim">from '+esc(from.name)+'</span>':''}</span><button class="pri" onclick="act('bag_open',${b.id}).then(()=>say('Bag opened: tracking starts now',true))">Open this bag</button><button class="del" onclick="ask('Forget this bag?').then(ok=>{if(ok){act('bag_delete',${b.id})}})">Forget</button></div>`;
 return `<div class="row" style="align-items:center"><span style="flex:1 1 220px">${esc(bits)}${b.current?' <span class="pill">in use</span>':''}</span>${b.current?'':`<button onclick="act('bag_use',${c.id},${b.id})">Use this bag</button><button class="del" onclick="ask('Forget this bag? Its shots stay in the history.').then(ok=>{if(ok){act('bag_delete',${b.id})}})">Forget</button>`}</div>`}).join('')}
+// ---- Subscriptions (core/Subscriptions.h): cards built from the shop's page, tracked here.
+let SUBS=null,SF=null,SA=null;
+const money=c=>'$'+(c/100).toFixed(2),cap=t=>t?t.charAt(0).toUpperCase()+t.slice(1):t;
+const subEvery=d=>!d?'not regular':d%7==0?(d==7?'every week':'every '+d/7+' weeks'):d>=28&&d<=31?'every month':d>=58&&d<=62?'every 2 months':'every '+d+' days';
+const subWhen=s=>{if(s.days_until==null)return '';const d=s.days_until,t=fd(s.next_date);return d<0?t+' · '+(-d)+(d==-1?' day':' days')+' overdue':d==0?'today':d==1?'tomorrow':t+' · in '+d+' days'};
+const imgTag=(u,cls)=>u?`<img src="${esc(u)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`:'';
+const kindTxt={coffee:'Coffee',supplies:'Supplies',other:'Subscription'};
+const platTxt={recharge:'Recharge',ordergroove:'Ordergroove',skio:'Skio',loop:'Loop',appstle:'Appstle',bold:'Bold',shopify:'Shopify'};
+// One card, from a subscription (saved) or the form (preview).
+function subCard(s,preview){const col=/^#[0-9a-f]{6}$/i.test(s.color||'')?s.color:'#5b6470',name=s.name||s.title||s.site||'Subscription';
+const off=s.status!='active',bits=[kindTxt[s.kind]||'',subEvery(s.every_days),s.price_cents?money(s.price_cents):''].filter(x=>x).join(' · ');
+const tags=(off?`<span class="pill">${s.status=='paused'?'Paused':'Cancelled'}</span>`:'')+(!off&&s.due_soon?`<span class="pill warn">${s.days_until<0?'Overdue':'Soon'}</span>`:'');
+let sup='';if(s.kind=='supplies'&&(s.stock||s.per_delivery)){const full=Math.max(s.per_delivery||0,s.stock||0,1),pct=Math.min(100,Math.round(100*(s.stock||0)/full));
+sup=`<div class="sm">${s.stock||0} ${esc(s.item||'left')}${s.stock_days_left!=null?' · about '+s.stock_days_left+' days':''}</div><div class="meter${s.stock_short?' warn':''}"><i style="width:${pct}%"></i></div>${s.stock_short?'<div class="sm" style="color:var(--warn)">Runs out before the next delivery</div>':''}`}
+const acts=preview?'':`<div class="acts">${s.manage_url?`<a class="btn pri" href="${esc(s.manage_url)}" target="_blank" rel="noopener noreferrer">Manage ↗</a>`:s.url?`<a class="btn" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">Open ↗</a>`:''}${off?'':`<button onclick="subArrived(${s.id})">Arrived</button><button onclick="subSkip(${s.id})">Skip one</button>`}<button class="tbtn" onclick="subEdit(${s.id})">Edit</button></div>`;
+return `<article class="sub${off?' off':''}"><div class="ban" style="background:linear-gradient(135deg,${col},${col}99 55%,var(--up))">${s.image?imgTag(s.image):''}${s.image?'':`<div class="ini">${esc(name.trim().charAt(0).toUpperCase())}</div>`}</div>
+<div class="ico">${s.icon?imgTag(s.icon):`<div style="width:100%;height:100%;background:${col}"></div>`}</div><div class="tags">${tags}</div>${s.share&&s.share!='local'?`<div class="lib"><span class="pill">${s.share=='published'?'Library':esc(SHARE_TXT[s.share]||s.share)}</span></div>`:''}
+<div class="bd"><b>${esc(name)}</b><span class="sm dim">${esc([s.site&&s.site!=name?s.site:'',platTxt[s.platform]?'via '+platTxt[s.platform]:''].filter(x=>x).join(' · '))}</span><span class="sm mid">${esc(bits)}</span>
+${s.next_date?`<span class="sm">Next: ${esc(subWhen(s)||fd(s.next_date))}</span>`:''}${sup}${s.note?`<span class="sm dim">${esc(s.note)}</span>`:''}${s.last_arrived?`<span class="sm dim">Last arrived ${fd(s.last_arrived)}</span>`:''}</div>${acts}</article>`}
+async function loadSubs(){try{SUBS=await get('/api/subscriptions')}catch(e){SUBS=null}drawSubs();
+if(location.hash=='#subscriptions'){loadLib();loadReviews();loadSubReco();if(!RT&&typeof loadRatings=='function')loadRatings()}}
+// ---- The shared library's services, reviews and recommendations (docs/SUBSCRIPTIONS.md).
+let LIBS=[],SREV=[],SV=null;
+const hostOf=u=>{try{return new URL(u).hostname.replace(/^www\./,'')}catch(e){return ''}};
+const STYLE_TXT={single_roaster:'Single roaster',multi_roaster:'Many roasters',curated:'Curated',matched:'Matched to your taste',single_origin:'Single origin',blends:'Blends',decaf:'Decaf',espresso:'For espresso',filters:'Filters',cleaning:'Cleaning',equipment:'Equipment'};
+const SRC_TXT={fair_trade:'Fair trade',direct_trade:'Direct trade',organic:'Organic',farm_named:'Farms named',prices_published:'Prices published',sustainable_packaging:'Sustainable packaging',carbon_neutral:'Carbon neutral',b_corp:'B Corp'};
+const ASP=[['value','Value'],['quality','Quality'],['consistency','Consistency'],['reliability','Reliability'],['flexibility','Flexibility'],['transparency','Transparency']];
+const SHARE_TXT={local:'On this controller only',queued:'Waiting to be sent',sent:'Sent: waiting for the library',review:'In review',published:'In the shared library',declined:'Declined',refused:'Refused by the library\'s checks'};
+async function loadLib(){try{const r=await get('/api/subscriptions/library');LIBS=r.services||[]}catch(e){LIBS=[]}drawLib()}
+async function loadReviews(){try{SREV=(await get('/api/subscriptions/reviews')).reviews||[]}catch(e){SREV=[]}if(SF&&SF.id)drawReview()}
+// A library entry as a card: what it is, where it ships, its claims and reviews, and Add.
+function libCard(e,why){const col=/^#[0-9a-f]{6}$/i.test(e.color||'')?e.color:'#3b6e9e',rv=e.reviews,have=SUBS&&(SUBS.subscriptions||[]).some(x=>x.library_id==e.id||(hostOf(x.url)&&hostOf(x.url)==hostOf(e.url)));
+const bits=[kindTxt[e.kind]||'',(e.cadences||[]).length?'every '+e.cadences.map(d=>d%7?d+' d':d/7+' wk').join(' / '):'',e.price_from_cents?'from '+(e.currency=='USD'?'$':'')+(e.price_from_cents/100).toFixed(2)+(e.currency&&e.currency!='USD'?' '+e.currency:''):''].filter(x=>x).join(' · ');
+const tags=[...(e.style||[]).map(k=>STYLE_TXT[k]),...(e.sourcing||[]).map(k=>SRC_TXT[k])].filter(x=>x);
+return `<article class="sub"><div class="ban" style="background:linear-gradient(135deg,${col},${col}99 55%,var(--up))">${e.image?imgTag(e.image):`<div class="ini">${esc((e.name||'?').charAt(0).toUpperCase())}</div>`}</div>
+<div class="ico">${e.icon?imgTag(e.icon):`<div style="width:100%;height:100%;background:${col}"></div>`}</div><div class="lib"><span class="pill">Library</span></div>
+<div class="bd"><b>${esc(e.name)}</b><span class="sm mid">${esc(bits)}</span>${e.ships_to?`<span class="sm dim">Ships to ${esc(e.ships_to.join(', '))}</span>`:''}
+${rv?`<span class="sm">${'★'.repeat(Math.round(rv.stars))}<span class="dim">${'★'.repeat(5-Math.round(rv.stars))}</span> ${rv.stars.toFixed(1)} from ${rv.n} reviews</span>`:'<span class="sm dim">Not enough reviews yet</span>'}
+${e.about?`<span class="sm dim">${esc(e.about)}</span>`:''}${tags.length?`<div class="why">${tags.map(t=>`<span>${esc(t)}</span>`).join('')}</div>`:''}${why||''}</div>
+<div class="acts">${have?'<span class="sm dim" style="padding:8px 4px">You have this one</span>':`<button class="pri" onclick="libAdd('${esc(e.id)}')">Add to my subscriptions</button>`}<a class="btn" href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">Visit ↗</a></div></article>`}
+function drawLib(){const el=$('sllist');if(!el)return;const q=($('slq').value||'').toLowerCase();
+const hit=e=>!q||[e.name,e.about,e.kind,...(e.style||[]).map(k=>STYLE_TXT[k]),...(e.sourcing||[]).map(k=>SRC_TXT[k])].join(' ').toLowerCase().includes(q);
+const list=LIBS.filter(hit);$('slcount').textContent=LIBS.length?LIBS.length+(LIBS.length==1?' service':' services'):'';
+el.innerHTML=list.length?list.map(e=>libCard(e)).join(''):`<div class="sm mid" style="grid-column:1/-1">${LIBS.length?'No service matches.':'The shared library has no services yet. Add yours above, then open it and send it to the library: once a reviewer lists it, everyone can add it in one tap.'}</div>`}
+function libAdd(id){const e=LIBS.find(x=>x.id==id);if(!e)return;
+const f={id:0,library_id:e.id,name:e.name,url:e.url,manage_url:e.manage_url||'',kind:e.kind||'coffee',status:'active',platform:e.platform||'',image:e.image||'',icon:e.icon||'',color:e.color||'',
+every_days:(e.cadences||[])[0]||0,ships_to:(e.ships_to||[]).join(','),cadences:e.cadences||[],price_from_cents:e.price_from_cents||0,currency:e.currency||'',style:e.style||[],sourcing:e.sourcing||[],description:e.about||''};
+post('/api/subscriptions',f).then(r=>{if(done(r,e.name+' added: set its next date and price')){loadSubs().then(()=>subEdit(r.id))}})}
+// The owner's say: country and what matters.
+function drawPrefs(){if(!SUBS)return;const m=SUBS.matters||[];$('sr_country').value=SUBS.country||'';
+$('srmatters').innerHTML=Object.keys(SRC_TXT).map(k=>`<button class="${m.includes(k)?'on':''}" aria-pressed="${m.includes(k)}" onclick="toggleMatter('${k}')">${SRC_TXT[k]}</button>`).join('')}
+function toggleMatter(k){SUBS.country=$('sr_country').value.trim().toUpperCase();const m=new Set(SUBS.matters||[]);m.has(k)?m.delete(k):m.add(k);SUBS.matters=[...m];drawPrefs();subPrefs()}
+function subPrefs(){SUBS.country=$('sr_country').value.trim().toUpperCase();post('/api/subscriptions/prefs',{country:SUBS.country,matters:SUBS.matters||[]}).then(r=>{if(r.ok)loadSubReco()})}
+async function loadSubReco(){drawPrefs();let r;try{r=await get('/api/subscriptions/recommend?drinker='+(typeof TPD!='undefined'?TPD:0))}catch(e){return}
+const el=$('srlist');$('srbasis').textContent=r.basis=='taste'?'By how their coffees taste to you':r.basis=='reviews'?'By reviews and what matters to you, until you have rated '+Math.max(0,3-r.coffees)+' more coffees':'';
+el.innerHTML=(r.items||[]).length?r.items.map(it=>libCard(it.service,`${it.why&&it.why.length?`<div class="why">${it.why.map(w=>`<span style="background:var(--accbg);color:var(--acctext)">${esc(w)}</span>`).join('')}</div>`:''}${it.people?`<span class="sm mid">${esc(it.people)}</span>`:''}`)).join(''):
+`<div class="sm mid" style="grid-column:1/-1">${LIBS.length?'Nothing to suggest yet: services you already have are left out, and so are those that do not ship to your country.':'Suggestions come from the shared library\'s services, how their coffees taste to people like you, and their reviews. The library has none listed yet.'}</div>`}
+// Sharing, on the form.
+function drawShare(){const row=$('sfsharerow');if(!SF||!SF.id||!SUBS){row.style.display='none';return}row.style.display='';
+const st=SF.share||'local',fromLib=st=='published'&&SF.library_id;$('sfsharepill').textContent=SHARE_TXT[st]||st;
+$('sfsharetxt').textContent=fromLib?'Listed as '+SF.library_id+(SF.share_changed?'. You have changed it since: send the change for review.':'.'):st=='declined'||st=='refused'?(SF.review_note||''):!SUBS.sharing?'Sharing is off (Setup, Shared library).':!SF.can_share?'It needs a name and an https link to be shared.':st=='local'?'Send it so other people can add it in one tap. A reviewer checks it first.':'';
+$('sfsend').style.display=SUBS.sharing&&SF.can_share&&(st=='local'||st=='declined'||st=='refused'||SF.share_changed)?'':'none'}
+async function subShare(){if(!SF||!SF.id)return;if(!await ask('Send "'+SF.name+'" to the shared library?\n\nIts name, links, kind, where it ships, deliveries offered, typical price, style and sourcing claims are sent. Your own price, dates, stock and notes are not.'))return;
+post('/api/subscriptions/share',{id:SF.id}).then(r=>{if(done(r,'Sent for review')){loadSubs().then(()=>{SF=Object.assign(SF,sub(SF.id)||{});drawShare()})}})}
+// Reviews, on the form: one per drinker.
+function revFor(d){return SREV.find(r=>r.subscription==SF.id&&r.drinker==d)}
+function drawReview(){const box=$('sfreview');if(!SF||!SF.id){box.style.display='none';return}box.style.display='flex';
+const named=RT&&RT.named,people=named?RT.drinkers.map((n,i)=>[i+1,n]).filter(x=>x[1]):[];
+if(!SV||SV.sub!=SF.id){const d=named&&people.length?people[0][0]:0,o=revFor(d);SV={sub:SF.id,drinker:d,stars:o?o.stars:0,asp:ASP.map(([k])=>o&&o.aspects[k]||0),note:o?o.note:''};$('sv_note').value=SV.note}
+$('svwho').innerHTML=named&&people.length?'<span class="sm dim">Who is reviewing:</span>'+people.map(([id,n])=>`<button class="${id==SV.drinker?'on':''}" onclick="SV=null;svPick(${id})">${esc(n)}</button>`).join(''):'';
+$('svstars').innerHTML='<span class="stars">'+[1,2,3,4,5].map(n=>`<button class="${n<=SV.stars?'on':''}" aria-label="${n} stars" onclick="SV.stars=${n};drawReview()">★</button>`).join('')+'</span>'+(SV.stars?'':'<span class="sm dim">tap to rate</span>');
+$('svasp').innerHTML=ASP.map(([k,l],i)=>`<label>${l} <span class="dim">${SV.asp[i]?SV.asp[i]+' / 5':'not given'}</span><input type="range" min="0" max="5" step="1" value="${SV.asp[i]}" oninput="SV.asp[${i}]=+this.value;this.previousElementSibling.textContent=+this.value?this.value+' / 5':'not given'"></label>`).join('');
+const mine=revFor(SV.drinker);$('svdel').style.display=mine?'':'none';
+$('svinfo').textContent=SUBS&&SUBS.share_ratings?(SF.share=='published'?'Shared anonymously with the library':'Shared once the service is in the library'):'Kept on this controller';
+const all=SREV.filter(r=>r.subscription==SF.id);$('svlist').innerHTML=all.length>1||(all.length&&named)?all.map(r=>`<div>${esc(drinkerName(r.drinker))}: ${'★'.repeat(r.stars)}${r.note?' <span class="dim">'+esc(r.note)+'</span>':''}</div>`).join(''):''}
+function svPick(d){const o=revFor(d);SV={sub:SF.id,drinker:d,stars:o?o.stars:0,asp:ASP.map(([k])=>o&&o.aspects[k]||0),note:o?o.note:''};$('sv_note').value=SV.note;drawReview()}
+function subReviewSave(){if(!SV||!SV.stars)return say('Give it 1 to 5 stars',false);const aspects={};ASP.forEach(([k],i)=>{if(SV.asp[i])aspects[k]=SV.asp[i]});
+post('/api/subscriptions/review',{subscription:SF.id,drinker:SV.drinker,stars:SV.stars,aspects,note:$('sv_note').value.trim()}).then(r=>{if(done(r,'Review saved'))loadReviews()})}
+async function subReviewDel(){const o=SV&&revFor(SV.drinker);if(!o||!await ask('Delete this review?'))return;post('/api/subscriptions/review/delete',{id:o.id}).then(r=>{if(done(r,'Deleted')){SV=null;loadReviews()}})}
+function drawSubs(){const el=$('sublist');if(!el)return;if(!SUBS){el.innerHTML='<div class="dim sm">Could not load the subscriptions.</div>';return}
+const list=SUBS.subscriptions||[],act=list.filter(s=>s.status=='active');
+const order=(a,b)=>(a.status!='active')-(b.status!='active')||(a.days_until==null)-(b.days_until==null)||(a.days_until||0)-(b.days_until||0);
+el.innerHTML=list.length?list.slice().sort(order).map(s=>subCard(s)).join(''):`<section class="card" style="grid-column:1/-1;align-items:flex-start"><b>Keep your subscriptions in one place.</b><span class="sm mid">Coffee, paper filters, anything that comes by post: add the link and the controller builds a card, tracks when the next one comes, what it costs, and how many filters you have left.</span><button class="pri" onclick="subEdit(0)">Add a subscription</button></section>`;
+const next=act.filter(s=>s.days_until!=null).sort((a,b)=>a.days_until-b.days_until)[0],sup=list.filter(s=>s.kind=='supplies'&&s.per_shot>0);
+$('subsum').innerHTML=list.length?[`<div class="stat"><span class="sm dim">Each month</span><b>${money(SUBS.monthly_cents||0)}</b><span class="sm dim">${act.length} active</span></div>`,
+next?`<div class="stat"><span class="sm dim">Next up</span><b>${esc(next.name||next.site)}</b><span class="sm dim">${esc(subWhen(next))}</span></div>`:'',
+...sup.map(s=>`<div class="stat"><span class="sm dim">${esc(cap(s.item||s.name))}</span><b>${s.stock} left</b><span class="sm ${s.stock_short?'':'dim'}" ${s.stock_short?'style="color:var(--warn)"':''}>${s.stock_days_left!=null?'about '+s.stock_days_left+' days at '+SUBS.shots_per_day+' shots a day':'not used up yet'}</span></div>`)].join(''):'';
+$('subrem').innerHTML=act.filter(s=>s.due_soon||s.stock_short).map(s=>`<div class="remind"><span style="flex:1 1 240px">${s.due_soon?`<b>${esc(s.name)}</b> ${s.days_until<0?'was due '+fd(s.next_date)+': did it come?':s.days_until==0?'charges or ships today':'charges or ships '+(s.days_until==1?'tomorrow':'in '+s.days_until+' days')+'. Skip it at the shop if you do not need it.'}`:`<b>${esc(cap(s.item||s.name))}</b> will run out before the next delivery.`}</span>${s.manage_url?`<a class="btn" href="${esc(s.manage_url)}" target="_blank" rel="noopener noreferrer">Manage ↗</a>`:''}${s.due_soon&&s.days_until<=0?`<button onclick="subArrived(${s.id})">Arrived</button>`:''}</div>`).join('')}
+const sub=id=>SUBS&&(SUBS.subscriptions||[]).find(s=>s.id==id);
+function subKind(){$('sfsup').style.display=$('sf_kind').value=='supplies'?'':'none'}
+function subEdit(id){const s=id?sub(id):null;SF=s?Object.assign({},s):{id:0,kind:'coffee',status:'active',color:''};
+$('sftitle').textContent=s?'Edit '+(s.name||'subscription'):'Add a subscription';$('sfread').textContent='';$('sfdel').style.display=s?'':'none';
+$('sf_url').value=SF.url||'';$('sf_name').value=SF.name||'';$('sf_kind').value=SF.kind;$('sf_status').value=SF.status;
+const d=SF.every_days||0,u=d&&d%7==0?7:d>=28&&d<=31&&d!=28?30.44:1;$('sf_unit').value=String(d?u:7);$('sf_every').value=d?(u==30.44?Math.round(d/30.44):d/u):'';
+$('sf_next').value=i2d(SF.next_date||0);$('sf_price').value=SF.price_cents?(SF.price_cents/100).toFixed(2):'';$('sf_manage').value=SF.manage_url||'';$('sf_note').value=SF.note||'';
+$('sf_item').value=SF.item||'';$('sf_stock').value=SF.stock||'';$('sf_pershot').value=SF.per_shot||'';$('sf_perdel').value=SF.per_delivery||'';
+$('sf_ships').value=(SF.ships_to||'').split(',').filter(x=>x).join(', ');$('sf_cad').value=(SF.cadences||[]).map(d=>Math.round(d/7*10)/10).join(', ');
+$('sf_pfrom').value=SF.price_from_cents?(SF.price_from_cents/100).toFixed(2):'';$('sf_cur').value=SF.currency||'';
+SF.style=SF.style||[];SF.sourcing=SF.sourcing||[];drawSfChips();SV=null;drawShare();drawReview();
+$('sf_image').value=SF.image||'';$('sf_icon').value=SF.icon||'';$('sf_color').value=/^#[0-9a-f]{6}$/i.test(SF.color||'')?SF.color:'#5b6470';
+subKind();subPrev();$('subform').style.display='';$('subarr').style.display='none';$('subform').scrollIntoView({behavior:'smooth',block:'start'});if(!s)$('sf_url').focus()}
+function subClose(){$('subform').style.display='none';SF=null;SV=null}
+function drawSfChips(){const chip=(list,key,txt)=>Object.keys(txt).map(k=>`<button class="${(SF[key]||[]).includes(k)?'on':''}" aria-pressed="${(SF[key]||[]).includes(k)}" onclick="sfToggle('${key}','${k}')">${txt[k]}</button>`).join('');
+$('sf_style').innerHTML=chip(SF.style,'style',STYLE_TXT);$('sf_sourcing').innerHTML=chip(SF.sourcing,'sourcing',SRC_TXT)}
+function sfToggle(key,k){const m=new Set(SF[key]||[]);m.has(k)?m.delete(k):m.add(k);SF[key]=[...m];drawSfChips()}
+function subForm(){const every=+$('sf_every').value||0,unit=+$('sf_unit').value;return Object.assign({},SF,{url:$('sf_url').value.trim(),name:$('sf_name').value.trim(),kind:$('sf_kind').value,status:$('sf_status').value,
+every_days:Math.min(366,Math.round(every*unit)),next_date:d2i($('sf_next').value),price_cents:Math.round((+$('sf_price').value||0)*100),manage_url:$('sf_manage').value.trim(),note:$('sf_note').value.trim(),
+item:$('sf_item').value.trim(),stock:Math.max(0,Math.round(+$('sf_stock').value||0)),per_shot:$('sf_kind').value=='supplies'?Math.round(+$('sf_pershot').value||0):0,per_delivery:Math.round(+$('sf_perdel').value||0),
+ships_to:$('sf_ships').value.toUpperCase().split(/[^A-Z]+/).filter(x=>x.length==2).join(','),cadences:$('sf_cad').value.split(/[^0-9.]+/).map(x=>Math.round(+x*7)).filter(d=>d>0&&d<=366).slice(0,6),
+price_from_cents:Math.round((+$('sf_pfrom').value||0)*100),currency:$('sf_cur').value.trim().toUpperCase(),style:SF.style||[],sourcing:SF.sourcing||[],
+image:$('sf_image').value.trim(),icon:$('sf_icon').value.trim(),color:$('sf_color').value=='#5b6470'&&!SF.color?'':$('sf_color').value})}
+function subPrev(){if(!SF)return;const f=subForm(),t=today(),n=f.next_date?Math.round((new Date(i2d(f.next_date))-new Date(i2d(t)))/864e5):null;
+$('sfprev').innerHTML=subCard(Object.assign(f,{days_until:n,due_soon:f.status=='active'&&n!=null&&n<=3}),true)}
+async function subRead(){const u=$('sf_url').value.trim();if(!/^https?:\/\//i.test(u))return say('Paste a link starting https://',false);
+$('sfread').textContent='Reading the page…';const r=await post('/api/subscriptions/preview',{url:u});if(!r.ok){$('sfread').textContent='';return done(r,'')}
+let p=null;for(let i=0;i<20;i++){await new Promise(z=>setTimeout(z,1000));try{p=await get('/api/subscriptions/preview')}catch(e){continue}if(p.url==u&&p.state!='waiting')break}
+if(!p||p.state=='waiting'){$('sfread').textContent='Still reading: try again in a moment.';return}
+if(p.state=='failed'){$('sfread').textContent=(p.problem||'The page could not be read')+'. Fill in the name; the card uses its initial.';if(!$('sf_name').value){try{$('sf_name').value=new URL(u).hostname.replace(/^www\./,'')}catch(e){}}subPrev();return}
+const keep=(id,v)=>{if(v&&!$(id).value)$(id).value=v};
+SF.title=p.title;SF.site=p.site;SF.description=p.description;SF.platform=p.platform;
+keep('sf_name',p.site||p.title);keep('sf_image',p.image);keep('sf_icon',p.icon);keep('sf_manage',p.manage_url);if(p.color&&!SF.color&&!/^#(fff|ffffff|000|000000)$/i.test(p.color)){$('sf_color').value=p.color;SF.color=p.color}
+$('sfread').textContent='Read: '+[p.title,platTxt[p.platform]?'subscriptions by '+platTxt[p.platform]:''].filter(x=>x).join(' · ')+(p.manage_url?'. Check the Manage link below.':'');subPrev()}
+function subSave(){const f=subForm();if(!f.name&&!f.url)return say('Give it a name or a link',false);if(f.manage_url&&!/^https?:\/\//i.test(f.manage_url))return say('The manage link must start https://',false);
+post('/api/subscriptions',f).then(r=>{if(done(r,'Subscription saved')){subClose();loadSubs()}})}
+async function subDel(){if(!SF||!SF.id||!await ask('Delete "'+(SF.name||'this subscription')+'"? Bags it brought stay on the shelf.'))return;post('/api/subscriptions/delete',{id:SF.id}).then(r=>{if(done(r,'Deleted')){subClose();loadSubs()}})}
+async function subSkip(id){const s=sub(id);if(!s)return;if(!await ask('Skip the next one of "'+s.name+'"?\n\nThe date moves on here only: skip it on the shop\'s page too.'))return;
+post('/api/subscriptions/skip',{id}).then(r=>{if(done(r,'Moved on to the next date')){loadSubs();if(s.manage_url)setTimeout(()=>window.open(s.manage_url,'_blank','noopener'),300)}})}
+async function subArrived(id){const s=sub(id);if(!s)return;
+if(s.kind=='coffee'){SA=s;$('satitle').textContent=(s.name||'Coffee')+' arrived';const shelf=L.coffees.filter(c=>!c.finished||waitingBag(c));
+$('sa_coffee').innerHTML='<option value="0">A new coffee</option>'+shelf.map(c=>`<option value="${c.id}">${esc(c.name)}${c.roaster?' ('+esc(c.roaster)+')':''}</option>`).join('');
+const same=shelf.find(c=>c.roaster&&s.name&&c.roaster.toLowerCase()==s.name.toLowerCase());$('sa_coffee').value=same?same.id:0;
+$('sa_roast').value='';$('sa_weight').value='';$('sa_name').value='';$('sa_roaster').value=(s.site||s.name||'').slice(0,23);$('sa_notes').value='';subArrKind();
+$('subarr').style.display='';$('subform').style.display='none';$('subarr').scrollIntoView({behavior:'smooth',block:'start'});return}
+const msg=s.kind=='supplies'&&s.per_delivery?'Add '+s.per_delivery+' '+(s.item||'')+' to the stock and move the next date on?':'Mark "'+s.name+'" arrived and move the next date on?';
+if(!await ask(msg))return;post('/api/subscriptions/arrived',{id}).then(r=>{if(done(r,'Arrived'))loadSubs()})}
+function subArrKind(){$('sanew').style.display=+$('sa_coffee').value?'none':''}
+async function subArrSave(){if(!SA)return;let cid=+$('sa_coffee').value;const roast=d2i($('sa_roast').value);if(!roast)return say('Enter the roast date printed on the bag',false);if(roast>today())return say('That date has not come yet',false);
+if(!cid){const name=$('sa_name').value.trim();if(!name)return say('Give the new coffee a name',false);
+const r=await post('/api/coffee',{name,roaster:$('sa_roaster').value.trim(),notes:$('sa_notes').value.trim()});if(!done(r,''))return;cid=r.id}
+const b=await post('/api/bag',{coffeeId:cid,roastDate:roast,weightG:Math.round(+$('sa_weight').value||0),unopened:true,subscriptionId:SA.id});if(!done(b,''))return;
+const a=await post('/api/subscriptions/arrived',{id:SA.id});done(a,'On the shelf, unopened');$('subarr').style.display='none';SA=null;loadLibrary();loadSubs()}
 function newBag(){$('cbagdate').value='';$('cbagrow').style.display='';$('cbagdate').focus()}
 // The bag is used up: the coffee goes to Finished bags and its entries leave the controller, which
 // moves on to the coffee with the oldest roast if this was the one it brews. A new bag brings it all back.
