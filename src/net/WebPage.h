@@ -8,6 +8,7 @@
 static const char WEB_PAGE[] PROGMEM = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="bbw-controller" content="1">
 <title>Brew by Weight</title>
 <script>try{const t=localStorage.getItem('bbwTheme');if(t&&t!='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
 <style>
@@ -796,7 +797,7 @@ if(b.unopened)return `<div class="row" style="align-items:center"><span style="f
 return `<div class="row" style="align-items:center"><span style="flex:1 1 220px">${esc(bits)}${b.current?' <span class="pill">in use</span>':''}</span>${b.current?'':`<button onclick="act('bag_use',${c.id},${b.id})">Use this bag</button><button class="del" onclick="ask('Forget this bag? Its shots stay in the history.').then(ok=>{if(ok){act('bag_delete',${b.id})}})">Forget</button>`}</div>`}).join('')}
 // ---- Subscriptions (core/Subscriptions.h): cards built from the shop's page, tracked here.
 let SUBS=null,SF=null,SA=null;
-const money=c=>'$'+(c/100).toFixed(2),cap=t=>t?t.charAt(0).toUpperCase()+t.slice(1):t;
+const money=c=>'$'+(c/100).toFixed(2),perDay=v=>{const n=Math.round(v*10)/10;return n+(n==1?' shot':' shots')+' a day'},cap=t=>t?t.charAt(0).toUpperCase()+t.slice(1):t;
 const subEvery=d=>!d?'not regular':d%7==0?(d==7?'every week':'every '+d/7+' weeks'):d>=28&&d<=31?'every month':d>=58&&d<=62?'every 2 months':'every '+d+' days';
 const subWhen=s=>{if(s.days_until==null)return '';const d=s.days_until,t=fd(s.next_date);return d<0?t+' · '+(-d)+(d==-1?' day':' days')+' overdue':d==0?'today':d==1?'tomorrow':t+' · in '+d+' days'};
 const imgTag=(u,cls)=>u?`<img src="${esc(u)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`:'';
@@ -807,19 +808,20 @@ function subCard(s,preview){const col=/^#[0-9a-f]{6}$/i.test(s.color||'')?s.colo
 const off=s.status!='active',bits=[kindTxt[s.kind]||'',subEvery(s.every_days),s.price_cents?money(s.price_cents):''].filter(x=>x).join(' · ');
 const tags=(off?`<span class="pill">${s.status=='paused'?'Paused':'Cancelled'}</span>`:'')+(!off&&s.due_soon?`<span class="pill warn">${s.days_until<0?'Overdue':'Soon'}</span>`:'');
 let sup='';if(s.kind=='supplies'&&(s.stock||s.per_delivery)){const full=Math.max(s.per_delivery||0,s.stock||0,1),pct=Math.min(100,Math.round(100*(s.stock||0)/full));
-sup=`<div class="sm">${s.stock||0} ${esc(s.item||'left')}${s.stock_days_left!=null?' · about '+s.stock_days_left+' days':''}</div><div class="meter${s.stock_short?' warn':''}"><i style="width:${pct}%"></i></div>${s.stock_short?'<div class="sm" style="color:var(--warn)">Runs out before the next delivery</div>':''}`}
+sup=`<div class="sm">${s.stock||0} ${esc(s.item||'left')}${s.stock_days_left!=null?' · about '+s.stock_days_left+' days'+(SUBS&&SUBS.shots_per_day?' at '+perDay(SUBS.shots_per_day)+(s.per_shot>1?' × '+s.per_shot:''):''):''}</div><div class="meter${s.stock_short?' warn':''}"><i style="width:${pct}%"></i></div>${s.stock_short?'<div class="sm" style="color:var(--warn)">Runs out before the next delivery</div>':''}`}
 const acts=preview?'':`<div class="acts">${s.manage_url?`<a class="btn pri" href="${esc(s.manage_url)}" target="_blank" rel="noopener noreferrer">Manage ↗</a>`:s.url?`<a class="btn" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">Open ↗</a>`:''}${off?'':`<button onclick="subArrived(${s.id})">Arrived</button><button onclick="subSkip(${s.id})">Skip one</button>`}${EXT&&/^https:/.test(s.url||s.manage_url||'')?`<button class="tbtn" onclick="subUpdate([${s.id}])">Update</button>`:''}<button class="tbtn" onclick="subEdit(${s.id})">Edit</button></div>`;
 return `<article class="sub${off?' off':''}"><div class="ban" style="background:linear-gradient(135deg,${col},${col}99 55%,var(--up))">${s.image?imgTag(s.image):''}${s.image?'':`<div class="ini">${esc(name.trim().charAt(0).toUpperCase())}</div>`}</div>
 <div class="ico">${s.icon?imgTag(s.icon):`<div style="width:100%;height:100%;background:${col}"></div>`}</div><div class="tags">${tags}</div>${s.share&&s.share!='local'?`<div class="lib"><span class="pill">${s.share=='published'?'Library':esc(SHARE_TXT[s.share]||s.share)}</span></div>`:''}
 <div class="bd"><b>${esc(name)}</b><span class="sm dim">${esc([s.site&&s.site!=name?s.site:'',platTxt[s.platform]?'via '+platTxt[s.platform]:''].filter(x=>x).join(' · '))}</span><span class="sm mid">${esc(bits)}</span>
 ${s.next_date?`<span class="sm">Next: ${esc(subWhen(s)||fd(s.next_date))}</span>`:''}${!preview&&typeof L!='undefined'&&L&&L.bags?L.bags.filter(b=>b.onTheWay&&b.subscriptionId==s.id).map(b=>{const c=coffee(b.coffeeId);return `<span class="sm" style="color:var(--com)">On its way: ${esc(c?c.name:'a bag')}${b.expectedDate?', expected '+fd(b.expectedDate):''}</span>`}).join(''):''}${sup}${s.note?`<span class="sm dim">${esc(s.note)}</span>`:''}${s.last_arrived?`<span class="sm dim">Last arrived ${fd(s.last_arrived)}</span>`:''}</div>${acts}</article>`}
 // ---- The Brew Controller helper (browser-extension/): updates from the shops' pages, in this browser.
-let EXT=document.documentElement.dataset.bbwExtension||'',IMP={},SXS={};
+let EXT=(document.documentElement.dataset.bbwExtension||'').replace('unpaired',''),EXTSEEN=document.documentElement.dataset.bbwExtension=='unpaired',IMP={},SXS={};
 window.addEventListener('message',e=>{if(e.source!==window||e.origin!==location.origin||!e.data||typeof e.data!='object')return;const m=e.data;
-if(m.bbw=='hello'){EXT=m.version||'1';drawExt();drawSubs();return}
+if(m.bbw=='hello'){EXT=m.paired===false?'':m.version||'1';EXTSEEN=m.paired===false;drawExt();drawSubs();return}
 if(m.bbw!='result')return;SXS[m.subscription]={state:m.state,message:m.message};
 if(m.state=='done'&&m.data&&typeof m.data=='object')IMP[m.subscription]=m.data;drawExt();drawImport()});
 function drawExt(){const el=$('sxbody');if(!el)return;const list=SUBS&&SUBS.subscriptions||[],can=list.filter(s=>/^https:/.test(s.url||s.manage_url||''));
+if(!EXT&&EXTSEEN){$('sxstate').textContent='helper installed';el.innerHTML=`<p class="sm mid" style="margin:0">The helper is installed but not connected to this controller. Click its icon in Chrome's toolbar and choose <b>Connect to this controller</b>; <b>Update</b> appears here as soon as it is.</p>`;return}
 if(!EXT){$('sxstate').textContent='';el.innerHTML=`<p class="sm mid" style="margin:0">The <b>Brew Controller helper</b> for Chrome brings each subscription's next delivery and the coffee coming from the shop's own pages, where you are signed in, and offers them here to apply. Your shop logins never leave your browser.</p>
 <ol class="sm mid" style="margin:8px 0 0;padding-left:20px;line-height:1.7"><li><a href="/extension.zip" download>Download the helper</a> and unzip it: you get a folder, <code>brew-controller-helper</code>.</li><li>In Chrome open <code>chrome://extensions</code>, turn on <b>Developer mode</b> (top right), click <b>Load unpacked</b> and choose that folder.</li><li>Click the puzzle piece in Chrome's toolbar and pin <b>Brew Controller helper</b>. Click it, then <b>Connect to this controller</b> (this page's address is filled in).</li><li>Reload this page. Each card then has <b>Update</b>.</li></ol>
 <details class="note"><summary>What it reads, and where it works</summary><ul><li>Only the next delivery date, how often, the items and coffees, and prices. Never your address, phone, email or payment details.</li><li>Chrome asks once for each shop it may read. It sends what it read only to this controller's page.</li><li>Desktop Chrome, Edge or Brave. Phones do not run extensions.</li><li>Shops that need you signed in: the helper opens the shop, you sign in as usual, and it carries on.</li></ul></details>`;return}
@@ -934,7 +936,7 @@ el.innerHTML=list.length?list.slice().sort(order).map(s=>subCard(s)).join(''):`<
 const next=act.filter(s=>s.days_until!=null).sort((a,b)=>a.days_until-b.days_until)[0],sup=list.filter(s=>s.kind=='supplies'&&s.per_shot>0);
 $('subsum').innerHTML=list.length?[`<div class="stat"><span class="sm dim">Each month</span><b>${money(SUBS.monthly_cents||0)}</b><span class="sm dim">${act.length} active</span></div>`,
 next?`<div class="stat"><span class="sm dim">Next up</span><b>${esc(next.name||next.site)}</b><span class="sm dim">${esc(subWhen(next))}</span></div>`:'',
-...sup.map(s=>`<div class="stat"><span class="sm dim">${esc(cap(s.item||s.name))}${s.note?' · '+esc(s.note):''}</span><b>${s.stock} left</b><span class="sm ${s.stock_short?'':'dim'}" ${s.stock_short?'style="color:var(--warn)"':''}>${s.stock_days_left!=null?'about '+s.stock_days_left+' days at '+SUBS.shots_per_day+' shots a day':'not used up yet'}</span></div>`)].join(''):'';
+...sup.map(s=>`<div class="stat"><span class="sm dim">${esc(cap(s.item||s.name))}${s.note?' · '+esc(s.note):''}</span><b>${s.stock} left</b><span class="sm ${s.stock_short?'':'dim'}" ${s.stock_short?'style="color:var(--warn)"':''}>${s.stock_days_left!=null?'about '+s.stock_days_left+' days at '+perDay(SUBS.shots_per_day):'not used up yet'}</span></div>`)].join(''):'';
 $('subrem').innerHTML=act.filter(s=>s.due_soon||s.stock_short).map(s=>`<div class="remind"><span style="flex:1 1 240px">${s.due_soon?`<b>${esc(s.name)}</b> ${s.days_until<0?'was due '+fd(s.next_date)+': did it come?':s.days_until==0?'charges or ships today':'charges or ships '+(s.days_until==1?'tomorrow':'in '+s.days_until+' days')+'. Skip it at the shop if you do not need it.'}`:`<b>${esc(cap(s.item||s.name))}</b> will run out before the next delivery.`}</span>${s.manage_url?`<a class="btn" href="${esc(s.manage_url)}" target="_blank" rel="noopener noreferrer">Manage ↗</a>`:''}${s.due_soon&&s.days_until<=0?`<button onclick="subArrived(${s.id})">Arrived</button>`:''}</div>`).join('')}
 const sub=id=>SUBS&&(SUBS.subscriptions||[]).find(s=>s.id==id);
 function subKind(){$('sfsup').style.display=$('sf_kind').value=='supplies'?'':'none'}

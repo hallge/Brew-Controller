@@ -1,8 +1,5 @@
-// Pairs the helper with controllers: their addresses, and Chrome's permission to run on their pages.
-//
-// The address is saved BEFORE Chrome is asked: Chrome's prompt can close this popup before the request
-// answers, and the worker registers the relay itself once the permission is there
-// (chrome.permissions.onAdded), so pairing completes either way.
+// Connects the helper to controllers: the addresses whose pages it relays for (relay.js checks this
+// list). Connecting is only ever done here, by the owner: a page cannot connect itself.
 const addr = document.getElementById('addr'), state = document.getElementById('state'), list = document.getElementById('list');
 
 async function controllers() {
@@ -12,7 +9,7 @@ async function controllers() {
 
 async function draw() {
   const all = await controllers();
-  const rows = await Promise.all(all.map(async o => [o, await chrome.permissions.contains({origins: [o + '/*']})]));
+  const rows = all.map(o => [o, true]);
   list.innerHTML = '';
   for (const [o, ok] of rows) {
     const row = document.createElement('div');
@@ -24,10 +21,6 @@ async function draw() {
     forget.textContent = 'Forget';
     forget.onclick = async () => {
       await chrome.storage.local.set({controllers: (await controllers()).filter(x => x !== o), controller: ''});
-      try {
-        await chrome.permissions.remove({origins: [o + '/*']});
-      } catch (e) {}
-      chrome.runtime.sendMessage({type: 'paired'});
       draw();
     };
     row.append(name, forget);
@@ -59,9 +52,6 @@ document.getElementById('pair').addEventListener('click', async () => {
   }
   const all = await controllers();
   if (!all.includes(origin)) await chrome.storage.local.set({controllers: [...all, origin], controller: ''});
-  state.textContent = 'Asking Chrome…';
-  const ok = await chrome.permissions.request({origins: [origin + '/*']});
-  chrome.runtime.sendMessage({type: 'paired'});
-  state.textContent = ok ? 'Connected to ' + origin + '. Reload its page.' : 'Chrome was not allowed to open that page: try again.';
+  state.textContent = 'Connected to ' + origin + '. Its page shows Update now (reload it if it does not).';
   draw();
 });

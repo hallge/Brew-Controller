@@ -30,25 +30,14 @@ async function controllers() {
   return controller && !controllers.includes(controller) ? [...controllers, controller] : controllers;
 }
 
-// The relay runs on the paired controllers' pages only: registered for every one Chrome has allowed,
-// and put straight into such pages already open, so no reload is needed.
+// The relay (relay.js) is declared in the manifest and checks for itself whether its page is a
+// connected controller; nothing to register here. Version 0.1.0 and 0.1.1 registered it at run time,
+// which could fail without a word: any such registration is removed.
 async function registerRelay() {
-  const allowed = [];
-  for (const o of await controllers()) {
-    if (await chrome.permissions.contains({origins: [o + '/*']})) allowed.push(o + '/*');
-  }
   try {
     await chrome.scripting.unregisterContentScripts({ids: ['relay']});
   } catch (e) {}
-  if (!allowed.length) return;
-  await chrome.scripting.registerContentScripts([{id: 'relay', matches: allowed, js: ['relay.js'], runAt: 'document_end'}]);
-  for (const tab of await chrome.tabs.query({url: allowed})) {
-    chrome.scripting.executeScript({target: {tabId: tab.id}, files: ['relay.js']}).catch(() => {});
-  }
 }
-// Chrome's prompt can close the popup before it hears the answer: the grant itself completes pairing.
-chrome.permissions.onAdded.addListener(registerRelay);
-chrome.permissions.onRemoved.addListener(registerRelay);
 
 // ---- the work in hand ---------------------------------------------------------------------------
 // queue: [{controllerTab, requestId, sub}]; job: the one being read now, with its shop tab.
