@@ -15,9 +15,10 @@ function check(ok, what) {
   }
 }
 
-function env({href, text = '', html = '', links = [], json = {}, hasPassword = false, followed = false}) {
+function env({href, text = '', html = '', links = [], json = {}, hasPassword = false, followed = false, pages = null}) {
   return {href, followed, hasPassword, text: () => text, html: () => html, links: () => links,
-          fetchJson: async path => (path in json ? json[path] : null)};
+          fetchJson: async path => (path in json ? json[path] : null),
+          exists: pages ? async path => pages.includes(path) : undefined};
 }
 
 const PERSONAL = /example\.com|555|Elm Street|\*0938|4242|token|Jane|Doe/i;
@@ -62,6 +63,13 @@ const clean = (r, what) => check(!PERSONAL.test(JSON.stringify(r)), what + ': no
     href: 'https://shop.example.org/pages/subscription-by-usage', html: 'bottomless', text: 'Shop', followed: true,
     json: {'/apps/bottomless/me': me, '/apps/bottomless/orders/last-subscription': last, '/apps/bottomless/orders/upcoming': {orders: []}}}));
   check(after.state == 'done' && after.data.next.date == 0 && after.data.shipments.length == 1, 'bottomless: no loop');
+  // A Bottomless shop whose page does not name the app where the reader looks, and that also loads
+  // Recharge's widget: still read as Bottomless.
+  const mixed = await reader.bbwReadSubscription(env({
+    href: 'https://shop.example.org/pages/subscription-by-usage', html: '<script src="https://static.rechargecdn.com/w.js">',
+    text: 'Next reorder date\nNov 12, 2026', pages: ['/tools/recurring/login'],
+    json: {'/apps/bottomless/me': me, '/apps/bottomless/orders/last-subscription': last, '/apps/bottomless/orders/upcoming': {orders: []}}}));
+  check(mixed.state == 'done' && mixed.data.platform == 'bottomless' && mixed.data.next.date == 20261112, 'bottomless: found by asking, not by the page');
   // Not signed in: the app answers nothing.
   const out = await reader.bbwReadSubscription(env({href: 'https://shop.example.org/', html: 'bottomless', text: 'Log in'}));
   check(out.state == 'wait', 'bottomless: not signed in waits');
@@ -87,6 +95,10 @@ const clean = (r, what) => check(!PERSONAL.test(JSON.stringify(r)), what + ': no
   // A Recharge shop page that is not the portal: go to the portal's sign-in.
   const shop = await reader.bbwReadSubscription(env({href: 'https://shop.example.org/', html: '<script src="https://static.rechargecdn.com/a.js">', text: 'Shop'}));
   check(shop.state == 'go' && shop.url == 'https://shop.example.org/tools/recurring/login', 'recharge: goes to the portal');
+  // Recharge's scripts but no portal (a 404 there): not sent to a page that is not there.
+  const noPortal = await reader.bbwReadSubscription(env({href: 'https://shop.example.org/', html: '<script src="https://static.rechargecdn.com/a.js">',
+                                                         text: 'Shop', pages: []}));
+  check(noPortal.state == 'none', 'recharge: no portal, no trip to a missing page');
   const login = await reader.bbwReadSubscription(env({href: 'https://shop.example.org/tools/recurring/portal/x/overview', text: 'Log in\nEmail', hasPassword: true}));
   check(login.state == 'wait', 'recharge: sign-in waits');
 }

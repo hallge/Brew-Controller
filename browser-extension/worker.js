@@ -109,7 +109,13 @@ chrome.tabs.onUpdated.addListener(async (id, info, t) => {
     const [r] = await chrome.scripting.executeScript({target: {tabId: id}, func: () => globalThis.bbwReader.readHere()});
     result = r && r.result;
   } catch (e) {
-    return say('working', 'waiting for the page');
+    // Chrome's own error pages (a 404 with no page, no connection) cannot be read: back to the shop's
+    // first page once, else give up rather than wait the full ten minutes.
+    if (!job.backHome && url.split('#')[0] !== job.start.split('#')[0]) {
+      await save(queue, {...job, backHome: true});
+      return chrome.tabs.update(id, {url: job.start});
+    }
+    return finish('error', 'the shop page could not be read');
   }
   if (!result) return;
   if (result.state === 'done') return finish('done', '', result.data);

@@ -11,7 +11,8 @@
 //   {state:'wait', why}     sign in first (the worker reads again after the next page load)
 //   {state:'none', why}     nothing found here
 // env: {href, text: () => visible text, html: () => page HTML, links: () => [{text, href}],
-//       fetchJson: async path => object or null (same site, with the owner's cookies)}
+//       fetchJson: async path => object or null (same site, with the owner's cookies),
+//       exists: async path => whether that page of this site is there (not a 404)}
 
 (function (root) {
   const MONTHS = {jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12};
@@ -234,10 +235,14 @@
       if (!/account\.drinktrade\.com$/.test(host)) return {state: 'go', url: 'https://account.drinktrade.com/'};
       return readTrade(env, host);
     }
-    const bottomless = /bottomless/i.test(html) ? await readBottomless(env, host) : null;
+    // Bottomless first: its data answers only for a shop that runs it (and a signed-in customer), and a
+    // shop's page may be too long to find its name in, or also load another subscription app's widget.
+    const bottomless = await readBottomless(env, host);
     if (bottomless) return bottomless;
     if (/bottomless/i.test(html)) return {state: 'wait', why: 'sign in'};
-    if (/rechargecdn|rechargeapps|ReCharge/.test(html) && !/\/tools\/recurring\//.test(env.href)) {
+    // Recharge's portal, when the shop has one (some load Recharge's scripts without it).
+    if (/rechargecdn|rechargeapps|ReCharge/.test(html) && !/\/tools\/recurring\//.test(env.href) &&
+        !env.followed && (!env.exists || await env.exists('/tools/recurring/login'))) {
       return {state: 'go', url: new URL('/tools/recurring/login', env.href).href};
     }
     if (signInPage(env)) return {state: 'wait', why: 'sign in'};
@@ -277,9 +282,17 @@
       href: location.href,
       followed: !!sessionStorage.getItem('bbwFollowed'),
       text: deepText,
-      html: () => document.documentElement ? document.documentElement.outerHTML.slice(0, 400000) : '',
+      html: () => document.documentElement ? document.documentElement.outerHTML : '',
       links: () => [...document.querySelectorAll('a[href]')].slice(0, 400).map(a => ({text: a.innerText.trim(), href: a.href})),
       hasPassword: !!document.querySelector('input[type=password]'),
+      exists: async path => {
+        try {
+          const r = await fetch(path, {credentials: 'include', redirect: 'manual'});
+          return r.type === 'opaqueredirect' || (r.status > 0 && r.status < 400);
+        } catch (e) {
+          return false;
+        }
+      },
       fetchJson: async path => {
         try {
           const r = await fetch(path, {credentials: 'include', headers: {Accept: 'application/json'}});
