@@ -6706,6 +6706,87 @@ static void testUnopenedBags() {
   }
 }
 
+static void testOnTheWayBags() {
+  printf("bags: a bag on its way is not on the shelf until it comes\n");
+  Library lib;
+  lib.recipeCount = 1;
+  lib.recipes[0] = RecipeDef{};
+  lib.recipes[0].id = 1;
+  Coffee a;
+  copyText(a.name, "A", COFFEE_NAME_LEN);
+  a.roastDate = 20261001;
+  const uint16_t ida = saveCoffee(lib, a);
+  Coffee club;
+  copyText(club.name, "Club pick", COFFEE_NAME_LEN);
+  const uint16_t idc = saveCoffee(lib, club);
+  lib.presetCount = 2;
+  lib.presets[0] = Preset{};
+  lib.presets[0].recipeId = 1;
+  lib.presets[0].coffeeId = ida;
+  lib.presets[1] = Preset{};
+  lib.presets[1].recipeId = 1;
+  lib.presets[1].coffeeId = idc;
+  lib.activePreset = 0;
+  // A re-order of A on its way, and a new coffee on its way.
+  const uint16_t a2 = addOnTheWayBag(lib, ida, 20261116, 340, 2);
+  const uint16_t c1 = addOnTheWayBag(lib, idc, 20261340, 0, 2);   // not a date: not known
+  CHECK(a2 && c1 && findBag(lib, a2)->unopened == BAG_ON_ITS_WAY && findBag(lib, a2)->expectedDate == 20261116);
+  CHECK(findBag(lib, c1)->expectedDate == 0 && findBag(lib, a2)->subscriptionId == 2);
+  CHECK(!addOnTheWayBag(lib, 999, 20261116, 0));
+  // Not on the shelf: never the next bag, never opened by hand or by choosing the coffee.
+  CHECK(!oldestUnopenedBag(lib, 0) && !openBag(lib, a2, 20261101));
+  lib.activePreset = 1;
+  CHECK(!openActiveCoffeeBag(lib, 20261101) && findCoffee(lib, idc)->bagId == 0);
+  lib.activePreset = 0;
+  // BAG FINISHED on A with only a bag on its way: A is finished, the bag stays on its way.
+  CHECK(finishCoffee(lib, ida, 20261105) && coffeeFinished(lib, ida) && findBag(lib, a2)->unopened == BAG_ON_ITS_WAY);
+  // It came: unopened on the shelf, with its roast date; then it can be opened.
+  CHECK(bagArrived(lib, a2, 20261110, 0) && findBag(lib, a2)->unopened == BAG_UNOPENED &&
+        findBag(lib, a2)->roastDate == 20261110 && findBag(lib, a2)->weightG == 340 && findBag(lib, a2)->expectedDate == 0);
+  CHECK(!bagArrived(lib, a2, 0, 0) && !coffeeFinished(lib, ida));
+  CHECK(openBag(lib, a2, 20261112) && findCoffee(lib, ida)->bagId == a2);
+  // Never dropped to make room.
+  Library many;
+  Coffee m;
+  copyText(m.name, "M", COFFEE_NAME_LEN);
+  m.roastDate = 20260101;
+  const uint16_t idm = saveCoffee(many, m);
+  const uint16_t keep = addOnTheWayBag(many, idm, 20260201, 0);
+  for (int i = 0; i < 60; ++i) startBag(many, idm, 20260101 + (i % 28));
+  CHECK(findBag(many, keep) && findBag(many, keep)->unopened == BAG_ON_ITS_WAY);
+  // Saved and read back; a 28-byte record from before reads expectedDate as 0.
+  uint8_t buffer[LIBRARY_MAX_BYTES];
+  const size_t written = encodeLibrary(lib, buffer, sizeof(buffer));
+  Library back;
+  CHECK(written > 0 && decodeLibrary(buffer, written, back) && findBag(back, c1)->unopened == BAG_ON_ITS_WAY);
+  {
+    size_t at = 0;
+    for (size_t i = 0; i + 8 <= written; ++i) {
+      uint16_t size, count;
+      memcpy(&size, &buffer[i], 2);
+      memcpy(&count, &buffer[i + 2], 2);
+      if (size == sizeof(Bag) && count == lib.bagCount && i + 8 + count * sizeof(Bag) == written) at = i;
+    }
+    CHECK(at != 0);
+    std::vector<uint8_t> made(buffer, buffer + at);
+    uint8_t h3[8];
+    memcpy(h3, &buffer[at], 8);
+    const uint16_t oldSize = 28;
+    memcpy(h3, &oldSize, 2);
+    made.insert(made.end(), h3, h3 + 8);
+    for (uint8_t i = 0; i < lib.bagCount; ++i) {
+      uint8_t rec[28];
+      memcpy(rec, &lib.bags[i], 28);
+      made.insert(made.end(), rec, rec + 28);
+    }
+    Library old;
+    CHECK(decodeLibrary(made.data(), made.size(), old));
+    bool zero = true;
+    for (uint8_t i = 0; i < old.bagCount; ++i) zero = zero && old.bags[i].expectedDate == 0;
+    CHECK(zero && findBag(old, c1)->unopened == BAG_ON_ITS_WAY);
+  }
+}
+
 static void testSubscriptions() {
   printf("subscriptions: dates, cost, stock, page preview\n");
   CHECK(daysBetween(20261022, 20261119) == 28 && addDays(20261231, 1) == 20270101 && addDays(20240228, 1) == 20240229);
@@ -7048,6 +7129,7 @@ int main() {
   testSimilarCoffee();
   testBags();
   testUnopenedBags();
+  testOnTheWayBags();
   testSubscriptions();
   testServiceSharing();
   testExtraction();

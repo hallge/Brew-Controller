@@ -213,7 +213,7 @@ inline const Bag *oldestUnopenedBag(const Library &lib, uint16_t coffeeId) {
   const Bag *best = nullptr;
   for (uint8_t i = 0; i < lib.bagCount && i < MAX_BAGS; ++i) {
     const Bag &b = lib.bags[i];
-    if (!b.unopened || (coffeeId != 0 && b.coffeeId != coffeeId)) continue;
+    if (b.unopened != BAG_UNOPENED || (coffeeId != 0 && b.coffeeId != coffeeId)) continue;
     const uint32_t key = b.roastDate ? b.roastDate : 0xFFFFFFFFu;
     if (!best || key < (best->roastDate ? best->roastDate : 0xFFFFFFFFu)) best = &b;
   }
@@ -252,11 +252,39 @@ inline uint16_t addUnopenedBag(Library &lib, uint16_t coffeeId, uint32_t roastDa
 inline bool openBag(Library &lib, uint16_t bagId, uint32_t today) {
   Bag *b = findBag(lib, bagId);
   Coffee *c = b ? findCoffee(lib, b->coffeeId) : nullptr;
-  if (!b || !c || !b->unopened) return false;
+  if (!b || !c || b->unopened != BAG_UNOPENED) return false;
   b->unopened = 0;
+  b->expectedDate = 0;
   if (b->openedDate == 0 && validRoastDate(today)) b->openedDate = today;
   mirrorBag(*c, *b);
   c->finishedDate = 0;
+  return true;
+}
+
+// A bag ordered and not yet come (a subscription's next delivery): on its way, expected on `expected`
+// (YYYYMMDD, 0 = not known). It is not on the shelf: it is never opened, never keeps a finished coffee
+// on the shelf, and is never dropped to make room. 0 if there is no such coffee or no room.
+inline uint16_t addOnTheWayBag(Library &lib, uint16_t coffeeId, uint32_t expected, uint16_t weightG,
+                               uint16_t subscriptionId = 0) {
+  if (!findCoffee(lib, coffeeId)) return 0;
+  const uint16_t id = addBag(lib, coffeeId, 0, 0, 0, 0, weightG);
+  if (id == 0) return 0;
+  Bag *b = findBag(lib, id);
+  b->unopened = BAG_ON_ITS_WAY;
+  b->subscriptionId = subscriptionId;
+  b->expectedDate = validRoastDate(expected) ? expected : 0;
+  return id;
+}
+
+// A bag on its way came: it is on the shelf, unopened, with the roast date printed on it (0 = not
+// entered yet) and its weight (0 = keep). false if it was not on its way.
+inline bool bagArrived(Library &lib, uint16_t bagId, uint32_t roastDate, uint16_t weightG) {
+  Bag *b = findBag(lib, bagId);
+  if (!b || b->unopened != BAG_ON_ITS_WAY) return false;
+  b->unopened = BAG_UNOPENED;
+  b->expectedDate = 0;
+  if (validRoastDate(roastDate)) b->roastDate = roastDate;
+  if (weightG) b->weightG = weightG;
   return true;
 }
 
@@ -687,7 +715,8 @@ inline void sanitizeLibrary(Library &lib) {
       if (!validRoastDate(b.frozenDate)) b.frozenDate = 0;
       if (!validRoastDate(b.thawDate)) b.thawDate = 0;
       if (b.frozenDate == 0) b.thawDate = 0;
-      b.unopened = b.unopened ? 1 : 0;
+      if (b.unopened > BAG_ON_ITS_WAY) b.unopened = 0;
+      if (b.unopened != BAG_ON_ITS_WAY || !validRoastDate(b.expectedDate)) b.expectedDate = 0;
       b.spare = 0;
       lib.bags[keep++] = b;
     }
@@ -696,7 +725,10 @@ inline void sanitizeLibrary(Library &lib) {
   for (uint8_t i = 0; i < lib.coffeeCount; ++i) {
     Coffee &c = lib.coffees[i];
     const Bag *b = findBag(lib, c.bagId);
-    if (b && b->coffeeId == c.id && b->unopened) findBag(lib, c.bagId)->unopened = 0;  // in use: opened
+    if (b && b->coffeeId == c.id && b->unopened) {  // in use: opened
+      findBag(lib, c.bagId)->unopened = 0;
+      findBag(lib, c.bagId)->expectedDate = 0;
+    }
     if (b && b->coffeeId == c.id) mirrorBag(c, *b);
     else {
       c.bagId = 0;
@@ -1324,6 +1356,7 @@ inline bool decodeLibrary(const uint8_t *in, size_t size, Library &out) {
     const uint8_t *bagAt = in + need + sizeof(h3);
     for (uint16_t i = 0; i < h3.bagCount; ++i, bagAt += h3.bagSize) {
       memcpy(&lib.bags[i], bagAt, h3.bagSize < sizeof(Bag) ? h3.bagSize : sizeof(Bag));
+      if (h3.bagSize < offsetof(Bag, expectedDate) + sizeof(uint32_t)) lib.bags[i].expectedDate = 0;
       if (h3.bagSize <= offsetof(Bag, unopened) + 2) {  // saved before unopened bags: its padding
         lib.bags[i].unopened = 0;
         lib.bags[i].spare = 0;

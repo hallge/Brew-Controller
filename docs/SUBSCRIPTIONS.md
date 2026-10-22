@@ -31,6 +31,53 @@ So each card links to the right page (**Manage**), and the controller keeps its 
 **Arrived** and **Skip one** move the date on here. Skipping at the shop is still the owner's to do,
 and the reminder says so.
 
+## Updates from the shops: the Brew Controller helper
+
+Each shop shows the next delivery and the coffee coming only to a customer who is signed in, so the
+controller cannot fetch them itself: it would need your shop logins. The **Brew Controller helper**, a
+small Chrome extension in `browser-extension/`, reads them in your own browser instead.
+
+**Installing it.** The controller serves the helper at `/extension.zip`, and the Subscriptions page
+says how to install it:
+1. Download it from the page and unzip it, which gives a folder, `brew-controller-helper`.
+2. In Chrome, open `chrome://extensions`, turn on Developer mode, choose **Load unpacked**, and pick
+   that folder.
+3. Pin the helper, click it, and choose **Connect to this controller**.
+
+The zip is packed from `browser-extension/` when the firmware is built (`browser-extension/make_zip.py`,
+run by `scripts/gen_extension.py`), so it always matches the firmware. It works in desktop Chrome, Edge
+and Brave; phones do not run extensions.
+
+**Using it.** **Update** on a card, or **Update all**:
+- The helper opens the shop in a tab. If the shop asks, you sign in as usual; the helper waits up to 10
+  minutes.
+- It reads only the next date, how often, items and coffees, prices and delivery dates, then closes
+  the tab.
+- The page lists what differs, each line ticked or not, and **Apply** makes the changes.
+
+**What it understands:**
+- **Bottomless** shops, through the shop's own `/apps/bottomless/` data and its subscription page;
+- the **Recharge** customer portal;
+- **Trade**'s account pages;
+- the next-delivery wording of other pages.
+
+**Rules:**
+- Chrome asks once for each shop it may read.
+- It opens only https pages of the subscription's own websites.
+- It answers only the paired controller's page, which it is told about in its popup.
+- It never sends an address, phone, email, payment detail or token: what it reads is filtered before it
+  leaves the shop's tab.
+
+## Coffee on its way
+
+A bag can be **on its way**: ordered, with an expected date, not on the shelf yet. The import offers
+the coffee a shop says is coming that way. **It arrived** (on the Coffees page, or Arrived on the
+subscription) makes it an unopened bag on the shelf, and asks for its roast date.
+
+A bag on its way is never opened, never makes a finished coffee show again, and is never dropped to
+make room. The bag record's state is 0 (in use or past), 1 (unopened) or 2 (on its way), and it gains
+`expectedDate`. Older records read 0.
+
 ## A card from a link
 
 Paste the shop's link and press **Read the page**.

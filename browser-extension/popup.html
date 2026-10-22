@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Brew Controller helper</title>
+<style>
+body{font:14px/1.45 system-ui,sans-serif;margin:0;padding:14px;width:300px;background:#17191c;color:#eceef0}
+h1{font-size:15px;margin:0 0 8px}p{margin:6px 0;color:#c3c9d0}
+input{width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid #3a3f46;background:#0e0f11;color:#eceef0;font:inherit}
+button{margin-top:8px;width:100%;padding:9px;border-radius:8px;border:none;background:#f08a24;color:#1d0f00;font-weight:600;font:inherit;cursor:pointer}
+#state{margin-top:8px;font-size:13px;color:#4cc38a}
+</style></head>
+<body>
+<h1>Brew Controller helper</h1>
+<p>Your controller's address, as you open its web page:</p>
+<input id="addr" placeholder="http://192.168.0.10">
+<button id="pair">Connect to this controller</button>
+<div id="state"></div>
+<p style="font-size:12px">Then use <b>Update</b> on its Subscriptions page. Chrome asks once for each shop the helper may read. It reads only the next delivery, the coffee and the dates, and sends them only to this controller.</p>
+<script src="popup.js"></script>
+</body></html>

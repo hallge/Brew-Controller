@@ -100,6 +100,12 @@ void WebServer::send(int code, const char *type, const char *body) {
   body_ = body;
 }
 
+void WebServer::send_P(int code, const char *type, const char *body, size_t length) {
+  code_ = code;
+  type_ = type;
+  body_.assign(body, length);
+}
+
 String WebServer::arg(const char *name) {
   const auto it = args_.find(name);
   return it == args_.end() ? String() : String(it->second);

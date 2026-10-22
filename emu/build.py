@@ -48,7 +48,7 @@ FIRMWARE = [
     "lib/EspressoScaleProtocol/src/ScaleProtocolCommon.cpp",
 ]
 
-INCLUDES = [EMU / "shims", EMU / "src", ROOT / "include", ROOT / "src",
+INCLUDES = [EMU / "shims", EMU / "src", ROOT / "include", ROOT / "src", ROOT / ".pio" / "gen",
             ROOT / "lib" / "EspressoScaleProtocol" / "src", LVGL, ARDUINOJSON]
 DEFINES = ["BBW_EMULATOR", "LV_CONF_INCLUDE_SIMPLE", "CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3",
            "ARDUINOJSON_ENABLE_ARDUINO_STRING=1", "ARDUINOJSON_ENABLE_ARDUINO_PRINT=1"]
@@ -64,6 +64,8 @@ def newest(paths):
 
 
 def main():
+    # The helper extension the controller serves (/extension.zip), packed as the firmware build does.
+    subprocess.check_call([sys.executable, str(ROOT / "browser-extension" / "make_zip.py")])
     if "--clean" in sys.argv and OUT.exists():
         shutil.rmtree(OUT)
     if not LVGL.exists() or not ARDUINOJSON.exists():
