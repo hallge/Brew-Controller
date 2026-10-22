@@ -45,6 +45,10 @@ bool libraryLinkReady();
 // true once GitHub has the record (or had it already).
 bool libraryPut(const char *path, const char *text);
 
+// Closes the connection kept open between requests (one TLS connection at a time: a subscription
+// card's page fetch lets this one go first). The next request opens it again.
+void libraryLinkRelease();
+
 // Reads a file of the library into `out`, terminated. false if it is not
 // there, does not fit, or the library could not be reached.
 bool libraryGet(const char *path, char *out, size_t size);

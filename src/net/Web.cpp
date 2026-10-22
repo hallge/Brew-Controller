@@ -95,7 +95,7 @@ void handleStatus() {
   {
     JsonArray caps = doc["capabilities"].to<JsonArray>();
     for (const char *c : {"status_v1", "shots_v1", "shot_data_v1", "shot_csv_v1", "grind_advice_v1",
-                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1", "coffee_taste_v1"}) {
+                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1", "coffee_taste_v1", "subscriptions_v1"}) {
       caps.add(c);
     }
   }
@@ -672,6 +672,8 @@ void handleLibrary() {
       o["weightG"] = b.weightG;
       const bbw::Coffee *owner = bbw::findCoffee(lib, b.coffeeId);
       o["current"] = owner && owner->bagId == b.id;   // the bag in use
+      o["unopened"] = b.unopened != 0;                 // waiting on the shelf, nothing tracked yet
+      o["subscriptionId"] = b.subscriptionId;          // the subscription it came with, 0 = none
     }
     grinderJson(doc["grinder"].to<JsonObject>(), lib.grinder);
     if (lib.hasOtherGrinder) grinderJson(doc["otherGrinder"].to<JsonObject>(), lib.otherGrinder);
@@ -707,6 +709,106 @@ void sendId(uint16_t id) {
   JsonDocument doc;
   doc["ok"] = true;
   doc["id"] = id;
+  sendJson(doc);
+}
+
+// ---- subscriptions (core/Subscriptions.h) --------------------------------
+
+// GET /api/subscriptions: the list, with what the page shows worked out here (days until the next
+// date, reminders, how long supplies last at the recent rate of shots, the monthly total).
+void handleGetSubscriptions() {
+  JsonDocument doc;
+  static uint32_t today;
+  static float perDay;
+  today = bbw::dateFromEpoch(app::epochNow());
+  perDay = app::shotsPerDay();
+  doc["today"] = today;
+  doc["shots_per_day"] = bbw::round2(perDay);
+  doc["max"] = bbw::MAX_SUBSCRIPTIONS;
+  static JsonDocument *out;
+  out = &doc;
+  app::readSubscriptions([](const bbw::Subscription *subs, size_t count, void *) {
+    JsonDocument &d = *out;
+    d["monthly_cents"] = bbw::monthlyCents(subs, count);
+    JsonArray list = d["subscriptions"].to<JsonArray>();
+    for (size_t i = 0; i < count; ++i) {
+      JsonObject o = list.add<JsonObject>();
+      app::subscriptionToJson(subs[i], o);
+      const int32_t until = bbw::daysUntilNext(subs[i], today);
+      if (until != INT32_MIN) o["days_until"] = until;
+      o["due_soon"] = bbw::subscriptionDueSoon(subs[i], today);
+      const int32_t left = bbw::stockDaysLeft(subs[i], perDay);
+      if (left >= 0) o["stock_days_left"] = left;
+      o["stock_short"] = bbw::stockShort(subs[i], perDay, today);
+    }
+  }, nullptr);
+  sendJson(doc);
+}
+
+// POST /api/subscriptions {id?, name, url, ...}: adds one (no id) or replaces it.
+void handlePostSubscription() {
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  bbw::Subscription s;
+  app::subscriptionFromJson(doc.as<JsonObjectConst>(), s);
+  if (!s.name[0] && !s.url[0]) return sendError(400, "give it a name or a link");
+  const uint16_t id = app::saveSubscription(s);
+  if (id == 0) return sendError(409, s.id ? "no such subscription" : "the list is full (12)");
+  sendId(id);
+}
+
+uint16_t subscriptionIdArg() {
+  JsonDocument doc;
+  if (!deserializeJson(doc, server.arg("plain"))) return doc["id"] | 0;
+  return static_cast<uint16_t>(server.arg("id").toInt());
+}
+
+void handleDeleteSubscription() {
+  if (!app::deleteSubscription(subscriptionIdArg())) return sendError(404, "no such subscription");
+  sendOk();
+}
+
+void handleSubscriptionArrived() {
+  if (!app::subscriptionArrived(subscriptionIdArg())) return sendError(404, "no such subscription");
+  sendOk();
+}
+
+void handleSubscriptionSkipped() {
+  if (!app::subscriptionSkipped(subscriptionIdArg())) return sendError(404, "no such subscription");
+  sendOk();
+}
+
+// POST /api/subscriptions/preview {url}: the controller reads that page for a card, when it is idle.
+// GET: {state: none|waiting|done|failed, url, problem, and what the page said}.
+void handlePostPreview() {
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  const char *url = doc["url"] | "";
+  if (strncmp(url, "https://", 8) != 0 && strncmp(url, "http://", 7) != 0) {
+    return sendError(400, "a link starting https://");
+  }
+  if (strlen(url) >= 250) return sendError(400, "that link is too long");
+  app::requestPagePreview(url);
+  sendOk();
+}
+
+void handleGetPreview() {
+  static char url[256], problem[80];
+  static bbw::PageMeta meta;
+  const app::PreviewState state = app::pagePreview(url, sizeof(url), meta, problem, sizeof(problem));
+  JsonDocument doc;
+  static const char *names[] = {"none", "waiting", "done", "failed"};
+  doc["state"] = names[static_cast<int>(state)];
+  doc["url"] = url;
+  doc["problem"] = problem;
+  doc["title"] = meta.title;
+  doc["site"] = meta.site;
+  doc["description"] = meta.description;
+  doc["image"] = meta.image;
+  doc["icon"] = meta.icon;
+  doc["color"] = meta.color;
+  doc["platform"] = meta.platform;
+  doc["manage_url"] = meta.manageUrl;
   sendJson(doc);
 }
 
@@ -1021,6 +1123,10 @@ void handleLibraryDo() {
       error = "that is not a bag of this coffee";
       return bbw::useBag(lib, static_cast<uint16_t>(a), static_cast<uint16_t>(b));
     }
+    if (what == "bag_open") {  // a = bag id: an unopened bag put in use from today
+      error = "that is not an unopened bag";
+      return bbw::openBag(lib, static_cast<uint16_t>(a), today);
+    }
     if (what == "bag_delete") {  // a = bag id
       error = "the bag in use cannot be removed: put another in use first";
       return bbw::removeBag(lib, static_cast<uint16_t>(a));
@@ -1052,6 +1158,8 @@ void handleLibraryDo() {
 }
 
 // POST /api/bag {coffeeId, roastDate, openedDate?, weightG?}: a new bag of that coffee, in use from now.
+// {coffeeId, roastDate, weightG?, unopened: true, subscriptionId?}: a bag put on the shelf unopened; the
+// coffee keeps the bag it has in use (core/Library.h addUnopenedBag).
 // {id, roastDate, openedDate, frozenDate, thawDate, weightG}: correct the dates and weight of a bag.
 void handleBag() {
   if (busyBrewing()) return sendError(409, "not while a shot is running");
@@ -1059,7 +1167,10 @@ void handleBag() {
   if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
   static uint16_t bagId, coffeeId, weight;
   static uint32_t roast, opened, frozen, thaw;
-  static uint16_t result;
+  static uint16_t result, subscriptionId;
+  static bool unopened;
+  unopened = doc["unopened"] | false;
+  subscriptionId = doc["subscriptionId"] | 0;
   bagId = doc["id"] | 0;
   coffeeId = doc["coffeeId"] | 0;
   weight = doc["weightG"] | 0;
@@ -1076,7 +1187,8 @@ void handleBag() {
           result = bagId;
           return true;
         }
-        result = bbw::startBag(lib, coffeeId, roast, opened, weight);
+        result = unopened ? bbw::addUnopenedBag(lib, coffeeId, roast, weight, subscriptionId)
+                          : bbw::startBag(lib, coffeeId, roast, opened, weight);
         return result != 0;
       }, nullptr)) {
     return sendError(409, "not saved: no such coffee or bag, or the list holds only bags in use");
@@ -2465,6 +2577,13 @@ void begin() {
   server.on("/api/drinkers", HTTP_POST, handlePostDrinkers);
   server.on("/api/taste/profile", HTTP_GET, handleGetTasteProfile);
   server.on("/api/taste/recommend", HTTP_GET, handleGetRecommend);
+  server.on("/api/subscriptions", HTTP_GET, handleGetSubscriptions);
+  server.on("/api/subscriptions", HTTP_POST, handlePostSubscription);
+  server.on("/api/subscriptions/delete", HTTP_POST, handleDeleteSubscription);
+  server.on("/api/subscriptions/arrived", HTTP_POST, handleSubscriptionArrived);
+  server.on("/api/subscriptions/skip", HTTP_POST, handleSubscriptionSkipped);
+  server.on("/api/subscriptions/preview", HTTP_GET, handleGetPreview);
+  server.on("/api/subscriptions/preview", HTTP_POST, handlePostPreview);
   server.on("/api/net", HTTP_POST, handleNet);
   server.on("/api/time", HTTP_POST, []() {
     const uint32_t epoch = strtoul(server.arg("epoch").c_str(), nullptr, 10);

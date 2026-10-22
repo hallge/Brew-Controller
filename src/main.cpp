@@ -35,6 +35,7 @@
 #include "platform/DeviceKey.h"
 #include "platform/FirmwareUpdate.h"
 #include "platform/LibraryLink.h"
+#include "platform/PagePreview.h"
 #include "storage/Store.h"
 #include "ui/Ui.h"
 
@@ -157,6 +158,23 @@ char *g_shareEnvelope;  // SHARE_ENVELOPE_MAX
 char *g_libraryText;    // LIBRARY_TEXT_SIZE
 bbw::CurvePoint *g_curveOut;  // MAX_CURVE_POINTS: a shot's readings on their way to flash
 
+// Subscriptions (core/Subscriptions.h): the list, and /subs.json written from it when it changes.
+constexpr const char *SUBS_FILE = "/subs.json";
+constexpr size_t SUBS_TEXT_SIZE = 24576;
+bbw::Subscription *g_subs;    // MAX_SUBSCRIPTIONS
+size_t g_subCount = 0;
+uint16_t g_nextSubId = 1;
+bool g_subsDirty = false;
+char *g_subsText;             // SUBS_TEXT_SIZE
+// The page fetch for a card: one at a time.
+struct PreviewJob {
+  char url[256];
+  app::PreviewState state;
+  bbw::PageMeta meta;
+  char problem[80];
+};
+PreviewJob *g_preview;
+
 void allocateBuffers() {
   g_libraryBefore = bbw::bigNew<bbw::Library>();
   g_librarySaving = bbw::bigNew<bbw::Library>();
@@ -164,6 +182,11 @@ void allocateBuffers() {
   g_shareEnvelope = bbw::bigArray<char>(bbw::SHARE_ENVELOPE_MAX);
   g_libraryText = bbw::bigArray<char>(LIBRARY_TEXT_SIZE);
   g_curveOut = bbw::bigArray<bbw::CurvePoint>(bbw::MAX_CURVE_POINTS);
+  g_subs = bbw::bigArray<bbw::Subscription>(bbw::MAX_SUBSCRIPTIONS);
+  for (size_t i = 0; i < bbw::MAX_SUBSCRIPTIONS; ++i) new (&g_subs[i]) bbw::Subscription();
+  g_subsText = bbw::bigArray<char>(SUBS_TEXT_SIZE);
+  g_preview = bbw::bigNew<PreviewJob>();
+  g_preview->state = app::PreviewState::NONE;
 }
 char g_sharePath[96];
 // Reading the library's index (further down): do not wait out the period,
@@ -959,6 +982,88 @@ void handleButton() {
 
 // =================================================================== app:: ==
 
+// ------------------------------------------------------------ subscriptions --
+void loadSubscriptions() {
+  g_subCount = 0;
+  const size_t length = g_store.readText(SUBS_FILE, g_subsText, SUBS_TEXT_SIZE);
+  if (length == 0) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, g_subsText, length)) {
+    LOGW("subscriptions: %s could not be read", SUBS_FILE);
+    return;
+  }
+  g_nextSubId = doc["next_id"] | 1;
+  for (JsonObjectConst o : doc["subscriptions"].as<JsonArrayConst>()) {
+    if (g_subCount >= bbw::MAX_SUBSCRIPTIONS) break;
+    bbw::Subscription &s = g_subs[g_subCount];
+    app::subscriptionFromJson(o, s);
+    bbw::sanitizeSubscription(s);
+    if (s.id == 0) continue;
+    if (s.id >= g_nextSubId) g_nextSubId = s.id + 1;
+    ++g_subCount;
+  }
+  LOGI("subscriptions: %u loaded", static_cast<unsigned>(g_subCount));
+}
+
+void saveSubscriptions() {
+  JsonDocument doc;
+  {
+    Lock lock;
+    doc["next_id"] = g_nextSubId;
+    JsonArray list = doc["subscriptions"].to<JsonArray>();
+    for (size_t i = 0; i < g_subCount; ++i) app::subscriptionToJson(g_subs[i], list.add<JsonObject>());
+    g_subsDirty = false;
+  }
+  const size_t n = serializeJson(doc, g_subsText, SUBS_TEXT_SIZE);
+  if (n == 0 || n >= SUBS_TEXT_SIZE - 1) {
+    LOGW("subscriptions: too big to save");
+    return;
+  }
+  if (!g_store.writeTextIfChanged(SUBS_FILE, g_subsText)) LOGW("subscriptions: not saved");
+}
+
+// A shot was saved: supplies that each shot uses (a paper filter) go down.
+void subscriptionsShotTaken() {
+  Lock lock;
+  for (size_t i = 0; i < g_subCount; ++i) {
+    if (!bbw::subscriptionShotTaken(g_subs[i])) continue;
+    g_subsDirty = true;
+    LOGI("subscriptions: %s, %d left", g_subs[i].item[0] ? g_subs[i].item : g_subs[i].name,
+         static_cast<int>(g_subs[i].stock));
+  }
+}
+
+// Loop task: a waiting page fetch is made while idle, and the list saved when it has changed.
+void subscriptionsService(bool idle) {
+  if (!idle) return;
+  char url[256];
+  bool fetch = false;
+  {
+    Lock lock;
+    if (g_preview->state == app::PreviewState::WAITING) {
+      strlcpy(url, g_preview->url, sizeof(url));
+      fetch = true;
+    }
+  }
+  if (fetch) {
+    static bbw::PageMeta meta;
+    char problem[80];
+    const int code = bbw::fetchPagePreview(url, meta, problem, sizeof(problem));
+    Lock lock;
+    if (strcmp(g_preview->url, url) == 0) {  // not asked again for another page meanwhile
+      g_preview->meta = meta;
+      strlcpy(g_preview->problem, problem, sizeof(g_preview->problem));
+      g_preview->state = code == 200 ? app::PreviewState::DONE : app::PreviewState::FAILED;
+    }
+  }
+  bool save;
+  {
+    Lock lock;
+    save = g_subsDirty;
+  }
+  if (save) saveSubscriptions();
+}
+
 namespace app {
 
 bbw::LiveStatus status() {
@@ -1079,6 +1184,10 @@ void selectRecipe(uint8_t index) {
   if (!editable()) return;
   if (bbw::presetVisible(g_library, index)) {
     g_library.activePreset = index;
+    // A coffee waiting on an unopened bag: choosing it puts that bag in use.
+    if (bbw::openActiveCoffeeBag(g_library, bbw::dateFromEpoch(epochNow()))) {
+      LOGI("bag: opened (the coffee was chosen)");
+    }
     markLibraryDirty();
   }
 }
@@ -1122,6 +1231,7 @@ bool applyPresetList(const bbw::Recipe *flat, const uint8_t *slots, uint8_t coun
   (*g_libraryBefore) = g_library;
   if (!bbw::applyPresetList(g_library, (*g_libraryBefore), flat, slots, count, active)) return false;
   bbw::keepActivePresetShown(g_library);
+  bbw::openActiveCoffeeBag(g_library, bbw::dateFromEpoch(epochNow()));
   markLibraryDirty();
   return true;
 }
@@ -1135,6 +1245,7 @@ bool editLibrary(bool (*edit)(bbw::Library &, void *), void *context) {
     return false;
   }
   bbw::sanitizeLibrary(g_library);
+  bbw::openActiveCoffeeBag(g_library, bbw::dateFromEpoch(epochNow()));
   markLibraryDirty();
   return true;
 }
@@ -2061,6 +2172,160 @@ void setEpoch(uint32_t epochS) {
   settimeofday(&tv, nullptr);
 }
 
+// ------------------------------------------------------------ subscriptions --
+
+void readSubscriptions(void (*visit)(const bbw::Subscription *, size_t, void *), void *context) {
+  Lock lock;
+  visit(g_subs, g_subCount, context);
+}
+
+uint16_t saveSubscription(const bbw::Subscription &in) {
+  Lock lock;
+  bbw::Subscription s = in;
+  bbw::sanitizeSubscription(s);
+  if (s.id == 0) {
+    if (g_subCount >= bbw::MAX_SUBSCRIPTIONS) return 0;
+    s.id = g_nextSubId++;
+    if (g_nextSubId == 0) g_nextSubId = 1;
+    g_subs[g_subCount++] = s;
+  } else {
+    size_t i = 0;
+    while (i < g_subCount && g_subs[i].id != s.id) ++i;
+    if (i == g_subCount) return 0;
+    g_subs[i] = s;
+  }
+  g_subsDirty = true;
+  return s.id;
+}
+
+bool deleteSubscription(uint16_t id) {
+  Lock lock;
+  for (size_t i = 0; i < g_subCount; ++i) {
+    if (g_subs[i].id != id) continue;
+    for (size_t j = i; j + 1 < g_subCount; ++j) g_subs[j] = g_subs[j + 1];
+    --g_subCount;
+    g_subsDirty = true;
+    return true;
+  }
+  return false;
+}
+
+namespace {
+bbw::Subscription *findSubscription(uint16_t id) {
+  for (size_t i = 0; i < g_subCount; ++i) if (g_subs[i].id == id) return &g_subs[i];
+  return nullptr;
+}
+}  // namespace
+
+bool subscriptionArrived(uint16_t id) {
+  Lock lock;
+  bbw::Subscription *s = findSubscription(id);
+  if (!s) return false;
+  bbw::subscriptionArrived(*s, bbw::dateFromEpoch(epochNow()));
+  g_subsDirty = true;
+  LOGI("subscriptions: %s arrived, next %u", s->name, static_cast<unsigned>(s->nextDate));
+  return true;
+}
+
+bool subscriptionSkipped(uint16_t id) {
+  Lock lock;
+  bbw::Subscription *s = findSubscription(id);
+  if (!s) return false;
+  s->nextDate = bbw::nextDateAfter(*s, bbw::dateFromEpoch(epochNow()));
+  g_subsDirty = true;
+  return true;
+}
+
+float shotsPerDay() {
+  static float cached = 0.0f;
+  static uint32_t cachedAtMs = 0;
+  static uint32_t cachedShot = 0xFFFFFFFFu;
+  const uint32_t nowS = epochNow();
+  if (nowS == 0) return 0.0f;
+  bbw::ShotRecord newest;
+  const uint32_t newestId = g_store.readShot(0, newest) ? newest.id : 0;
+  if (cachedAtMs != 0 && newestId == cachedShot && millis() - cachedAtMs < 3600000u) return cached;
+  static uint32_t epochs[200];
+  size_t n = 0;
+  for (uint32_t i = 0; i < 200; ++i) {
+    bbw::ShotRecord r;
+    if (!g_store.readShot(i, r)) break;
+    if (r.epochS != 0 && nowS - r.epochS > 14u * 86400u && r.epochS < nowS) break;
+    epochs[n++] = r.epochS;
+  }
+  cached = bbw::shotsPerDay(epochs, n, nowS);
+  cachedAtMs = millis() ? millis() : 1;
+  cachedShot = newestId;
+  return cached;
+}
+
+void subscriptionToJson(const bbw::Subscription &s, JsonObject o) {
+  o["id"] = s.id;
+  o["kind"] = bbw::subKindName(s.kind);
+  o["status"] = bbw::subStatusName(s.status);
+  o["name"] = s.name;
+  o["url"] = s.url;
+  o["manage_url"] = s.manageUrl;
+  o["every_days"] = s.everyDays;
+  o["next_date"] = s.nextDate;
+  o["price_cents"] = s.priceCents;
+  o["last_arrived"] = s.lastArrived;
+  o["note"] = s.note;
+  o["title"] = s.title;
+  o["site"] = s.site;
+  o["description"] = s.description;
+  o["image"] = s.image;
+  o["icon"] = s.icon;
+  o["color"] = s.color;
+  o["platform"] = s.platform;
+  o["item"] = s.item;
+  o["stock"] = s.stock;
+  o["per_shot"] = s.perShot;
+  o["per_delivery"] = s.perDelivery;
+}
+
+void subscriptionFromJson(JsonObjectConst o, bbw::Subscription &s) {
+  s = bbw::Subscription();
+  s.id = o["id"] | 0;
+  s.kind = bbw::subKindFrom(o["kind"] | "coffee");
+  s.status = bbw::subStatusFrom(o["status"] | "active");
+  bbw::subCopy(s.name, o["name"] | "", sizeof(s.name));
+  bbw::subCopy(s.url, o["url"] | "", sizeof(s.url));
+  bbw::subCopy(s.manageUrl, o["manage_url"] | "", sizeof(s.manageUrl));
+  s.everyDays = o["every_days"] | 0;
+  s.nextDate = o["next_date"] | 0;
+  s.priceCents = o["price_cents"] | 0;
+  s.lastArrived = o["last_arrived"] | 0;
+  bbw::subCopy(s.note, o["note"] | "", sizeof(s.note));
+  bbw::subCopy(s.title, o["title"] | "", sizeof(s.title));
+  bbw::subCopy(s.site, o["site"] | "", sizeof(s.site));
+  bbw::subCopy(s.description, o["description"] | "", sizeof(s.description));
+  bbw::subCopy(s.image, o["image"] | "", sizeof(s.image));
+  bbw::subCopy(s.icon, o["icon"] | "", sizeof(s.icon));
+  bbw::subCopy(s.color, o["color"] | "", sizeof(s.color));
+  bbw::subCopy(s.platform, o["platform"] | "", sizeof(s.platform));
+  bbw::subCopy(s.item, o["item"] | "", sizeof(s.item));
+  s.stock = o["stock"] | 0;
+  s.perShot = o["per_shot"] | 0;
+  s.perDelivery = o["per_delivery"] | 0;
+}
+
+void requestPagePreview(const char *url) {
+  Lock lock;
+  strlcpy(g_preview->url, url ? url : "", sizeof(g_preview->url));
+  g_preview->meta = bbw::PageMeta();
+  g_preview->problem[0] = '\0';
+  g_preview->state = PreviewState::WAITING;
+}
+
+PreviewState pagePreview(char *url, size_t urlSize, bbw::PageMeta &meta, char *problem, size_t problemSize) {
+  Lock lock;
+  strlcpy(url, g_preview->url, urlSize);
+  meta = g_preview->meta;
+  strlcpy(problem, g_preview->problem, problemSize);
+  return g_preview->state;
+}
+
 }  // namespace app
 
 // ============================================================ setup / loop ==
@@ -2104,6 +2369,7 @@ void setup() {
   g_settings = g_store.loadSettings();
   g_store.loadLibrary(g_library);
   LOGI("start-up: library loaded");
+  loadSubscriptions();
   if (bbw::beginDeviceKey()) {
     char kid[bbw::KEY_ID_LEN], last[bbw::KEY_ID_LEN + 2];
     bbw::keyId(bbw::deviceSigner().publicKey(), kid);
@@ -2251,6 +2517,7 @@ void loop() {
       LOGW("store: shot %u data not saved", static_cast<unsigned>(shot.id));
     }
     g_grindAdviceStale = true;
+    subscriptionsShotTaken();
     // What surrounded the shot, kept for the learning work (core/ShotContext.h). Recorded only: nothing
     // reads it back to steer a shot.
     {
@@ -2316,6 +2583,7 @@ void loop() {
   shareSendOne(idle);
   shareReadStatus(idle);
   libraryRefresh(idle);
+  subscriptionsService(idle);
   if (saveSettings) g_store.saveSettings(snapshot);
   if (saveLibrary && !g_store.saveLibrary((*g_librarySaving))) LOGW("store: library not saved");
   if (g_ble.takePairingDirty()) g_store.savePairing(g_ble.pairing());

@@ -295,6 +295,12 @@ struct Bag {
   uint32_t frozenDate = 0;     // went into the freezer; 0 = never
   uint32_t thawDate = 0;       // came out; 0 with a frozenDate = still frozen
   uint16_t weightG = 0;        // what the bag held, 0 = not entered
+  // Added at the end of the record (the library stores its length): bags saved before read 0.
+  // An unopened bag waits on the shelf (a subscription delivery, a bag bought ahead): nothing is
+  // tracked for it until it is put in use (core/Library.h openBag).
+  uint8_t unopened = 0;
+  uint8_t spare = 0;
+  uint16_t subscriptionId = 0; // the subscription it came with, 0 = none (core/Subscriptions.h)
 };
 
 struct Library {

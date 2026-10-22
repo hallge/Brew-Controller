@@ -9,6 +9,7 @@
 // Portable and host-tested; no flash or UI access in here.
 
 #include <new>
+#include <stddef.h>
 #include <string.h>
 
 #include "GrinderRegistry.h"
@@ -75,7 +76,7 @@ inline bool bagInUse(const Library &lib, uint16_t id) {
 inline bool dropOldestBag(Library &lib) {
   int oldest = -1;
   for (uint8_t i = 0; i < lib.bagCount; ++i) {
-    if (bagInUse(lib, lib.bags[i].id)) continue;
+    if (bagInUse(lib, lib.bags[i].id) || lib.bags[i].unopened) continue;
     if (oldest < 0 || lib.bags[i].id < lib.bags[oldest].id) oldest = i;
   }
   if (oldest < 0) return false;
@@ -205,9 +206,64 @@ inline uint32_t dateFromEpoch(uint32_t epochS) {
   return year * 10000 + month * 100 + day;
 }
 
+// ---------------------------------------------------------- unopened bags --
+// The unopened bag of a coffee (0: of any coffee) with the oldest roast date; a bag with no roast
+// date comes after those, and ties keep list order. nullptr if there is none.
+inline const Bag *oldestUnopenedBag(const Library &lib, uint16_t coffeeId) {
+  const Bag *best = nullptr;
+  for (uint8_t i = 0; i < lib.bagCount && i < MAX_BAGS; ++i) {
+    const Bag &b = lib.bags[i];
+    if (!b.unopened || (coffeeId != 0 && b.coffeeId != coffeeId)) continue;
+    const uint32_t key = b.roastDate ? b.roastDate : 0xFFFFFFFFu;
+    if (!best || key < (best->roastDate ? best->roastDate : 0xFFFFFFFFu)) best = &b;
+  }
+  return best;
+}
+
+// A coffee with no bag to brew from: none in use, or the one in use is finished.
+inline bool coffeeWaiting(const Coffee &c) { return c.bagId == 0 || c.finishedDate != 0; }
+
+// The roast date that decides which bag on the shelf goes first: the bag in use, or for a coffee
+// waiting on an unopened bag, that bag's. 0 if not known.
+inline uint32_t shelfRoastDate(const Library &lib, const Coffee &c) {
+  if (coffeeWaiting(c)) {
+    const Bag *u = oldestUnopenedBag(lib, c.id);
+    if (u) return u->roastDate;
+  }
+  return c.roastDate;
+}
+
+// A new bag on the shelf, not opened: the coffee keeps the bag it has in use. 0 if the list is full
+// of bags in use and unopened ones, or there is no such coffee.
+inline uint16_t addUnopenedBag(Library &lib, uint16_t coffeeId, uint32_t roastDate, uint16_t weightG,
+                               uint16_t subscriptionId = 0) {
+  if (!findCoffee(lib, coffeeId)) return 0;
+  const uint16_t id = addBag(lib, coffeeId, roastDate, 0, 0, 0, weightG);
+  if (id == 0) return 0;
+  Bag *b = findBag(lib, id);
+  b->unopened = 1;
+  b->subscriptionId = subscriptionId;
+  return id;
+}
+
+// An unopened bag is put in use: opened `today` (YYYYMMDD; 0 when the clock is not set), the coffee
+// mirrors it and is back on the shelf. Tracking (bag age, the run of shots for grind advice) starts
+// from here. false if it is not an unopened bag.
+inline bool openBag(Library &lib, uint16_t bagId, uint32_t today) {
+  Bag *b = findBag(lib, bagId);
+  Coffee *c = b ? findCoffee(lib, b->coffeeId) : nullptr;
+  if (!b || !c || !b->unopened) return false;
+  b->unopened = 0;
+  if (b->openedDate == 0 && validRoastDate(today)) b->openedDate = today;
+  mirrorBag(*c, *b);
+  c->finishedDate = 0;
+  return true;
+}
+
 inline bool coffeeFinished(const Library &lib, uint16_t coffeeId) {
   const Coffee *c = coffeeId != 0 ? findCoffee(lib, coffeeId) : nullptr;
-  return c && c->finishedDate != 0;
+  // A finished coffee with an unopened bag waiting is still on the shelf.
+  return c && c->finishedDate != 0 && !oldestUnopenedBag(lib, coffeeId);
 }
 
 // false for an index out of range, or a preset whose coffee is finished.
@@ -224,7 +280,8 @@ inline int nextPresetByRoastAge(const Library &lib, int skip = -1) {
   for (uint8_t i = 0; i < lib.presetCount; ++i) {
     if (static_cast<int>(i) == skip || !presetVisible(lib, i)) continue;
     const Coffee *c = lib.presets[i].coffeeId != 0 ? findCoffee(lib, lib.presets[i].coffeeId) : nullptr;
-    const uint32_t key = c && c->roastDate != 0 ? c->roastDate : 0xFFFFFFFFu;
+    const uint32_t roast = c ? shelfRoastDate(lib, *c) : 0;
+    const uint32_t key = roast != 0 ? roast : 0xFFFFFFFFu;
     if (best < 0 || key < bestKey) {
       best = i;
       bestKey = key;
@@ -253,12 +310,49 @@ inline void keepActivePresetShown(Library &lib) {
 
 // The bag of a coffee is finished: off the shelf from `today` (YYYYMMDD; 0 or not a date when the
 // clock is not set). A coffee finished already keeps its date. false if there is no such coffee.
+inline bool openActiveCoffeeBag(Library &lib, uint32_t today);
 inline bool finishCoffee(Library &lib, uint16_t coffeeId, uint32_t today) {
   Coffee *c = coffeeId != 0 ? findCoffee(lib, coffeeId) : nullptr;
   if (!c) return false;
+  // Another bag of the same coffee waiting unopened: it is the next one, in use from today.
+  const Bag *same = oldestUnopenedBag(lib, coffeeId);
+  if (same) return openBag(lib, same->id, today);
   if (c->finishedDate == 0) c->finishedDate = validRoastDate(today) ? today : FINISHED_DATE_UNKNOWN;
+  // The next bag by roast date may be an unopened bag of a coffee with nothing on the controller's
+  // list: it gets an entry with the recipe just used, if the list has room (else it waits).
+  const Bag *next = oldestUnopenedBag(lib, 0);
+  if (next) {
+    bool listed = false;
+    for (uint8_t i = 0; i < lib.presetCount && !listed; ++i) listed = lib.presets[i].coffeeId == next->coffeeId;
+    const int other = nextPresetByRoastAge(lib);
+    const Coffee *oc = other >= 0 && lib.presets[other].coffeeId ? findCoffee(lib, lib.presets[other].coffeeId) : nullptr;
+    const uint32_t otherRoast = oc ? shelfRoastDate(lib, *oc) : 0;
+    const uint32_t nextRoast = next->roastDate ? next->roastDate : 0xFFFFFFFFu;
+    const bool first = other < 0 || nextRoast < (otherRoast ? otherRoast : 0xFFFFFFFFu);
+    if (!listed && first && lib.presetCount < MAX_PRESETS && lib.activePreset < lib.presetCount) {
+      Preset p = lib.presets[lib.activePreset];
+      const RecipeDef *d = findRecipe(lib, p.recipeId);
+      Preset made = Preset{};
+      made.recipeId = p.recipeId;
+      made.coffeeId = next->coffeeId;
+      made.stopOffsetG = d ? d->baselineOffsetG : p.stopOffsetG;
+      lib.presets[lib.presetCount] = made;
+      lib.activePreset = lib.presetCount++;
+    }
+  }
   keepActivePresetShown(lib);
+  openActiveCoffeeBag(lib, today);
   return true;
+}
+
+// The coffee chosen (the active preset's) has no bag to brew from but an unopened one waiting: the
+// one roasted first is opened. Choosing it is putting it in use. true if a bag was opened.
+inline bool openActiveCoffeeBag(Library &lib, uint32_t today) {
+  if (lib.activePreset >= lib.presetCount) return false;
+  Coffee *c = findCoffee(lib, lib.presets[lib.activePreset].coffeeId);
+  if (!c || !coffeeWaiting(*c)) return false;
+  const Bag *u = oldestUnopenedBag(lib, c->id);
+  return u && openBag(lib, u->id, today);
 }
 
 inline void copyText(char *to, const char *from, size_t size) {
@@ -593,6 +687,8 @@ inline void sanitizeLibrary(Library &lib) {
       if (!validRoastDate(b.frozenDate)) b.frozenDate = 0;
       if (!validRoastDate(b.thawDate)) b.thawDate = 0;
       if (b.frozenDate == 0) b.thawDate = 0;
+      b.unopened = b.unopened ? 1 : 0;
+      b.spare = 0;
       lib.bags[keep++] = b;
     }
     lib.bagCount = keep;
@@ -600,6 +696,7 @@ inline void sanitizeLibrary(Library &lib) {
   for (uint8_t i = 0; i < lib.coffeeCount; ++i) {
     Coffee &c = lib.coffees[i];
     const Bag *b = findBag(lib, c.bagId);
+    if (b && b->coffeeId == c.id && b->unopened) findBag(lib, c.bagId)->unopened = 0;  // in use: opened
     if (b && b->coffeeId == c.id) mirrorBag(c, *b);
     else {
       c.bagId = 0;
@@ -1227,6 +1324,11 @@ inline bool decodeLibrary(const uint8_t *in, size_t size, Library &out) {
     const uint8_t *bagAt = in + need + sizeof(h3);
     for (uint16_t i = 0; i < h3.bagCount; ++i, bagAt += h3.bagSize) {
       memcpy(&lib.bags[i], bagAt, h3.bagSize < sizeof(Bag) ? h3.bagSize : sizeof(Bag));
+      if (h3.bagSize <= offsetof(Bag, unopened) + 2) {  // saved before unopened bags: its padding
+        lib.bags[i].unopened = 0;
+        lib.bags[i].spare = 0;
+        lib.bags[i].subscriptionId = 0;
+      }
     }
     lib.bagCount = static_cast<uint8_t>(h3.bagCount);
     lib.nextBagId = h3.nextBagId;

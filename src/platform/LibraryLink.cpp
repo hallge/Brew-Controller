@@ -100,6 +100,10 @@ void libraryLinkConfigure(const char *repo, const char *token) {
   if (g_client) g_client->stop();
 }
 
+void libraryLinkRelease() {
+  if (g_client) g_client->stop();
+}
+
 bool libraryLinkReady() {
   if (!g_status.configured || WiFi.status() != WL_CONNECTED || !clockSet()) return false;
   return g_retryAtMs == 0 || static_cast<int32_t>(millis() - g_retryAtMs) >= 0;
