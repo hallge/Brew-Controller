@@ -20,6 +20,25 @@ void configureClient(NimBLEClient *client) {
   client->setConnectTimeout(10);
 }
 
+// A failed connection attempt in words, from the BLE host's code (NimBLE:
+// host codes below 0x100, controller (HCI) codes from 0x200).
+const char *connectFailText(int code) {
+  switch (code) {
+    case -1: return "connected, but its service could not be set up";
+    case 0: return "no answer within the connect time";
+    case 2: return "an attempt was already running";
+    case 13: case 19: return "timed out";
+    case 14: return "already connected";
+    case 15: return "radio busy";
+    case 0x208: return "link lost (supervision timeout)";
+    case 0x213: return "the pusher closed the link";
+    case 0x216: return "closed by this controller";
+    case 0x21a: case 0x23b: return "connection settings refused";
+    case 0x23e: return "the link could not be set up";
+    default: return "BLE error";
+  }
+}
+
 }  // namespace
 
 // ================================================================= BleScale ==
@@ -228,6 +247,7 @@ bool BlePusher::connectTo(const NimBLEAddress &address) {
   xSemaphoreTake(mutex_, portMAX_DELAY);
   writeChar_ = nullptr;
   bool ok = client_->connect(address, true);
+  connectError_ = ok ? 0 : client_->getLastError();
   PusherDriver *driver = nullptr;
   NimBLERemoteCharacteristic *notifyChar = nullptr;
   NimBLERemoteCharacteristic *writeChar = nullptr;
@@ -270,7 +290,10 @@ bool BlePusher::connectTo(const NimBLEAddress &address) {
                                  memcpy(note.data, data, note.length);
                                  xQueueSend(notes_, &note, 0);
                                });
-    if (!ok) LOGW("%s: no supported pusher service/characteristics usable", name_);
+    if (!ok) {
+      connectError_ = -1;
+      LOGW("%s: no supported pusher service/characteristics usable", name_);
+    }
   }
   if (!ok) {
     xSemaphoreGive(mutex_);
@@ -531,11 +554,27 @@ void BleManager::servePusher(BlePusher &pusher, const char *name, const char *ad
   scan->stop();
   LOGI("%s: connecting to %s", name, address);
   attemptStarted(stats);
+  const uint32_t startMs = millis();
   const bool connected = pusher.connectTo(NimBLEAddress(address, type));
   attemptEnded(stats, connected);
   if (connected) {
     failures = 0;
   } else {
+    // Why it failed, and whether the pusher was being heard: a pusher heard
+    // just before at a strong signal that still does not answer is busy
+    // (another app or hub connected to it) or asleep, not out of range.
+    const int code = pusher.lastConnectError();
+    char heard[64] = "not heard advertising";
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    for (size_t i = 0; i < seenCount_; ++i) {
+      if (strcasecmp(seen_[i].address, address) != 0 || seen_[i].seenAtMs == 0) continue;
+      snprintf(heard, sizeof(heard), "last heard %lu s before, %d dBm",
+               static_cast<unsigned long>((startMs - seen_[i].seenAtMs) / 1000), seen_[i].rssi);
+      break;
+    }
+    xSemaphoreGive(mutex_);
+    LOGW("%s: connect failed after %lu ms: %s (code %d); %s", name,
+         static_cast<unsigned long>(millis() - startMs), connectFailText(code), code, heard);
     // A press is waiting on this link: retry fast, back off to 2 s at most.
     if (failures < 10) ++failures;
     retryAtMs = millis() + std::min<uint32_t>(2000, 250u * failures);
