@@ -17,6 +17,7 @@
 #include "Version.h"
 #include "ShotFormat.h"
 #include "WebPage.h"
+#include "ExtensionZip.h"   // made from browser-extension/ by its make_zip.py
 #include "core/TasteProfile.h"
 #include "core/SettingsUtil.h"
 #include "platform/BigMem.h"
@@ -672,7 +673,9 @@ void handleLibrary() {
       o["weightG"] = b.weightG;
       const bbw::Coffee *owner = bbw::findCoffee(lib, b.coffeeId);
       o["current"] = owner && owner->bagId == b.id;   // the bag in use
-      o["unopened"] = b.unopened != 0;                 // waiting on the shelf, nothing tracked yet
+      o["unopened"] = b.unopened == bbw::BAG_UNOPENED;  // waiting on the shelf, nothing tracked yet
+      o["onTheWay"] = b.unopened == bbw::BAG_ON_ITS_WAY;   // ordered, not come yet
+      o["expectedDate"] = b.expectedDate;
       o["subscriptionId"] = b.subscriptionId;          // the subscription it came with, 0 = none
     }
     grinderJson(doc["grinder"].to<JsonObject>(), lib.grinder);
@@ -1138,6 +1141,10 @@ void handleLibraryDo() {
       error = "that is not a bag of this coffee";
       return bbw::useBag(lib, static_cast<uint16_t>(a), static_cast<uint16_t>(b));
     }
+    if (what == "bag_arrived") {  // a = bag id: a bag on its way came; unopened on the shelf now
+      error = "that bag is not on its way";
+      return bbw::bagArrived(lib, static_cast<uint16_t>(a), 0, 0);
+    }
     if (what == "bag_open") {  // a = bag id: an unopened bag put in use from today
       error = "that is not an unopened bag";
       return bbw::openBag(lib, static_cast<uint16_t>(a), today);
@@ -1173,6 +1180,7 @@ void handleLibraryDo() {
 }
 
 // POST /api/bag {coffeeId, roastDate, openedDate?, weightG?}: a new bag of that coffee, in use from now.
+// {coffeeId, expectedDate?, weightG?, onTheWay: true, subscriptionId?}: a bag ordered, not come yet.
 // {coffeeId, roastDate, weightG?, unopened: true, subscriptionId?}: a bag put on the shelf unopened; the
 // coffee keeps the bag it has in use (core/Library.h addUnopenedBag).
 // {id, roastDate, openedDate, frozenDate, thawDate, weightG}: correct the dates and weight of a bag.
@@ -1183,8 +1191,11 @@ void handleBag() {
   static uint16_t bagId, coffeeId, weight;
   static uint32_t roast, opened, frozen, thaw;
   static uint16_t result, subscriptionId;
-  static bool unopened;
+  static bool unopened, onTheWay;
+  static uint32_t expected;
   unopened = doc["unopened"] | false;
+  onTheWay = doc["onTheWay"] | false;
+  expected = doc["expectedDate"] | 0;
   subscriptionId = doc["subscriptionId"] | 0;
   bagId = doc["id"] | 0;
   coffeeId = doc["coffeeId"] | 0;
@@ -1202,8 +1213,9 @@ void handleBag() {
           result = bagId;
           return true;
         }
-        result = unopened ? bbw::addUnopenedBag(lib, coffeeId, roast, weight, subscriptionId)
-                          : bbw::startBag(lib, coffeeId, roast, opened, weight);
+        result = onTheWay   ? bbw::addOnTheWayBag(lib, coffeeId, expected, weight, subscriptionId)
+                 : unopened ? bbw::addUnopenedBag(lib, coffeeId, roast, weight, subscriptionId)
+                            : bbw::startBag(lib, coffeeId, roast, opened, weight);
         return result != 0;
       }, nullptr)) {
     return sendError(409, "not saved: no such coffee or bag, or the list holds only bags in use");
@@ -2864,6 +2876,11 @@ void begin() {
   server.on("/api/drinkers", HTTP_POST, handlePostDrinkers);
   server.on("/api/taste/profile", HTTP_GET, handleGetTasteProfile);
   server.on("/api/taste/recommend", HTTP_GET, handleGetRecommend);
+  // The Brew Controller helper for Chrome, as a zip to unpack and load (docs/SUBSCRIPTIONS.md).
+  server.on("/extension.zip", HTTP_GET, []() {
+    server.sendHeader("Content-Disposition", "attachment; filename=\"brew-controller-helper.zip\"");
+    server.send_P(200, "application/zip", reinterpret_cast<const char *>(EXTENSION_ZIP), EXTENSION_ZIP_LEN);
+  });
   server.on("/api/subscriptions", HTTP_GET, handleGetSubscriptions);
   server.on("/api/subscriptions", HTTP_POST, handlePostSubscription);
   server.on("/api/subscriptions/delete", HTTP_POST, handleDeleteSubscription);

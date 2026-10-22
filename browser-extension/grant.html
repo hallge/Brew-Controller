@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Allow reading a shop</title>
+<style>
+body{font:14px/1.45 system-ui,sans-serif;margin:0;padding:18px;background:#17191c;color:#eceef0}
+h1{font-size:16px;margin:0 0 8px}p{color:#c3c9d0}code{color:#ffd0a3}
+button{padding:10px 16px;border-radius:8px;border:none;background:#f08a24;color:#1d0f00;font-weight:600;font:inherit;cursor:pointer;margin-right:8px}
+button.no{background:#2a2e33;color:#eceef0}
+</style></head>
+<body>
+<h1>Read <span id="name"></span>?</h1>
+<p>To update this subscription, the Brew Controller helper needs to read <code id="sites"></code> while you are signed in there. It reads only the next delivery, the coffee and the dates, and sends them only to your controller.</p>
+<button id="yes">Allow</button><button class="no" id="no">Not now</button>
+<script src="grant.js"></script>
+</body></html>

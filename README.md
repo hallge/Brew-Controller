@@ -296,6 +296,10 @@ Coffee, paper filters and other supplies that come by post, in one place (Subscr
   in one tap; review the ones you use. Services whose coffees suit your taste, or that match what
   matters to you (fair trade, farms named, ...), are recommended.
 
+- **Updates from the shops:** the Brew Controller helper for Chrome (download it from the Subscriptions
+  page) reads each shop's next delivery and the coffee coming where you are signed in, for you to
+  apply. A coffee on its way is added as such and becomes an unopened bag when it arrives.
+
 See [docs/SUBSCRIPTIONS.md](docs/SUBSCRIPTIONS.md).
 
 ### Grinder tracking and grind advice

@@ -62,6 +62,7 @@ described; the rest are as the page uses them.
 | `/api/subscriptions/reviews` | GET | reviews: `id`, `subscription`, `drinker`, `stars`, `aspects`, `note`, `share` |
 | `/api/subscriptions/review`, `/review/delete` | POST | `{subscription, drinker, stars, aspects:{value, quality, consistency, reliability, flexibility, transparency}, note}`: one per drinker per subscription, a later one replaces it; `{id}` deletes |
 | `/api/subscriptions/prefs` | POST | `{country, matters:[sourcing values]}` for recommendations |
+| `/extension.zip` | GET | the Brew Controller helper for Chrome (browser-extension/), packed when the firmware was built |
 | `/api/subscriptions/recommend?drinker=` | GET | up to 5 services from the library: `service` (its library entry), `why`, `people`; `basis` (`taste`, `reviews`, `none`) |
 | others | | `/api/cmd`, `/api/devices`, `/api/pair`, `/api/pusher`, `/api/power`, `/api/machine`, `/api/recipe`, `/api/share*`, `/api/net`, `/api/time`, `/api/log*`, `/api/update`, `/api/history/clear`, `/api/offset/reset`, `/api/last`, `/api/bot/test`, `/api/shot/grind`, `/api/shot/vote`, `/api/coffee/adopt` |
 
@@ -94,7 +95,9 @@ now. `{ "id": 7, "roastDate": ..., "openedDate": ..., "frozenDate": ..., "thawDa
 Dates are `YYYYMMDD`, 0 for none. Answers `{ "ok": true, "id": <bag id> }`.
 
 `{ "coffeeId": 3, "roastDate": 20261018, "weightG": 340, "unopened": true, "subscriptionId": 1 }` puts a bag on the shelf
-unopened: the coffee keeps the bag it has in use. `/api/library` `bags[]` carries `unopened` and `subscriptionId`. An unopened
+unopened: the coffee keeps the bag it has in use. `{ "coffeeId": 3, "onTheWay": true, "expectedDate": 20261116, "subscriptionId": 1 }` adds a bag
+on its way (ordered, not come); `/api/library/do?what=bag_arrived&a=<bag>` makes it unopened. `/api/library` `bags[]` carries `unopened`,
+`onTheWay`, `expectedDate` and `subscriptionId`. An unopened
 bag goes into use with `bag_open`, when its coffee is chosen and has no other bag in use, or at Bag finished (below).
 
 ## Bag finished

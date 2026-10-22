@@ -223,13 +223,21 @@ inline bool stockShort(const Subscription &s, float shotsPerDay, uint32_t today)
   return left < next;
 }
 
-// Shots a day over the last `days` days, from their times (seconds since 1970).
-inline float shotsPerDay(const uint32_t *epochs, size_t count, uint32_t nowS, uint32_t days = 14) {
+// Shots a day over the last `days` days, from their times (seconds since 1970). keptSinceS: when the
+// history the controller keeps begins (its oldest shot), 0 if it reaches further back than `days`: a
+// history only five days long is five days of shots, not fourteen. Never less than one day.
+inline float shotsPerDay(const uint32_t *epochs, size_t count, uint32_t nowS, uint32_t days = 14,
+                         uint32_t keptSinceS = 0) {
   if (days == 0 || nowS == 0) return 0.0f;
   const uint32_t since = nowS > days * 86400u ? nowS - days * 86400u : 0;
   size_t n = 0;
   for (size_t i = 0; i < count; ++i) n += epochs[i] >= since && epochs[i] <= nowS;
-  return static_cast<float>(n) / static_cast<float>(days);
+  float span = static_cast<float>(days);
+  if (keptSinceS > since && keptSinceS <= nowS) {
+    span = static_cast<float>(nowS - keptSinceS) / 86400.0f;
+    if (span < 1.0f) span = 1.0f;
+  }
+  return static_cast<float>(n) / span;
 }
 
 inline void sanitizeSubscription(Subscription &s, uint32_t today = 0) {
@@ -361,6 +369,70 @@ inline void resolveUrl(const char *base, const char *ref, char *out, size_t size
     }
   }
   if (strlen(out) + 1 >= size) out[0] = '\0';  // cut short: not a usable link
+}
+
+// ------------------------------------------------------ links to share --
+// The links an owner pastes are often their own: a customer portal with their id and a login token in
+// it ("/tools/recurring/portal/<customer>/subscriptions?token=..."), a shop page with tracking in the
+// query. What goes to the shared library is the shop's general page instead.
+
+// A path segment that names one customer or session: long and mixing letters and digits, or saying
+// "token". Shop ids (all digits, like a Shopify shop number) are not.
+inline bool personalSegment(const char *seg, size_t n) {
+  bool digit = false, alpha = false;
+  for (size_t i = 0; i < n; ++i) {
+    const char c = seg[i];
+    digit |= c >= '0' && c <= '9';
+    alpha |= (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+  }
+  for (size_t i = 0; i + 5 <= n; ++i) {
+    if (strncmp(seg + i, "token", 5) == 0 || strncmp(seg + i, "Token", 5) == 0) return true;
+  }
+  return n >= 16 && digit && alpha;
+}
+
+// `url` made fit to share: the query and fragment dropped; a path with anything personal in it
+// replaced by the shop's general page, which for a manage link is where a customer signs in (Recharge's
+// portal, else the shop's account page). "" if it is not a web link.
+inline void shareableLink(const char *url, bool manage, const char *platform, char *out, size_t size) {
+  out[0] = '\0';
+  char origin[160];
+  urlOrigin(url ? url : "", origin, sizeof(origin));
+  if (!origin[0]) return;
+  const char *path = url + strlen(origin);
+  size_t pathLen = strcspn(path, "?#");
+  bool personal = false;
+  for (const char *seg = path; seg < path + pathLen;) {
+    while (seg < path + pathLen && *seg == '/') ++seg;
+    const char *end = seg;
+    while (end < path + pathLen && *end != '/') ++end;
+    personal |= personalSegment(seg, static_cast<size_t>(end - seg));
+    seg = end;
+  }
+  if (personal) {
+    const bool recharge = (platform && strcmp(platform, "recharge") == 0) || strstr(url, "/tools/recurring") != nullptr;
+    snprintf(out, size, "%s%s", origin, manage ? (recharge ? "/tools/recurring/login" : "/account") : "/");
+  } else if (pathLen == 0) {
+    snprintf(out, size, "%s/", origin);
+  } else {
+    snprintf(out, size, "%s%.*s", origin, static_cast<int>(pathLen), path);
+  }
+}
+
+// A picture's link: kept as it is unless its query carries something that looks like a credential.
+inline bool linkHasCredential(const char *url) {
+  const char *q = url ? strchr(url, '?') : nullptr;
+  if (!q) return false;
+  static const char *words[] = {"token", "key=", "sig", "auth", "session", "password"};
+  for (const char *w : words) {
+    const size_t n = strlen(w);
+    for (const char *p = q; *p; ++p) {
+      size_t i = 0;
+      while (i < n && p[i] && (p[i] | 0x20) == w[i]) ++i;
+      if (i == n) return true;
+    }
+  }
+  return false;
 }
 
 namespace detail {

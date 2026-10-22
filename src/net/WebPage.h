@@ -399,6 +399,9 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <div class="head"><h1>Subscriptions</h1><button class="pri" onclick="subEdit(0)">Add a subscription</button></div>
 <div class="grid" id="subsum"></div>
 <div class="list" id="subrem"></div>
+<section class="card" id="subext"><div class="head"><h2>Update from the shops</h2><span class="sm dim" id="sxstate"></span></div><div id="sxbody"></div></section>
+<section class="card" id="subimp" style="display:none"><div class="head"><h2>From the shops: check and apply</h2><button class="tbtn" onclick="IMP={};drawImport()">Dismiss</button></div><div id="sibody"></div>
+<div class="row"><button class="pri" onclick="applyImport()">Apply what is ticked</button><span class="sm dim">Nothing changes until you apply.</span></div></section>
 <div class="subs" id="sublist"></div>
 <section class="card" id="subreco"><div class="head"><h2>Services you might like</h2><span class="sm dim" id="srbasis"></span></div>
 <div class="row" style="align-items:flex-end"><label style="flex:0 0 130px">Your country<input id="sr_country" maxlength="2" placeholder="e.g. US" onchange="subPrefs()"></label><div style="flex:1 1 300px"><div class="sm dim" style="margin-bottom:6px">What matters to you</div><div class="chips" id="srmatters"></div></div></div>
@@ -678,7 +681,7 @@ const d=c?age(c.roastDate):null;$('pinfo').textContent=(c?[c.roaster,c.origin,c.
 // their data (a new bag puts one back on the shelf and on the controller).
 function drawCoffeeList(){const q=$('csearch').value.toLowerCase();const hit=c=>!q||[c.name,c.roaster,c.origin,c.region,c.process,c.varietal].join(' ').toLowerCase().includes(q);
 const m=L.coffees.filter(c=>(!c.finished||waitingBag(c))&&hit(c)),fin=L.coffees.filter(c=>c.finished&&!waitingBag(c)&&hit(c));
-$('clist').innerHTML=m.map(c=>{const n=L.presets.filter(p=>p.coffeeId==c.id).length,w=waitingBag(c),u=L.bags.filter(b=>b.coffeeId==c.id&&b.unopened).length,d=c.finished||!c.bagId?null:age(c.roastDate);return `<button class="item ${c.id==C?'on':''}" onclick="C=${c.id};drawCoffees()"><b>${esc(c.name)}</b><span>${esc([c.roaster,n?n+(n==1?' recipe':' recipes'):'not on the controller',d!=null?d+' days off roast':'',u?(u==1?'1 unopened bag':u+' unopened bags')+(w&&w.roastDate&&(c.finished||!c.bagId)?', roasted '+fd(w.roastDate):''):'',c.share&&c.share!='local'?(c.share=='sent'&&!lib()?'not sent':SHN[c.share])+(c.shareChanged?', changed since':''):''].filter(x=>x).join(' · '))}</span></button>`}).join('')||'<div class="dim sm">'+(q?'No coffee on the shelf matches.':'No coffee on the shelf.')+'</div>';
+$('clist').innerHTML=m.map(c=>{const n=L.presets.filter(p=>p.coffeeId==c.id).length,w=waitingBag(c),u=L.bags.filter(b=>b.coffeeId==c.id&&b.unopened).length,otw=L.bags.filter(b=>b.coffeeId==c.id&&b.onTheWay),d=c.finished||!c.bagId?null:age(c.roastDate);return `<button class="item ${c.id==C?'on':''}" onclick="C=${c.id};drawCoffees()"><b>${esc(c.name)}</b><span>${esc([c.roaster,n?n+(n==1?' recipe':' recipes'):'not on the controller',d!=null?d+' days off roast':'',u?(u==1?'1 unopened bag':u+' unopened bags')+(w&&w.roastDate&&(c.finished||!c.bagId)?', roasted '+fd(w.roastDate):''):'',otw.length?'on its way'+(otw[0].expectedDate?', expected '+fd(otw[0].expectedDate):''):'',c.share&&c.share!='local'?(c.share=='sent'&&!lib()?'not sent':SHN[c.share])+(c.shareChanged?', changed since':''):''].filter(x=>x).join(' · '))}</span></button>`}).join('')||'<div class="dim sm">'+(q?'No coffee on the shelf matches.':'No coffee on the shelf.')+'</div>';
 const fo=$('cfinished')&&$('cfinished').open;
 $('clist').innerHTML+=fin.length?`<details id="cfinished" ${fo||fin.some(c=>c.id==C)||q?'open':''} style="margin-top:10px"><summary class="sm mid">Finished bags (${fin.length})</summary>`+fin.map(c=>`<button class="item ${c.id==C?'on':''}" style="opacity:.8" onclick="C=${c.id};drawCoffees()"><b>${esc(c.name)}</b><span>${esc([c.roaster,'finished '+fd(c.finished)].filter(x=>x).join(' · '))}</span></button>`).join('')+'</details>':'';
 const onShelf=L.coffees.filter(c=>!c.finished).length,nf=L.coffees.length-onShelf;
@@ -788,6 +791,7 @@ const waitingBag=c=>L.bags.filter(b=>b.coffeeId==c.id&&b.unopened).sort((a,b)=>(
 function drawBags(c){const el=$('cbags');if(!el)return;const bs=c?L.bags.filter(b=>b.coffeeId==c.id).sort((a,b)=>b.id-a.id):[];if(!bs.length){el.innerHTML='';return}
 el.innerHTML='<h3 style="margin:14px 0 6px">Bags of '+esc(c.name)+'</h3>'+bs.map(b=>{const f=frozenFor({frozenDate:b.frozenDate,thawDate:b.thawDate});const bits=[b.roastDate?'roasted '+i2d(b.roastDate):'roast date not entered',b.openedDate?'opened '+i2d(b.openedDate):'',f?f+' days frozen'+(b.frozenDate&&!b.thawDate?' (still there)':''):'',b.weightG?b.weightG+' g':''].filter(x=>x).join(', ');
 const from=b.subscriptionId&&SUBS?SUBS.subscriptions.find(x=>x.id==b.subscriptionId):null;
+if(b.onTheWay)return `<div class="row" style="align-items:center"><span style="flex:1 1 220px">${b.expectedDate?'expected '+i2d(b.expectedDate):'not come yet'}${b.weightG?', '+b.weightG+' g':''} <span class="pill" style="background:var(--combg);color:var(--comtext)">on its way</span>${from?' <span class="sm dim">from '+esc(from.name)+'</span>':''}</span><button class="pri" onclick="act('bag_arrived',${b.id}).then(()=>say('On the shelf, unopened: add its roast date',true))">It arrived</button><button class="del" onclick="ask('Forget this bag?').then(ok=>{if(ok){act('bag_delete',${b.id})}})">Forget</button></div>`;
 if(b.unopened)return `<div class="row" style="align-items:center"><span style="flex:1 1 220px">${esc(bits)} <span class="pill warn">unopened</span>${from?' <span class="sm dim">from '+esc(from.name)+'</span>':''}</span><button class="pri" onclick="act('bag_open',${b.id}).then(()=>say('Bag opened: tracking starts now',true))">Open this bag</button><button class="del" onclick="ask('Forget this bag?').then(ok=>{if(ok){act('bag_delete',${b.id})}})">Forget</button></div>`;
 return `<div class="row" style="align-items:center"><span style="flex:1 1 220px">${esc(bits)}${b.current?' <span class="pill">in use</span>':''}</span>${b.current?'':`<button onclick="act('bag_use',${c.id},${b.id})">Use this bag</button><button class="del" onclick="ask('Forget this bag? Its shots stay in the history.').then(ok=>{if(ok){act('bag_delete',${b.id})}})">Forget</button>`}</div>`}).join('')}
 // ---- Subscriptions (core/Subscriptions.h): cards built from the shop's page, tracked here.
@@ -804,12 +808,66 @@ const off=s.status!='active',bits=[kindTxt[s.kind]||'',subEvery(s.every_days),s.
 const tags=(off?`<span class="pill">${s.status=='paused'?'Paused':'Cancelled'}</span>`:'')+(!off&&s.due_soon?`<span class="pill warn">${s.days_until<0?'Overdue':'Soon'}</span>`:'');
 let sup='';if(s.kind=='supplies'&&(s.stock||s.per_delivery)){const full=Math.max(s.per_delivery||0,s.stock||0,1),pct=Math.min(100,Math.round(100*(s.stock||0)/full));
 sup=`<div class="sm">${s.stock||0} ${esc(s.item||'left')}${s.stock_days_left!=null?' · about '+s.stock_days_left+' days':''}</div><div class="meter${s.stock_short?' warn':''}"><i style="width:${pct}%"></i></div>${s.stock_short?'<div class="sm" style="color:var(--warn)">Runs out before the next delivery</div>':''}`}
-const acts=preview?'':`<div class="acts">${s.manage_url?`<a class="btn pri" href="${esc(s.manage_url)}" target="_blank" rel="noopener noreferrer">Manage ↗</a>`:s.url?`<a class="btn" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">Open ↗</a>`:''}${off?'':`<button onclick="subArrived(${s.id})">Arrived</button><button onclick="subSkip(${s.id})">Skip one</button>`}<button class="tbtn" onclick="subEdit(${s.id})">Edit</button></div>`;
+const acts=preview?'':`<div class="acts">${s.manage_url?`<a class="btn pri" href="${esc(s.manage_url)}" target="_blank" rel="noopener noreferrer">Manage ↗</a>`:s.url?`<a class="btn" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">Open ↗</a>`:''}${off?'':`<button onclick="subArrived(${s.id})">Arrived</button><button onclick="subSkip(${s.id})">Skip one</button>`}${EXT&&/^https:/.test(s.url||s.manage_url||'')?`<button class="tbtn" onclick="subUpdate([${s.id}])">Update</button>`:''}<button class="tbtn" onclick="subEdit(${s.id})">Edit</button></div>`;
 return `<article class="sub${off?' off':''}"><div class="ban" style="background:linear-gradient(135deg,${col},${col}99 55%,var(--up))">${s.image?imgTag(s.image):''}${s.image?'':`<div class="ini">${esc(name.trim().charAt(0).toUpperCase())}</div>`}</div>
 <div class="ico">${s.icon?imgTag(s.icon):`<div style="width:100%;height:100%;background:${col}"></div>`}</div><div class="tags">${tags}</div>${s.share&&s.share!='local'?`<div class="lib"><span class="pill">${s.share=='published'?'Library':esc(SHARE_TXT[s.share]||s.share)}</span></div>`:''}
 <div class="bd"><b>${esc(name)}</b><span class="sm dim">${esc([s.site&&s.site!=name?s.site:'',platTxt[s.platform]?'via '+platTxt[s.platform]:''].filter(x=>x).join(' · '))}</span><span class="sm mid">${esc(bits)}</span>
-${s.next_date?`<span class="sm">Next: ${esc(subWhen(s)||fd(s.next_date))}</span>`:''}${sup}${s.note?`<span class="sm dim">${esc(s.note)}</span>`:''}${s.last_arrived?`<span class="sm dim">Last arrived ${fd(s.last_arrived)}</span>`:''}</div>${acts}</article>`}
-async function loadSubs(){try{SUBS=await get('/api/subscriptions')}catch(e){SUBS=null}drawSubs();
+${s.next_date?`<span class="sm">Next: ${esc(subWhen(s)||fd(s.next_date))}</span>`:''}${!preview&&typeof L!='undefined'&&L&&L.bags?L.bags.filter(b=>b.onTheWay&&b.subscriptionId==s.id).map(b=>{const c=coffee(b.coffeeId);return `<span class="sm" style="color:var(--com)">On its way: ${esc(c?c.name:'a bag')}${b.expectedDate?', expected '+fd(b.expectedDate):''}</span>`}).join(''):''}${sup}${s.note?`<span class="sm dim">${esc(s.note)}</span>`:''}${s.last_arrived?`<span class="sm dim">Last arrived ${fd(s.last_arrived)}</span>`:''}</div>${acts}</article>`}
+// ---- The Brew Controller helper (browser-extension/): updates from the shops' pages, in this browser.
+let EXT=document.documentElement.dataset.bbwExtension||'',IMP={},SXS={};
+window.addEventListener('message',e=>{if(e.source!==window||e.origin!==location.origin||!e.data||typeof e.data!='object')return;const m=e.data;
+if(m.bbw=='hello'){EXT=m.version||'1';drawExt();drawSubs();return}
+if(m.bbw!='result')return;SXS[m.subscription]={state:m.state,message:m.message};
+if(m.state=='done'&&m.data&&typeof m.data=='object')IMP[m.subscription]=m.data;drawExt();drawImport()});
+function drawExt(){const el=$('sxbody');if(!el)return;const list=SUBS&&SUBS.subscriptions||[],can=list.filter(s=>/^https:/.test(s.url||s.manage_url||''));
+if(!EXT){$('sxstate').textContent='';el.innerHTML=`<p class="sm mid" style="margin:0">The <b>Brew Controller helper</b> for Chrome brings each subscription's next delivery and the coffee coming from the shop's own pages, where you are signed in, and offers them here to apply. Your shop logins never leave your browser.</p>
+<ol class="sm mid" style="margin:8px 0 0;padding-left:20px;line-height:1.7"><li><a href="/extension.zip" download>Download the helper</a> and unzip it: you get a folder, <code>brew-controller-helper</code>.</li><li>In Chrome open <code>chrome://extensions</code>, turn on <b>Developer mode</b> (top right), click <b>Load unpacked</b> and choose that folder.</li><li>Click the puzzle piece in Chrome's toolbar and pin <b>Brew Controller helper</b>. Click it, then <b>Connect to this controller</b> (this page's address is filled in).</li><li>Reload this page. Each card then has <b>Update</b>.</li></ol>
+<details class="note"><summary>What it reads, and where it works</summary><ul><li>Only the next delivery date, how often, the items and coffees, and prices. Never your address, phone, email or payment details.</li><li>Chrome asks once for each shop it may read. It sends what it read only to this controller's page.</li><li>Desktop Chrome, Edge or Brave. Phones do not run extensions.</li><li>Shops that need you signed in: the helper opens the shop, you sign in as usual, and it carries on.</li></ul></details>`;return}
+$('sxstate').textContent='helper '+EXT;
+el.innerHTML=`<div class="row"><button class="pri" onclick="subUpdate(${JSON.stringify(can.map(s=>s.id))})" ${can.length?'':'disabled'}>Update all</button><span class="sm dim">Opens each shop in turn; sign in if it asks. Paused and cancelled ones too.</span></div>`+
+(Object.keys(SXS).length?'<div class="list sm">'+Object.entries(SXS).map(([id,x])=>{const s=sub(+id);return `<div>${esc(s?s.name:'#'+id)}: <span class="${x.state=='error'?'':'dim'}" ${x.state=='error'?'style="color:var(--warn)"':''}>${esc(x.state=='done'?'read: check below':x.message||x.state)}</span></div>`}).join('')+'</div>':'')}
+function subUpdate(ids){const list=(SUBS.subscriptions||[]).filter(s=>ids.includes(s.id));if(!list.length)return;
+list.forEach(s=>SXS[s.id]={state:'working',message:'waiting'});drawExt();
+window.postMessage({bbw:'update',requestId:String(Date.now()),subscriptions:list.map(s=>({id:s.id,name:s.name,url:s.url,manage_url:s.manage_url}))},location.origin)}
+// What came back, turned into ticked suggestions per subscription.
+const norm=t=>String(t||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+const shelfCoffee=name=>L.coffees.find(c=>norm(c.name)==norm(name))||null;
+function importRows(){const rows=[];const list=SUBS&&SUBS.subscriptions||[];
+for(const [sid,d] of Object.entries(IMP)){const s=sub(+sid);if(!s||!d)continue;
+// Which of the subscriptions on this website each dated item belongs to: by its variant or name against the note and item.
+const mates=list.filter(x=>hostOf(x.url)&&hostOf(x.url)==hostOf(s.url));
+const owner=it=>{if(mates.length<2)return s;const w=norm(it.variant||it.name).split(' ').filter(t=>t.length>0);
+let best=null,bs=0;for(const m of mates){const hay=' '+norm([m.note,m.item,m.name].join(' '))+' ';const sc=w.filter(t=>/[0-9]/.test(t)||t.length==1?hay.includes(' '+t+' '):false).length*2+w.filter(t=>t.length>3&&hay.includes(t)).length;if(sc>bs){bs=sc;best=m}}return best||s};
+const dated=[];if(d.next&&d.next.date)(d.next.items&&d.next.items.length?d.next.items:[{}]).forEach(it=>dated.push({date:d.next.date,it}));
+(d.later||[]).forEach(g=>(g.items||[]).forEach(it=>{if(!it.coffee)dated.push({date:g.date,it})}));
+const seen=new Set();for(const {date,it} of dated){const m=owner(it);if(seen.has(m.id))continue;seen.add(m.id);
+if(date&&date!=m.next_date)rows.push({key:'d'+m.id,sub:m,kind:'date',value:date,text:`${m.name}${m.note?' ('+m.note+')':''}: next ${fd(date)}`+(m.next_date?` (was ${fd(m.next_date)})`:''),on:true});
+const every=it.every_days||(d.plan&&d.plan.every_days)||0;if(every&&every!=m.every_days)rows.push({key:'e'+m.id,sub:m,kind:'every',value:every,text:`${m.name}: ${subEvery(every)} (was ${subEvery(m.every_days)})`,on:true});
+if(it.price_cents&&it.price_cents!=m.price_cents)rows.push({key:'p'+m.id,sub:m,kind:'price',value:it.price_cents,text:`${m.name}: ${money(it.price_cents)} each time (was ${money(m.price_cents||0)})`,on:false})}
+if(!seen.size&&d.plan&&d.plan.every_days&&d.plan.every_days!=s.every_days)rows.push({key:'e'+s.id,sub:s,kind:'every',value:d.plan.every_days,text:`${s.name}: ${subEvery(d.plan.every_days)} (was ${subEvery(s.every_days)})`,on:true});
+// Coffees: coming, on the way, or come.
+const coffees=[...(d.later||[]).flatMap(g=>(g.items||[]).filter(it=>it.coffee).map(it=>({coffee:it.name,eta:g.date,coming:true}))),...(d.shipments||[]).map(x=>({...x,coming:!x.delivered}))];
+const done=new Set();for(const x of coffees){if(!x.coffee||done.has(norm(x.coffee)))continue;done.add(norm(x.coffee));const c=shelfCoffee(x.coffee);
+const otw=c?L.bags.find(b=>b.coffeeId==c.id&&b.onTheWay):null,on=c?L.bags.find(b=>b.coffeeId==c.id&&(b.unopened||b.current)):null;
+if(x.coming){if(otw)rows.push({key:'k'+norm(x.coffee),kind:'known',text:`${x.coffee}: already on its way`});
+else rows.push({key:'w'+norm(x.coffee),sub:s,kind:'otw',coffee:x,existing:c,text:`${x.coffee}${x.roaster?' ('+x.roaster+')':''}: add as on its way`+(x.eta?`, expected ${fd(x.eta)}`:''),on:true})}
+else if(otw)rows.push({key:'a'+norm(x.coffee),kind:'arrived',bag:otw,text:`${x.coffee}: arrived ${fd(x.delivered)}, mark its bag arrived`,on:true});
+else if(on)rows.push({key:'k'+norm(x.coffee),kind:'known',text:`${x.coffee}: on the shelf already`});
+else{const recent=x.delivered&&(Date.now()-new Date(i2d(x.delivered)))/864e5<10;rows.push({key:'u'+norm(x.coffee),sub:s,kind:'unopened',coffee:x,existing:c,text:`${x.coffee}${x.roaster?' ('+x.roaster+')':''}: delivered ${fd(x.delivered)}, add to the shelf unopened`,on:recent})}}}
+return rows}
+let IROWS=[];
+function drawImport(){const box=$('subimp');if(!box)return;IROWS=importRows();if(!Object.keys(IMP).length){box.style.display='none';return}box.style.display='';
+$('sibody').innerHTML=IROWS.length?IROWS.map((r,i)=>r.kind=='known'?`<div class="sm dim" style="padding:4px 0">${esc(r.text)}</div>`:`<label class="chk"><input type="checkbox" ${r.on?'checked':''} onchange="IROWS[${i}].on=this.checked">${esc(r.text)}</label>`).join(''):'<div class="sm mid">Everything already matches what the shops say.</div>'}
+async function applyImport(){let n=0;for(const r of IROWS){if(!r.on||r.kind=='known')continue;
+if(r.kind=='date'||r.kind=='every'||r.kind=='price'){const cur=sub(r.sub.id);if(!cur)continue;const f=Object.assign({},cur);
+if(r.kind=='date')f.next_date=r.value;if(r.kind=='every')f.every_days=r.value;if(r.kind=='price')f.price_cents=r.value;const x=await post('/api/subscriptions',f);if(x.ok){n++;await loadSubs()}}
+else if(r.kind=='arrived'){const x=await post('/api/library/do?what=bag_arrived&a='+r.bag.id+'&b=0');if(x.ok)n++}
+else if(r.kind=='otw'||r.kind=='unopened'){let cid=r.existing&&r.existing.id;
+if(!cid){const name=r.coffee.coffee.split(' ').map(w=>w.charAt(0)+w.slice(1).toLowerCase()).join(' ').slice(0,23);
+const c=await post('/api/coffee',{name,roaster:(r.coffee.roaster||r.sub.site||r.sub.name||'').slice(0,23),notes:(r.coffee.notes||'').slice(0,47)});if(!c.ok){done(c,'');continue}cid=c.id}
+const b=await post('/api/bag',r.kind=='otw'?{coffeeId:cid,onTheWay:true,expectedDate:r.coffee.eta||0,subscriptionId:r.sub.id}:{coffeeId:cid,roastDate:0,unopened:true,subscriptionId:r.sub.id});if(b.ok)n++;else done(b,'')}}
+say(n?n+(n==1?' change applied':' changes applied'):'Nothing applied',!!n);IMP={};await loadLibrary();await loadSubs();drawImport()}
+async function loadSubs(){try{SUBS=await get('/api/subscriptions')}catch(e){SUBS=null}drawSubs();drawExt();
 if(location.hash=='#subscriptions'){loadLib();loadReviews();loadSubReco();if(!RT&&typeof loadRatings=='function')loadRatings()}}
 // ---- The shared library's services, reviews and recommendations (docs/SUBSCRIPTIONS.md).
 let LIBS=[],SREV=[],SV=null;
@@ -919,14 +977,20 @@ async function subSkip(id){const s=sub(id);if(!s)return;if(!await ask('Skip the 
 post('/api/subscriptions/skip',{id}).then(r=>{if(done(r,'Moved on to the next date')){loadSubs();if(s.manage_url)setTimeout(()=>window.open(s.manage_url,'_blank','noopener'),300)}})}
 async function subArrived(id){const s=sub(id);if(!s)return;
 if(s.kind=='coffee'){SA=s;$('satitle').textContent=(s.name||'Coffee')+' arrived';const shelf=L.coffees.filter(c=>!c.finished||waitingBag(c));
-$('sa_coffee').innerHTML='<option value="0">A new coffee</option>'+shelf.map(c=>`<option value="${c.id}">${esc(c.name)}${c.roaster?' ('+esc(c.roaster)+')':''}</option>`).join('');
-const same=shelf.find(c=>c.roaster&&s.name&&c.roaster.toLowerCase()==s.name.toLowerCase());$('sa_coffee').value=same?same.id:0;
+const otw=L.bags.filter(b=>b.onTheWay&&(b.subscriptionId==s.id||!b.subscriptionId));
+$('sa_coffee').innerHTML=otw.map(b=>{const c=coffee(b.coffeeId);return `<option value="otw:${b.id}">On its way: ${esc(c?c.name:'a bag')}</option>`}).join('')+'<option value="0">A new coffee</option>'+shelf.map(c=>`<option value="${c.id}">${esc(c.name)}${c.roaster?' ('+esc(c.roaster)+')':''}</option>`).join('');
+const same=shelf.find(c=>c.roaster&&s.name&&c.roaster.toLowerCase()==s.name.toLowerCase());$('sa_coffee').value=otw.length?'otw:'+otw[0].id:same?same.id:0;
 $('sa_roast').value='';$('sa_weight').value='';$('sa_name').value='';$('sa_roaster').value=(s.site||s.name||'').slice(0,23);$('sa_notes').value='';subArrKind();
 $('subarr').style.display='';$('subform').style.display='none';$('subarr').scrollIntoView({behavior:'smooth',block:'start'});return}
 const msg=s.kind=='supplies'&&s.per_delivery?'Add '+s.per_delivery+' '+(s.item||'')+' to the stock and move the next date on?':'Mark "'+s.name+'" arrived and move the next date on?';
 if(!await ask(msg))return;post('/api/subscriptions/arrived',{id}).then(r=>{if(done(r,'Arrived'))loadSubs()})}
-function subArrKind(){$('sanew').style.display=+$('sa_coffee').value?'none':''}
-async function subArrSave(){if(!SA)return;let cid=+$('sa_coffee').value;const roast=d2i($('sa_roast').value);if(!roast)return say('Enter the roast date printed on the bag',false);if(roast>today())return say('That date has not come yet',false);
+function subArrKind(){const v=$('sa_coffee').value;$('sanew').style.display=v=='0'?'':'none'}
+async function subArrSave(){if(!SA)return;const pick=$('sa_coffee').value;
+if(pick.startsWith('otw:')){const id=+pick.slice(4),roast=d2i($('sa_roast').value);if(!roast)return say('Enter the roast date printed on the bag',false);if(roast>today())return say('That date has not come yet',false);
+const r=await post('/api/library/do?what=bag_arrived&a='+id+'&b=0');if(!done(r,''))return;const bag=L.bags.find(b=>b.id==id)||{};
+await post('/api/bag',{id,roastDate:roast,openedDate:0,frozenDate:0,thawDate:0,weightG:Math.round(+$('sa_weight').value||0)||bag.weightG||0});
+const a=await post('/api/subscriptions/arrived',{id:SA.id});done(a,'On the shelf, unopened');$('subarr').style.display='none';SA=null;loadLibrary();loadSubs();return}
+let cid=+pick;const roast=d2i($('sa_roast').value);if(!roast)return say('Enter the roast date printed on the bag',false);if(roast>today())return say('That date has not come yet',false);
 if(!cid){const name=$('sa_name').value.trim();if(!name)return say('Give the new coffee a name',false);
 const r=await post('/api/coffee',{name,roaster:$('sa_roaster').value.trim(),notes:$('sa_notes').value.trim()});if(!done(r,''))return;cid=r.id}
 const b=await post('/api/bag',{coffeeId:cid,roastDate:roast,weightG:Math.round(+$('sa_weight').value||0),unopened:true,subscriptionId:SA.id});if(!done(b,''))return;
