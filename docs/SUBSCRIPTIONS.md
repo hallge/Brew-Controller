@@ -97,7 +97,12 @@ up. It is signed, and goes to `services/<key id>/s<local id>-<record>.json`:
                  "sustainable_packaging","carbon_neutral","b_corp"],
      "image":"https://...","icon":"https://...","color":"#rrggbb","about":"..."}
 
-**Never sent:** the owner's own price, dates, stock and notes.
+**Never sent:** the owner's own price, dates, stock and notes, or the owner's own links. A pasted
+link often belongs to one customer (a portal address with a customer id and a login token, a shop page
+with tracking in it). Before sending, the query and fragment are dropped, and a path that looks
+personal is replaced by the shop's general page: Recharge's sign-in page for a manage link, else the
+shop's account page, or its home page. The library refuses links that still carry a query, a token or
+a long customer id.
 
 **The library's handling:**
 - **Intake** checks it and opens a review for `services/<slug>.json`. The pull request asks the

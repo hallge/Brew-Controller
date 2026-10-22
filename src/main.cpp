@@ -2455,13 +2455,23 @@ float shotsPerDay() {
   if (cachedAtMs != 0 && newestId == cachedShot && millis() - cachedAtMs < 3600000u) return cached;
   static uint32_t epochs[200];
   size_t n = 0;
+  bool historyEnds = false;   // the kept history began inside the 14 days
   for (uint32_t i = 0; i < 200; ++i) {
     bbw::ShotRecord r;
-    if (!g_store.readShot(i, r)) break;
+    if (!g_store.readShot(i, r)) {
+      historyEnds = true;
+      break;
+    }
     if (r.epochS != 0 && nowS - r.epochS > 14u * 86400u && r.epochS < nowS) break;
     epochs[n++] = r.epochS;
   }
-  cached = bbw::shotsPerDay(epochs, n, nowS);
+  uint32_t keptSince = 0;
+  if (historyEnds) {
+    for (size_t i = 0; i < n; ++i) {
+      if (epochs[i] != 0 && (keptSince == 0 || epochs[i] < keptSince)) keptSince = epochs[i];
+    }
+  }
+  cached = bbw::shotsPerDay(epochs, n, nowS, 14, keptSince);
   cachedAtMs = millis() ? millis() : 1;
   cachedShot = newestId;
   return cached;

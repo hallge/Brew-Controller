@@ -792,8 +792,12 @@ inline size_t buildServiceRecord(const Subscription &s, uint32_t record, uint32_
   j.integer("local_id", s.id);
   asciiText(s.name, text, sizeof(text));
   j.text("name", text[0] ? text : "Subscription");
-  j.text("url", s.url);
-  j.textIf("manage_url", s.manageUrl);
+  // The shop's general pages, never the owner's own links (shareableLink, core/Subscriptions.h).
+  char link[200];
+  shareableLink(s.url, false, s.platform, link, sizeof(link));
+  j.text("url", link);
+  shareableLink(s.manageUrl, true, s.platform, link, sizeof(link));
+  j.textIf("manage_url", link);
   j.textIf("platform", s.platform);
   j.text("kind", subKindName(s.kind));
   if (s.shipsTo[0]) {
@@ -826,8 +830,8 @@ inline size_t buildServiceRecord(const Subscription &s, uint32_t record, uint32_
     for (uint8_t i = 0; i < SERVICE_SOURCING_COUNT; ++i) if ((s.sourcingMask >> i) & 1u) j.item(SERVICE_SOURCING[i]);
     j.closeArray();
   }
-  j.textIf("image", s.image);
-  j.textIf("icon", s.icon);
+  if (!linkHasCredential(s.image)) j.textIf("image", s.image);
+  if (!linkHasCredential(s.icon)) j.textIf("icon", s.icon);
   j.textIf("color", s.color);
   asciiText(s.description, text, 161);
   j.textIf("about", text);

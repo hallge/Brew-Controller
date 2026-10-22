@@ -6766,6 +6766,34 @@ static void testSubscriptions() {
   const uint32_t now = 1792688400;
   const uint32_t shots[] = {now - 3600, now - 86400 * 2, now - 86400 * 13, now - 86400 * 20};
   CHECK_NEAR(shotsPerDay(shots, 4, now), 3.0f / 14.0f, 0.001);
+  // A history that began five days ago: seven shots are seven in five days.
+  const uint32_t young[] = {now - 3600, now - 86400, now - 86400 * 2, now - 86400 * 3, now - 86400 * 4,
+                            now - 86400 * 4 - 100, now - 86400 * 5};
+  CHECK_NEAR(shotsPerDay(young, 7, now, 14, now - 86400 * 5), 7.0f / 5.0f, 0.001);
+  CHECK_NEAR(shotsPerDay(young, 1, now, 14, now - 3600), 1.0f, 0.001);            // never less than a day
+  CHECK_NEAR(shotsPerDay(shots, 4, now, 14, now - 86400 * 30), 3.0f / 14.0f, 0.001);   // older history: 14 days
+
+  // Links to share: the shop's general pages, never one customer's (made-up ids and tokens).
+  char link[200];
+  shareableLink("https://shop.example/tools/recurring/portal/0123456789abcdef0123456789ab/subscriptions?token=abcdef0123456789",
+                true, "recharge", link, sizeof(link));
+  CHECK(strcmp(link, "https://shop.example/tools/recurring/login") == 0);
+  shareableLink("https://shop.example/a/account/9f8e7d6c5b4a39281706f5e4?x=1", true, "", link, sizeof(link));
+  CHECK(strcmp(link, "https://shop.example/account") == 0);
+  shareableLink("https://shopify.com/12345678901/account/orders", true, "", link, sizeof(link));
+  CHECK(strcmp(link, "https://shopify.com/12345678901/account/orders") == 0);   // a shop number, not a person
+  shareableLink("https://shop.example/?country=US", false, "", link, sizeof(link));
+  CHECK(strcmp(link, "https://shop.example/") == 0);
+  shareableLink("https://www.shop.example/pages/home#top", false, "", link, sizeof(link));
+  CHECK(strcmp(link, "https://www.shop.example/pages/home") == 0);
+  shareableLink("https://shop.example", false, "", link, sizeof(link));
+  CHECK(strcmp(link, "https://shop.example/") == 0);
+  shareableLink("https://shop.example/login/session-token/x", true, "", link, sizeof(link));
+  CHECK(strcmp(link, "https://shop.example/account") == 0);
+  shareableLink("javascript:alert(1)", true, "", link, sizeof(link));
+  CHECK(link[0] == '\0');
+  CHECK(linkHasCredential("https://x.example/i.png?token=abc") && linkHasCredential("https://x.example/i.png?X-Amz-Signature=1"));
+  CHECK(!linkHasCredential("https://x.example/i.png?v=17&width=1200") && !linkHasCredential("https://x.example/i.png"));
 
   // Sanitizing: only web links, a real colour, sane numbers.
   Subscription bad;
@@ -6884,6 +6912,19 @@ static void testServiceSharing() {
   CHECK(rec.find("\"about\":\"Coffee \\\"matched\\\" to you - 500+ coffees\"") != std::string::npos);
   CHECK(rec.find("2150") == std::string::npos && rec.find("secret") == std::string::npos &&
         rec.find("stock") == std::string::npos);
+  {
+    Subscription mine = s;
+    subCopy(mine.url, "https://shop.example/?country=US", sizeof(mine.url));
+    subCopy(mine.manageUrl, "https://shop.example/tools/recurring/portal/0123456789abcdef0123456789ab/subscriptions?token=feedface01234567",
+            sizeof(mine.manageUrl));
+    subCopy(mine.platform, "recharge", sizeof(mine.platform));
+    CHECK(buildServiceRecord(mine, 50, 0, out, sizeof(out)) > 0);
+    const std::string r2(out);
+    CHECK(r2.find("\"url\":\"https://shop.example/\"") != std::string::npos);
+    CHECK(r2.find("\"manage_url\":\"https://shop.example/tools/recurring/login\"") != std::string::npos);
+    CHECK(r2.find("feedface") == std::string::npos && r2.find("0123456789abcdef0123") == std::string::npos &&
+          r2.find("country=") == std::string::npos);
+  }
 
   // Changed since shared: only the shared fields count.
   markServiceQueued(s, 41);

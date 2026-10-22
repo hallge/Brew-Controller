@@ -7,6 +7,9 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <esp_heap_caps.h>
+
+#include <memory>
 
 #include "BigMem.h"
 #include "Log.h"
@@ -21,9 +24,13 @@ namespace {
 
 // Some shops put their tags far into a long <head> (one at 100 KB): read up to this much, in PSRAM.
 constexpr size_t PAGE_MAX = 192 * 1024;
-constexpr uint16_t CONNECT_TIMEOUT_MS = 6000;
+constexpr uint16_t CONNECT_TIMEOUT_MS = 8000;
 constexpr uint16_t ANSWER_TIMEOUT_MS = 8000;
+// A shop's chain can be four certificates of P-384 keys, each checked in software: more time than
+// GitHub's short chain needs.
+constexpr uint16_t HANDSHAKE_TIMEOUT_S = 15;
 constexpr int MAX_REDIRECTS = 4;
+constexpr int TRIES = 2;   // a connection that fails is tried once more
 
 char *g_page;  // PAGE_MAX + 1, in PSRAM
 
@@ -82,20 +89,23 @@ int fetchPagePreview(const char *url, PageMeta &out, char *problem, size_t probl
   char current[256];
   strlcpy(current, url, sizeof(current));
   int code = -1;
+  char tlsError[96] = {};
+  int tries = 0;
   for (int hop = 0; hop <= MAX_REDIRECTS; ++hop) {
     const bool secure = strncmp(current, "https://", 8) == 0;
-    WiFiClientSecure tls;
-    WiFiClient plain;
+    // On the heap, not the loop task's stack: a TLS client carries the whole mbedTLS context.
+    std::unique_ptr<WiFiClientSecure> tls(new WiFiClientSecure());
+    std::unique_ptr<WiFiClient> plain(new WiFiClient());
     if (secure) {
-      tls.setCACertBundle(rootca_crt_bundle_start);
-      tls.setHandshakeTimeout(CONNECT_TIMEOUT_MS / 1000);
+      tls->setCACertBundle(rootca_crt_bundle_start);
+      tls->setHandshakeTimeout(HANDSHAKE_TIMEOUT_S);
     }
     HTTPClient http;
     http.setReuse(false);
     http.setConnectTimeout(CONNECT_TIMEOUT_MS);
     http.setTimeout(ANSWER_TIMEOUT_MS);
     http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);  // followed here, across http and https
-    if (!(secure ? http.begin(tls, current) : http.begin(plain, current))) {
+    if (!(secure ? http.begin(*tls, current) : http.begin(*plain, current))) {
       say(problem, problemSize, "not a link that can be read");
       return -2;
     }
@@ -106,7 +116,29 @@ int fetchPagePreview(const char *url, PageMeta &out, char *problem, size_t probl
     http.addHeader("Accept-Language", "en");
     static const char *keep[] = {"Location"};
     http.collectHeaders(keep, 1);
+    const size_t freeBefore = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const size_t largestBefore = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const uint32_t startedMs = millis();
     code = http.GET();
+    if (code < 0) {
+      // Why the connection failed: mbedTLS's own words when it was the secure part, with the memory
+      // there was for it.
+      tlsError[0] = '\0';
+      if (secure) {
+        const int err = tls->lastError(tlsError, sizeof(tlsError));
+        if (err == 0) tlsError[0] = '\0';
+      }
+      LOGW("subscriptions: %s: no connection (answer %d) after %lu ms%s%s; chip RAM %u free, largest %u",
+           current, code, static_cast<unsigned long>(millis() - startedMs), tlsError[0] ? ": " : "",
+           tlsError, static_cast<unsigned>(freeBefore), static_cast<unsigned>(largestBefore));
+      http.end();
+      if (++tries < TRIES) {
+        delay(500);
+        --hop;   // the same address again
+        continue;
+      }
+      break;
+    }
     if (code >= 300 && code < 400 && http.hasHeader("Location")) {
       char next[256];
       resolveUrl(current, http.header("Location").c_str(), next, sizeof(next));
@@ -125,7 +157,9 @@ int fetchPagePreview(const char *url, PageMeta &out, char *problem, size_t probl
     LOGI("subscriptions: read %u bytes of %s", static_cast<unsigned>(got), current);
     return 200;
   }
-  if (code < 0) say(problem, problemSize, "the shop's site could not be reached");
+  if (code < 0 && tlsError[0] && problem && problemSize) {
+    snprintf(problem, problemSize, "no secure connection: %s", tlsError);
+  } else if (code < 0) say(problem, problemSize, "the shop's site could not be reached");
   else if (code == 403 || code == 429 || code == 503) say(problem, problemSize, "the shop's site turned the controller away");
   else if (code >= 300 && code < 400) say(problem, problemSize, "too many redirects");
   else say(problem, problemSize, "the shop's site answered with an error");
