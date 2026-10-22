@@ -267,6 +267,25 @@ void subscriptionToJson(const bbw::Subscription &s, JsonObject o);
 void subscriptionFromJson(JsonObjectConst o, bbw::Subscription &s);
 // A shop's page for a card: asked for by the web page, read by the loop task while idle.
 enum class PreviewState : uint8_t { NONE, WAITING, DONE, FAILED };
+// The owner's say for recommendations: their country (two letters, "" = not said) and the sourcing
+// values that matter to them (a SERVICE_SOURCING mask).
+struct SubscriptionPrefs {
+  char country[3] = {};
+  uint16_t matters = 0;
+};
+SubscriptionPrefs subscriptionPrefs();
+void setSubscriptionPrefs(const SubscriptionPrefs &p);
+// Sends a service's description to the shared library for review. false: sharing is off, it cannot
+// be shared (no name or https link), or nothing has changed since it was sent.
+bool shareService(uint16_t id);
+uint32_t outboxSent();
+// Reviews of services (core/Subscriptions.h ServiceReview), kept in /svcreviews.json. One per drinker
+// per subscription: saving again replaces it. Shared, when ratings are, for a service in the library.
+void readServiceReviews(void (*visit)(const bbw::ServiceReview *reviews, size_t count, void *), void *context);
+uint32_t saveServiceReview(const bbw::ServiceReview &r);
+bool deleteServiceReview(uint32_t id);
+// The library's list of services (index/services.json) as cached. Good until the next library read.
+const char *communityServices();
 void requestPagePreview(const char *url);
 PreviewState pagePreview(char *url, size_t urlSize, bbw::PageMeta &meta, char *problem, size_t problemSize);
 

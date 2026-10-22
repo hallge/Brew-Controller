@@ -39,6 +39,9 @@ static const char WEB_PAGE[] PROGMEM = R"HTML(<!doctype html>
 a.btn{display:inline-flex;align-items:center;border-radius:10px;border:1px solid var(--edge);background:var(--up);color:var(--fg)}a.btn.pri{background:var(--acc);border-color:var(--acc);color:#1d0f00;font-weight:600}
 .meter{height:6px;border-radius:3px;background:var(--up);overflow:hidden;margin-top:4px}.meter i{display:block;height:100%;background:var(--ok);border-radius:3px}.meter.warn i{background:var(--warn)}
 .stat{background:var(--up);border-radius:12px;padding:12px 14px;min-width:0}.stat b{display:block;font-size:22px;font-weight:600;letter-spacing:-.02em;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chips{display:flex;flex-wrap:wrap;gap:6px}.chips button{min-height:34px;padding:0 12px;border-radius:999px;font-size:13px}.chips button.on{border-color:var(--acc);background:var(--accbg);color:var(--acctext)}
+.sub .why{display:flex;flex-wrap:wrap;gap:4px}.sub .why span{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--up);color:var(--mid)}
+.sub .lib{position:absolute;left:10px;top:10px}.sub .lib .pill{font-size:11px;padding:3px 9px;background:var(--combg);color:var(--comtext);border:1px solid var(--comline)}
 .remind{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;background:var(--warnbg);border:1px solid var(--line);border-left:4px solid var(--warn);border-radius:12px;padding:10px 14px}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:700px){.two{grid-template-columns:1fr}}
 .theme{display:inline-flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:120px}.theme.on{outline:2px solid var(--acc);outline-offset:1px}.theme .strip{display:flex;border-radius:4px;overflow:hidden;border:1px solid var(--edge)}.theme .strip i{display:block;width:22px;height:14px}
@@ -397,6 +400,12 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <div class="grid" id="subsum"></div>
 <div class="list" id="subrem"></div>
 <div class="subs" id="sublist"></div>
+<section class="card" id="subreco"><div class="head"><h2>Services you might like</h2><span class="sm dim" id="srbasis"></span></div>
+<div class="row" style="align-items:flex-end"><label style="flex:0 0 130px">Your country<input id="sr_country" maxlength="2" placeholder="e.g. US" onchange="subPrefs()"></label><div style="flex:1 1 300px"><div class="sm dim" style="margin-bottom:6px">What matters to you</div><div class="chips" id="srmatters"></div></div></div>
+<div class="subs" id="srlist"></div></section>
+<section class="card com" id="sublib"><div class="head"><h2>From the shared library</h2><span class="sm" id="slcount"></span></div>
+<label>Search services<input type="search" id="slq" oninput="drawLib()" placeholder="name, style, sourcing"></label>
+<div class="subs" id="sllist"></div></section>
 <section class="card" id="subform" style="display:none"><div class="head"><h2 id="sftitle">Add a subscription</h2><button class="tbtn" onclick="subClose()">Close</button></div>
 <div class="row"><label style="flex:1 1 280px">Link to the shop or the subscription<input id="sf_url" type="url" placeholder="https://" onkeydown="if(event.key==='Enter')subRead()"></label><button style="align-self:flex-end" onclick="subRead()">Read the page</button></div>
 <div class="sm dim" id="sfread"></div>
@@ -409,6 +418,16 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <label>Price each time ($)<input id="sf_price" type="number" min="0" step="0.01" oninput="subPrev()"></label></div></div>
 <div class="grid" id="sfsup"><label>Item<input id="sf_item" maxlength="39" placeholder="e.g. paper filters"></label><label>In stock now<input id="sf_stock" type="number" min="0"></label><label>Used per shot<input id="sf_pershot" type="number" min="0" max="10" placeholder="1"></label><label>Each delivery brings<input id="sf_perdel" type="number" min="0"></label></div>
 <label>Where you manage it (the shop's subscription page)<input id="sf_manage" type="url" placeholder="https://"></label>
+<details class="note" id="sfshared"><summary>For the shared library: what it offers, where it ships, how it sources</summary><div class="grid" style="margin-top:8px">
+<label>Ships to (country codes)<input id="sf_ships" placeholder="e.g. US, CA"></label><label>Deliveries offered (every N weeks)<input id="sf_cad" placeholder="e.g. 1, 2, 4"></label>
+<label>Typical price each delivery<input id="sf_pfrom" type="number" min="0" step="0.01"></label><label>Currency<input id="sf_cur" maxlength="3" placeholder="USD"></label></div>
+<div class="subh">Style</div><div class="chips" id="sf_style"></div><div class="subh">Sourcing it claims</div><div class="chips" id="sf_sourcing"></div>
+<div class="sm dim" style="margin-top:6px">Claims are checked against the shop's site by the library's reviewer before it is listed. Your own price, dates, stock and notes are never sent.</div></details>
+<div class="row" id="sfsharerow" style="border-top:1px solid var(--line);padding-top:12px"><span class="pill" id="sfsharepill" style="background:var(--combg);color:var(--comtext);border:1px solid var(--comline)"></span><span class="sm mid" id="sfsharetxt" style="flex:1 1 240px"></span><button id="sfsend" onclick="subShare()">Send to the shared library</button></div>
+<div id="sfreview" style="border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:10px"><div class="head"><h2>Your review</h2><span class="sm dim" id="svinfo"></span></div>
+<div class="row" id="svwho"></div><div class="row" id="svstars"></div><div class="grid" id="svasp"></div>
+<label>Note (stays on this controller)<input id="sv_note" maxlength="39"></label>
+<div class="row"><button class="pri" onclick="subReviewSave()">Save review</button><button class="del" id="svdel" onclick="subReviewDel()">Delete review</button></div><div class="list sm" id="svlist"></div></div>
 <label>Note<input id="sf_note" maxlength="95" placeholder="e.g. 2 bags, whole bean"></label>
 <details class="note"><summary>Card look</summary><div class="grid" style="margin-top:8px"><label>Picture<input id="sf_image" type="url" oninput="subPrev()"></label><label>Icon<input id="sf_icon" type="url" oninput="subPrev()"></label><label>Colour<input id="sf_color" type="color" value="#5b6470" oninput="subPrev()"></label></div></details>
 <div class="row"><button class="pri" data-save onclick="subSave()">Save</button><button onclick="subClose()">Cancel</button><button class="del" id="sfdel" style="margin-left:auto" onclick="subDel()">Delete</button></div></section>
@@ -787,10 +806,69 @@ let sup='';if(s.kind=='supplies'&&(s.stock||s.per_delivery)){const full=Math.max
 sup=`<div class="sm">${s.stock||0} ${esc(s.item||'left')}${s.stock_days_left!=null?' · about '+s.stock_days_left+' days':''}</div><div class="meter${s.stock_short?' warn':''}"><i style="width:${pct}%"></i></div>${s.stock_short?'<div class="sm" style="color:var(--warn)">Runs out before the next delivery</div>':''}`}
 const acts=preview?'':`<div class="acts">${s.manage_url?`<a class="btn pri" href="${esc(s.manage_url)}" target="_blank" rel="noopener noreferrer">Manage ↗</a>`:s.url?`<a class="btn" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">Open ↗</a>`:''}${off?'':`<button onclick="subArrived(${s.id})">Arrived</button><button onclick="subSkip(${s.id})">Skip one</button>`}<button class="tbtn" onclick="subEdit(${s.id})">Edit</button></div>`;
 return `<article class="sub${off?' off':''}"><div class="ban" style="background:linear-gradient(135deg,${col},${col}99 55%,var(--up))">${s.image?imgTag(s.image):''}${s.image?'':`<div class="ini">${esc(name.trim().charAt(0).toUpperCase())}</div>`}</div>
-<div class="ico">${s.icon?imgTag(s.icon):`<div style="width:100%;height:100%;background:${col}"></div>`}</div><div class="tags">${tags}</div>
+<div class="ico">${s.icon?imgTag(s.icon):`<div style="width:100%;height:100%;background:${col}"></div>`}</div><div class="tags">${tags}</div>${s.share&&s.share!='local'?`<div class="lib"><span class="pill">${s.share=='published'?'Library':esc(SHARE_TXT[s.share]||s.share)}</span></div>`:''}
 <div class="bd"><b>${esc(name)}</b><span class="sm dim">${esc([s.site&&s.site!=name?s.site:'',platTxt[s.platform]?'via '+platTxt[s.platform]:''].filter(x=>x).join(' · '))}</span><span class="sm mid">${esc(bits)}</span>
 ${s.next_date?`<span class="sm">Next: ${esc(subWhen(s)||fd(s.next_date))}</span>`:''}${sup}${s.note?`<span class="sm dim">${esc(s.note)}</span>`:''}${s.last_arrived?`<span class="sm dim">Last arrived ${fd(s.last_arrived)}</span>`:''}</div>${acts}</article>`}
-async function loadSubs(){try{SUBS=await get('/api/subscriptions')}catch(e){SUBS=null}drawSubs()}
+async function loadSubs(){try{SUBS=await get('/api/subscriptions')}catch(e){SUBS=null}drawSubs();
+if(location.hash=='#subscriptions'){loadLib();loadReviews();loadSubReco();if(!RT&&typeof loadRatings=='function')loadRatings()}}
+// ---- The shared library's services, reviews and recommendations (docs/SUBSCRIPTIONS.md).
+let LIBS=[],SREV=[],SV=null;
+const hostOf=u=>{try{return new URL(u).hostname.replace(/^www\./,'')}catch(e){return ''}};
+const STYLE_TXT={single_roaster:'Single roaster',multi_roaster:'Many roasters',curated:'Curated',matched:'Matched to your taste',single_origin:'Single origin',blends:'Blends',decaf:'Decaf',espresso:'For espresso',filters:'Filters',cleaning:'Cleaning',equipment:'Equipment'};
+const SRC_TXT={fair_trade:'Fair trade',direct_trade:'Direct trade',organic:'Organic',farm_named:'Farms named',prices_published:'Prices published',sustainable_packaging:'Sustainable packaging',carbon_neutral:'Carbon neutral',b_corp:'B Corp'};
+const ASP=[['value','Value'],['quality','Quality'],['consistency','Consistency'],['reliability','Reliability'],['flexibility','Flexibility'],['transparency','Transparency']];
+const SHARE_TXT={local:'On this controller only',queued:'Waiting to be sent',sent:'Sent: waiting for the library',review:'In review',published:'In the shared library',declined:'Declined',refused:'Refused by the library\'s checks'};
+async function loadLib(){try{const r=await get('/api/subscriptions/library');LIBS=r.services||[]}catch(e){LIBS=[]}drawLib()}
+async function loadReviews(){try{SREV=(await get('/api/subscriptions/reviews')).reviews||[]}catch(e){SREV=[]}if(SF&&SF.id)drawReview()}
+// A library entry as a card: what it is, where it ships, its claims and reviews, and Add.
+function libCard(e,why){const col=/^#[0-9a-f]{6}$/i.test(e.color||'')?e.color:'#3b6e9e',rv=e.reviews,have=SUBS&&(SUBS.subscriptions||[]).some(x=>x.library_id==e.id||(hostOf(x.url)&&hostOf(x.url)==hostOf(e.url)));
+const bits=[kindTxt[e.kind]||'',(e.cadences||[]).length?'every '+e.cadences.map(d=>d%7?d+' d':d/7+' wk').join(' / '):'',e.price_from_cents?'from '+(e.currency=='USD'?'$':'')+(e.price_from_cents/100).toFixed(2)+(e.currency&&e.currency!='USD'?' '+e.currency:''):''].filter(x=>x).join(' · ');
+const tags=[...(e.style||[]).map(k=>STYLE_TXT[k]),...(e.sourcing||[]).map(k=>SRC_TXT[k])].filter(x=>x);
+return `<article class="sub"><div class="ban" style="background:linear-gradient(135deg,${col},${col}99 55%,var(--up))">${e.image?imgTag(e.image):`<div class="ini">${esc((e.name||'?').charAt(0).toUpperCase())}</div>`}</div>
+<div class="ico">${e.icon?imgTag(e.icon):`<div style="width:100%;height:100%;background:${col}"></div>`}</div><div class="lib"><span class="pill">Library</span></div>
+<div class="bd"><b>${esc(e.name)}</b><span class="sm mid">${esc(bits)}</span>${e.ships_to?`<span class="sm dim">Ships to ${esc(e.ships_to.join(', '))}</span>`:''}
+${rv?`<span class="sm">${'★'.repeat(Math.round(rv.stars))}<span class="dim">${'★'.repeat(5-Math.round(rv.stars))}</span> ${rv.stars.toFixed(1)} from ${rv.n} reviews</span>`:'<span class="sm dim">Not enough reviews yet</span>'}
+${e.about?`<span class="sm dim">${esc(e.about)}</span>`:''}${tags.length?`<div class="why">${tags.map(t=>`<span>${esc(t)}</span>`).join('')}</div>`:''}${why||''}</div>
+<div class="acts">${have?'<span class="sm dim" style="padding:8px 4px">You have this one</span>':`<button class="pri" onclick="libAdd('${esc(e.id)}')">Add to my subscriptions</button>`}<a class="btn" href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">Visit ↗</a></div></article>`}
+function drawLib(){const el=$('sllist');if(!el)return;const q=($('slq').value||'').toLowerCase();
+const hit=e=>!q||[e.name,e.about,e.kind,...(e.style||[]).map(k=>STYLE_TXT[k]),...(e.sourcing||[]).map(k=>SRC_TXT[k])].join(' ').toLowerCase().includes(q);
+const list=LIBS.filter(hit);$('slcount').textContent=LIBS.length?LIBS.length+(LIBS.length==1?' service':' services'):'';
+el.innerHTML=list.length?list.map(e=>libCard(e)).join(''):`<div class="sm mid" style="grid-column:1/-1">${LIBS.length?'No service matches.':'The shared library has no services yet. Add yours above, then open it and send it to the library: once a reviewer lists it, everyone can add it in one tap.'}</div>`}
+function libAdd(id){const e=LIBS.find(x=>x.id==id);if(!e)return;
+const f={id:0,library_id:e.id,name:e.name,url:e.url,manage_url:e.manage_url||'',kind:e.kind||'coffee',status:'active',platform:e.platform||'',image:e.image||'',icon:e.icon||'',color:e.color||'',
+every_days:(e.cadences||[])[0]||0,ships_to:(e.ships_to||[]).join(','),cadences:e.cadences||[],price_from_cents:e.price_from_cents||0,currency:e.currency||'',style:e.style||[],sourcing:e.sourcing||[],description:e.about||''};
+post('/api/subscriptions',f).then(r=>{if(done(r,e.name+' added: set its next date and price')){loadSubs().then(()=>subEdit(r.id))}})}
+// The owner's say: country and what matters.
+function drawPrefs(){if(!SUBS)return;const m=SUBS.matters||[];$('sr_country').value=SUBS.country||'';
+$('srmatters').innerHTML=Object.keys(SRC_TXT).map(k=>`<button class="${m.includes(k)?'on':''}" aria-pressed="${m.includes(k)}" onclick="toggleMatter('${k}')">${SRC_TXT[k]}</button>`).join('')}
+function toggleMatter(k){SUBS.country=$('sr_country').value.trim().toUpperCase();const m=new Set(SUBS.matters||[]);m.has(k)?m.delete(k):m.add(k);SUBS.matters=[...m];drawPrefs();subPrefs()}
+function subPrefs(){SUBS.country=$('sr_country').value.trim().toUpperCase();post('/api/subscriptions/prefs',{country:SUBS.country,matters:SUBS.matters||[]}).then(r=>{if(r.ok)loadSubReco()})}
+async function loadSubReco(){drawPrefs();let r;try{r=await get('/api/subscriptions/recommend?drinker='+(typeof TPD!='undefined'?TPD:0))}catch(e){return}
+const el=$('srlist');$('srbasis').textContent=r.basis=='taste'?'By how their coffees taste to you':r.basis=='reviews'?'By reviews and what matters to you, until you have rated '+Math.max(0,3-r.coffees)+' more coffees':'';
+el.innerHTML=(r.items||[]).length?r.items.map(it=>libCard(it.service,`${it.why&&it.why.length?`<div class="why">${it.why.map(w=>`<span style="background:var(--accbg);color:var(--acctext)">${esc(w)}</span>`).join('')}</div>`:''}${it.people?`<span class="sm mid">${esc(it.people)}</span>`:''}`)).join(''):
+`<div class="sm mid" style="grid-column:1/-1">${LIBS.length?'Nothing to suggest yet: services you already have are left out, and so are those that do not ship to your country.':'Suggestions come from the shared library\'s services, how their coffees taste to people like you, and their reviews. The library has none listed yet.'}</div>`}
+// Sharing, on the form.
+function drawShare(){const row=$('sfsharerow');if(!SF||!SF.id||!SUBS){row.style.display='none';return}row.style.display='';
+const st=SF.share||'local',fromLib=st=='published'&&SF.library_id;$('sfsharepill').textContent=SHARE_TXT[st]||st;
+$('sfsharetxt').textContent=fromLib?'Listed as '+SF.library_id+(SF.share_changed?'. You have changed it since: send the change for review.':'.'):st=='declined'||st=='refused'?(SF.review_note||''):!SUBS.sharing?'Sharing is off (Setup, Shared library).':!SF.can_share?'It needs a name and an https link to be shared.':st=='local'?'Send it so other people can add it in one tap. A reviewer checks it first.':'';
+$('sfsend').style.display=SUBS.sharing&&SF.can_share&&(st=='local'||st=='declined'||st=='refused'||SF.share_changed)?'':'none'}
+async function subShare(){if(!SF||!SF.id)return;if(!await ask('Send "'+SF.name+'" to the shared library?\n\nIts name, links, kind, where it ships, deliveries offered, typical price, style and sourcing claims are sent. Your own price, dates, stock and notes are not.'))return;
+post('/api/subscriptions/share',{id:SF.id}).then(r=>{if(done(r,'Sent for review')){loadSubs().then(()=>{SF=Object.assign(SF,sub(SF.id)||{});drawShare()})}})}
+// Reviews, on the form: one per drinker.
+function revFor(d){return SREV.find(r=>r.subscription==SF.id&&r.drinker==d)}
+function drawReview(){const box=$('sfreview');if(!SF||!SF.id){box.style.display='none';return}box.style.display='flex';
+const named=RT&&RT.named,people=named?RT.drinkers.map((n,i)=>[i+1,n]).filter(x=>x[1]):[];
+if(!SV||SV.sub!=SF.id){const d=named&&people.length?people[0][0]:0,o=revFor(d);SV={sub:SF.id,drinker:d,stars:o?o.stars:0,asp:ASP.map(([k])=>o&&o.aspects[k]||0),note:o?o.note:''};$('sv_note').value=SV.note}
+$('svwho').innerHTML=named&&people.length?'<span class="sm dim">Who is reviewing:</span>'+people.map(([id,n])=>`<button class="${id==SV.drinker?'on':''}" onclick="SV=null;svPick(${id})">${esc(n)}</button>`).join(''):'';
+$('svstars').innerHTML='<span class="stars">'+[1,2,3,4,5].map(n=>`<button class="${n<=SV.stars?'on':''}" aria-label="${n} stars" onclick="SV.stars=${n};drawReview()">★</button>`).join('')+'</span>'+(SV.stars?'':'<span class="sm dim">tap to rate</span>');
+$('svasp').innerHTML=ASP.map(([k,l],i)=>`<label>${l} <span class="dim">${SV.asp[i]?SV.asp[i]+' / 5':'not given'}</span><input type="range" min="0" max="5" step="1" value="${SV.asp[i]}" oninput="SV.asp[${i}]=+this.value;this.previousElementSibling.textContent=+this.value?this.value+' / 5':'not given'"></label>`).join('');
+const mine=revFor(SV.drinker);$('svdel').style.display=mine?'':'none';
+$('svinfo').textContent=SUBS&&SUBS.share_ratings?(SF.share=='published'?'Shared anonymously with the library':'Shared once the service is in the library'):'Kept on this controller';
+const all=SREV.filter(r=>r.subscription==SF.id);$('svlist').innerHTML=all.length>1||(all.length&&named)?all.map(r=>`<div>${esc(drinkerName(r.drinker))}: ${'★'.repeat(r.stars)}${r.note?' <span class="dim">'+esc(r.note)+'</span>':''}</div>`).join(''):''}
+function svPick(d){const o=revFor(d);SV={sub:SF.id,drinker:d,stars:o?o.stars:0,asp:ASP.map(([k])=>o&&o.aspects[k]||0),note:o?o.note:''};$('sv_note').value=SV.note;drawReview()}
+function subReviewSave(){if(!SV||!SV.stars)return say('Give it 1 to 5 stars',false);const aspects={};ASP.forEach(([k],i)=>{if(SV.asp[i])aspects[k]=SV.asp[i]});
+post('/api/subscriptions/review',{subscription:SF.id,drinker:SV.drinker,stars:SV.stars,aspects,note:$('sv_note').value.trim()}).then(r=>{if(done(r,'Review saved'))loadReviews()})}
+async function subReviewDel(){const o=SV&&revFor(SV.drinker);if(!o||!await ask('Delete this review?'))return;post('/api/subscriptions/review/delete',{id:o.id}).then(r=>{if(done(r,'Deleted')){SV=null;loadReviews()}})}
 function drawSubs(){const el=$('sublist');if(!el)return;if(!SUBS){el.innerHTML='<div class="dim sm">Could not load the subscriptions.</div>';return}
 const list=SUBS.subscriptions||[],act=list.filter(s=>s.status=='active');
 const order=(a,b)=>(a.status!='active')-(b.status!='active')||(a.days_until==null)-(b.days_until==null)||(a.days_until||0)-(b.days_until||0);
@@ -808,12 +886,20 @@ $('sf_url').value=SF.url||'';$('sf_name').value=SF.name||'';$('sf_kind').value=S
 const d=SF.every_days||0,u=d&&d%7==0?7:d>=28&&d<=31&&d!=28?30.44:1;$('sf_unit').value=String(d?u:7);$('sf_every').value=d?(u==30.44?Math.round(d/30.44):d/u):'';
 $('sf_next').value=i2d(SF.next_date||0);$('sf_price').value=SF.price_cents?(SF.price_cents/100).toFixed(2):'';$('sf_manage').value=SF.manage_url||'';$('sf_note').value=SF.note||'';
 $('sf_item').value=SF.item||'';$('sf_stock').value=SF.stock||'';$('sf_pershot').value=SF.per_shot||'';$('sf_perdel').value=SF.per_delivery||'';
+$('sf_ships').value=(SF.ships_to||'').split(',').filter(x=>x).join(', ');$('sf_cad').value=(SF.cadences||[]).map(d=>Math.round(d/7*10)/10).join(', ');
+$('sf_pfrom').value=SF.price_from_cents?(SF.price_from_cents/100).toFixed(2):'';$('sf_cur').value=SF.currency||'';
+SF.style=SF.style||[];SF.sourcing=SF.sourcing||[];drawSfChips();SV=null;drawShare();drawReview();
 $('sf_image').value=SF.image||'';$('sf_icon').value=SF.icon||'';$('sf_color').value=/^#[0-9a-f]{6}$/i.test(SF.color||'')?SF.color:'#5b6470';
 subKind();subPrev();$('subform').style.display='';$('subarr').style.display='none';$('subform').scrollIntoView({behavior:'smooth',block:'start'});if(!s)$('sf_url').focus()}
-function subClose(){$('subform').style.display='none';SF=null}
+function subClose(){$('subform').style.display='none';SF=null;SV=null}
+function drawSfChips(){const chip=(list,key,txt)=>Object.keys(txt).map(k=>`<button class="${(SF[key]||[]).includes(k)?'on':''}" aria-pressed="${(SF[key]||[]).includes(k)}" onclick="sfToggle('${key}','${k}')">${txt[k]}</button>`).join('');
+$('sf_style').innerHTML=chip(SF.style,'style',STYLE_TXT);$('sf_sourcing').innerHTML=chip(SF.sourcing,'sourcing',SRC_TXT)}
+function sfToggle(key,k){const m=new Set(SF[key]||[]);m.has(k)?m.delete(k):m.add(k);SF[key]=[...m];drawSfChips()}
 function subForm(){const every=+$('sf_every').value||0,unit=+$('sf_unit').value;return Object.assign({},SF,{url:$('sf_url').value.trim(),name:$('sf_name').value.trim(),kind:$('sf_kind').value,status:$('sf_status').value,
 every_days:Math.min(366,Math.round(every*unit)),next_date:d2i($('sf_next').value),price_cents:Math.round((+$('sf_price').value||0)*100),manage_url:$('sf_manage').value.trim(),note:$('sf_note').value.trim(),
 item:$('sf_item').value.trim(),stock:Math.max(0,Math.round(+$('sf_stock').value||0)),per_shot:$('sf_kind').value=='supplies'?Math.round(+$('sf_pershot').value||0):0,per_delivery:Math.round(+$('sf_perdel').value||0),
+ships_to:$('sf_ships').value.toUpperCase().split(/[^A-Z]+/).filter(x=>x.length==2).join(','),cadences:$('sf_cad').value.split(/[^0-9.]+/).map(x=>Math.round(+x*7)).filter(d=>d>0&&d<=366).slice(0,6),
+price_from_cents:Math.round((+$('sf_pfrom').value||0)*100),currency:$('sf_cur').value.trim().toUpperCase(),style:SF.style||[],sourcing:SF.sourcing||[],
 image:$('sf_image').value.trim(),icon:$('sf_icon').value.trim(),color:$('sf_color').value=='#5b6470'&&!SF.color?'':$('sf_color').value})}
 function subPrev(){if(!SF)return;const f=subForm(),t=today(),n=f.next_date?Math.round((new Date(i2d(f.next_date))-new Date(i2d(t)))/864e5):null;
 $('sfprev').innerHTML=subCard(Object.assign(f,{days_until:n,due_soon:f.status=='active'&&n!=null&&n<=3}),true)}

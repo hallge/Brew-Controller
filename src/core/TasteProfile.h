@@ -331,6 +331,23 @@ inline float peopleLikeness(const uint8_t *mine, const uint8_t *theirs, size_t n
 // The score a candidate coffee is ranked by: mostly how its taste matches the profile (discounted by
 // how sure that is), then what drinkers like you gave it, then a little for good community stars.
 // peopleStars / communityStars: 1..5, or 0 when there is none.
+// A subscription service, ranked: the coffee score above over the taste of the coffees it sent
+// (a match is worth nothing without any), plus a lift for each sourcing value the owner said matters
+// and the service claims (0.06 each, at most three), and for its reviews' stars.
+// reviewStars: 1..5, or 0 when there are not enough reviews.
+inline float serviceScore(const TasteMatch &m, bool haveTaste, float peopleStars, float reviewStars,
+                          uint8_t mattersMet) {
+  float score = 0.0f;
+  if (haveTaste) {
+    const float content = m.score * (0.4f + 0.6f * m.confidence);
+    score = (peopleStars >= 1.0f ? 0.5f : 0.7f) * content;
+    if (peopleStars >= 1.0f) score += 0.25f * (peopleStars - 3.0f) / 2.0f;
+  }
+  if (reviewStars >= 1.0f) score += (haveTaste ? 0.15f : 0.4f) * (reviewStars - 3.0f) / 2.0f;
+  score += 0.06f * (mattersMet > 3 ? 3 : mattersMet);
+  return score;
+}
+
 inline float recommendScore(const TasteMatch &m, float peopleStars, float communityStars) {
   const float content = m.score * (0.4f + 0.6f * m.confidence);
   const bool people = peopleStars >= 1.0f, community = communityStars >= 1.0f;

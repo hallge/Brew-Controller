@@ -591,6 +591,18 @@ brewed:
 does not use these two yet: shots from different machine styles are still
 fitted together.
 
+## 8k. Subscription services (22 Oct 2026)
+
+A subscription service travels like a machine profile: a signed `service` record in
+`services/<key id>/s<local id>-<record>.json`, checked by `verify_record.py` and put up for review by
+`intake.py` as `services/<slug>.json`. The reviewer checks its links and sourcing claims against the
+shop's site. Its outcome is written under `services` in the contributor's status file. `build_index.py`
+lists merged services in `index/services.json`, with reviews from two or more contributors.
+
+Reviews (`service_review`, filed under `svcreviews/`) and the `service` field of coffee ratings feed
+the recommendations. `taste.json` gains `services` (each service's coffees' mean taste) and `svc:<id>`
+entries in the anonymous drinkers' rows. Design: docs/SUBSCRIPTIONS.md.
+
 ## 8b. Bean age
 
 Roasted coffee goes on changing: as a bag ages, a shot runs faster at the

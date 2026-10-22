@@ -22,6 +22,55 @@ namespace bbw {
 
 constexpr size_t MAX_SUBSCRIPTIONS = 12;
 
+// ------------------------------------------------- the shared description --
+// A service as the shared library lists it (docs/SUBSCRIPTIONS.md): the fixed lists below are the
+// library's too (library-template/tools/verify_record.py), in this order: a bit each in a mask.
+constexpr const char *SERVICE_STYLES[] = {"single_roaster", "multi_roaster", "curated", "matched",
+                                          "single_origin", "blends", "decaf", "espresso",
+                                          "filters", "cleaning", "equipment"};
+constexpr uint8_t SERVICE_STYLE_COUNT = sizeof(SERVICE_STYLES) / sizeof(SERVICE_STYLES[0]);
+// Sourcing and ethics: claims the service makes, checked by the library's reviewer against its site.
+constexpr const char *SERVICE_SOURCING[] = {"fair_trade", "direct_trade", "organic", "farm_named",
+                                            "prices_published", "sustainable_packaging",
+                                            "carbon_neutral", "b_corp"};
+constexpr uint8_t SERVICE_SOURCING_COUNT = sizeof(SERVICE_SOURCING) / sizeof(SERVICE_SOURCING[0]);
+constexpr const char *SERVICE_PLATFORMS[] = {"recharge", "ordergroove", "skio", "loop", "appstle",
+                                             "bold", "shopify", "own"};
+constexpr uint8_t SERVICE_PLATFORM_COUNT = sizeof(SERVICE_PLATFORMS) / sizeof(SERVICE_PLATFORMS[0]);
+constexpr uint8_t SERVICE_CADENCES = 6;      // delivery intervals offered, in days
+constexpr size_t SHIPS_TO_LEN = 32;          // "US,CA,GB": up to ten two-letter codes
+
+inline int listIndex(const char *const *list, uint8_t count, const char *name) {
+  for (uint8_t i = 0; name && i < count; ++i) if (strcmp(list[i], name) == 0) return i;
+  return -1;
+}
+
+// ---------------------------------------------------------------- reviews --
+// How a drinker rates a service: overall stars and six aspects, 1..5 each, 0 = not given.
+constexpr uint8_t SERVICE_ASPECTS = 6;
+constexpr const char *SERVICE_ASPECT_NAMES[SERVICE_ASPECTS] = {"value", "quality", "consistency",
+                                                               "reliability", "flexibility", "transparency"};
+constexpr size_t MAX_SERVICE_REVIEWS = 96;   // 12 subscriptions, 8 drinkers
+struct ServiceReview {
+  uint32_t id = 0;
+  uint32_t epochS = 0;
+  uint32_t shareSeq = 0;
+  uint16_t subscriptionId = 0;
+  uint8_t drinkerId = 0;                      // 0 = household
+  uint8_t stars = 0;                          // 1..5
+  uint8_t aspect[SERVICE_ASPECTS] = {};
+  uint8_t shareState = 0;                     // ShareState (core/Share.h)
+  char note[40] = {};                         // never leaves the controller
+};
+
+inline void sanitizeServiceReview(ServiceReview &r) {
+  if (r.stars < 1) r.stars = 1;
+  if (r.stars > 5) r.stars = 5;
+  for (uint8_t i = 0; i < SERVICE_ASPECTS; ++i) if (r.aspect[i] > 5) r.aspect[i] = 0;
+  if (r.drinkerId > 8) r.drinkerId = 0;
+  r.note[sizeof(r.note) - 1] = '\0';
+}
+
 enum class SubKind : uint8_t { COFFEE, SUPPLIES, OTHER };
 enum class SubStatus : uint8_t { ACTIVE, PAUSED, CANCELLED };
 
@@ -50,6 +99,19 @@ struct Subscription {
   int32_t stock = 0;
   uint8_t perShot = 0;         // 0: not used up by shots
   uint16_t perDelivery = 0;
+  // The shared description (sent with buildServiceRecord, core/Share.h) and where it stands with the
+  // library. A service added from the library's list carries its id and is published already.
+  char shipsTo[SHIPS_TO_LEN] = {};      // ISO country codes, comma separated; "" = not said
+  uint16_t cadences[SERVICE_CADENCES] = {};  // days; 0 = unused
+  uint32_t priceFromCents = 0;          // a typical price per delivery, a hint only
+  char currency[4] = {};                // "USD"
+  uint16_t styleMask = 0;               // SERVICE_STYLES
+  uint16_t sourcingMask = 0;            // SERVICE_SOURCING
+  char libraryId[40] = {};              // LIBRARY_ID_LEN
+  uint8_t shareState = 0;
+  uint32_t shareSeq = 0;
+  uint32_t shareHash = 0;
+  char reviewNote[48] = {};             // NOTES_LEN
 };
 
 inline const char *subKindName(SubKind k) {
@@ -200,6 +262,50 @@ inline void sanitizeSubscription(Subscription &s, uint32_t today = 0) {
     hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
   }
   if (!hex) s.color[0] = '\0';
+  // Country codes: upper-case pairs, comma separated.
+  {
+    char clean[SHIPS_TO_LEN] = {};
+    size_t n = 0;
+    for (const char *p = s.shipsTo; *p && n + 3 < sizeof(clean);) {
+      while (*p == ',' || *p == ' ') ++p;
+      char a = p[0], b = a ? p[1] : 0;
+      if (a >= 'a' && a <= 'z') a = static_cast<char>(a - 32);
+      if (b >= 'a' && b <= 'z') b = static_cast<char>(b - 32);
+      const bool code = a >= 'A' && a <= 'Z' && b >= 'A' && b <= 'Z' && (p[2] == ',' || p[2] == ' ' || !p[2]);
+      if (code) {
+        if (n) clean[n++] = ',';
+        clean[n++] = a;
+        clean[n++] = b;
+      }
+      while (*p && *p != ',') ++p;
+    }
+    memcpy(s.shipsTo, clean, sizeof(clean));
+  }
+  for (uint8_t i = 0; i < SERVICE_CADENCES; ++i) if (s.cadences[i] > 366) s.cadences[i] = 0;
+  if (s.priceFromCents > 1000000) s.priceFromCents = 0;
+  for (int i = 0; i < 3; ++i) {
+    char &c = s.currency[i];
+    if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 32);
+    if (!(c >= 'A' && c <= 'Z')) {
+      s.currency[0] = '\0';
+      break;
+    }
+  }
+  s.currency[3] = '\0';
+  s.styleMask &= static_cast<uint16_t>((1u << SERVICE_STYLE_COUNT) - 1);
+  s.sourcingMask &= static_cast<uint16_t>((1u << SERVICE_SOURCING_COUNT) - 1);
+  if (s.platform[0] && listIndex(SERVICE_PLATFORMS, SERVICE_PLATFORM_COUNT, s.platform) < 0) s.platform[0] = '\0';
+  s.libraryId[sizeof(s.libraryId) - 1] = s.reviewNote[sizeof(s.reviewNote) - 1] = '\0';
+  if (s.shareState > 6) s.shareState = 0;
+}
+
+// Whether a service ships to `country` (a two-letter code): yes when it does not say.
+inline bool shipsTo(const char *list, const char *country) {
+  if (!list || !list[0] || !country || !country[0]) return true;
+  for (const char *p = list; *p; ++p) {
+    if ((p == list || p[-1] == ',') && p[0] == country[0] && p[1] == country[1]) return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------- page preview --

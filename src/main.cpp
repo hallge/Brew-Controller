@@ -174,6 +174,13 @@ struct PreviewJob {
   char problem[80];
 };
 PreviewJob *g_preview;
+// Reviews of services, and the owner's say for recommendations.
+constexpr const char *SERVICE_REVIEWS_FILE = "/svcreviews.json";
+bbw::ServiceReview *g_reviews;   // MAX_SERVICE_REVIEWS
+size_t g_reviewCount = 0;
+uint32_t g_nextReviewId = 1;
+bool g_reviewsDirty = false;
+app::SubscriptionPrefs g_subPrefs;
 
 void allocateBuffers() {
   g_libraryBefore = bbw::bigNew<bbw::Library>();
@@ -186,6 +193,8 @@ void allocateBuffers() {
   for (size_t i = 0; i < bbw::MAX_SUBSCRIPTIONS; ++i) new (&g_subs[i]) bbw::Subscription();
   g_subsText = bbw::bigArray<char>(SUBS_TEXT_SIZE);
   g_preview = bbw::bigNew<PreviewJob>();
+  g_reviews = bbw::bigArray<bbw::ServiceReview>(bbw::MAX_SERVICE_REVIEWS);
+  for (size_t i = 0; i < bbw::MAX_SERVICE_REVIEWS; ++i) new (&g_reviews[i]) bbw::ServiceReview();
   g_preview->state = app::PreviewState::NONE;
 }
 char g_sharePath[96];
@@ -385,6 +394,25 @@ void shareReadStatus(bool idle) {
       LOGI("share: the library on the machine profile: %s", name);
     }
   }
+  // And about the subscription services this controller described.
+  for (JsonObjectConst entry : doc["services"].as<JsonArrayConst>()) {
+    const char *name = entry["state"] | "";
+    const bbw::ShareState state = !strcmp(name, "review") ? bbw::ShareState::IN_REVIEW
+                                  : !strcmp(name, "published") ? bbw::ShareState::PUBLISHED
+                                  : !strcmp(name, "declined") ? bbw::ShareState::DECLINED
+                                  : !strcmp(name, "refused") ? bbw::ShareState::REFUSED
+                                  : bbw::ShareState::LOCAL;
+    const uint16_t localId = entry["local_id"] | 0;
+    Lock lock;
+    for (size_t i = 0; i < g_subCount; ++i) {
+      if (g_subs[i].id != localId) continue;
+      if (bbw::applyReviewTo(&g_subs[i], entry["record"] | 0u, state, entry["note"] | "",
+                             entry["library_id"] | "")) {
+        g_subsDirty = true;
+        LOGI("share: the library on the service %s: %s", g_subs[i].name, name);
+      }
+    }
+  }
   doc.clear();
   if (changed) {
     LOGI("share: the library's verdicts on this controller's coffees have changed");
@@ -416,8 +444,22 @@ void shareRating(uint32_t id) {
       if (g_library.bags[i].id == find.r.bagId) roastDate = g_library.bags[i].roastDate;
     }
   }
+  // The service the bag came with, if that service is in the library's list.
+  char service[40] = {};
+  {
+    Lock lock;
+    uint16_t subId = 0;
+    for (uint8_t i = 0; i < g_library.bagCount; ++i) {
+      if (g_library.bags[i].id == find.r.bagId) subId = g_library.bags[i].subscriptionId;
+    }
+    for (size_t i = 0; subId && i < g_subCount; ++i) {
+      if (g_subs[i].id == subId && g_subs[i].shareState == static_cast<uint8_t>(bbw::ShareState::PUBLISHED)) {
+        strlcpy(service, g_subs[i].libraryId, sizeof(service));
+      }
+    }
+  }
   if (!ensureKeyQueued()) return;
-  if (bbw::buildTasteRecord(find.r, g_shareCoffee, roastDate, g_shareBody, bbw::SHARE_BODY_MAX) == 0) return;
+  if (bbw::buildTasteRecord(find.r, g_shareCoffee, roastDate, g_shareBody, bbw::SHARE_BODY_MAX, service) == 0) return;
   char kid[bbw::KEY_ID_LEN];
   bbw::keyId(bbw::deviceSigner().publicKey(), kid);
   snprintf(g_sharePath, sizeof(g_sharePath), "tastes/%s-r%u.json", kid, static_cast<unsigned>(id));
@@ -523,8 +565,9 @@ constexpr const char *COFFEES_CACHE = "/lcoffees.json";
 constexpr const char *GRINDERS_CACHE = "/lgrinders.json";
 constexpr const char *MACHINES_CACHE = "/lmachines.json";
 constexpr const char *AGE_CACHE = "/lage.json";
+constexpr const char *SERVICES_CACHE = "/lservices.json";  // index/services.json: subscription services
 constexpr const char *TASTE_CACHE = "/ltaste.json";   // index/taste.json: coffee ratings from everyone
-constexpr uint8_t LIBRARY_FIXED_STEPS = 6;  // fit, coffees, grinders, ageing rate, machines, taste; then a dial-in per coffee
+constexpr uint8_t LIBRARY_FIXED_STEPS = 7;  // fit, coffees, grinders, ageing rate, machines, taste, services; then a dial-in per coffee
 uint32_t g_communityStamp = 1;  // goes up when anything cached changes
 
 void dialinCache(uint16_t coffeeId, char *out, size_t size) {
@@ -587,6 +630,10 @@ void libraryRefresh(bool idle) {
   } else if (step == 5) {
     if (fetchLibraryFile("index/taste.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
       g_store.writeTextIfChanged(TASTE_CACHE, g_libraryText);
+    }
+  } else if (step == 6) {
+    if (fetchLibraryFile("index/services.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
+      g_store.writeTextIfChanged(SERVICES_CACHE, g_libraryText);
     }
   } else if (step - LIBRARY_FIXED_STEPS < count) {
     char file[bbw::LIBRARY_ID_LEN * 2], cache[20];
@@ -993,6 +1040,8 @@ void loadSubscriptions() {
     return;
   }
   g_nextSubId = doc["next_id"] | 1;
+  strlcpy(g_subPrefs.country, doc["country"] | "", sizeof(g_subPrefs.country));
+  g_subPrefs.matters = doc["matters"] | 0;
   for (JsonObjectConst o : doc["subscriptions"].as<JsonArrayConst>()) {
     if (g_subCount >= bbw::MAX_SUBSCRIPTIONS) break;
     bbw::Subscription &s = g_subs[g_subCount];
@@ -1010,6 +1059,8 @@ void saveSubscriptions() {
   {
     Lock lock;
     doc["next_id"] = g_nextSubId;
+    doc["country"] = g_subPrefs.country;
+    doc["matters"] = g_subPrefs.matters;
     JsonArray list = doc["subscriptions"].to<JsonArray>();
     for (size_t i = 0; i < g_subCount; ++i) app::subscriptionToJson(g_subs[i], list.add<JsonObject>());
     g_subsDirty = false;
@@ -1020,6 +1071,133 @@ void saveSubscriptions() {
     return;
   }
   if (!g_store.writeTextIfChanged(SUBS_FILE, g_subsText)) LOGW("subscriptions: not saved");
+}
+
+// Queues a service's description for review, unless the library has this very version already.
+bool queueService(uint16_t id) {
+  static bbw::Subscription s;
+  bool found = false;
+  {
+    Lock lock;
+    for (size_t i = 0; i < g_subCount; ++i) {
+      if (g_subs[i].id == id) {
+        s = g_subs[i];
+        found = true;
+      }
+    }
+  }
+  if (!found || !bbw::serviceCanBeShared(s)) return false;
+  if (s.shareState != 0 && s.shareState != static_cast<uint8_t>(bbw::ShareState::REFUSED) &&
+      s.shareState != static_cast<uint8_t>(bbw::ShareState::DECLINED) && !bbw::serviceChangedSinceShared(s)) {
+    return false;
+  }
+  if (!ensureKeyQueued()) return false;
+  char kid[bbw::KEY_ID_LEN];
+  bbw::keyId(bbw::deviceSigner().publicKey(), kid);
+  const uint32_t seq = g_store.outboxNext();
+  if (bbw::buildServiceRecord(s, seq, wallClock(), g_shareBody, bbw::SHARE_BODY_MAX) == 0) return false;
+  snprintf(g_sharePath, sizeof(g_sharePath), "services/%s/s%u-%u.json", kid, static_cast<unsigned>(id),
+           static_cast<unsigned>(seq));
+  if (!shareQueue(g_sharePath)) return false;
+  Lock lock;
+  for (size_t i = 0; i < g_subCount; ++i) {
+    if (g_subs[i].id == id) bbw::markServiceQueued(g_subs[i], seq);
+  }
+  g_subsDirty = true;
+  LOGI("share: service %s queued", s.name);
+  return true;
+}
+
+// A review just saved, sent when ratings are shared and its service is in the library's list.
+void shareServiceReview(uint32_t id) {
+  const bbw::Settings st = app::settings();
+  if (!st.shareEnabled || !st.shareRatings || !bbw::deviceSigner().ready()) return;
+  bbw::ServiceReview r;
+  char service[40] = {};
+  {
+    Lock lock;
+    size_t i = 0;
+    while (i < g_reviewCount && g_reviews[i].id != id) ++i;
+    if (i == g_reviewCount) return;
+    r = g_reviews[i];
+    for (size_t k = 0; k < g_subCount; ++k) {
+      if (g_subs[k].id == r.subscriptionId &&
+          g_subs[k].shareState == static_cast<uint8_t>(bbw::ShareState::PUBLISHED)) {
+        strlcpy(service, g_subs[k].libraryId, sizeof(service));
+      }
+    }
+  }
+  if (!service[0] || !ensureKeyQueued()) return;
+  if (bbw::buildServiceReviewRecord(r, service, g_shareBody, bbw::SHARE_BODY_MAX) == 0) return;
+  char kid[bbw::KEY_ID_LEN];
+  bbw::keyId(bbw::deviceSigner().publicKey(), kid);
+  snprintf(g_sharePath, sizeof(g_sharePath), "svcreviews/%s-v%u.json", kid, static_cast<unsigned>(id));
+  const uint32_t seq = g_store.outboxNext();
+  if (!shareQueue(g_sharePath)) return;
+  Lock lock;
+  for (size_t i = 0; i < g_reviewCount; ++i) {
+    if (g_reviews[i].id == id) {
+      g_reviews[i].shareState = static_cast<uint8_t>(bbw::ShareState::QUEUED);
+      g_reviews[i].shareSeq = seq;
+      g_reviewsDirty = true;
+    }
+  }
+  LOGI("share: review of %s queued", service);
+}
+
+void loadServiceReviews() {
+  g_reviewCount = 0;
+  const size_t length = g_store.readText(SERVICE_REVIEWS_FILE, g_subsText, SUBS_TEXT_SIZE);
+  if (length == 0) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, g_subsText, length)) return;
+  g_nextReviewId = doc["next_id"] | 1;
+  for (JsonObjectConst o : doc["reviews"].as<JsonArrayConst>()) {
+    if (g_reviewCount >= bbw::MAX_SERVICE_REVIEWS) break;
+    bbw::ServiceReview &r = g_reviews[g_reviewCount];
+    r = bbw::ServiceReview();
+    r.id = o["id"] | 0u;
+    r.epochS = o["at"] | 0u;
+    r.subscriptionId = o["sub"] | 0;
+    r.drinkerId = o["drinker"] | 0;
+    r.stars = o["stars"] | 0;
+    for (uint8_t a = 0; a < bbw::SERVICE_ASPECTS; ++a) r.aspect[a] = o["aspects"][a] | 0;
+    r.shareState = o["share"] | 0;
+    r.shareSeq = o["seq"] | 0u;
+    strlcpy(r.note, o["note"] | "", sizeof(r.note));
+    bbw::sanitizeServiceReview(r);
+    if (r.id == 0) continue;
+    if (r.id >= g_nextReviewId) g_nextReviewId = r.id + 1;
+    ++g_reviewCount;
+  }
+}
+
+void saveServiceReviews() {
+  JsonDocument doc;
+  {
+    Lock lock;
+    doc["next_id"] = g_nextReviewId;
+    JsonArray list = doc["reviews"].to<JsonArray>();
+    for (size_t i = 0; i < g_reviewCount; ++i) {
+      const bbw::ServiceReview &r = g_reviews[i];
+      JsonObject o = list.add<JsonObject>();
+      o["id"] = r.id;
+      o["at"] = r.epochS;
+      o["sub"] = r.subscriptionId;
+      o["drinker"] = r.drinkerId;
+      o["stars"] = r.stars;
+      JsonArray a = o["aspects"].to<JsonArray>();
+      for (uint8_t k = 0; k < bbw::SERVICE_ASPECTS; ++k) a.add(r.aspect[k]);
+      o["share"] = r.shareState;
+      o["seq"] = r.shareSeq;
+      o["note"] = r.note;
+    }
+    g_reviewsDirty = false;
+  }
+  const size_t n = serializeJson(doc, g_subsText, SUBS_TEXT_SIZE);
+  if (n == 0 || n >= SUBS_TEXT_SIZE - 1 || !g_store.writeTextIfChanged(SERVICE_REVIEWS_FILE, g_subsText)) {
+    LOGW("subscriptions: reviews not saved");
+  }
 }
 
 // A shot was saved: supplies that each shot uses (a paper filter) go down.
@@ -1062,6 +1240,11 @@ void subscriptionsService(bool idle) {
     save = g_subsDirty;
   }
   if (save) saveSubscriptions();
+  {
+    Lock lock;
+    save = g_reviewsDirty;
+  }
+  if (save) saveServiceReviews();
 }
 
 namespace app {
@@ -2183,6 +2366,23 @@ uint16_t saveSubscription(const bbw::Subscription &in) {
   Lock lock;
   bbw::Subscription s = in;
   bbw::sanitizeSubscription(s);
+  // Where it stands with the library is the controller's to know, never the page's: kept as it was,
+  // or, for one just added from the library's list, published already (nothing to send).
+  s.shareState = 0;
+  s.shareSeq = s.shareHash = 0;
+  s.reviewNote[0] = '\0';
+  if (s.id == 0) {
+    if (s.libraryId[0]) s.shareState = static_cast<uint8_t>(bbw::ShareState::PUBLISHED);
+  } else {
+    for (size_t i = 0; i < g_subCount; ++i) {
+      if (g_subs[i].id != s.id) continue;
+      memcpy(s.libraryId, g_subs[i].libraryId, sizeof(s.libraryId));
+      s.shareState = g_subs[i].shareState;
+      s.shareSeq = g_subs[i].shareSeq;
+      s.shareHash = g_subs[i].shareHash;
+      memcpy(s.reviewNote, g_subs[i].reviewNote, sizeof(s.reviewNote));
+    }
+  }
   if (s.id == 0) {
     if (g_subCount >= bbw::MAX_SUBSCRIPTIONS) return 0;
     s.id = g_nextSubId++;
@@ -2205,6 +2405,14 @@ bool deleteSubscription(uint16_t id) {
     for (size_t j = i; j + 1 < g_subCount; ++j) g_subs[j] = g_subs[j + 1];
     --g_subCount;
     g_subsDirty = true;
+    size_t keep = 0;
+    for (size_t k = 0; k < g_reviewCount; ++k) {
+      if (g_reviews[k].subscriptionId != id) g_reviews[keep++] = g_reviews[k];
+    }
+    if (keep != g_reviewCount) {
+      g_reviewCount = keep;
+      g_reviewsDirty = true;
+    }
     return true;
   }
   return false;
@@ -2282,6 +2490,22 @@ void subscriptionToJson(const bbw::Subscription &s, JsonObject o) {
   o["stock"] = s.stock;
   o["per_shot"] = s.perShot;
   o["per_delivery"] = s.perDelivery;
+  o["ships_to"] = s.shipsTo;
+  JsonArray cad = o["cadences"].to<JsonArray>();
+  for (uint8_t i = 0; i < bbw::SERVICE_CADENCES; ++i) if (s.cadences[i]) cad.add(s.cadences[i]);
+  o["price_from_cents"] = s.priceFromCents;
+  o["currency"] = s.currency;
+  JsonArray style = o["style"].to<JsonArray>();
+  for (uint8_t i = 0; i < bbw::SERVICE_STYLE_COUNT; ++i) if ((s.styleMask >> i) & 1u) style.add(bbw::SERVICE_STYLES[i]);
+  JsonArray sourcing = o["sourcing"].to<JsonArray>();
+  for (uint8_t i = 0; i < bbw::SERVICE_SOURCING_COUNT; ++i) {
+    if ((s.sourcingMask >> i) & 1u) sourcing.add(bbw::SERVICE_SOURCING[i]);
+  }
+  o["library_id"] = s.libraryId;
+  o["share_state"] = s.shareState;
+  o["share_seq"] = s.shareSeq;
+  o["share_hash"] = s.shareHash;
+  o["review_note"] = s.reviewNote;
 }
 
 void subscriptionFromJson(JsonObjectConst o, bbw::Subscription &s) {
@@ -2308,6 +2532,106 @@ void subscriptionFromJson(JsonObjectConst o, bbw::Subscription &s) {
   s.stock = o["stock"] | 0;
   s.perShot = o["per_shot"] | 0;
   s.perDelivery = o["per_delivery"] | 0;
+  bbw::subCopy(s.shipsTo, o["ships_to"] | "", sizeof(s.shipsTo));
+  uint8_t n = 0;
+  for (JsonVariantConst d : o["cadences"].as<JsonArrayConst>()) {
+    if (n < bbw::SERVICE_CADENCES) s.cadences[n++] = d | 0;
+  }
+  s.priceFromCents = o["price_from_cents"] | 0;
+  bbw::subCopy(s.currency, o["currency"] | "", sizeof(s.currency));
+  for (JsonVariantConst v : o["style"].as<JsonArrayConst>()) {
+    const int k = bbw::listIndex(bbw::SERVICE_STYLES, bbw::SERVICE_STYLE_COUNT, v | "");
+    if (k >= 0) s.styleMask |= static_cast<uint16_t>(1u << k);
+  }
+  for (JsonVariantConst v : o["sourcing"].as<JsonArrayConst>()) {
+    const int k = bbw::listIndex(bbw::SERVICE_SOURCING, bbw::SERVICE_SOURCING_COUNT, v | "");
+    if (k >= 0) s.sourcingMask |= static_cast<uint16_t>(1u << k);
+  }
+  bbw::subCopy(s.libraryId, o["library_id"] | "", sizeof(s.libraryId));
+  s.shareState = o["share_state"] | 0;
+  s.shareSeq = o["share_seq"] | 0u;
+  s.shareHash = o["share_hash"] | 0u;
+  bbw::subCopy(s.reviewNote, o["review_note"] | "", sizeof(s.reviewNote));
+}
+
+SubscriptionPrefs subscriptionPrefs() {
+  Lock lock;
+  return g_subPrefs;
+}
+
+void setSubscriptionPrefs(const SubscriptionPrefs &p) {
+  Lock lock;
+  g_subPrefs = p;
+  g_subPrefs.country[2] = '\0';
+  for (char &c : g_subPrefs.country) if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 32);
+  if (!(g_subPrefs.country[0] >= 'A' && g_subPrefs.country[0] <= 'Z' && g_subPrefs.country[1] >= 'A' &&
+        g_subPrefs.country[1] <= 'Z')) {
+    g_subPrefs.country[0] = '\0';
+  }
+  g_subPrefs.matters &= static_cast<uint16_t>((1u << bbw::SERVICE_SOURCING_COUNT) - 1);
+  g_subsDirty = true;
+}
+
+bool shareService(uint16_t id) {
+  if (!settings().shareEnabled) return false;
+  return queueService(id);
+}
+
+uint32_t outboxSent() { return g_store.outboxSent(); }
+
+void readServiceReviews(void (*visit)(const bbw::ServiceReview *, size_t, void *), void *context) {
+  Lock lock;
+  visit(g_reviews, g_reviewCount, context);
+}
+
+uint32_t saveServiceReview(const bbw::ServiceReview &in) {
+  uint32_t id = 0;
+  {
+    Lock lock;
+    bbw::ServiceReview r = in;
+    bbw::sanitizeServiceReview(r);
+    bool known = false;
+    for (size_t i = 0; i < g_subCount; ++i) known |= g_subs[i].id == r.subscriptionId;
+    if (!known) return 0;
+    r.epochS = epochNow();
+    r.shareState = 0;
+    r.shareSeq = 0;
+    // One per drinker per subscription: a new one replaces it, keeping its id (the library keeps the latest).
+    size_t i = 0;
+    while (i < g_reviewCount && !(g_reviews[i].subscriptionId == r.subscriptionId &&
+                                  g_reviews[i].drinkerId == r.drinkerId)) {
+      ++i;
+    }
+    if (i == g_reviewCount) {
+      if (g_reviewCount >= bbw::MAX_SERVICE_REVIEWS) return 0;
+      r.id = g_nextReviewId++;
+      ++g_reviewCount;
+    } else {
+      r.id = g_reviews[i].id;
+    }
+    g_reviews[i] = r;
+    g_reviewsDirty = true;
+    id = r.id;
+  }
+  shareServiceReview(id);
+  return id;
+}
+
+bool deleteServiceReview(uint32_t id) {
+  Lock lock;
+  for (size_t i = 0; i < g_reviewCount; ++i) {
+    if (g_reviews[i].id != id) continue;
+    for (size_t j = i; j + 1 < g_reviewCount; ++j) g_reviews[j] = g_reviews[j + 1];
+    --g_reviewCount;
+    g_reviewsDirty = true;
+    return true;
+  }
+  return false;
+}
+
+const char *communityServices() {
+  if (g_store.readText(SERVICES_CACHE, g_libraryText, LIBRARY_TEXT_SIZE) == 0) g_libraryText[0] = '\0';
+  return g_libraryText;
 }
 
 void requestPagePreview(const char *url) {
@@ -2370,6 +2694,7 @@ void setup() {
   g_store.loadLibrary(g_library);
   LOGI("start-up: library loaded");
   loadSubscriptions();
+  loadServiceReviews();
   if (bbw::beginDeviceKey()) {
     char kid[bbw::KEY_ID_LEN], last[bbw::KEY_ID_LEN + 2];
     bbw::keyId(bbw::deviceSigner().publicKey(), kid);

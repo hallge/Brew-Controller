@@ -6842,6 +6842,105 @@ static void testSubscriptions() {
   CHECK(m.title[0] == '\0');
 }
 
+static void testServiceSharing() {
+  printf("subscriptions: shared services, reviews and the service score\n");
+  Subscription s;
+  s.id = 3;
+  subCopy(s.name, "Trade Coffee", sizeof(s.name));
+  subCopy(s.url, "https://www.drinktrade.com/", sizeof(s.url));
+  subCopy(s.manageUrl, "https://www.drinktrade.com/account", sizeof(s.manageUrl));
+  subCopy(s.platform, "ordergroove", sizeof(s.platform));
+  subCopy(s.shipsTo, " us, ca,xyz,G", sizeof(s.shipsTo));
+  subCopy(s.currency, "usd", sizeof(s.currency));
+  subCopy(s.description, "Coffee \xE2\x80\x9Cmatched\xE2\x80\x9D to you \xE2\x80\x94 500+ coffees", sizeof(s.description));
+  s.cadences[0] = 14;
+  s.cadences[1] = 28;
+  s.cadences[2] = 999;
+  s.priceFromCents = 1500;
+  s.styleMask = (1u << 1) | (1u << 3) | (1u << 15);
+  s.sourcingMask = (1u << 0) | (1u << 3);
+  s.priceCents = 2150;           // the owner's own: never in the record
+  s.stock = 5;
+  subCopy(s.note, "my secret note", sizeof(s.note));
+  sanitizeSubscription(s);
+  CHECK(strcmp(s.shipsTo, "US,CA") == 0 && strcmp(s.currency, "USD") == 0 && s.cadences[2] == 0);
+  CHECK(s.styleMask == ((1u << 1) | (1u << 3)));
+  CHECK(shipsTo(s.shipsTo, "CA") && !shipsTo(s.shipsTo, "GB") && shipsTo("", "GB"));
+  Subscription badPlatform = s;
+  subCopy(badPlatform.platform, "evil", sizeof(badPlatform.platform));
+  sanitizeSubscription(badPlatform);
+  CHECK(badPlatform.platform[0] == '\0');
+
+  char out[SHARE_BODY_MAX];
+  const size_t n = buildServiceRecord(s, 41, 1792688400, out, sizeof(out));
+  CHECK(n > 0);
+  const std::string rec(out);
+  CHECK(rec.find("\"t\":\"service\"") != std::string::npos && rec.find("\"local_id\":3") != std::string::npos);
+  CHECK(rec.find("\"ships_to\":[\"US\",\"CA\"]") != std::string::npos);
+  CHECK(rec.find("\"cadences\":[14,28]") != std::string::npos);
+  CHECK(rec.find("\"style\":[\"multi_roaster\",\"matched\"]") != std::string::npos);
+  CHECK(rec.find("\"sourcing\":[\"fair_trade\",\"farm_named\"]") != std::string::npos);
+  CHECK(rec.find("\"price_from_cents\":1500,\"currency\":\"USD\"") != std::string::npos);
+  CHECK(rec.find("\"about\":\"Coffee \\\"matched\\\" to you - 500+ coffees\"") != std::string::npos);
+  CHECK(rec.find("2150") == std::string::npos && rec.find("secret") == std::string::npos &&
+        rec.find("stock") == std::string::npos);
+
+  // Changed since shared: only the shared fields count.
+  markServiceQueued(s, 41);
+  CHECK(s.shareState == static_cast<uint8_t>(ShareState::QUEUED) && !serviceChangedSinceShared(s));
+  s.priceCents = 9999;
+  s.nextDate = 20261201;
+  CHECK(!serviceChangedSinceShared(s));
+  s.sourcingMask |= 1u << 2;
+  CHECK(serviceChangedSinceShared(s));
+  CHECK(serviceShareState(s, 40) == ShareState::QUEUED && serviceShareState(s, 42) == ShareState::SENT);
+  CHECK(applyReviewTo(&s, 41, ShareState::PUBLISHED, "ok", "trade-coffee") && strcmp(s.libraryId, "trade-coffee") == 0);
+  CHECK(!applyReviewTo(&s, 40, ShareState::DECLINED, "old", ""));
+  Subscription none;
+  CHECK(!serviceCanBeShared(none) && serviceCanBeShared(s));
+
+  // A review: stars and the aspects given; the note stays here.
+  ServiceReview r;
+  r.id = 7;
+  r.epochS = 1792688400;
+  r.drinkerId = 2;
+  r.stars = 9;
+  r.aspect[0] = 4;
+  r.aspect[2] = 5;
+  r.aspect[5] = 8;
+  subCopy(r.note, "late twice", sizeof(r.note));
+  sanitizeServiceReview(r);
+  CHECK(r.stars == 5 && r.aspect[5] == 0);
+  CHECK(buildServiceReviewRecord(r, "trade-coffee", out, sizeof(out)) > 0);
+  const std::string rv(out);
+  CHECK(rv.find("\"t\":\"service_review\"") != std::string::npos && rv.find("\"service\":\"trade-coffee\"") != std::string::npos);
+  CHECK(rv.find("\"aspects\":{\"value\":4,\"consistency\":5}") != std::string::npos && rv.find("late") == std::string::npos);
+  CHECK(buildServiceReviewRecord(r, "", out, sizeof(out)) == 0);    // only for a service in the library
+
+  // A coffee rating says which service the bag came with.
+  CoffeeRating cr;
+  cr.id = 1;
+  cr.stars = 4;
+  Coffee c;
+  copyText(c.name, "Alma", COFFEE_NAME_LEN);
+  CHECK(buildTasteRecord(cr, c, 20261018, out, sizeof(out), "trade-coffee") > 0 &&
+        std::string(out).find("\"service\":\"trade-coffee\"") != std::string::npos);
+  CHECK(buildTasteRecord(cr, c, 20261018, out, sizeof(out)) > 0 && std::string(out).find("service") == std::string::npos);
+
+  // The service score: a good taste match leads; values that matter lift; reviews alone still rank.
+  TasteMatch good;
+  good.score = 0.8f;
+  good.confidence = 1.0f;
+  TasteMatch poor;
+  poor.score = -0.4f;
+  poor.confidence = 1.0f;
+  CHECK(serviceScore(good, true, 0, 0, 0) > serviceScore(poor, true, 0, 0, 0));
+  CHECK(serviceScore(poor, true, 0, 0, 2) > serviceScore(poor, true, 0, 0, 0));
+  CHECK_NEAR(serviceScore(good, false, 0, 0, 5) - serviceScore(good, false, 0, 0, 3), 0.0, 1e-6);   // at most three
+  CHECK(serviceScore(good, false, 0, 4.5f, 0) > serviceScore(good, false, 0, 3.5f, 0));
+  CHECK(serviceScore(good, false, 5.0f, 0, 0) == 0.0f);   // people's stars mean nothing without taste
+}
+
 int main() {
   setvbuf(stdout, nullptr, _IONBF, 0);  // keep the output if a test crashes
   testAcaiaProtocol();
@@ -6909,6 +7008,7 @@ int main() {
   testBags();
   testUnopenedBags();
   testSubscriptions();
+  testServiceSharing();
   testExtraction();
   testUpkeep();
   testUpkeepDefaults();
