@@ -2,6 +2,8 @@
 // messages between the page and the extension's worker. Registered only for the controller's address
 // the owner paired in the popup.
 (function () {
+  if (window.__bbwRelay) return;   // put in once, whether registered or added to an open page
+  window.__bbwRelay = true;
   const version = chrome.runtime.getManifest().version;
   document.documentElement.dataset.bbwExtension = version;
   // The page asks: {bbw:'update', requestId, subscriptions:[{id, name, url, manage_url}]}

@@ -698,7 +698,7 @@ function drawDrinkers(){const el=$('drnames');if(!el||!RT)return;el.innerHTML=RT
 function saveDrinkers(){post('/api/drinkers',{names:[...Array(8)].map((_,i)=>($('drn'+i)||{}).value||'')}).then(r=>{done(r,'Names saved');loadRatings()})}
 // The rating being edited: the drinker's rating of the bag in use if there is one.
 function ratingFor(cid,bag,dr){return RT?RT.ratings.find(r=>r.coffee==cid&&r.bag==bag&&r.drinker==dr):null}
-function drawRating(){const el=$('crate');if(!el)return;const c=C&&coffee(C);if(!c||!RT){el.style.display='none';return}el.style.display='';
+function drawRating(){const el=$('crate');if(!el||!L)return;const c=C&&coffee(C);if(!c||!RT){el.style.display='none';return}el.style.display='';
 const named=RT.named,people=named?RT.drinkers.map((n,i)=>[i+1,n]).filter(x=>x[1]):[];
 if(!RS||RS.coffee!=C){const dr=named&&people.length?(RS&&RS.drinker&&RT.drinkers[RS.drinker-1]?RS.drinker:people[0][0]):0,old=ratingFor(C,c.bagId||0,dr);
 RS=old?{coffee:C,id:old.id,drinker:dr,stars:old.stars,attr:[...old.attr],fl:old.flavours}:{coffee:C,id:0,drinker:dr,stars:0,attr:[0,0,0,0,0],fl:0}}
@@ -934,7 +934,7 @@ el.innerHTML=list.length?list.slice().sort(order).map(s=>subCard(s)).join(''):`<
 const next=act.filter(s=>s.days_until!=null).sort((a,b)=>a.days_until-b.days_until)[0],sup=list.filter(s=>s.kind=='supplies'&&s.per_shot>0);
 $('subsum').innerHTML=list.length?[`<div class="stat"><span class="sm dim">Each month</span><b>${money(SUBS.monthly_cents||0)}</b><span class="sm dim">${act.length} active</span></div>`,
 next?`<div class="stat"><span class="sm dim">Next up</span><b>${esc(next.name||next.site)}</b><span class="sm dim">${esc(subWhen(next))}</span></div>`:'',
-...sup.map(s=>`<div class="stat"><span class="sm dim">${esc(cap(s.item||s.name))}</span><b>${s.stock} left</b><span class="sm ${s.stock_short?'':'dim'}" ${s.stock_short?'style="color:var(--warn)"':''}>${s.stock_days_left!=null?'about '+s.stock_days_left+' days at '+SUBS.shots_per_day+' shots a day':'not used up yet'}</span></div>`)].join(''):'';
+...sup.map(s=>`<div class="stat"><span class="sm dim">${esc(cap(s.item||s.name))}${s.note?' · '+esc(s.note):''}</span><b>${s.stock} left</b><span class="sm ${s.stock_short?'':'dim'}" ${s.stock_short?'style="color:var(--warn)"':''}>${s.stock_days_left!=null?'about '+s.stock_days_left+' days at '+SUBS.shots_per_day+' shots a day':'not used up yet'}</span></div>`)].join(''):'';
 $('subrem').innerHTML=act.filter(s=>s.due_soon||s.stock_short).map(s=>`<div class="remind"><span style="flex:1 1 240px">${s.due_soon?`<b>${esc(s.name)}</b> ${s.days_until<0?'was due '+fd(s.next_date)+': did it come?':s.days_until==0?'charges or ships today':'charges or ships '+(s.days_until==1?'tomorrow':'in '+s.days_until+' days')+'. Skip it at the shop if you do not need it.'}`:`<b>${esc(cap(s.item||s.name))}</b> will run out before the next delivery.`}</span>${s.manage_url?`<a class="btn" href="${esc(s.manage_url)}" target="_blank" rel="noopener noreferrer">Manage ↗</a>`:''}${s.due_soon&&s.days_until<=0?`<button onclick="subArrived(${s.id})">Arrived</button>`:''}</div>`).join('')}
 const sub=id=>SUBS&&(SUBS.subscriptions||[]).find(s=>s.id==id);
 function subKind(){$('sfsup').style.display=$('sf_kind').value=='supplies'?'':'none'}
