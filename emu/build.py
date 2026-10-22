@@ -75,7 +75,7 @@ def main():
 
     # Any header change rebuilds the firmware and emulator sources; LVGL only
     # depends on its configuration.
-    headers = [p for d in (ROOT / "src", ROOT / "lib", EMU / "shims", EMU / "src")
+    headers = [p for d in (ROOT / "src", ROOT / "lib", EMU / "shims", EMU / "src", ROOT / ".pio" / "gen")
                for p in d.rglob("*.h")]
     lv_conf = ROOT / "include" / "lv_conf.h"
     own_stamp = max(newest(headers), lv_conf.stat().st_mtime, Path(__file__).stat().st_mtime)
