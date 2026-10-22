@@ -117,6 +117,9 @@ class Store {
   // when it cannot be reached.
   size_t readText(const char *path, char *out, size_t size);  // 0: not there
   bool writeTextIfChanged(const char *path, const char *text);
+  // The file holds `text` afterwards: written, or the same already. false only when it could not be
+  // written (for files the controller owns, where "unchanged" is not news).
+  bool saveText(const char *path, const char *text);
 
   // Outbox: records waiting to go to the shared library, oldest first. Each
   // is a small file; this survives restarts and being offline.
@@ -131,6 +134,7 @@ class Store {
   void outboxForgetKey();  // the public key is to be sent again, ahead of the next record
 
  private:
+  int writeText(const char *path, const char *text);  // 1 written, 0 already so, -1 failed
   struct Header {
     uint32_t magic;
     uint16_t version;

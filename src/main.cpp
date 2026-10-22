@@ -1070,7 +1070,7 @@ void saveSubscriptions() {
     LOGW("subscriptions: too big to save");
     return;
   }
-  if (!g_store.writeTextIfChanged(SUBS_FILE, g_subsText)) LOGW("subscriptions: not saved");
+  if (!g_store.saveText(SUBS_FILE, g_subsText)) LOGW("subscriptions: not saved");
 }
 
 // Queues a service's description for review, unless the library has this very version already.
@@ -1195,7 +1195,7 @@ void saveServiceReviews() {
     g_reviewsDirty = false;
   }
   const size_t n = serializeJson(doc, g_subsText, SUBS_TEXT_SIZE);
-  if (n == 0 || n >= SUBS_TEXT_SIZE - 1 || !g_store.writeTextIfChanged(SERVICE_REVIEWS_FILE, g_subsText)) {
+  if (n == 0 || n >= SUBS_TEXT_SIZE - 1 || !g_store.saveText(SERVICE_REVIEWS_FILE, g_subsText)) {
     LOGW("subscriptions: reviews not saved");
   }
 }

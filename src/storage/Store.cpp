@@ -851,7 +851,16 @@ size_t Store::readText(const char *path, char *out, size_t size) {
 // Flash wears: a file read again and again from the library is only written
 // when what came back is different. true if it was written.
 bool Store::writeTextIfChanged(const char *path, const char *text) {
-  if (!fsOk_) return false;
+  return writeText(path, text) == 1;
+}
+
+bool Store::saveText(const char *path, const char *text) {
+  return writeText(path, text) >= 0;
+}
+
+// 1: written; 0: the file held this text already; -1: it could not be written.
+int Store::writeText(const char *path, const char *text) {
+  if (!fsOk_) return -1;
   const size_t length = strlen(text);
   bool same = false;
   if (bbw::fileExists(path)) {
@@ -874,12 +883,12 @@ bool Store::writeTextIfChanged(const char *path, const char *text) {
       existing.close();
     }
   }
-  if (same) return false;
+  if (same) return 0;
   File file = LittleFS.open(path, "w");
-  if (!file) return false;
+  if (!file) return -1;
   const bool ok = file.write(reinterpret_cast<const uint8_t *>(text), length) == length;
   file.close();
-  return ok;
+  return ok ? 1 : -1;
 }
 // ---- outbox ---------------------------------------------------------------
 // One file per record, "/o<number>.txt": the path it is to be published at,
