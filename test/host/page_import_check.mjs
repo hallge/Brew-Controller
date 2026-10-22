@@ -122,6 +122,11 @@ const clean = (r, what) => check(!PERSONAL.test(JSON.stringify(r)), what + ': no
   const r = await reader.bbwReadSubscription(env({href: 'https://roaster.example.org/account', text: 'Your plan\nNext delivery\nNovember 20, 2026\nContact jane@example.com'}));
   check(r.state == 'done' && r.data.next.date == 20261120, 'generic: next delivery');
   clean(r, 'generic');
+  // An account page that links to its subscription page: followed once, gift subscriptions not.
+  const acct = await reader.bbwReadSubscription(env({href: 'https://accounts.example.org/123/account/orders', text: 'Orders',
+    links: [{text: 'Give a subscription', href: 'https://accounts.example.org/gift'},
+            {text: 'Manage Subscription', href: 'https://accounts.example.org/123/account/pages/abc'}]}));
+  check(acct.state == 'go' && acct.url == 'https://accounts.example.org/123/account/pages/abc', 'generic: follows the subscription link');
   const none = await reader.bbwReadSubscription(env({href: 'https://roaster.example.org/', text: 'Welcome'}));
   check(none.state == 'none', 'generic: nothing found');
 }

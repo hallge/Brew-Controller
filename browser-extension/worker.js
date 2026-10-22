@@ -60,7 +60,10 @@ async function next() {
   const sub = item.sub;
   const say = (state, message) => tell(item.controllerTab, item.requestId, sub.id, state, message);
   const hosts = [hostOf(sub.url), hostOf(sub.manage_url)].filter((h, i, a) => h && a.indexOf(h) === i);
-  const start = [sub.url, sub.manage_url].find(u => bbwReader.allowedUrl(u || '', hosts));
+  // Where to read: the subscription page the owner saved on the card first (it is where the details
+  // are), then the shop's own site.
+  const starts = [sub.manage_url, sub.url].filter((u, i, a) => u && bbwReader.allowedUrl(u, hosts) && a.indexOf(u) === i);
+  const start = starts[0];
   await save(queue, null);
   if (!start) {
     say('error', 'no https link to read');
@@ -68,20 +71,35 @@ async function next() {
   }
   if (!(await chrome.permissions.contains({origins: originsFor(hosts)}))) {
     // Chrome asks only from a page the owner clicks in: a small window, and the job waits for it.
-    await save(queue, {...item, hosts, start, waitingGrant: true, deadline: Date.now() + WAIT_MS});
+    await save(queue, {...item, hosts, start, starts, waitingGrant: true, deadline: Date.now() + WAIT_MS});
     const url = chrome.runtime.getURL('grant.html') + '?' + new URLSearchParams({name: sub.name || hosts[0], origins: originsFor(hosts).join(' ')});
     await chrome.windows.create({url, type: 'popup', width: 460, height: 340});
     return say('working', 'allow the helper to read ' + hosts.join(', '));
   }
-  return open({...item, hosts, start}, queue);
+  return open({...item, hosts, start, starts}, queue);
 }
 
 async function open(item, queue) {
   const tab = await chrome.tabs.create({url: item.start, active: true});
-  await save(queue, {...item, waitingGrant: false, shopTab: tab.id, startHost: hostOf(item.start), hops: 0,
-                     backHome: false, deadline: Date.now() + WAIT_MS});
+  await save(queue, {...item, waitingGrant: false, shopTab: tab.id, si: 0, hops: 0, fallback: null,
+                     deadline: Date.now() + WAIT_MS});
   tell(item.controllerTab, item.requestId, item.sub.id, 'working', 'opening ' + hostOf(item.start));
   chrome.alarms.create('deadline', {periodInMinutes: 1});
+}
+
+// The next place to read from, if there is one: true when it is on its way.
+async function nextStart(queue, job, id) {
+  const starts = job.starts || [job.start];
+  if (job.si + 1 >= starts.length) return false;
+  await save(queue, {...job, si: job.si + 1, hops: 0});
+  await chrome.tabs.update(id, {url: starts[job.si + 1]});
+  return true;
+}
+
+// Nothing more to try: what was found that is worth having, else why not.
+function giveUp(job, why) {
+  if (job.fallback) return finish('done', '', job.fallback);
+  return finish('error', why);
 }
 
 async function finish(state, message, data) {
@@ -109,27 +127,29 @@ chrome.tabs.onUpdated.addListener(async (id, info, t) => {
     const [r] = await chrome.scripting.executeScript({target: {tabId: id}, func: () => globalThis.bbwReader.readHere()});
     result = r && r.result;
   } catch (e) {
-    // Chrome's own error pages (a 404 with no page, no connection) cannot be read: back to the shop's
-    // first page once, else give up rather than wait the full ten minutes.
-    if (!job.backHome && url.split('#')[0] !== job.start.split('#')[0]) {
-      await save(queue, {...job, backHome: true});
-      return chrome.tabs.update(id, {url: job.start});
-    }
-    return finish('error', 'the shop page could not be read');
+    // Chrome's own error pages (a 404 with no page, no connection) cannot be read: on to the next place
+    // to read from, else give up rather than wait the full ten minutes.
+    if (await nextStart(queue, job, id)) return;
+    return giveUp(job, 'the shop page could not be read');
   }
   if (!result) return;
-  if (result.state === 'done') return finish('done', '', result.data);
+  if (result.state === 'done') {
+    // Only dates from a page's wording (no plan, no coffee): kept, while the next place may say more.
+    if (result.data && result.data.platform === 'page' && (job.starts || []).length > job.si + 1) {
+      const {queue: q} = await load();
+      await save(q, {...job, fallback: result.data});
+      if (await nextStart(q, {...job, fallback: result.data}, id)) return;
+    }
+    return finish('done', '', result.data);
+  }
   if (result.state === 'wait') return say('working', 'sign in to ' + hostOf(url) + ' in the tab that opened');
   if (result.state === 'go' && job.hops < MAX_HOPS && bbwReader.allowedUrl(result.url, job.hosts)) {
     await save(queue, {...job, hops: job.hops + 1});
     return chrome.tabs.update(id, {url: result.url});
   }
-  // Nothing here: a page of the shop's account service; try the shop itself once.
-  if (hostOf(url) !== job.startHost && !job.backHome) {
-    await save(queue, {...job, backHome: true});
-    return chrome.tabs.update(id, {url: job.start});
-  }
-  finish('error', result.why || 'nothing found');
+  // Nothing here: on to the next place to read from.
+  if (await nextStart(queue, job, id)) return;
+  giveUp(job, result.why || 'nothing found');
 });
 
 chrome.tabs.onRemoved.addListener(async id => {
@@ -141,7 +161,10 @@ chrome.alarms.onAlarm.addListener(async alarm => {
   if (alarm.name !== 'deadline') return;
   const {queue, job} = await load();
   if (!job && !queue.length) return chrome.alarms.clear('deadline');
-  if (job && Date.now() > job.deadline) finish('error', job.waitingGrant ? 'not allowed to read the shop' : 'timed out waiting for the page (10 minutes)');
+  if (job && Date.now() > job.deadline) {
+    if (job.waitingGrant) return finish('error', 'not allowed to read the shop');
+    giveUp(job, 'timed out waiting for the page (10 minutes)');
+  }
 });
 
 chrome.runtime.onMessage.addListener((m, sender) => {

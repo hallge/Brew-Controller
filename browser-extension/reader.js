@@ -246,6 +246,11 @@
       return {state: 'go', url: new URL('/tools/recurring/login', env.href).href};
     }
     if (signInPage(env)) return {state: 'wait', why: 'sign in'};
+    if (!env.followed) {
+      const link = env.links().find(l => /subscriptions?\b/i.test(l.text) && !/gift|give/i.test(l.text) &&
+                                        sameSite(l.href, env.href) && l.href.split('#')[0] != env.href.split('#')[0]);
+      if (link) return {state: 'go', url: link.href};
+    }
     return readGeneric(env, host);
   }
 
