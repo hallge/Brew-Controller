@@ -1907,20 +1907,32 @@ void handleGetRecommend() {
     o["from"] = cd.from == 0 ? "shelf" : cd.from == 1 ? "library" : "community";
     o["score"] = roundf(cd.score * 100) / 100;
     o["sure"] = roundf(cd.match.confidence * 100) / 100;
+    // Why: the two values it agrees on most, what you lean towards first (a flavour you like, more of a
+    // cup value), and a flavour you steer away from that it lacks ("no smoky") only to fill in.
     JsonArray why = o["why"].to<JsonArray>();
-    for (uint8_t w : cd.match.why) {
-      if (w == 255) continue;
-      // A cup value is named for which way it leans; a flavour family by its name.
-      if (w < bbw::TASTE_ATTRS) {
+    {
+      float score[bbw::TASTE_DIMS];
+      for (uint8_t d = 0; d < bbw::TASTE_DIMS; ++d) {
+        const float agree = profile.known[d] * cd.taste.known[d] * (profile.v[d] - 0.5f) * (cd.taste.v[d] - 0.5f);
+        const bool liked = d < bbw::TASTE_ATTRS || profile.v[d] > 0.5f;
+        score[d] = agree > 0.01f ? agree + (liked ? 1.0f : 0.0f) : -1.0f;
+      }
+      for (uint8_t n = 0; n < 2; ++n) {
+        int best = -1;
+        for (uint8_t d = 0; d < bbw::TASTE_DIMS; ++d) {
+          if (score[d] > 0 && (best < 0 || score[d] > score[best])) best = d;
+        }
+        if (best < 0) break;
+        score[best] = -1.0f;
         char t[24];
-        snprintf(t, sizeof(t), "%s %s", profile.v[w] > 0.5f ? "more" : "less", bbw::tasteDimName(w));
+        if (best < bbw::TASTE_ATTRS) {
+          snprintf(t, sizeof(t), "%s %s", profile.v[best] > 0.5f ? "more" : "less", bbw::tasteDimName(best));
+        } else if (profile.v[best] < 0.5f) {
+          snprintf(t, sizeof(t), "no %s", bbw::tasteDimName(best));
+        } else {
+          strlcpy(t, bbw::tasteDimName(best), sizeof(t));
+        }
         why.add(t);
-      } else if (profile.v[w] < 0.5f) {
-        char t[24];  // agreeing on a flavour's absence: one you steer away from, and it has none
-        snprintf(t, sizeof(t), "no %s", bbw::tasteDimName(w));
-        why.add(t);
-      } else {
-        why.add(bbw::tasteDimName(w));
       }
     }
     // The rated coffee it is most like, if that one was loved.
