@@ -25,9 +25,11 @@ const hostOf = u => {
 const originsFor = hosts => hosts.flatMap(h => [`https://${h}/*`, `https://www.${h}/*`]);
 
 // The controllers paired in the popup (a home may have more than one, and a test emulator).
+const DEFAULT_CONTROLLER = 'http://brewbyweight.local';   // every controller's mDNS name
 async function controllers() {
-  const {controllers = [], controller} = await chrome.storage.local.get(['controllers', 'controller']);
-  return controller && !controllers.includes(controller) ? [...controllers, controller] : controllers;
+  const {controllers = [], controller, forgotDefault} = await chrome.storage.local.get(['controllers', 'controller', 'forgotDefault']);
+  const all = controller && !controllers.includes(controller) ? [...controllers, controller] : controllers;
+  return forgotDefault || all.includes(DEFAULT_CONTROLLER) ? all : [DEFAULT_CONTROLLER, ...all];
 }
 
 // The relay (relay.js) is declared in the manifest and checks for itself whether its page is a

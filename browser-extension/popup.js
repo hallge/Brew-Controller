@@ -2,9 +2,11 @@
 // list). Connecting is only ever done here, by the owner: a page cannot connect itself.
 const addr = document.getElementById('addr'), state = document.getElementById('state'), list = document.getElementById('list');
 
+const DEFAULT_CONTROLLER = 'http://brewbyweight.local';   // every controller's mDNS name, on from the start
 async function controllers() {
-  const {controllers = [], controller} = await chrome.storage.local.get(['controllers', 'controller']);
-  return controller && !controllers.includes(controller) ? [...controllers, controller] : controllers;
+  const {controllers = [], controller, forgotDefault} = await chrome.storage.local.get(['controllers', 'controller', 'forgotDefault']);
+  const all = controller && !controllers.includes(controller) ? [...controllers, controller] : controllers;
+  return forgotDefault || all.includes(DEFAULT_CONTROLLER) ? all : [DEFAULT_CONTROLLER, ...all];
 }
 
 async function draw() {
@@ -20,7 +22,8 @@ async function draw() {
     forget.className = 'small';
     forget.textContent = 'Forget';
     forget.onclick = async () => {
-      await chrome.storage.local.set({controllers: (await controllers()).filter(x => x !== o), controller: ''});
+      await chrome.storage.local.set({controllers: (await controllers()).filter(x => x !== o && x !== DEFAULT_CONTROLLER),
+                                      controller: '', ...(o === DEFAULT_CONTROLLER ? {forgotDefault: true} : {})});
       draw();
     };
     row.append(name, forget);
@@ -51,7 +54,10 @@ document.getElementById('pair').addEventListener('click', async () => {
     return;
   }
   const all = await controllers();
-  if (!all.includes(origin)) await chrome.storage.local.set({controllers: [...all, origin], controller: ''});
+  if (!all.includes(origin) || origin === DEFAULT_CONTROLLER) {
+    await chrome.storage.local.set({controllers: [...all.filter(x => x !== DEFAULT_CONTROLLER), origin], controller: '',
+                                    ...(origin === DEFAULT_CONTROLLER ? {forgotDefault: false} : {})});
+  }
   state.textContent = 'Connected to ' + origin + '. Its page shows Update now (reload it if it does not).';
   draw();
 });

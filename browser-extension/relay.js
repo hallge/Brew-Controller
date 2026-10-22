@@ -10,12 +10,20 @@
   const version = chrome.runtime.getManifest().version;
   const origin = location.origin;
 
+  // The name every controller answers to on a home network (mDNS), connected from the start. It may
+  // stand for any device that claims the name, so it is taken only on a page that says it is a Brew
+  // Controller page, or on firmware from before that marker once its page shows the controller's own
+  // Subscriptions section. Forgetting it in the popup turns this off.
+  const DEFAULT = 'http://brewbyweight.local';
+  const looksLikeOne = () => !!document.querySelector('meta[name="bbw-controller"]') ||
+                             (!!document.getElementById('p-subscriptions') && !!document.getElementById('sxbody'));
   async function paired() {
-    const {controllers = [], controller} = await chrome.storage.local.get(['controllers', 'controller']);
-    return controllers.includes(origin) || controller === origin;
+    const {controllers = [], controller, forgotDefault} = await chrome.storage.local.get(['controllers', 'controller', 'forgotDefault']);
+    if (controllers.includes(origin) || controller === origin) return true;
+    return origin === DEFAULT && !forgotDefault && looksLikeOne();
   }
   // A Brew Controller page says so; a connected one is taken as it is (firmware from before the marker).
-  if (!document.querySelector('meta[name="bbw-controller"]') && !(await paired())) return;
+  if (!looksLikeOne() && !(await paired())) return;
 
   async function hello() {
     const ok = await paired();
@@ -39,7 +47,7 @@
   });
   // Connected or forgotten in the popup: say so at once.
   chrome.storage.onChanged.addListener(changes => {
-    if (changes.controllers || changes.controller) hello();
+    if (changes.controllers || changes.controller || changes.forgotDefault) hello();
   });
   hello();
 })();
