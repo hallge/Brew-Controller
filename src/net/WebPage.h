@@ -817,6 +817,7 @@ ${s.next_date?`<span class="sm">Next: ${esc(subWhen(s)||fd(s.next_date))}</span>
 // ---- The Brew Controller helper (browser-extension/): updates from the shops' pages, in this browser.
 let EXT=(document.documentElement.dataset.bbwExtension||'').replace('unpaired',''),EXTSEEN=document.documentElement.dataset.bbwExtension=='unpaired',IMP={},SXS={};
 window.addEventListener('message',e=>{if(e.source!==window||e.origin!==location.origin||!e.data||typeof e.data!='object')return;const m=e.data;
+if(m.bbw=='stale'){say('The helper was reloaded or updated: reload this page to use it',false);return}
 if(m.bbw=='hello'){EXT=m.paired===false?'':m.version||'1';EXTSEEN=m.paired===false;drawExt();drawSubs();return}
 if(m.bbw!='result')return;SXS[m.subscription]={state:m.state,message:m.message};
 if(m.state=='done'&&m.data&&typeof m.data=='object')IMP[m.subscription]=m.data;drawExt();drawImport()});

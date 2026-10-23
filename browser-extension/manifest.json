@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Brew Controller helper",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Brings your coffee subscriptions' next delivery and coffee from the shops you are signed in to, to your Brew Controller.",
   "permissions": ["storage", "scripting", "tabs", "alarms"],
   "optional_host_permissions": ["https://*/*", "http://*/*"],

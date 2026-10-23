@@ -17,7 +17,11 @@
   const DEFAULT = 'http://brewbyweight.local';
   const looksLikeOne = () => !!document.querySelector('meta[name="bbw-controller"]') ||
                              (!!document.getElementById('p-subscriptions') && !!document.getElementById('sxbody'));
+  // After the helper is reloaded or updated, Chrome cuts this copy (left in a page that was already
+  // open) off from the helper: it can no longer read or send. The page is told to reload instead.
+  const alive = () => { try { return !!(chrome.runtime && chrome.runtime.id && chrome.storage); } catch (e) { return false; } };
   async function paired() {
+    if (!alive()) return false;
     const {controllers = [], controller, forgotDefault} = await chrome.storage.local.get(['controllers', 'controller', 'forgotDefault']);
     if (controllers.includes(origin) || controller === origin) return true;
     return origin === DEFAULT && !forgotDefault && looksLikeOne();
@@ -26,6 +30,7 @@
   if (!looksLikeOne() && !(await paired())) return;
 
   async function hello() {
+    if (!alive()) return;
     const ok = await paired();
     document.documentElement.dataset.bbwExtension = ok ? version : 'unpaired';
     window.postMessage({bbw: 'hello', version, paired: ok}, origin);
@@ -36,6 +41,7 @@
     if (event.source !== window || event.origin !== origin) return;
     const m = event.data;
     if (!m || m.bbw !== 'update' || !Array.isArray(m.subscriptions)) return;
+    if (!alive()) return window.postMessage({bbw: 'stale'}, origin);
     if (!(await paired())) return hello();
     chrome.runtime.sendMessage({type: 'update', requestId: String(m.requestId || ''), subscriptions: m.subscriptions.slice(0, 12)});
   });
