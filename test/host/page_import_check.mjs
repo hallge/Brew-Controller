@@ -117,6 +117,19 @@ const clean = (r, what) => check(!PERSONAL.test(JSON.stringify(r)), what + ': no
   check(r.data.shipments[0].coffee == 'Honduras Example' && r.data.shipments[0].roaster == 'EXAMPLE ROASTERS' &&
         r.data.shipments[0].delivered == 20250421, 'trade: recent delivery');
   clean(r, 'trade');
+  // The account page as it is: "My Queue" in the menu, the credit balance under the recent delivery.
+  const menu = ['My Trade', 'My Queue', 'Past Deliveries', 'My Subscription', 'Trade Credit', 'Log Out', 'Hi, Jane!',
+    'Explore Plans', 'Recent Delivery', 'View Past Deliveries', 'SOME ROASTER', 'Some Coffee', 'Chocolaty & Sweet',
+    'Delivered On Apr 21, 2025', 'Add to Cart', 'Trade Credit', 'Current Balance', 'Available Credit: $0.00'].join('\n');
+  const m = await reader.bbwReadSubscription(env({href: 'https://account.drinktrade.com/', text: menu}));
+  check(m.state == 'done' && m.data.next.date == 0 && m.data.later.length == 0, 'trade: the menu\'s My Queue and a past date are not a next delivery');
+  check(m.data.shipments.length == 1 && m.data.shipments[0].coffee == 'Some Coffee', 'trade: recent delivery under the menu');
+  // A queue still to come is read; one already past is not.
+  const q = await reader.bbwReadSubscription(Object.assign(env({href: 'https://account.drinktrade.com/',
+    text: ['My Queue', 'Ships Dec 1, 2099', 'ROASTER', 'Future Coffee', 'Explore Plans'].join('\n')}), {today: 20261023}));
+  check(q.state == 'done' && q.data.later.length == 1 && q.data.later[0].date == 20991201 && q.data.later[0].items[0].name == 'Future Coffee', 'trade: queue to come');
+  const loading = await reader.bbwReadSubscription(env({href: 'https://account.drinktrade.com/', text: 'Shop Coffee'}));
+  check(loading.state == 'none', 'trade: a page not drawn yet gives nothing, not an empty read');
   const shop = await reader.bbwReadSubscription(env({href: 'https://www.drinktrade.com/', text: 'Shop coffee'}));
   check(shop.state == 'go' && shop.url == 'https://account.drinktrade.com/', 'trade: goes to the account pages');
 }

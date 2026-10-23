@@ -172,16 +172,28 @@
       if (coffee) shipments.push({coffee, roaster, notes, delivered: ymd(when), status: when ? 'delivered' : ''});
     }
     const later = [];
-    const queue = ls.findIndex(l => /^(up next|next delivery|my queue)$/i.test(l));
+    // "My Queue" is also a link in the account menu (followed by "Past Deliveries"): the section is the
+    // heading that is not followed by the menu. Only the lines just under it, and only dates to come.
+    const now = env.today || todayYmd();
+    const queue = ls.findIndex((l, i) => /^(up next|next delivery|my queue)$/i.test(l) && !/^past deliveries$/i.test(ls[i + 1] || ''));
     if (queue >= 0) {
-      for (let k = queue + 1; k < ls.length && later.length < 4; ++k) {
+      for (let k = queue + 1; k < Math.min(ls.length, queue + 24) && later.length < 4; ++k) {
+        if (/^(recent delivery|trade credit|my account|my matches)$/i.test(ls[k])) break;
         const d = ymd(ls[k]);
-        if (d && ls[k + 1]) later.push({date: d, items: [{name: clean(ls[k + 2] || ls[k + 1], 60), coffee: true}]});
+        const name = clean(ls[k + 2] || ls[k + 1], 60);
+        if (d && d >= now && !/^delivered/i.test(ls[k]) && name && !/credit|balance|gift/i.test(name)) {
+          later.push({date: d, items: [{name, coffee: true}]});
+        }
       }
     }
     const planGone = /explore plans|no active plan|start a plan/i.test(ls.join(' '));
     return {state: 'done', data: {v: 1, site: host, platform: 'trade', plan: planGone ? null : {name: 'Trade', every_days: 0},
                                   next: {date: later.length ? later[0].date : 0, items: later.length ? later[0].items : []}, later, shipments}};
+  }
+
+  function todayYmd() {
+    const t = new Date();
+    return t.getFullYear() * 10000 + (t.getMonth() + 1) * 100 + t.getDate();
   }
 
   // ---- Anything else: dates next to the words that matter ---------------------------------------------
@@ -238,6 +250,7 @@
     if (/(^|\.)drinktrade\.com$/.test(host)) {
       if (signInPage(env)) return {state: 'wait', why: 'sign in'};
       if (!/account\.drinktrade\.com$/.test(host)) return {state: 'go', url: 'https://account.drinktrade.com/'};
+      if (!/recent delivery|explore plans|my subscription/i.test(env.text())) return {state: 'none', why: 'the account page did not finish loading'};
       return readTrade(env, host);
     }
     // Bottomless first: its data answers only for a shop that runs it (and a signed-in customer), and a
@@ -287,6 +300,9 @@
     // An app that draws the subscription after the page has loaded: give it a few seconds.
     if (document.querySelector('bottomless-app')) {
       for (let i = 0; i < 16 && !/next\s+(re)?order\s+date/i.test(deepText()); ++i) await new Promise(r => setTimeout(r, 500));
+    }
+    if (/(^|\.)account\.drinktrade\.com$/.test(location.hostname)) {
+      for (let i = 0; i < 30 && !/recent delivery|explore plans|my subscription|log in|sign in/i.test(deepText()); ++i) await new Promise(r => setTimeout(r, 500));
     }
     const env = {
       href: location.href,

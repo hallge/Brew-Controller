@@ -843,7 +843,7 @@ let best=null,bs=0;for(const m of mates){const hay=' '+norm([m.note,m.item,m.nam
 const dated=[];if(d.next&&d.next.date)(d.next.items&&d.next.items.length?d.next.items:[{}]).forEach(it=>dated.push({date:d.next.date,it}));
 (d.later||[]).forEach(g=>(g.items||[]).forEach(it=>{if(!it.coffee)dated.push({date:g.date,it})}));
 const seen=new Set();for(const {date,it} of dated){const m=owner(it);if(seen.has(m.id))continue;seen.add(m.id);
-if(date&&date!=m.next_date)rows.push({key:'d'+m.id,sub:m,kind:'date',value:date,text:`${m.name}${m.note?' ('+m.note+')':''}: next ${fd(date)}`+(m.next_date?` (was ${fd(m.next_date)})`:''),on:true});
+if(date&&date>=today()&&date!=m.next_date)rows.push({key:'d'+m.id,sub:m,kind:'date',value:date,text:`${m.name}${m.note?' ('+m.note+')':''}: next ${fd(date)}`+(m.next_date?` (was ${fd(m.next_date)})`:''),on:true});
 const every=it.every_days||(d.plan&&d.plan.every_days)||0;if(every&&every!=m.every_days)rows.push({key:'e'+m.id,sub:m,kind:'every',value:every,text:`${m.name}: ${subEvery(every)} (was ${subEvery(m.every_days)})`,on:true});
 if(it.price_cents&&it.price_cents!=m.price_cents)rows.push({key:'p'+m.id,sub:m,kind:'price',value:it.price_cents,text:`${m.name}: ${money(it.price_cents)} each time (was ${money(m.price_cents||0)})`,on:false})}
 if(!seen.size&&d.plan&&d.plan.every_days&&d.plan.every_days!=s.every_days)rows.push({key:'e'+s.id,sub:s,kind:'every',value:d.plan.every_days,text:`${s.name}: ${subEvery(d.plan.every_days)} (was ${subEvery(s.every_days)})`,on:true});
@@ -855,6 +855,7 @@ if(x.coming){if(otw)rows.push({key:'k'+norm(x.coffee),kind:'known',text:`${x.cof
 else rows.push({key:'w'+norm(x.coffee),sub:s,kind:'otw',coffee:x,existing:c,text:`${x.coffee}${x.roaster?' ('+x.roaster+')':''}: add as on its way`+(x.eta?`, expected ${fd(x.eta)}`:''),on:true})}
 else if(otw)rows.push({key:'a'+norm(x.coffee),kind:'arrived',bag:otw,text:`${x.coffee}: arrived ${fd(x.delivered)}, mark its bag arrived`,on:true});
 else if(on)rows.push({key:'k'+norm(x.coffee),kind:'known',text:`${x.coffee}: on the shelf already`});
+else if(x.delivered&&(Date.now()-new Date(i2d(x.delivered)))/864e5>60)rows.push({key:'k'+norm(x.coffee),kind:'known',text:`${x.coffee}: delivered ${fd(x.delivered)}, long ago: not added`});
 else{const recent=x.delivered&&(Date.now()-new Date(i2d(x.delivered)))/864e5<10;rows.push({key:'u'+norm(x.coffee),sub:s,kind:'unopened',coffee:x,existing:c,text:`${x.coffee}${x.roaster?' ('+x.roaster+')':''}: delivered ${fd(x.delivered)}, add to the shelf unopened`,on:recent})}}}
 return rows}
 let IROWS=[];
