@@ -92,6 +92,10 @@ const clean = (r, what) => check(!PERSONAL.test(JSON.stringify(r)), what + ': no
   check(r.data.later.length == 1 && r.data.later[0].date == 20261227 && r.data.later[0].items[0].variant == 'Size D / 100 (1 Pack)',
         'recharge: the item in another order');
   clean(r, 'recharge');
+  // The portal's list of subscriptions (no dates): on to its overview, keeping the link's query.
+  const list = await reader.bbwReadSubscription(env({href: 'https://shop.example.org/tools/recurring/portal/0abc/subscriptions?x=1',
+    text: 'Subscriptions\nActive\nPortafilter Paper Filters\nEvery 14 weeks\nSize J / 100\n$8.09 USD\nEdit'}));
+  check(list.state == 'go' && list.url == 'https://shop.example.org/tools/recurring/portal/0abc/overview?x=1', 'recharge: list page goes to the overview');
   // A Recharge shop page that is not the portal: go to the portal's sign-in.
   const shop = await reader.bbwReadSubscription(env({href: 'https://shop.example.org/', html: '<script src="https://static.rechargecdn.com/a.js">', text: 'Shop'}));
   check(shop.state == 'go' && shop.url == 'https://shop.example.org/tools/recurring/login', 'recharge: goes to the portal');
@@ -127,6 +131,14 @@ const clean = (r, what) => check(!PERSONAL.test(JSON.stringify(r)), what + ': no
     links: [{text: 'Give a subscription', href: 'https://accounts.example.org/gift'},
             {text: 'Manage Subscription', href: 'https://accounts.example.org/123/account/pages/abc'}]}));
   check(acct.state == 'go' && acct.url == 'https://accounts.example.org/123/account/pages/abc', 'generic: follows the subscription link');
+  // "Start your subscription" is a sign-up, not one's own: not followed.
+  const signup = await reader.bbwReadSubscription(env({href: 'https://roaster.example.org/', text: 'Welcome',
+    links: [{text: 'Start Your Subscription', href: 'https://roaster.example.org/collections/club'}]}));
+  check(signup.state == 'none', 'generic: a sign-up link is not followed');
+  // An account page that names Bottomless (its own site does not answer for it): follows its link, no wait.
+  const acctB = await reader.bbwReadSubscription(env({href: 'https://accounts.example.org/9/account/orders', text: 'Orders', html: 'bottomless',
+    links: [{text: 'Manage Subscription', href: 'https://accounts.example.org/9/account/pages/x'}]}));
+  check(acctB.state == 'go' && acctB.url == 'https://accounts.example.org/9/account/pages/x', 'account page naming Bottomless: follows, does not wait');
   const none = await reader.bbwReadSubscription(env({href: 'https://roaster.example.org/', text: 'Welcome'}));
   check(none.state == 'none', 'generic: nothing found');
 }

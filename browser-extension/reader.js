@@ -228,6 +228,11 @@
     if (/\/tools\/recurring\/portal\//.test(env.href)) {
       const r = readRechargePortal(env, host);
       if (r) return r;
+      // Another page of the portal (its list of subscriptions has no dates): its overview has them.
+      const portal = env.href.match(/^(.*\/tools\/recurring\/portal\/[^/?#]+)(\/[^?#]*)?(\?[^#]*)?/);
+      if (portal && !/^\/overview\/?$/.test(portal[2] || '') && !env.followed && !signInPage(env)) {
+        return {state: 'go', url: portal[1] + '/overview' + (portal[3] || '')};
+      }
       return signInPage(env) ? {state: 'wait', why: 'sign in'} : {state: 'none', why: 'the portal did not show the next order'};
     }
     if (/(^|\.)drinktrade\.com$/.test(host)) {
@@ -239,7 +244,7 @@
     // shop's page may be too long to find its name in, or also load another subscription app's widget.
     const bottomless = await readBottomless(env, host);
     if (bottomless) return bottomless;
-    if (/bottomless/i.test(html)) return {state: 'wait', why: 'sign in'};
+    if (/bottomless/i.test(html) && signInPage(env)) return {state: 'wait', why: 'sign in'};
     // Recharge's portal, when the shop has one (some load Recharge's scripts without it).
     if (/rechargecdn|rechargeapps|ReCharge/.test(html) && !/\/tools\/recurring\//.test(env.href) &&
         !env.followed && (!env.exists || await env.exists('/tools/recurring/login'))) {
@@ -247,7 +252,7 @@
     }
     if (signInPage(env)) return {state: 'wait', why: 'sign in'};
     if (!env.followed) {
-      const link = env.links().find(l => /subscriptions?\b/i.test(l.text) && !/gift|give/i.test(l.text) &&
+      const link = env.links().find(l => /subscriptions?\b/i.test(l.text) && !/gift|give|start|join|buy|shop|sign up|try|subscribe/i.test(l.text) &&
                                         sameSite(l.href, env.href) && l.href.split('#')[0] != env.href.split('#')[0]);
       if (link) return {state: 'go', url: link.href};
     }
