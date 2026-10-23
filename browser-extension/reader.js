@@ -168,8 +168,14 @@
       let k = recent + 1;
       if (/^view past deliveries/i.test(ls[k])) ++k;
       const roaster = clean(ls[k], 40), coffee = clean(ls[k + 1], 60), notes = clean(ls[k + 2], 60);
-      const when = ls.slice(k, k + 8).find(l => /^delivered on/i.test(l));
-      if (coffee) shipments.push({coffee, roaster, notes, delivered: ymd(when), status: when ? 'delivered' : ''});
+      const card = ls.slice(k, k + 8);
+      const when = card.find(l => /^delivered on/i.test(l));
+      const moving = card.find(l => /^(shipped|in transit|out for delivery|arriving|on its way)\b/i.test(l));
+      // The heading is drawn before the card: until then the lines under it are the next sections.
+      const heading = /^(trade credit|my account|my matches|current balance|my queue|my subscription)$/i;
+      if (coffee && (when || moving) && !heading.test(coffee) && !heading.test(roaster)) {
+        shipments.push({coffee, roaster, notes, delivered: ymd(when), status: when ? 'delivered' : 'shipped'});
+      }
     }
     const later = [];
     // "My Queue" is also a link in the account menu (followed by "Past Deliveries"): the section is the
@@ -302,7 +308,9 @@
       for (let i = 0; i < 16 && !/next\s+(re)?order\s+date/i.test(deepText()); ++i) await new Promise(r => setTimeout(r, 500));
     }
     if (/(^|\.)account\.drinktrade\.com$/.test(location.hostname)) {
-      for (let i = 0; i < 30 && !/recent delivery|explore plans|my subscription|log in|sign in/i.test(deepText()); ++i) await new Promise(r => setTimeout(r, 500));
+      const drawn = () => { const t = deepText(); return /delivered on|in transit|out for delivery|^shipped/im.test(t) ||
+                                                    /^(log in|sign in)$/im.test(t) || !/recent delivery/i.test(t) && /explore plans|my subscription/i.test(t); };
+      for (let i = 0; i < 30 && !drawn(); ++i) await new Promise(r => setTimeout(r, 500));
     }
     const env = {
       href: location.href,

@@ -128,6 +128,10 @@ const clean = (r, what) => check(!PERSONAL.test(JSON.stringify(r)), what + ': no
   const q = await reader.bbwReadSubscription(Object.assign(env({href: 'https://account.drinktrade.com/',
     text: ['My Queue', 'Ships Dec 1, 2099', 'ROASTER', 'Future Coffee', 'Explore Plans'].join('\n')}), {today: 20261023}));
   check(q.state == 'done' && q.data.later.length == 1 && q.data.later[0].date == 20991201 && q.data.later[0].items[0].name == 'Future Coffee', 'trade: queue to come');
+  // The heading drawn before its card: the next sections are not a coffee on its way.
+  const half = await reader.bbwReadSubscription(env({href: 'https://account.drinktrade.com/',
+    text: ['My Trade', 'Explore Plans', 'Recent Delivery', 'View Past Deliveries', 'Trade Credit', 'My Account', 'Manage Account Settings'].join('\n')}));
+  check(half.state == 'done' && half.data.shipments.length == 0, 'trade: a half-drawn recent delivery is not a coffee');
   const loading = await reader.bbwReadSubscription(env({href: 'https://account.drinktrade.com/', text: 'Shop Coffee'}));
   check(loading.state == 'none', 'trade: a page not drawn yet gives nothing, not an empty read');
   const shop = await reader.bbwReadSubscription(env({href: 'https://www.drinktrade.com/', text: 'Shop coffee'}));
