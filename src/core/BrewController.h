@@ -144,6 +144,13 @@ class BrewController {
     if (hasLastShot_ && lastShot_.id == id) lastShot_.grindVote = vote;
   }
   bool machineMayBeRunning() const;
+  // No shot in hand (none being set up, run or dripped) and the machine known to be stopped: the
+  // power button may be pressed, whatever screen is showing (home, a shot's result, a fault).
+  bool idleForPower() const;
+  // A shot's result or a fault (the machine stopped) still showing when the scale has been gone this
+  // long, let go to rest or switched off: back to the home screen, which waits for the scale and lets
+  // the display go dark.
+  static constexpr uint32_t RESULT_SCALE_GONE_MS = 60000;
   // True from the Start request until the shot is finished and confirmed
   // stopped. The Bot link is only held while this is true, to save its battery.
   bool actuatorNeeded() const;
@@ -219,6 +226,7 @@ class BrewController {
   WeightSample last_;        // last accepted reading
   uint32_t lastRxMs_ = 0;    // last notification, accepted or not
   uint32_t lastGoodRxMs_ = 0;
+  uint32_t scaleGoneSinceMs_ = 0;  // the scale's link down while a result or fault shows; 0: it is up
   const char *tareWhy_ = nullptr;
   bool startRefusedNoCup_ = false;  // the last one while the scale was in use, before it went away
   bool haveSample_ = false;

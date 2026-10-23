@@ -2173,6 +2173,31 @@ static void testPowerControl() {
   CHECK(config.schedule[2].minuteOfDay == 0 && config.belief == 2 && config.utcOffsetMin == 0);
 }
 
+static void testResultScreenLetsGo() {
+  printf("a shot's result left showing: power may be pressed, and the scale gone sends it home\n");
+  Rig r;
+  r.toReady();
+  CHECK(r.ctl.idleForPower());
+  r.ctl.requestStart();
+  CHECK(r.runUntil(State::BREWING, 10000));
+  CHECK(!r.ctl.idleForPower());                       // never under a shot
+  CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+  CHECK(r.ctl.idleForPower());                        // the result showing is not a shot
+  // The scale stays: the result stays.
+  r.run(BrewController::RESULT_SCALE_GONE_MS + 5000);
+  CHECK(r.ctl.state() == State::SHOT_COMPLETE);
+  // The scale let go (or switched off): home after a while, not at once.
+  r.sim.scaleLink = false;
+  r.run(BrewController::RESULT_SCALE_GONE_MS / 2);
+  CHECK(r.ctl.state() == State::SHOT_COMPLETE);
+  r.run(BrewController::RESULT_SCALE_GONE_MS / 2 + 1000);
+  CHECK(r.ctl.state() == State::CONNECTING_SCALE);
+  CHECK(r.ctl.idleForPower());
+  // Back again: ready as usual.
+  r.sim.scaleLink = true;
+  CHECK(r.runUntil(State::READY, 10000));
+}
+
 static void testReadingNewerThanTick() {
   printf("a reading stamped after the tick's clock was read\n");
   // Reported from the emulator: "scale went silent" in the middle of shots
@@ -7083,6 +7108,7 @@ int main() {
   testMachineProfiles();
   testShotDataSet();
   testReadingNewerThanTick();
+  testResultScreenLetsGo();
   testEmptyScaleZeroed();
   testScaleRest();
   testCupRemembered();

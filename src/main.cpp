@@ -722,10 +722,10 @@ void controlTask(void *) {
       // brew button is pressed.
       const bool shotPhase = g_controller.stopActuatorNeeded();
       g_ble.setStopWanted(shotPhase || static_cast<int32_t>(now - g_stopHoldUntilMs.load()) < 0);
-      // The power button is only pressed while no shot is running or being set up.
+      // The power button is only pressed while no shot is running or being set up: on any screen
+      // else, a shot's result or a fault included.
       const bbw::State state = g_controller.state();
-      const bool idle = !g_controller.machineMayBeRunning() &&
-                        (state == State::READY || state == State::CONNECTING_SCALE);
+      const bool idle = g_controller.idleForPower();
       g_powerControl.tick(now, static_cast<uint32_t>(time(nullptr)), idle, g_power);
       if (g_powerControl.takeDirty()) g_pushersDirty = true;
       bbw::PowerEvent powerEvent;
@@ -757,7 +757,9 @@ void controlTask(void *) {
         const uint32_t heardAt = g_ble.scaleHeardAtMs();
         const uint32_t quietMs = scaleConnected ? 0 : (heardAt == 0 ? UINT32_MAX : now - heardAt);
         const bool wasResting = g_scaleRest.resting();
-        const bool resting = g_scaleRest.update(now, g_settings.scaleRestMin, state == State::READY,
+        const bool restable = state == State::READY ||
+                              ((state == State::SHOT_COMPLETE || bbw::isFault(state)) && g_controller.idleForPower());
+        const bool resting = g_scaleRest.update(now, g_settings.scaleRestMin, restable,
                                                 scaleConnected, st.weightG, quietMs);
         if (resting != wasResting) {
           LOGI("scale: %s", resting ? "resting (idle), let go so it can switch itself off"
