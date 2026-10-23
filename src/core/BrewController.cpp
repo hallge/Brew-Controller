@@ -123,6 +123,23 @@ bool BrewController::machineMayBeRunning() const {
   }
 }
 
+bool BrewController::idleForPower() const {
+  if (machineMayBeRunning()) return false;
+  switch (state_) {
+    case State::TARING:
+    case State::WAITING_FOR_CUP:
+    case State::READY_TO_BREW:
+    case State::STARTING_SHOT:
+    case State::BREWING:
+    case State::BLOOMING:
+    case State::STOPPING_SHOT:
+    case State::POST_SHOT_DRIP:
+      return false;
+    default:
+      return true;
+  }
+}
+
 bool BrewController::actuatorNeeded() const {
   // A machine worked by hand has no bot on its brew control.
   if (!machine().controllerStarts()) return false;
@@ -458,6 +475,22 @@ void BrewController::tick(uint32_t nowMs) {
       enter(State::BLE_ERROR, nowMs);
       return;
     }
+  }
+
+  // A result or a fault left showing (the machine stopped) while the scale is gone: the scale was let
+  // go to rest or switched off, nobody is there. Back to the home screen after a while, as from READY.
+  // Not BLE_ERROR, which has its own recovery.
+  if ((state_ == State::SHOT_COMPLETE || (isFault(state_) && state_ != State::BLE_ERROR)) &&
+      !machineMayBeRunning() && !scale_.connected()) {
+    if (scaleGoneSinceMs_ == 0) {
+      scaleGoneSinceMs_ = nowMs ? nowMs : 1;
+    } else if (static_cast<uint32_t>(nowMs - scaleGoneSinceMs_) >= RESULT_SCALE_GONE_MS) {
+      scaleGoneSinceMs_ = 0;
+      enter(State::CONNECTING_SCALE, nowMs);
+      return;
+    }
+  } else {
+    scaleGoneSinceMs_ = 0;
   }
 
   switch (state_) {
