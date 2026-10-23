@@ -48,7 +48,8 @@ The zip is packed from `browser-extension/` when the firmware is built (`browser
 run by `scripts/gen_extension.py`), so it always matches the firmware. It works in desktop Chrome, Edge
 and Brave; phones do not run extensions.
 
-**Using it.** **Update** on a card, or **Update all**:
+**Using it.** **Update** on a card, or **Update all** (active subscriptions only; a paused or cancelled
+one is read only from its own card):
 - The helper opens the shop in a tab. If the shop asks, you sign in as usual; the helper waits up to 10
   minutes.
 - It reads only the next date, how often, items and coffees, prices and delivery dates, then closes

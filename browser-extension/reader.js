@@ -11,7 +11,8 @@
 //   {state:'wait', why}     sign in first (the worker reads again after the next page load)
 //   {state:'none', why}     nothing found here
 // env: {href, text: () => visible text, html: () => page HTML, links: () => [{text, href}],
-//       fetchJson: async path => object or null (same site, with the owner's cookies)}
+//       fetchJson: async path => object or null (same site, with the owner's cookies),
+//       exists: async path => whether that page of this site is there (not a 404)}
 
 (function (root) {
   const MONTHS = {jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12};
@@ -167,20 +168,38 @@
       let k = recent + 1;
       if (/^view past deliveries/i.test(ls[k])) ++k;
       const roaster = clean(ls[k], 40), coffee = clean(ls[k + 1], 60), notes = clean(ls[k + 2], 60);
-      const when = ls.slice(k, k + 8).find(l => /^delivered on/i.test(l));
-      if (coffee) shipments.push({coffee, roaster, notes, delivered: ymd(when), status: when ? 'delivered' : ''});
+      const card = ls.slice(k, k + 8);
+      const when = card.find(l => /^delivered on/i.test(l));
+      const moving = card.find(l => /^(shipped|in transit|out for delivery|arriving|on its way)\b/i.test(l));
+      // The heading is drawn before the card: until then the lines under it are the next sections.
+      const heading = /^(trade credit|my account|my matches|current balance|my queue|my subscription)$/i;
+      if (coffee && (when || moving) && !heading.test(coffee) && !heading.test(roaster)) {
+        shipments.push({coffee, roaster, notes, delivered: ymd(when), status: when ? 'delivered' : 'shipped'});
+      }
     }
     const later = [];
-    const queue = ls.findIndex(l => /^(up next|next delivery|my queue)$/i.test(l));
+    // "My Queue" is also a link in the account menu (followed by "Past Deliveries"): the section is the
+    // heading that is not followed by the menu. Only the lines just under it, and only dates to come.
+    const now = env.today || todayYmd();
+    const queue = ls.findIndex((l, i) => /^(up next|next delivery|my queue)$/i.test(l) && !/^past deliveries$/i.test(ls[i + 1] || ''));
     if (queue >= 0) {
-      for (let k = queue + 1; k < ls.length && later.length < 4; ++k) {
+      for (let k = queue + 1; k < Math.min(ls.length, queue + 24) && later.length < 4; ++k) {
+        if (/^(recent delivery|trade credit|my account|my matches)$/i.test(ls[k])) break;
         const d = ymd(ls[k]);
-        if (d && ls[k + 1]) later.push({date: d, items: [{name: clean(ls[k + 2] || ls[k + 1], 60), coffee: true}]});
+        const name = clean(ls[k + 2] || ls[k + 1], 60);
+        if (d && d >= now && !/^delivered/i.test(ls[k]) && name && !/credit|balance|gift/i.test(name)) {
+          later.push({date: d, items: [{name, coffee: true}]});
+        }
       }
     }
     const planGone = /explore plans|no active plan|start a plan/i.test(ls.join(' '));
     return {state: 'done', data: {v: 1, site: host, platform: 'trade', plan: planGone ? null : {name: 'Trade', every_days: 0},
                                   next: {date: later.length ? later[0].date : 0, items: later.length ? later[0].items : []}, later, shipments}};
+  }
+
+  function todayYmd() {
+    const t = new Date();
+    return t.getFullYear() * 10000 + (t.getMonth() + 1) * 100 + t.getDate();
   }
 
   // ---- Anything else: dates next to the words that matter ---------------------------------------------
@@ -227,20 +246,35 @@
     if (/\/tools\/recurring\/portal\//.test(env.href)) {
       const r = readRechargePortal(env, host);
       if (r) return r;
+      // Another page of the portal (its list of subscriptions has no dates): its overview has them.
+      const portal = env.href.match(/^(.*\/tools\/recurring\/portal\/[^/?#]+)(\/[^?#]*)?(\?[^#]*)?/);
+      if (portal && !/^\/overview\/?$/.test(portal[2] || '') && !env.followed && !signInPage(env)) {
+        return {state: 'go', url: portal[1] + '/overview' + (portal[3] || '')};
+      }
       return signInPage(env) ? {state: 'wait', why: 'sign in'} : {state: 'none', why: 'the portal did not show the next order'};
     }
     if (/(^|\.)drinktrade\.com$/.test(host)) {
       if (signInPage(env)) return {state: 'wait', why: 'sign in'};
       if (!/account\.drinktrade\.com$/.test(host)) return {state: 'go', url: 'https://account.drinktrade.com/'};
+      if (!/recent delivery|explore plans|my subscription/i.test(env.text())) return {state: 'none', why: 'the account page did not finish loading'};
       return readTrade(env, host);
     }
-    const bottomless = /bottomless/i.test(html) ? await readBottomless(env, host) : null;
+    // Bottomless first: its data answers only for a shop that runs it (and a signed-in customer), and a
+    // shop's page may be too long to find its name in, or also load another subscription app's widget.
+    const bottomless = await readBottomless(env, host);
     if (bottomless) return bottomless;
-    if (/bottomless/i.test(html)) return {state: 'wait', why: 'sign in'};
-    if (/rechargecdn|rechargeapps|ReCharge/.test(html) && !/\/tools\/recurring\//.test(env.href)) {
+    if (/bottomless/i.test(html) && signInPage(env)) return {state: 'wait', why: 'sign in'};
+    // Recharge's portal, when the shop has one (some load Recharge's scripts without it).
+    if (/rechargecdn|rechargeapps|ReCharge/.test(html) && !/\/tools\/recurring\//.test(env.href) &&
+        !env.followed && (!env.exists || await env.exists('/tools/recurring/login'))) {
       return {state: 'go', url: new URL('/tools/recurring/login', env.href).href};
     }
     if (signInPage(env)) return {state: 'wait', why: 'sign in'};
+    if (!env.followed) {
+      const link = env.links().find(l => /subscriptions?\b/i.test(l.text) && !/gift|give|start|join|buy|shop|sign up|try|subscribe/i.test(l.text) &&
+                                        sameSite(l.href, env.href) && l.href.split('#')[0] != env.href.split('#')[0]);
+      if (link) return {state: 'go', url: link.href};
+    }
     return readGeneric(env, host);
   }
 
@@ -273,13 +307,26 @@
     if (document.querySelector('bottomless-app')) {
       for (let i = 0; i < 16 && !/next\s+(re)?order\s+date/i.test(deepText()); ++i) await new Promise(r => setTimeout(r, 500));
     }
+    if (/(^|\.)account\.drinktrade\.com$/.test(location.hostname)) {
+      const drawn = () => { const t = deepText(); return /delivered on|in transit|out for delivery|^shipped/im.test(t) ||
+                                                    /^(log in|sign in)$/im.test(t) || !/recent delivery/i.test(t) && /explore plans|my subscription/i.test(t); };
+      for (let i = 0; i < 30 && !drawn(); ++i) await new Promise(r => setTimeout(r, 500));
+    }
     const env = {
       href: location.href,
       followed: !!sessionStorage.getItem('bbwFollowed'),
       text: deepText,
-      html: () => document.documentElement ? document.documentElement.outerHTML.slice(0, 400000) : '',
+      html: () => document.documentElement ? document.documentElement.outerHTML : '',
       links: () => [...document.querySelectorAll('a[href]')].slice(0, 400).map(a => ({text: a.innerText.trim(), href: a.href})),
       hasPassword: !!document.querySelector('input[type=password]'),
+      exists: async path => {
+        try {
+          const r = await fetch(path, {credentials: 'include', redirect: 'manual'});
+          return r.type === 'opaqueredirect' || (r.status > 0 && r.status < 400);
+        } catch (e) {
+          return false;
+        }
+      },
       fetchJson: async path => {
         try {
           const r = await fetch(path, {credentials: 'include', headers: {Accept: 'application/json'}});

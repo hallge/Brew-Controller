@@ -15,9 +15,10 @@ function check(ok, what) {
   }
 }
 
-function env({href, text = '', html = '', links = [], json = {}, hasPassword = false, followed = false}) {
+function env({href, text = '', html = '', links = [], json = {}, hasPassword = false, followed = false, pages = null}) {
   return {href, followed, hasPassword, text: () => text, html: () => html, links: () => links,
-          fetchJson: async path => (path in json ? json[path] : null)};
+          fetchJson: async path => (path in json ? json[path] : null),
+          exists: pages ? async path => pages.includes(path) : undefined};
 }
 
 const PERSONAL = /example\.com|555|Elm Street|\*0938|4242|token|Jane|Doe/i;
@@ -62,6 +63,13 @@ const clean = (r, what) => check(!PERSONAL.test(JSON.stringify(r)), what + ': no
     href: 'https://shop.example.org/pages/subscription-by-usage', html: 'bottomless', text: 'Shop', followed: true,
     json: {'/apps/bottomless/me': me, '/apps/bottomless/orders/last-subscription': last, '/apps/bottomless/orders/upcoming': {orders: []}}}));
   check(after.state == 'done' && after.data.next.date == 0 && after.data.shipments.length == 1, 'bottomless: no loop');
+  // A Bottomless shop whose page does not name the app where the reader looks, and that also loads
+  // Recharge's widget: still read as Bottomless.
+  const mixed = await reader.bbwReadSubscription(env({
+    href: 'https://shop.example.org/pages/subscription-by-usage', html: '<script src="https://static.rechargecdn.com/w.js">',
+    text: 'Next reorder date\nNov 12, 2026', pages: ['/tools/recurring/login'],
+    json: {'/apps/bottomless/me': me, '/apps/bottomless/orders/last-subscription': last, '/apps/bottomless/orders/upcoming': {orders: []}}}));
+  check(mixed.state == 'done' && mixed.data.platform == 'bottomless' && mixed.data.next.date == 20261112, 'bottomless: found by asking, not by the page');
   // Not signed in: the app answers nothing.
   const out = await reader.bbwReadSubscription(env({href: 'https://shop.example.org/', html: 'bottomless', text: 'Log in'}));
   check(out.state == 'wait', 'bottomless: not signed in waits');
@@ -84,9 +92,17 @@ const clean = (r, what) => check(!PERSONAL.test(JSON.stringify(r)), what + ': no
   check(r.data.later.length == 1 && r.data.later[0].date == 20261227 && r.data.later[0].items[0].variant == 'Size D / 100 (1 Pack)',
         'recharge: the item in another order');
   clean(r, 'recharge');
+  // The portal's list of subscriptions (no dates): on to its overview, keeping the link's query.
+  const list = await reader.bbwReadSubscription(env({href: 'https://shop.example.org/tools/recurring/portal/0abc/subscriptions?x=1',
+    text: 'Subscriptions\nActive\nPortafilter Paper Filters\nEvery 14 weeks\nSize J / 100\n$8.09 USD\nEdit'}));
+  check(list.state == 'go' && list.url == 'https://shop.example.org/tools/recurring/portal/0abc/overview?x=1', 'recharge: list page goes to the overview');
   // A Recharge shop page that is not the portal: go to the portal's sign-in.
   const shop = await reader.bbwReadSubscription(env({href: 'https://shop.example.org/', html: '<script src="https://static.rechargecdn.com/a.js">', text: 'Shop'}));
   check(shop.state == 'go' && shop.url == 'https://shop.example.org/tools/recurring/login', 'recharge: goes to the portal');
+  // Recharge's scripts but no portal (a 404 there): not sent to a page that is not there.
+  const noPortal = await reader.bbwReadSubscription(env({href: 'https://shop.example.org/', html: '<script src="https://static.rechargecdn.com/a.js">',
+                                                         text: 'Shop', pages: []}));
+  check(noPortal.state == 'none', 'recharge: no portal, no trip to a missing page');
   const login = await reader.bbwReadSubscription(env({href: 'https://shop.example.org/tools/recurring/portal/x/overview', text: 'Log in\nEmail', hasPassword: true}));
   check(login.state == 'wait', 'recharge: sign-in waits');
 }
@@ -101,6 +117,23 @@ const clean = (r, what) => check(!PERSONAL.test(JSON.stringify(r)), what + ': no
   check(r.data.shipments[0].coffee == 'Honduras Example' && r.data.shipments[0].roaster == 'EXAMPLE ROASTERS' &&
         r.data.shipments[0].delivered == 20250421, 'trade: recent delivery');
   clean(r, 'trade');
+  // The account page as it is: "My Queue" in the menu, the credit balance under the recent delivery.
+  const menu = ['My Trade', 'My Queue', 'Past Deliveries', 'My Subscription', 'Trade Credit', 'Log Out', 'Hi, Jane!',
+    'Explore Plans', 'Recent Delivery', 'View Past Deliveries', 'SOME ROASTER', 'Some Coffee', 'Chocolaty & Sweet',
+    'Delivered On Apr 21, 2025', 'Add to Cart', 'Trade Credit', 'Current Balance', 'Available Credit: $0.00'].join('\n');
+  const m = await reader.bbwReadSubscription(env({href: 'https://account.drinktrade.com/', text: menu}));
+  check(m.state == 'done' && m.data.next.date == 0 && m.data.later.length == 0, 'trade: the menu\'s My Queue and a past date are not a next delivery');
+  check(m.data.shipments.length == 1 && m.data.shipments[0].coffee == 'Some Coffee', 'trade: recent delivery under the menu');
+  // A queue still to come is read; one already past is not.
+  const q = await reader.bbwReadSubscription(Object.assign(env({href: 'https://account.drinktrade.com/',
+    text: ['My Queue', 'Ships Dec 1, 2099', 'ROASTER', 'Future Coffee', 'Explore Plans'].join('\n')}), {today: 20261023}));
+  check(q.state == 'done' && q.data.later.length == 1 && q.data.later[0].date == 20991201 && q.data.later[0].items[0].name == 'Future Coffee', 'trade: queue to come');
+  // The heading drawn before its card: the next sections are not a coffee on its way.
+  const half = await reader.bbwReadSubscription(env({href: 'https://account.drinktrade.com/',
+    text: ['My Trade', 'Explore Plans', 'Recent Delivery', 'View Past Deliveries', 'Trade Credit', 'My Account', 'Manage Account Settings'].join('\n')}));
+  check(half.state == 'done' && half.data.shipments.length == 0, 'trade: a half-drawn recent delivery is not a coffee');
+  const loading = await reader.bbwReadSubscription(env({href: 'https://account.drinktrade.com/', text: 'Shop Coffee'}));
+  check(loading.state == 'none', 'trade: a page not drawn yet gives nothing, not an empty read');
   const shop = await reader.bbwReadSubscription(env({href: 'https://www.drinktrade.com/', text: 'Shop coffee'}));
   check(shop.state == 'go' && shop.url == 'https://account.drinktrade.com/', 'trade: goes to the account pages');
 }
@@ -110,6 +143,19 @@ const clean = (r, what) => check(!PERSONAL.test(JSON.stringify(r)), what + ': no
   const r = await reader.bbwReadSubscription(env({href: 'https://roaster.example.org/account', text: 'Your plan\nNext delivery\nNovember 20, 2026\nContact jane@example.com'}));
   check(r.state == 'done' && r.data.next.date == 20261120, 'generic: next delivery');
   clean(r, 'generic');
+  // An account page that links to its subscription page: followed once, gift subscriptions not.
+  const acct = await reader.bbwReadSubscription(env({href: 'https://accounts.example.org/123/account/orders', text: 'Orders',
+    links: [{text: 'Give a subscription', href: 'https://accounts.example.org/gift'},
+            {text: 'Manage Subscription', href: 'https://accounts.example.org/123/account/pages/abc'}]}));
+  check(acct.state == 'go' && acct.url == 'https://accounts.example.org/123/account/pages/abc', 'generic: follows the subscription link');
+  // "Start your subscription" is a sign-up, not one's own: not followed.
+  const signup = await reader.bbwReadSubscription(env({href: 'https://roaster.example.org/', text: 'Welcome',
+    links: [{text: 'Start Your Subscription', href: 'https://roaster.example.org/collections/club'}]}));
+  check(signup.state == 'none', 'generic: a sign-up link is not followed');
+  // An account page that names Bottomless (its own site does not answer for it): follows its link, no wait.
+  const acctB = await reader.bbwReadSubscription(env({href: 'https://accounts.example.org/9/account/orders', text: 'Orders', html: 'bottomless',
+    links: [{text: 'Manage Subscription', href: 'https://accounts.example.org/9/account/pages/x'}]}));
+  check(acctB.state == 'go' && acctB.url == 'https://accounts.example.org/9/account/pages/x', 'account page naming Bottomless: follows, does not wait');
   const none = await reader.bbwReadSubscription(env({href: 'https://roaster.example.org/', text: 'Welcome'}));
   check(none.state == 'none', 'generic: nothing found');
 }
