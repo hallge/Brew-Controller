@@ -24,8 +24,9 @@ in UTC; a second report in the same second takes the next free second. The store
 signed `body` string, `pub` and `sig` as they came, so it can be checked again later, plus the
 parsed `report` for reading.
 
-Emulator reports (`alg` `EMULATOR-UNSIGNED`) are not signature-checked and go to `emulator/...`
-only, with their own daily count.
+Emulator reports go to `emulator/...` only, with their own daily count: those whose body says
+`"emu":1` (an emulator with a real key; the signature is still checked), and those with `alg`
+`EMULATOR-UNSIGNED` (no key: not signature-checked).
 
 ## One-time setup
 
