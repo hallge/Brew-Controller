@@ -1,0 +1,8 @@
+{
+ "v": 1,
+ "kid": "c3c3c3c3c3d4d4d4d4d4",
+ "alg": "ES256",
+ "pub": "BBERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERE=",
+ "sig": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIg==",
+ "body": "{\"t\":\"diag_crash\",\"v\":1,\"fw\":\"v0.1.19\",\"at\":1792058400,\"reset\":\"TASK WATCHDOG\",\"boot_count\":5,\"log\":[\"[ 300.000] W <brew bot>: no supported pusher service/characteristics usable\"]}"
+}

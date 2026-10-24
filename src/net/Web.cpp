@@ -20,6 +20,7 @@
 #include "ExtensionZip.h"   // made from browser-extension/ by its make_zip.py
 #include "core/TasteProfile.h"
 #include "core/SettingsUtil.h"
+#include "core/Telemetry.h"
 #include "platform/BigMem.h"
 #include "platform/FirmwareUpdate.h"
 #include "platform/FsUtil.h"
@@ -155,6 +156,7 @@ void handleGetSettings() {
   doc["displayFlipped"] = s.displayFlipped;
   doc["uiTheme"] = s.uiTheme;
   doc["powerOffWithScale"] = s.powerOffWithScale;
+  doc["diagnosticsOn"] = !s.diagnosticsOff;
   doc["namedDrinkers"] = s.namedDrinkers;  // colour scheme, 0 Dark .. 5 High contrast (bbw::UiTheme)
   // Minutes idle before the scale is let go so that it can switch itself off; 0: kept connected.
   doc["scaleRestMin"] = s.scaleRestMin == bbw::SCALE_REST_NEVER ? 0 : s.scaleRestMin;
@@ -247,6 +249,7 @@ void handlePostSettings() {
   s.displayFlipped = doc["displayFlipped"] | s.displayFlipped;
   s.powerOffWithScale = doc["powerOffWithScale"] | s.powerOffWithScale;
   s.namedDrinkers = doc["namedDrinkers"] | s.namedDrinkers;
+  if (doc["diagnosticsOn"].is<bool>()) s.diagnosticsOff = !doc["diagnosticsOn"].as<bool>();
   if (doc["uiTheme"].is<int>()) {
     const int theme = doc["uiTheme"].as<int>();
     if (theme >= 0 && theme < bbw::UI_THEME_COUNT) s.uiTheme = static_cast<uint8_t>(theme);
@@ -1015,7 +1018,10 @@ void handleShare() {
   // Only ES256 is a signature the library can check.
   doc["real_signatures"] = strcmp(st.algorithm, "ES256") == 0;
   doc["can_send"] = st.canSend;
-  doc["repository"] = st.link.repository;
+  // The owner's own repository (empty when sharing goes through the relay), and the relay's host.
+  doc["repository"] = st.link.viaRelay ? "" : st.link.repository;
+  doc["via_relay"] = st.link.viaRelay;
+  doc["relay"] = st.link.viaRelay ? st.link.repository : "";
   doc["configured"] = st.link.configured;
   doc["token_set"] = st.tokenSet;   // whether there is one; never the token itself
   doc["problem"] = st.link.problem;
@@ -2935,6 +2941,37 @@ void begin() {
     JsonDocument doc;
     app::diagnostics(doc.to<JsonObject>());
     sendJson(doc);
+  });
+  // Diagnostics reports (docs/TELEMETRY.md): the next one as it would go, a send now, where they go.
+  server.on("/api/diagnostics/preview", HTTP_GET, []() {
+    String body;
+    app::diagPreview(body);
+    server.send(200, "application/json", body);
+  });
+  server.on("/api/diagnostics/report", HTTP_GET, []() {
+    JsonDocument doc;
+    app::diagStatus(doc.to<JsonObject>());
+    sendJson(doc);
+  });
+  server.on("/api/diagnostics/send", HTTP_POST, []() {
+    if (!app::diagSendNow()) return sendError(409, "Diagnostics are off (Setup, Diagnostics)");
+    sendOk();
+  });
+  server.on("/api/diagnostics/relay", HTTP_POST, []() {
+    JsonDocument doc;
+    if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "not JSON");
+    const char *url = doc["url"] | "";
+    if (url[0] && strncmp(url, "https://", 8) != 0 && strncmp(url, "http://127.0.0.1", 16) != 0) {
+      return sendError(400, "the relay's address must be an https link");
+    }
+    if (strlen(url) >= 96) return sendError(400, "that address is too long");
+    app::setDiagRelay(url);
+    sendOk();
+  });
+  server.on("/api/crash", HTTP_GET, []() {
+    static char *text = bbw::bigArray<char>(bbw::DIAG_BODY_MAX);  // PSRAM, on first use
+    if (!app::lastCrash(text, bbw::DIAG_BODY_MAX)) return server.send(200, "application/json", "{}");
+    server.send(200, "application/json", text);
   });
   server.on("/api/update", HTTP_GET, handleUpdateInfo);
   server.on("/api/update/check", HTTP_POST, handleUpdateCheck);

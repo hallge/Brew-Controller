@@ -460,11 +460,11 @@ version**, or **Start the safe (factory) version**.
    while it runs. Settings, recipes, pairing and shot history are kept.
 
 Only GitHub's own certificate authorities are trusted for this
-(`src/platform/GithubRoots.h`, `ReleaseRoots.h`). While the repository is
-private the controller needs a token: a fine-grained GitHub token with
-**Contents: read-only** on this repository and nothing else, entered once in
-Setup, Firmware. It is stored on the controller and never shown again. A
-public repository needs none.
+(`src/platform/GithubRoots.h`, `ReleaseRoots.h`). The repository is public,
+so nothing needs setting up. Only a private fork needs a token: a
+fine-grained GitHub token with **Contents: read-only** on that repository and
+nothing else, entered once in Setup, Firmware, stored on the controller and
+never shown again.
 
 **From a file**: download `firmware.bin` from the releases page and choose it
 under "From a file". No internet needed.
@@ -498,6 +498,17 @@ needed to analyse it remotely is in the API (docs/API.md):
 
 Outside the home network it needs a way in (a VPN to the home network); the
 controller has no login of its own and should not be exposed to the internet.
+
+### Diagnostics reports
+
+Controllers that cannot be reached at all report on their own: once a day a
+short technical report (firmware and restarts, which scale, pushers and machine
+are in use, how their Bluetooth links and shots went, warnings from the log with
+names and addresses taken out), and after a crash, where it crashed. Reports are
+signed with the controller's key and go through a relay to a private repository
+the maintainer reads; `telemetry-tools/` turns them into a fleet view and decodes
+crashes against each release's `firmware.elf`. On by default; Setup, Diagnostics
+shows exactly what would be sent and turns it off. Details: docs/TELEMETRY.md.
 
 ### Memory
 

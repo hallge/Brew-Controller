@@ -1034,6 +1034,7 @@ NetConfig Store::loadNet() {
   net.botPassword[sizeof(net.botPassword) - 1] = '\0';
   net.libraryRepo[sizeof(net.libraryRepo) - 1] = '\0';
   net.libraryToken[sizeof(net.libraryToken) - 1] = '\0';
+  net.diagRelay[sizeof(net.diagRelay) - 1] = '\0';
   if (strlen(net.apPassword) < 8) strlcpy(net.apPassword, "brewbyweight", sizeof(net.apPassword));
   return net;
 }

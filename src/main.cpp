@@ -18,9 +18,10 @@
 #include <atomic>
 #include <esp_task_wdt.h>
 #include <sys/time.h>
-#ifndef BBW_EMULATOR
 #include <WiFi.h>
+#ifndef BBW_EMULATOR
 #include <esp_ota_ops.h>
+#include <esp_core_dump.h>
 #endif
 
 #include "App.h"
@@ -36,6 +37,8 @@
 #include "platform/FirmwareUpdate.h"
 #include "platform/LibraryLink.h"
 #include "platform/PagePreview.h"
+#include "platform/TelemetryLink.h"
+#include "core/Telemetry.h"
 #include "storage/Store.h"
 #include "ui/Ui.h"
 
@@ -147,6 +150,27 @@ bool editable() {  // call with the lock held
 // Where records go and the index comes from: platform/LibraryLink.h. On the
 // board, the library's repository over HTTPS; in the emulator, a folder.
 bool publishRecord(const char *path, const char *text) { return bbw::libraryPut(path, text); }
+
+// The relay everything goes through (diagnostics and the shared library): the one Setup names, given
+// with or without its "/report", else the built-in one. "https://host", no trailing slash.
+void relayBase(char *out, size_t size) {
+  if (!g_net.diagRelay[0]) {
+    strlcpy(out, bbw::RELAY_BASE_DEFAULT, size);
+    return;
+  }
+  strlcpy(out, g_net.diagRelay, size);
+  size_t n = strlen(out);
+  while (n > 0 && out[n - 1] == '/') out[--n] = '\0';
+  if (n > 7 && strcmp(out + n - 7, "/report") == 0) out[n - 7] = '\0';
+}
+
+// The library: the owner's repository and token when both are given, else the relay.
+void configureLibraryLink() {
+  char base[96];
+  relayBase(base, sizeof(base));
+  bbw::libraryLinkSetRelay(base);
+  bbw::libraryLinkConfigure(g_net.libraryRepo, g_net.libraryToken);
+}
 
 constexpr uint32_t SHARE_SEND_PERIOD_MS = 1000;
 constexpr size_t LIBRARY_TEXT_SIZE = 16384;
@@ -543,6 +567,19 @@ void shareSendOne(bool idle) {
   if (publishRecord(g_sharePath, g_shareEnvelope)) {
     g_store.outboxPop();
     LOGI("share: sent %s", g_sharePath);
+  } else if (bbw::libraryTakeKeyMissing()) {
+    // The relay has no key for this controller: send it now, ahead of the record, which goes next time.
+    bbw::ISigner &signer = bbw::deviceSigner();
+    char kid[bbw::KEY_ID_LEN], keyPath[48];
+    bbw::keyId(signer.publicKey(), kid);
+    snprintf(keyPath, sizeof(keyPath), "keys/%s.json", kid);
+    if (bbw::buildKeyRecord(signer, wallClock(), g_shareBody, bbw::SHARE_BODY_MAX) != 0 &&
+        bbw::sealRecord(signer, g_shareBody, g_shareEnvelope, bbw::SHARE_ENVELOPE_MAX) != 0 &&
+        publishRecord(keyPath, g_shareEnvelope)) {
+      LOGI("share: the relay asked for this controller's key; sent");
+    } else {
+      LOGW("share: the relay asked for this controller's key; not sent");
+    }
   }
 }
 
@@ -797,8 +834,8 @@ void bleTask(void *) { g_ble.run(); }
 
 // ------------------------------------------------------------ diagnostics --
 
-const char *resetReasonText() {
-  switch (esp_reset_reason()) {
+const char *resetReasonName(esp_reset_reason_t reason) {
+  switch (reason) {
     case ESP_RST_POWERON: return "power on";
     case ESP_RST_EXT: return "reset pin";
     case ESP_RST_SW: return "restart requested";
@@ -813,11 +850,13 @@ const char *resetReasonText() {
     default: {
       // e.g. a reset from the USB port, which this core has no name for
       static char text[24];
-      snprintf(text, sizeof(text), "other (%d)", static_cast<int>(esp_reset_reason()));
+      snprintf(text, sizeof(text), "other (%d)", static_cast<int>(reason));
       return text;
     }
   }
 }
+
+const char *resetReasonText() { return resetReasonName(esp_reset_reason()); }
 
 // A new firmware is on trial until it has run for a while: if it crashes or
 // hangs before then, the bootloader goes back to the one before it.
@@ -1248,6 +1287,495 @@ void subscriptionsService(bool idle) {
   }
   if (save) saveServiceReviews();
 }
+
+// ------------------------------------------------------- diagnostics reports --
+// A daily summary and, after a crash, a crash report, signed and sent to the relay (docs/TELEMETRY.md,
+// core/Telemetry.h). Built and sent by the loop task while idle; never while a shot needs the radio.
+
+constexpr const char *DIAG_STATE_FILE = "/diag.bin";
+constexpr const char *DIAG_CRASH_FILE = "/diagcrash.json";  // the last crash's report, for /api/crash
+constexpr uint8_t DIAG_QUEUE = 20;
+constexpr uint32_t DIAG_SAVE_PERIOD_MS = 3600000;
+constexpr uint32_t DIAG_QUIET_AFTER_SHOT_MS = 30000;
+constexpr uint32_t DIAG_BACKOFF_FIRST_MS = 60000;
+constexpr uint32_t DIAG_BACKOFF_MAX_MS = 3600000;
+
+// Kept on flash: the period's start, its resets, the link counters at its start, the queue of reports
+// waiting to go, and how the last one went.
+struct DiagState {
+  static constexpr uint32_t MAGIC = 0x44494731;  // "DIG1"
+  uint32_t magic = MAGIC;
+  uint32_t sinceS = 0;
+  uint8_t resets[8] = {};      // esp_reset_reason() values, 0xFF unused
+  uint8_t resetCount = 0;
+  uint8_t queueNext = 0;       // slot the next report goes into
+  uint8_t queueCount = 0;
+  bbw::LinkStats atStart[4];   // scale, bot, power, stop: as they were when the period began
+  uint32_t bootAtStart = 0;    // the boot those were counted in
+  uint32_t framesAtStart = 0, badAtStart = 0, droppedAtStart = 0;
+  uint32_t lastSentS = 0;
+  int16_t lastCode = 0;
+  char lastProblem[80] = {};
+  char scaleDriver[16] = {};   // as last seen connected
+  char scaleName[24] = {};
+  int8_t rssiMin = 0, rssiMax = 0;
+  char lastFw[16] = {};        // the firmware that ran before this start
+};
+
+DiagState g_diag;
+bbw::WarnTally *g_warns = nullptr;   // in PSRAM
+bbw::ScrubList *g_scrub = nullptr;   // in PSRAM
+char *g_diagBody = nullptr;          // DIAG_BODY_MAX
+char *g_diagEnvelope = nullptr;      // DIAG_ENVELOPE_MAX
+bool g_diagDirty = false;
+uint32_t g_diagLogPos = 0;
+uint32_t g_diagRetryAtMs = 0, g_diagBackoffMs = 0;
+uint32_t g_diagBusyAtMs = 0;         // a shot was in hand
+bool g_diagSendNow = false;
+
+void diagSlotPath(uint8_t slot, char *out, size_t size) { snprintf(out, size, "/tm%u.json", slot); }
+
+void diagSaveState() {
+  File f = LittleFS.open(DIAG_STATE_FILE, "w");
+  if (!f) return;
+  f.write(reinterpret_cast<const uint8_t *>(&g_diag), sizeof(g_diag));
+  if (g_warns) f.write(reinterpret_cast<const uint8_t *>(g_warns), sizeof(bbw::WarnTally));
+  f.close();
+  g_diagDirty = false;
+}
+
+void diagLoadState() {
+  File f = LittleFS.open(DIAG_STATE_FILE, "r");
+  if (!f) return;
+  DiagState s;
+  if (f.read(reinterpret_cast<uint8_t *>(&s), sizeof(s)) == sizeof(s) && s.magic == DiagState::MAGIC &&
+      s.queueCount <= DIAG_QUEUE && s.queueNext < DIAG_QUEUE && s.resetCount <= 8) {
+    g_diag = s;
+    if (g_warns && f.read(reinterpret_cast<uint8_t *>(g_warns), sizeof(bbw::WarnTally)) == sizeof(bbw::WarnTally) &&
+        !g_warns->valid()) {
+      *g_warns = bbw::WarnTally();
+    }
+  }
+  f.close();
+  g_diag.lastProblem[sizeof(g_diag.lastProblem) - 1] = '\0';
+  g_diag.scaleDriver[sizeof(g_diag.scaleDriver) - 1] = g_diag.scaleName[sizeof(g_diag.scaleName) - 1] = '\0';
+}
+
+// Into the queue; the oldest goes when it is full.
+void diagQueue(const char *envelope) {
+  char path[16];
+  if (g_diag.queueCount == DIAG_QUEUE) --g_diag.queueCount;  // the oldest slot is the one written over
+  diagSlotPath(g_diag.queueNext, path, sizeof(path));
+  if (!g_store.saveText(path, envelope)) {
+    LOGW("diagnostics: report not kept (flash)");
+    return;
+  }
+  g_diag.queueNext = static_cast<uint8_t>((g_diag.queueNext + 1) % DIAG_QUEUE);
+  ++g_diag.queueCount;
+  diagSaveState();
+}
+
+uint8_t diagOldestSlot() {
+  return static_cast<uint8_t>((g_diag.queueNext + DIAG_QUEUE - g_diag.queueCount) % DIAG_QUEUE);
+}
+
+// What must not leave the controller: the paired devices' addresses (by role), the network's and the
+// access point's names, and the names of coffees, roasters and drinkers.
+void diagBuildScrubList() {
+  if (!g_scrub) return;
+  *g_scrub = bbw::ScrubList();
+  const bbw::Pairing pairing = g_ble.pairing();
+  char power[bbw::ADDR_LEN], stop[bbw::ADDR_LEN];
+  g_ble.powerAddress(power);
+  g_ble.stopAddress(stop);
+  g_scrub->add(pairing.scaleAddress, "<scale>");
+  g_scrub->add(pairing.botAddress, "<brew bot>");
+  g_scrub->add(power, "<power bot>");
+  g_scrub->add(stop, "<stop bot>");
+  g_scrub->add(g_net.staSsid, "<wifi>");
+  g_scrub->add(g_net.libraryRepo, "<repo>");
+  char model[24];
+  bbw::scaleModelName(g_diag.scaleName, model, sizeof(model));
+  if (strcmp(model, g_diag.scaleName) != 0) g_scrub->add(g_diag.scaleName, model);
+  const bbw::Drinkers drinkers = g_store.loadDrinkers();
+  for (const auto &name : drinkers.names) g_scrub->add(name, "<name>");
+  for (uint8_t i = 0; i < g_library.coffeeCount; ++i) {
+    g_scrub->add(g_library.coffees[i].name, "<coffee>");
+    g_scrub->add(g_library.coffees[i].roaster, "<roaster>");
+  }
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  char ap[24];
+  snprintf(ap, sizeof(ap), "BrewByWeight-%02X%02X", mac[4], mac[5]);
+  g_scrub->add(ap, "<ap>");
+}
+
+// The W and E lines logged since the last look, into the tally. Loop task.
+void diagTakeWarnings() {
+  static char chunk[2048];
+  static char line[224];
+  static size_t lineLen = 0;
+  static uint32_t lastMs = 0;
+  if (!g_warns || millis() - lastMs < 1000) return;
+  lastMs = millis();
+  bool listBuilt = false;
+  for (int rounds = 0; rounds < 8; ++rounds) {
+    const size_t n = bbw::logRead(g_diagLogPos, chunk, sizeof(chunk));
+    if (n == 0) break;
+    for (size_t i = 0; i < n; ++i) {
+      const char c = chunk[i];
+      if (c != '\n') {
+        if (lineLen + 1 < sizeof(line)) line[lineLen++] = c;
+        continue;
+      }
+      line[lineLen] = '\0';
+      lineLen = 0;
+      // "[   12.345] W ...": the level letter follows the time stamp.
+      const char *close = strchr(line, ']');
+      if (!close || (close[2] != 'W' && close[2] != 'E') || close[3] != ' ') continue;
+      if (strncmp(close + 4, "diagnostics:", 12) == 0) continue;  // not about itself
+      if (!listBuilt) {
+        diagBuildScrubList();
+        listBuilt = true;
+      }
+      char cleaned[bbw::DIAG_LINE_MAX];
+      bbw::scrubLine(line, cleaned, sizeof(cleaned), g_scrub);
+      g_warns->add(cleaned);
+      g_diagDirty = true;
+    }
+  }
+}
+
+// The period's figures, from what the controller keeps anyway.
+void diagFillInput(bbw::DiagInput &in, uint32_t nowS) {
+#ifdef BBW_EMULATOR
+  in.emulator = true;
+#endif
+  in.firmware = BBW_VERSION;
+  in.atS = nowS;
+  in.sinceS = g_diag.sinceS;
+  in.bootCount = g_bootCount;
+  in.uptimeS = millis() / 1000;
+#ifndef BBW_EMULATOR
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  in.slot = running ? running->label : "";
+#endif
+  for (uint8_t i = 0; i < g_diag.resetCount; ++i) {
+    in.addReset(resetReasonName(static_cast<esp_reset_reason_t>(g_diag.resets[i])));
+  }
+  in.scaleDriver = g_diag.scaleDriver;
+  strlcpy(in.scaleName, g_diag.scaleName, sizeof(in.scaleName));
+  bbw::scaleModelName(g_diag.scaleName, in.scaleName, sizeof(in.scaleName));
+  const bbw::Pairing pairing = g_ble.pairing();
+  char power[bbw::ADDR_LEN], stop[bbw::ADDR_LEN];
+  g_ble.powerAddress(power);
+  g_ble.stopAddress(stop);
+  if (pairing.botAddress[0]) in.bots[in.botCount++] = {"brew", g_bot.protocolLabel()};
+  if (power[0]) in.bots[in.botCount++] = {"power", g_power.protocolLabel()};
+  if (stop[0]) in.bots[in.botCount++] = {"stop", g_stop.protocolLabel()};
+  static char machine[64];
+  snprintf(machine, sizeof(machine), "%s %s", g_machine.maker, g_machine.model);
+  char cleaned[64];
+  bbw::scrubLine(machine, cleaned, sizeof(cleaned), g_scrub);
+  strlcpy(machine, cleaned, sizeof(machine));
+  in.machineKey = machine;
+  in.machineStyle = bbw::machineStyleName(g_machine.style);
+
+  // Link counters since the period began (they count from each start: a restart since then counts from 0).
+  const char *which[4] = {"scale", "bot", "power", "stop"};
+  bbw::DiagLink *links[4] = {&in.scale, &in.brew, &in.power, &in.stop};
+  const bool used[4] = {pairing.scaleAddress[0] != '\0', pairing.botAddress[0] != '\0', power[0] != '\0', stop[0] != '\0'};
+  const bool sameBoot = g_diag.bootAtStart == g_bootCount;
+  for (int k = 0; k < 4; ++k) {
+    const bbw::LinkStats s = g_ble.linkStats(which[k]);
+    const bbw::LinkStats b = sameBoot ? g_diag.atStart[k] : bbw::LinkStats();
+    links[k]->used = used[k];
+    links[k]->attempts = s.attempts >= b.attempts ? s.attempts - b.attempts : s.attempts;
+    links[k]->failures = s.failures >= b.failures ? s.failures - b.failures : s.failures;
+    links[k]->connects = s.connects >= b.connects ? s.connects - b.connects : s.connects;
+    links[k]->longestWaitMs = s.longestWaitMs;
+  }
+  const bbw::ScaleDiag sd = g_scale.diag();
+  in.frames = sameBoot && sd.frames >= g_diag.framesAtStart ? sd.frames - g_diag.framesAtStart : sd.frames;
+  in.badFrames = sameBoot && sd.badFrames >= g_diag.badAtStart ? sd.badFrames - g_diag.badAtStart : sd.badFrames;
+  in.droppedFrames = sameBoot && sd.dropped >= g_diag.droppedAtStart ? sd.dropped - g_diag.droppedAtStart : sd.dropped;
+
+  struct Ctx { bbw::DiagInput *in; uint32_t since; } ctx{&in, g_diag.sinceS};
+  g_store.scanShots(200, [](const bbw::ShotRecord &r, void *c) {
+    Ctx &x = *static_cast<Ctx *>(c);
+    if (r.epochS != 0 && r.epochS < x.since) return false;  // newest first: the rest are older
+    x.in->addShot(r);
+    return true;
+  }, &ctx);
+  g_store.scanPowerEvents([](const bbw::PowerEvent &e, void *c) {
+    Ctx &x = *static_cast<Ctx *>(c);
+    if (e.epochS != 0 && e.epochS < x.since) return false;
+    x.in->addPower(e);
+    return true;
+  }, &ctx);
+
+  const bbw::MemoryReport memory = bbw::memoryReport();
+  in.heapLowest = memory.internalLowest;
+#ifndef BBW_EMULATOR
+  in.stackLoop = uxTaskGetStackHighWaterMark(nullptr);
+  in.stackControl = g_controlTask ? uxTaskGetStackHighWaterMark(g_controlTask) : 0;
+  in.stackBle = g_bleTask ? uxTaskGetStackHighWaterMark(g_bleTask) : 0;
+#endif
+  in.rssiMin = g_diag.rssiMin;
+  in.rssiMax = g_diag.rssiMax;
+  in.scaleRestMin = g_settings.scaleRestMin;
+  in.requireCup = g_settings.requireCup;
+  in.powerWithScale = g_settings.powerOffWithScale;
+  in.learningFactor = g_settings.learningFactor;
+}
+
+// A new period: from now, with the counters as they are now.
+void diagStartPeriod(uint32_t nowS) {
+  g_diag.sinceS = nowS;
+  const char *which[4] = {"scale", "bot", "power", "stop"};
+  for (int k = 0; k < 4; ++k) g_diag.atStart[k] = g_ble.linkStats(which[k]);
+  g_diag.bootAtStart = g_bootCount;
+  const bbw::ScaleDiag sd = g_scale.diag();
+  g_diag.framesAtStart = sd.frames;
+  g_diag.badAtStart = sd.badFrames;
+  g_diag.droppedAtStart = sd.dropped;
+  g_diag.rssiMin = g_diag.rssiMax = 0;
+  if (g_warns) g_warns->clear();
+}
+
+// The daily summary's body into g_diagBody; its length, 0 if it could not be built.
+size_t diagBuildDaily(uint32_t nowS) {
+  if (!g_diagBody || !g_warns) return 0;
+  diagBuildScrubList();
+  static bbw::DiagInput *inp = bbw::bigNew<bbw::DiagInput>();
+  bbw::DiagInput &in = *inp;
+  in = bbw::DiagInput();
+  diagFillInput(in, nowS);
+  for (uint8_t recent = bbw::DIAG_RECENT;; recent = recent > 10 ? recent - 10 : 0) {
+    const size_t n = bbw::buildDailyReport(in, *g_warns, g_diagBody, bbw::DIAG_BODY_MAX, recent);
+    if (n || recent == 0) return n;
+  }
+}
+
+bool diagSeal() {
+  return bbw::sealReport(bbw::deviceSigner(), g_diagBody, g_diagEnvelope, bbw::DIAG_ENVELOPE_MAX) != 0;
+}
+
+#ifndef BBW_EMULATOR
+const char *exceptionCauseName(uint32_t cause) {
+  switch (cause) {
+    case 0: return "IllegalInstruction";
+    case 2: return "InstructionFetchError";
+    case 3: return "LoadStoreError";
+    case 6: return "IntegerDivideByZero";
+    case 9: return "LoadStoreAlignment";
+    case 20: return "InstFetchProhibited";
+    case 28: return "LoadProhibited";
+    case 29: return "StoreProhibited";
+    default: return "";
+  }
+}
+#endif
+
+// At start-up, before this start's own lines reach the log file: after a crash, the crash report.
+// The log file's end is then still what was written before the reset.
+void diagBoot() {
+  g_warns = bbw::bigNew<bbw::WarnTally>();
+  g_scrub = bbw::bigNew<bbw::ScrubList>();
+  g_diagBody = bbw::bigArray<char>(bbw::DIAG_BODY_MAX);
+  g_diagEnvelope = bbw::bigArray<char>(bbw::DIAG_ENVELOPE_MAX);
+  diagLoadState();
+  g_diagLogPos = 0;  // from this start's first line: warnings while starting count too
+  const esp_reset_reason_t reason = esp_reset_reason();
+  bool seen = false;
+  for (uint8_t i = 0; i < g_diag.resetCount; ++i) seen = seen || g_diag.resets[i] == static_cast<uint8_t>(reason);
+  if (!seen && g_diag.resetCount < 8) g_diag.resets[g_diag.resetCount++] = static_cast<uint8_t>(reason);
+  g_diagDirty = true;
+  const bool crashed = reason == ESP_RST_PANIC || reason == ESP_RST_INT_WDT || reason == ESP_RST_TASK_WDT
+#ifndef BBW_EMULATOR
+                       || reason == ESP_RST_WDT
+#endif
+      ;
+  // A core dump still in flash from an earlier crash (one the restart after it did not report, such
+  // as a crash under an older firmware followed by an update): reported too, without a log.
+  char previousFw[16];
+  strlcpy(previousFw, g_diag.lastFw, sizeof(previousFw));
+  if (strcmp(g_diag.lastFw, BBW_VERSION) != 0) {
+    strlcpy(g_diag.lastFw, BBW_VERSION, sizeof(g_diag.lastFw));
+    diagSaveState();
+  }
+  bool dumpWaiting = false;
+#ifndef BBW_EMULATOR
+  dumpWaiting = esp_core_dump_image_check() == ESP_OK;
+#endif
+  if (!crashed && !dumpWaiting) return;
+
+  static bbw::CrashInput c;
+  c = bbw::CrashInput();
+#ifdef BBW_EMULATOR
+  c.emulator = true;
+#endif
+  c.firmware = crashed ? BBW_VERSION : (previousFw[0] ? previousFw : "unknown");
+  c.atS = static_cast<uint32_t>(time(nullptr));
+  c.reset = crashed ? resetReasonText() : "an earlier crash, found at start-up";
+  c.bootCount = g_bootCount;
+#ifndef BBW_EMULATOR
+  static esp_core_dump_summary_t summary;
+  if (esp_core_dump_image_check() == ESP_OK && esp_core_dump_get_summary(&summary) == ESP_OK) {
+    c.haveDump = true;
+    strlcpy(c.task, summary.exc_task, sizeof(c.task));
+    c.pc = summary.exc_pc;
+    c.vaddr = summary.ex_info.exc_vaddr;
+    static char cause[32];
+    const char *name = exceptionCauseName(summary.ex_info.exc_cause);
+    snprintf(cause, sizeof(cause), "%s%s(%u)", name, name[0] ? " " : "", static_cast<unsigned>(summary.ex_info.exc_cause));
+    c.cause = reason == ESP_RST_PANIC ? cause : "";
+    c.depth = static_cast<uint8_t>(summary.exc_bt_info.depth > 16 ? 16 : summary.exc_bt_info.depth);
+    for (uint8_t i = 0; i < c.depth; ++i) c.backtrace[i] = summary.exc_bt_info.bt[i];
+    c.corrupted = summary.exc_bt_info.corrupted;
+    for (int i = 0; i < 8; ++i) snprintf(c.elf + 2 * i, 3, "%02x", static_cast<unsigned>(summary.app_elf_sha256[i]));
+  }
+#endif
+  // The last lines written before the reset: the end of the log file (and of the one before it).
+  // Once, at start-up: in PSRAM, not inside the chip. Not for an earlier crash: the log's end is then
+  // about the restart since.
+  constexpr size_t TAIL = 12288;
+  char *tail = bbw::bigArray<char>(TAIL);
+  size_t got = 0;
+  if (crashed) {
+    File f = LittleFS.open(bbw::LOG_FILE, "r");
+    if (f) {
+      const size_t size = f.size();
+      const size_t take = size < TAIL - 1 ? size : TAIL - 1;
+      f.seek(size - take);
+      got = f.read(reinterpret_cast<uint8_t *>(tail), take);
+      f.close();
+    }
+  }
+  tail[got] = '\0';
+  diagBuildScrubList();
+  auto cleanedLines = bbw::bigArray<char[bbw::DIAG_LINE_MAX]>(bbw::DIAG_CRASH_LINES);
+  const char *lines[bbw::DIAG_CRASH_LINES];
+  uint8_t count = 0;
+  // From the end backwards, whole lines only.
+  char *end = tail + got;
+  while (end > tail && count < bbw::DIAG_CRASH_LINES) {
+    *end = '\0';
+    char *start = end;
+    while (start > tail && start[-1] != '\n') --start;
+    if (start == tail && got == TAIL - 1) break;  // cut at the front: not a whole line
+    if (end - start > 1) {
+      bbw::scrubLine(start, cleanedLines[count], bbw::DIAG_LINE_MAX, g_scrub);
+      ++count;
+    }
+    end = start > tail ? start - 1 : tail;
+  }
+  for (uint8_t i = 0; i < count; ++i) lines[i] = cleanedLines[count - 1 - i];  // oldest first
+  size_t n = 0;
+  for (uint8_t keep = count;; keep = keep > 10 ? keep - 10 : 0) {
+    n = bbw::buildCrashReport(c, lines + (count - keep), keep, g_diagBody, bbw::DIAG_BODY_MAX);
+    if (n || keep == 0) break;
+  }
+  if (n) {
+    g_store.saveText(DIAG_CRASH_FILE, g_diagBody);
+    if (!g_settings.diagnosticsOff && diagSeal()) diagQueue(g_diagEnvelope);
+  }
+#ifndef BBW_EMULATOR
+  if (c.haveDump) esp_core_dump_image_erase();
+#endif
+  LOGW("diagnostics: %s%s%s", crashed ? "the controller restarted after a crash" : "a record of an earlier crash was found",
+       c.haveDump ? " in " : "", c.haveDump ? c.task : "");
+}
+
+// Loop task. `idle`: no shot is running or being set up.
+void diagService(bool idle) {
+  const uint32_t now = millis();
+  if (!idle) g_diagBusyAtMs = now ? now : 1;
+  diagTakeWarnings();
+  if (g_scale.connected() && g_scale.protocolId()[0] && strcmp(g_diag.scaleDriver, g_scale.protocolId()) != 0) {
+    strlcpy(g_diag.scaleDriver, g_scale.protocolId(), sizeof(g_diag.scaleDriver));
+    strlcpy(g_diag.scaleName, g_scale.name(), sizeof(g_diag.scaleName));
+    g_diagDirty = true;
+  }
+#ifndef BBW_EMULATOR
+  static uint32_t rssiAtMs = 0;
+  if (WiFi.status() == WL_CONNECTED && now - rssiAtMs > 60000) {
+    rssiAtMs = now;
+    const int8_t r = static_cast<int8_t>(WiFi.RSSI());
+    if (g_diag.rssiMin == 0 || r < g_diag.rssiMin) g_diag.rssiMin = r;
+    if (g_diag.rssiMax == 0 || r > g_diag.rssiMax) g_diag.rssiMax = r;
+  }
+#endif
+  if (!idle || (g_diagBusyAtMs && now - g_diagBusyAtMs < DIAG_QUIET_AFTER_SHOT_MS)) return;
+  static uint32_t savedAtMs = 0;
+  if (g_diagDirty && now - savedAtMs > DIAG_SAVE_PERIOD_MS) {
+    savedAtMs = now;
+    diagSaveState();
+  }
+  const time_t clock = time(nullptr);
+  if (clock < 1700000000) return;
+  const uint32_t nowS = static_cast<uint32_t>(clock);
+  if (g_diag.sinceS == 0 || g_diag.sinceS > nowS) {
+    diagStartPeriod(nowS);
+    diagSaveState();
+  }
+  if (g_settings.diagnosticsOff) {
+    // Off: nothing is built or sent, and what was waiting goes.
+    if (g_diag.queueCount) {
+      g_diag.queueCount = 0;
+      diagSaveState();
+    }
+    g_diagSendNow = false;
+    return;
+  }
+  if (g_diagSendNow || nowS - g_diag.sinceS >= bbw::DIAG_PERIOD_S) {
+    const bool asked = g_diagSendNow;
+    g_diagSendNow = false;
+    if (diagBuildDaily(nowS) && diagSeal()) {
+      diagQueue(g_diagEnvelope);
+      g_diag.resetCount = 0;  // reported
+      diagStartPeriod(nowS);
+      diagSaveState();
+      if (asked) g_diagRetryAtMs = 0;  // go at once
+    }
+  }
+  if (!g_diag.queueCount) return;
+#ifndef BBW_EMULATOR
+  if (WiFi.status() != WL_CONNECTED) return;
+#endif
+  if (g_diagRetryAtMs && static_cast<int32_t>(now - g_diagRetryAtMs) < 0) return;
+  char path[16];
+  diagSlotPath(diagOldestSlot(), path, sizeof(path));
+  if (!g_store.readText(path, g_diagEnvelope, bbw::DIAG_ENVELOPE_MAX)) {
+    --g_diag.queueCount;  // gone: on to the next
+    diagSaveState();
+    return;
+  }
+  char base[96], relay[112];
+  relayBase(base, sizeof(base));
+  snprintf(relay, sizeof(relay), "%s/report", base);
+  char problem[80];
+  const int code = bbw::diagPost(relay, g_diagEnvelope, problem, sizeof(problem));
+  g_diag.lastCode = static_cast<int16_t>(code);
+  strlcpy(g_diag.lastProblem, problem, sizeof(g_diag.lastProblem));
+  // Sent, or refused for good (a 4xx other than "too many"): either way it is done with.
+  if ((code >= 200 && code < 300) || (code >= 400 && code < 500 && code != 429)) {
+    if (code < 300) g_diag.lastSentS = nowS;
+    else LOGW("diagnostics: report not taken: %s", problem);
+    LittleFS.remove(path);
+    --g_diag.queueCount;
+    g_diagBackoffMs = 0;
+    g_diagRetryAtMs = now + 5000;  // the next one a little later
+  } else {
+    g_diagBackoffMs = g_diagBackoffMs == 0 ? DIAG_BACKOFF_FIRST_MS
+                                           : (g_diagBackoffMs * 2 > DIAG_BACKOFF_MAX_MS ? DIAG_BACKOFF_MAX_MS : g_diagBackoffMs * 2);
+    g_diagRetryAtMs = now + g_diagBackoffMs;
+    LOGI("diagnostics: not sent (%d): %s; next try in %u s", code, problem, static_cast<unsigned>(g_diagBackoffMs / 1000));
+  }
+  if (g_diagRetryAtMs == 0) g_diagRetryAtMs = 1;
+  diagSaveState();
+}
+
 
 namespace app {
 
@@ -1930,7 +2458,7 @@ void setLibraryLink(const char *repo, const char *token) {
   // Never the token itself: whether one came, and whether one is kept.
   LOGI("library: connection saved: %s, %s", g_net.libraryRepo[0] ? g_net.libraryRepo : "no repository",
        token && token[0] ? "new token stored" : g_net.libraryToken[0] ? "token kept" : "no token");
-  bbw::libraryLinkConfigure(g_net.libraryRepo, g_net.libraryToken);
+  configureLibraryLink();
   g_libraryReadSoon = true;
 }
 
@@ -2276,6 +2804,46 @@ void diagnostics(JsonObject out) {
     Lock lock;
     c["scale_zeroes_itself"] = g_controller.scaleZeroesItself();
   }
+}
+
+void diagPreview(String &out) {
+  const time_t clock = time(nullptr);
+  const uint32_t nowS = clock > 1700000000 ? static_cast<uint32_t>(clock) : 0;
+  const size_t n = diagBuildDaily(nowS);
+  out = n ? String(g_diagBody) : String("{}");
+}
+
+bool diagSendNow() {
+  if (g_settings.diagnosticsOff) return false;
+  g_diagSendNow = true;
+  return true;
+}
+
+void diagStatus(JsonObject out) {
+  out["on"] = !g_settings.diagnosticsOff;
+  char base[96];
+  relayBase(base, sizeof(base));
+  out["relay"] = base;
+  out["relay_default"] = g_net.diagRelay[0] == '\0';
+  out["waiting"] = g_diag.queueCount;
+  out["since"] = g_diag.sinceS;
+  out["last_sent"] = g_diag.lastSentS;
+  out["last_code"] = g_diag.lastCode;
+  out["last_problem"] = g_diag.lastProblem;
+  char kid[bbw::KEY_ID_LEN] = "";
+  if (bbw::deviceSigner().ready()) bbw::keyId(bbw::deviceSigner().publicKey(), kid);
+  out["key_id"] = kid;
+}
+
+size_t lastCrash(char *out, size_t size) { return g_store.readText(DIAG_CRASH_FILE, out, size); }
+
+void setDiagRelay(const char *url) {
+  strlcpy(g_net.diagRelay, url ? url : "", sizeof(g_net.diagRelay));
+  g_store.saveNet(g_net);
+  configureLibraryLink();  // the library goes through the same relay
+  g_libraryReadSoon = true;
+  g_diagRetryAtMs = 0;
+  g_diagBackoffMs = 0;
 }
 
 bool scaleZeroesItself() {
@@ -2726,7 +3294,7 @@ void setup() {
   LOGI("start-up: device key ready");
   g_net = g_store.loadNet();
   g_maintenance = g_store.loadMaintenance();
-  bbw::libraryLinkConfigure(g_net.libraryRepo, g_net.libraryToken);
+  configureLibraryLink();
   const bbw::Pairing pairing = g_store.loadPairing();
   // The cup on the scale before a restart is believed again (core/BrewController.h CupMemory), but
   // not after the power was off: the scale may have been switched off and on meanwhile.
@@ -2780,6 +3348,9 @@ void setup() {
   web::begin();
   bbw::updateBegin(g_store.loadUpdateConfig());
   LOGI("start-up: done in %u ms", static_cast<unsigned>(millis()));
+  // After Bluetooth is up (its pairings name what to take out of the log), and before the loop first
+  // writes the log to flash: the log file's end is still what was written before a crash.
+  diagBoot();
   if (g_net.staSsid[0]) configTime(0, 0, "pool.ntp.org");  // optional; the browser also sets the clock
   const bbw::MemoryReport memory = bbw::memoryReport();
   if (memory.known) {
@@ -2918,6 +3489,7 @@ void loop() {
     // the update task restarts the controller itself in a moment
   }
   shareSendOne(idle);
+  diagService(idle);
   shareReadStatus(idle);
   libraryRefresh(idle);
   subscriptionsService(idle);

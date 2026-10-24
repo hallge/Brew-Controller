@@ -30,6 +30,7 @@
 #include "core/ShotData.h"
 #include "core/SwitchBotProtocol.h"
 #include "core/TasteProfile.h"
+#include "core/Telemetry.h"
 
 using namespace bbw;
 
@@ -4687,6 +4688,145 @@ struct FakeSigner : ISigner {
   }
 };
 
+static void testDiagnostics() {
+  printf("diagnostics: cleaning, the warning tally, the reports\n");
+  // Lines as the board logs them (made-up addresses and names).
+  ScrubList list;
+  list.add("aa:bb:cc:11:22:33", "<scale>");
+  list.add("aa:bb:cc:44:55:66", "<power bot>");
+  list.add("MyHomeNet", "<wifi>");
+  list.add("BrewByWeight-1234", "<ap>");
+  list.add("LUNAR-9E4079", "LUNAR");
+  list.add("Finca La Unice", "<coffee>");
+  list.add("Greg", "<name>");
+  char out[DIAG_LINE_MAX];
+  scrubLine("[59640.030] I scale: connecting to AA:BB:CC:11:22:33 (LUNAR-9E4079)", out, sizeof(out), &list);
+  CHECK(strcmp(out, "[59640.030] I scale: connecting to <scale> (LUNAR)") == 0);
+  scrubLine("[60282.002] I power: connecting to aa:bb:cc:44:55:66", out, sizeof(out), &list);
+  CHECK(strcmp(out, "[60282.002] I power: connecting to <power bot>") == 0);
+  scrubLine("[  62.506] I wifi: on the home network (192.168.0.242), own access point off", out, sizeof(out), &list);
+  CHECK(strcmp(out, "[  62.506] I wifi: on the home network (<ip>), own access point off") == 0);
+  scrubLine("[   2.833] I web: access point BrewByWeight-1234, http://192.168.4.1 on MyHomeNet", out, sizeof(out), &list);
+  CHECK(strcmp(out, "[   2.833] I web: access point <ap>, http://<ip> on <wifi>") == 0);
+  scrubLine("W bot: unknown device 12:34:56:78:9a:bc near", out, sizeof(out), &list);
+  CHECK(strcmp(out, "W bot: unknown device <mac> near") == 0);
+  scrubLine("I coffee: Honduras finca la unice for greg", out, sizeof(out), &list);
+  CHECK(strcmp(out, "I coffee: Honduras <coffee> for <name>") == 0);
+  scrubLine("I library: token github_pat_11ABCDEFG0123456789abcdef used", out, sizeof(out), &list);
+  CHECK(strcmp(out, "I library: token <token> used") == 0);
+  // Versions, times and short codes are kept.
+  scrubLine("[   0.815] I boot: firmware v0.1.19, status 0x01, 3.5 s", out, sizeof(out), &list);
+  CHECK(strcmp(out, "[   0.815] I boot: firmware v0.1.19, status 0x01, 3.5 s") == 0);
+  // A long line is cut, never overrun.
+  char longLine[400];
+  memset(longLine, 'x', sizeof(longLine) - 1);
+  longLine[sizeof(longLine) - 1] = '\0';
+  CHECK(scrubLine(longLine, out, sizeof(out), &list) == DIAG_LINE_MAX - 1);
+
+  // Patterns: numbers become '#', the time stamp and level go.
+  char pattern[DIAG_PATTERN_MAX];
+  warningPattern("[65179.623] W power: connect failed after 10237 ms: timed out (code 13); last heard 4 s before, -71 dBm",
+                 pattern, sizeof(pattern));
+  CHECK(strcmp(pattern, "power: connect failed after # ms: timed out (code #); last heard # s before, # dBm") == 0);
+
+  WarnTally *w = new WarnTally();
+  for (int i = 0; i < 5; ++i) {
+    char line[160];
+    snprintf(line, sizeof(line), "[%d.000] W power: connect failed after %d ms: timed out (code 13)", 100 + i, 10000 + i);
+    w->add(line);
+  }
+  w->add("[200.000] W scale: no supported characteristic pair found\n");
+  CHECK(w->patternCount == 2 && w->patterns[0].count == 5 && w->patterns[1].count == 1);
+  CHECK(w->recentCount == 6 && strcmp(w->recentLine(5), "[200.000] W scale: no supported characteristic pair found") == 0);
+  for (int i = 0; i < 40; ++i) {
+    char line[64];
+    snprintf(line, sizeof(line), "W thing %c: broke", 'A' + i % 26);
+    w->add(line);
+  }
+  CHECK(w->recentCount == DIAG_RECENT && w->patternCount <= DIAG_PATTERNS && w->valid());
+  CHECK(strcmp(w->recentLine(DIAG_RECENT - 1), "W thing N: broke") == 0);  // the newest last
+
+  // The daily report.
+  DiagInput in;
+  in.firmware = "v0.1.20";
+  in.atS = 1792806690;
+  in.sinceS = 1792720290;
+  in.bootCount = 58;
+  in.addReset("restart requested");
+  in.addReset("CRASH (exception)");
+  in.addReset("restart requested");
+  CHECK(in.resetCount == 2);
+  in.scaleDriver = "acaia";
+  scaleModelName("LUNAR-9E4079", in.scaleName, sizeof(in.scaleName));
+  CHECK(strcmp(in.scaleName, "LUNAR") == 0);
+  in.bots[in.botCount++] = {"brew", "SwitchBot Bot"};
+  in.power.used = true;
+  in.power.attempts = 11;
+  in.power.failures = 9;
+  ShotRecord a{}, b{};
+  a.endReason = static_cast<uint8_t>(EndReason::WEIGHT);
+  a.flags = SHOT_FLAG_FINAL_VALID;
+  a.targetWeightG = 48.0f;
+  a.finalWeightG = 49.8f;
+  a.stopLatencyMs = 3691;
+  b = a;
+  b.finalWeightG = 45.8f;
+  b.stopLatencyMs = 3232;
+  b.flags |= SHOT_FLAG_STOP_RETRIED;
+  in.addShot(a);
+  in.addShot(b);
+  PowerEvent e{};
+  e.outcome = static_cast<uint8_t>(PowerControl::Outcome::MACHINE_BUSY);
+  in.addPower(e);
+  static char body[DIAG_BODY_MAX];
+  const size_t n = buildDailyReport(in, *w, body, sizeof(body));
+  CHECK(n > 0 && n < DIAG_BODY_MAX);
+  CHECK(strstr(body, "\"t\":\"diag_daily\"") && strstr(body, "\"resets\":[\"restart requested\",\"CRASH (exception)\"]"));
+  CHECK(strstr(body, "\"scale\":{\"driver\":\"acaia\",\"name\":\"LUNAR\"}"));
+  CHECK(strstr(body, "\"power\":{\"attempts\":11,\"failures\":9"));
+  CHECK(strstr(body, "\"end\":{\"weight\":2}") && strstr(body, "\"stop_retried\":1"));
+  CHECK(strstr(body, "\"stop_latency_ms\":{\"median\":3691,\"max\":3691}"));
+  CHECK(strstr(body, "\"overshoot_g\":{\"median\":1.8,\"max\":1.8}"));
+  CHECK(strstr(body, "\"machine_busy\":1"));
+  CHECK(strstr(body, "\"n\":5,\"p\":\"power: connect failed after # ms: timed out (code #)\""));
+  CHECK(!strstr(body, "brew\":{"));  // no stats for a role with nothing paired
+  CHECK(!strstr(body, "\"emu\""));
+  in.emulator = true;
+  CHECK(buildDailyReport(in, *w, body, sizeof(body)) > 0 && strstr(body, "\"v\":1,\"emu\":1,"));
+  in.emulator = false;
+  // Too small: nothing rather than half a report.
+  CHECK(buildDailyReport(in, *w, body, 300) == 0);
+
+  // The crash report.
+  CrashInput c;
+  c.firmware = "v0.1.19";
+  c.reset = "CRASH (exception)";
+  c.haveDump = true;
+  strcpy(c.task, "loopTask");
+  c.pc = 0x42012345;
+  c.cause = "LoadProhibited";
+  c.backtrace[0] = 0x42012345;
+  c.backtrace[1] = 0x4200abcd;
+  c.depth = 2;
+  const char *lines[] = {"[  48.768] I update: up to date: v0.1.19 is the latest release"};
+  CHECK(buildCrashReport(c, lines, 1, body, sizeof(body)) > 0);
+  CHECK(strstr(body, "\"dump\":{\"task\":\"loopTask\",\"pc\":\"0x42012345\",\"cause\":\"LoadProhibited\",\"vaddr\":\"0x00000000\",\"bt\":[\"0x42012345\",\"0x4200abcd\"]"));
+
+  // The envelope: the library's, plus the key; signed over the body as it is sent.
+  FakeSigner signer;
+  static char envelope[DIAG_ENVELOPE_MAX];
+  CHECK(sealReport(signer, body, envelope, sizeof(envelope)) > 0);
+  char pub[100];
+  base64Encode(signer.key, PUBLIC_KEY_LEN, pub, sizeof(pub));
+  char expectPub[128];
+  snprintf(expectPub, sizeof(expectPub), "\"pub\":\"%s\"", pub);
+  CHECK(strstr(envelope, expectPub) && strstr(envelope, "\"alg\":\"ES256\""));
+  uint8_t hash[32];
+  sha256(body, strlen(body), hash);
+  CHECK(memcmp(hash, signer.lastHash, 32) == 0);
+  delete w;
+}
+
 static void hexOf(const uint8_t *bytes, size_t n, char *out) {
   for (size_t i = 0; i < n; ++i) snprintf(out + 2 * i, 3, "%02x", bytes[i]);
 }
@@ -7109,6 +7249,7 @@ int main() {
   testShotDataSet();
   testReadingNewerThanTick();
   testResultScreenLetsGo();
+  testDiagnostics();
   testEmptyScaleZeroed();
   testScaleRest();
   testCupRemembered();

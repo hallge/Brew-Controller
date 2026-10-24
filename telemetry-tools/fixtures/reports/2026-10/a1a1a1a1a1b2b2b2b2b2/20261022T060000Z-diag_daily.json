@@ -1,0 +1,8 @@
+{
+ "v": 1,
+ "kid": "a1a1a1a1a1b2b2b2b2b2",
+ "alg": "ES256",
+ "pub": "BBERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERE=",
+ "sig": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIg==",
+ "body": "{\"t\":\"diag_daily\",\"v\":1,\"fw\":\"v0.1.20\",\"at\":1792648800,\"since\":1792562400,\"boot\":{\"count\":10,\"uptime_s\":80000,\"slot\":\"app0\",\"resets\":[\"restart requested\"]},\"hw\":{\"scale\":{\"driver\":\"acaia\",\"name\":\"LUNAR\"},\"bots\":[{\"role\":\"brew\",\"kind\":\"SwitchBot Bot\"},{\"role\":\"power\",\"kind\":\"SwitchBot Bot\"}],\"machine\":{\"key\":\"breville-dual-boiler\",\"style\":\"toggle_button\"}},\"links\":{\"scale\":{\"attempts\":1,\"failures\":0,\"connects\":1,\"longest_wait_ms\":1500},\"brew\":{\"attempts\":1,\"failures\":0,\"connects\":1,\"longest_wait_ms\":700},\"power\":{\"attempts\":1,\"failures\":0,\"connects\":1,\"longest_wait_ms\":2500}},\"shots\":{\"count\":1,\"end\":{\"weight\":1},\"faults\":{},\"stop_latency_ms\":{\"median\":3400,\"max\":3400},\"overshoot_g\":{\"median\":0.9,\"max\":0.9},\"stop_retried\":0},\"power\":{\"done\":1,\"bot_unreachable\":0,\"machine_busy\":0,\"failed\":0},\"health\":{\"heap_lowest\":41000,\"stack_left\":{\"loop\":8000,\"control\":5300,\"ble\":5500},\"rssi\":{\"min\":-70,\"max\":-60}},\"settings\":{\"scale_rest_min\":5,\"require_cup\":true,\"power_with_scale\":false,\"learning_factor\":0.3},\"warnings\":[],\"recent\":[]}"
+}

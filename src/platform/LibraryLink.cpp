@@ -1,5 +1,5 @@
-// The shared library over HTTPS: GitHub's contents API. Not built for the
-// emulator (see LibraryLink.h). Not yet run on a real board.
+// The shared library over HTTPS: GitHub's contents API with the owner's token, or
+// the Brew Controller relay with none. Not built for the emulator (see LibraryLink.h).
 #ifndef BBW_EMULATOR
 
 #include "LibraryLink.h"
@@ -12,6 +12,8 @@
 
 #include "BigMem.h"
 #include "GithubRoots.h"
+// Mozilla's root certificates in ESP-IDF's bundle format, for the relay (another host than GitHub).
+extern const uint8_t rootca_crt_bundle_start[] asm("_binary_certs_x509_crt_bundle_bin_start");
 #include "Log.h"
 #include "core/Share.h"
 
@@ -30,7 +32,14 @@ constexpr size_t BODY_SIZE = SHARE_ENVELOPE_MAX * 4 / 3 + 128;
 
 char g_repo[64];
 char g_token[128];
+char g_relayBase[96];        // "https://host"; empty: no relay
+bool g_viaRelay = false;
+bool g_keyMissing = false;
 WiFiClientSecure *g_client;  // one connection, kept open between requests
+WiFiClientSecure *g_relayClient;
+char *g_relayBody;           // RELAY_BODY_SIZE, in PSRAM
+// {"path":"...","record":"<the envelope, escaped>"}: every character escaped, at worst.
+constexpr size_t RELAY_BODY_SIZE = 2 * SHARE_ENVELOPE_MAX + 256;
 char *g_body;                // BODY_SIZE, in PSRAM
 LibraryLinkStatus g_status;
 uint32_t g_backoffMs = 0;
@@ -58,8 +67,18 @@ void succeeded(int code) {
   g_retryAtMs = 0;
 }
 
+// The relay's answers, in words.
+const char *explainRelay(int code) {
+  if (code < 0) return "the relay could not be reached";
+  if (code == 403) return "the relay refused this controller";
+  if (code == 429) return "the relay's daily limit is reached";
+  if (code == 502) return "the relay could not reach the library";
+  return "the relay answered with an error";
+}
+
 // What an answer that is not a success means, in words.
 const char *explain(int code) {
+  if (g_viaRelay) return explainRelay(code);
   if (code < 0) return "GitHub could not be reached";
   if (code == 401) return "GitHub refused the token";
   if (code == 403) return "the token may not do that, or the hourly limit is reached";
@@ -69,6 +88,20 @@ const char *explain(int code) {
 }
 
 void begin(HTTPClient &http, const char *url, const char *accept) {
+  if (g_viaRelay) {
+    if (!g_relayClient) {
+      g_relayClient = new WiFiClientSecure();
+      g_relayClient->setCACertBundle(rootca_crt_bundle_start);
+      g_relayClient->setHandshakeTimeout(15);  // the relay's chain is checked in software too
+    }
+    http.setReuse(true);
+    http.setConnectTimeout(CONNECT_TIMEOUT_MS);
+    http.setTimeout(ANSWER_TIMEOUT_MS);
+    http.begin(*g_relayClient, url);
+    http.addHeader("Accept", accept);
+    http.setUserAgent("brew-by-weight-controller");
+    return;
+  }
   if (!g_client) {
     g_client = new WiFiClientSecure();
     g_client->setCACert(GITHUB_ROOTS_PEM);  // nothing else is trusted
@@ -88,11 +121,23 @@ void begin(HTTPClient &http, const char *url, const char *accept) {
 
 }  // namespace
 
+void libraryLinkSetRelay(const char *base) { strlcpy(g_relayBase, base ? base : "", sizeof(g_relayBase)); }
+
+bool libraryTakeKeyMissing() {
+  const bool missing = g_keyMissing;
+  g_keyMissing = false;
+  return missing;
+}
+
 void libraryLinkConfigure(const char *repo, const char *token) {
   strlcpy(g_repo, repo ? repo : "", sizeof(g_repo));
   strlcpy(g_token, token ? token : "", sizeof(g_token));
-  strlcpy(g_status.repository, g_repo, sizeof(g_status.repository));
-  g_status.configured = g_repo[0] != '\0' && g_token[0] != '\0';
+  const bool own = g_repo[0] != '\0' && g_token[0] != '\0';
+  g_viaRelay = !own && g_relayBase[0] != '\0';
+  g_keyMissing = false;
+  strlcpy(g_status.repository, g_viaRelay ? g_relayBase + (strncmp(g_relayBase, "https://", 8) == 0 ? 8 : 0) : g_repo,
+          sizeof(g_status.repository));
+  g_status.configured = own || g_viaRelay;
   // New details deserve a fresh try.
   g_backoffMs = 0;
   g_retryAtMs = 0;
@@ -102,6 +147,7 @@ void libraryLinkConfigure(const char *repo, const char *token) {
 
 void libraryLinkRelease() {
   if (g_client) g_client->stop();
+  if (g_relayClient) g_relayClient->stop();
 }
 
 bool libraryLinkReady() {
@@ -109,8 +155,42 @@ bool libraryLinkReady() {
   return g_retryAtMs == 0 || static_cast<int32_t>(millis() - g_retryAtMs) >= 0;
 }
 
+// Through the relay: POST <relay>/library/put {"path","record"}.
+bool relayPut(const char *path, const char *text) {
+  if (!g_relayBody) g_relayBody = bigArray<char>(RELAY_BODY_SIZE);
+  JsonOut j(g_relayBody, RELAY_BODY_SIZE);
+  j.open();
+  j.text("path", path);
+  j.text("record", text);
+  j.close();
+  if (!j.ok()) return false;  // would not fit: not a record
+  char url[160];
+  snprintf(url, sizeof(url), "%s/library/put", g_relayBase);
+  HTTPClient http;
+  begin(http, url, "application/json");
+  http.addHeader("Content-Type", "application/json");
+  const int code = http.POST(reinterpret_cast<uint8_t *>(g_relayBody), j.length());
+  http.end();
+  // 201: in the library's inbox. 422 there means it arrived on an earlier try.
+  if (code == 201 || code == 200 || code == 422) {
+    succeeded(code);
+    return true;
+  }
+  if (code == 409) {
+    // The relay has no key for this controller yet (a library that started over, or a key that went
+    // out by token before): the key goes now, then this record again. Not a failure to back off from.
+    g_keyMissing = true;
+    g_status.lastHttp = code;
+    strlcpy(g_status.problem, "the relay asked for this controller's key first", sizeof(g_status.problem));
+    return false;
+  }
+  fail(code, explain(code));
+  return false;
+}
+
 bool libraryPut(const char *path, const char *text) {
   if (!libraryLinkReady() || !path || !text) return false;
+  if (g_viaRelay) return relayPut(path, text);
   if (!g_body) g_body = bigArray<char>(BODY_SIZE);
   // {"message":"...","branch":"inbox","content":"<base64 of the record>"}
   int at = snprintf(g_body, BODY_SIZE, "{\"message\":\"Record from a controller\",\"branch\":\"inbox\",\"content\":\"");
@@ -140,7 +220,8 @@ bool libraryGet(const char *path, char *out, size_t size) {
   if (!libraryLinkReady() || !path || !out || size < 2) return false;
   out[0] = '\0';
   char url[224];
-  snprintf(url, sizeof(url), "%s%s/contents/%s?ref=main", API, g_repo, path);
+  if (g_viaRelay) snprintf(url, sizeof(url), "%s/library/get?path=%s", g_relayBase, path);
+  else snprintf(url, sizeof(url), "%s%s/contents/%s?ref=main", API, g_repo, path);
   HTTPClient http;
   begin(http, url, "application/vnd.github.raw+json");  // the file itself, not a description of it
   const int code = http.GET();
@@ -193,7 +274,9 @@ bool libraryGet(const char *path, char *out, size_t size) {
 LibraryLinkStatus libraryLinkStatus() {
   LibraryLinkStatus status = g_status;
   status.ready = libraryLinkReady();
-  strlcpy(status.via, "GitHub, over HTTPS", sizeof(status.via));
+  strlcpy(status.via, g_viaRelay ? "the Brew Controller relay, over HTTPS (no GitHub token needed)"
+                                  : "GitHub, over HTTPS, with your token", sizeof(status.via));
+  status.viaRelay = g_viaRelay;
   if (status.configured && !status.problem[0]) {
     if (WiFi.status() != WL_CONNECTED) {
       strlcpy(status.problem, "not on a Wi-Fi network", sizeof(status.problem));

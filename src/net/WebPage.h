@@ -495,10 +495,12 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <details class="note"><summary>Download <b>firmware.bin</b> for the version you want from the <a id="fwrel" href="#" target="_blank" rel="noopener">releases page</a>, then choose it here.</summary><ul><li>Not while a shot is in hand.</li><li>The new firmware goes into the spare slot and is on trial for its first 45 seconds: if it crashes or hangs in that time the controller goes back to this one by itself.</li><li>Settings, recipes and shot history are kept.</li></ul></details></section>
 <section class="card com"><div class="head"><h2>Shared library</h2><span class="pill" id="sh_state"></span></div>
 <div class="sm mid" id="sh_key"></div>
+<div class="sm mid">Sharing goes through the Brew Controller relay: no GitHub account or token is needed. The relay checks each record's signature and passes it to the library's review.</div>
+<div class="sm mid" id="sh_link"></div>
+<details class="note" id="sh_own"><summary>Use your own library repository (optional)</summary>
 <div class="grid"><label>Library repository (owner/name)<input id="sh_repo" maxlength="63" placeholder="e.g. hallge/Community-Coffee" autocomplete="off"></label>
 <label>Token for that repository only (blank keeps the one stored)<input id="sh_token" type="password" maxlength="127" autocomplete="new-password"></label></div>
-<div class="sm mid" id="sh_link"></div>
-<div class="sm mid">The token should be a fine-grained one limited to this repository, with Contents: read and write and nothing else. Save below stores it on the controller; it is never shown again.</div>
+<div class="sm mid">For running another library, or testing. The token should be a fine-grained one limited to this repository, with Contents: read and write and nothing else. Save below stores it on the controller; it is never shown again. Both filled in, they are used instead of the relay; clear the repository to go back to the relay.</div></details>
 <label class="chk"><input type="checkbox" id="shareEnabled" style="accent-color:var(--com)">Share from this controller</label>
 <fieldset><legend>What it shares</legend>
 <label class="chk"><input type="checkbox" id="shareCoffees" style="accent-color:var(--com)">Coffees I add or change (name, roaster, origin, process, roast level, notes)</label>
@@ -508,6 +510,14 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <div class="row"><button class="pri" style="background:var(--com);border-color:var(--com);color:#06203a" data-save onclick="saveShare()">Save</button><button onclick="post('/api/share/coffees').then(r=>{done(r,r.queued+' coffees queued');loadLibrary();loadShare()})">Queue coffees not sent yet</button><button onclick="ask('Forget what was sent before and send every coffee and grinder you have described again?').then(ok=>{if(ok){post('/api/share/again').then(r=>{done(r,r.queued+' queued');loadLibrary();loadShare()})}})">Send everything again</button></div>
 <div class="sm mid" id="sh_queue"></div>
 <details class="note"><summary>Every record is signed with this controller's own key.</summary><ul><li>It carries the key's short id, never a name, an address or anything about the network.</li><li>Coffees and grinders wait for a reviewer before they are published; measurements do not.</li></ul></details></section>
+<section class="card" id="diagcard"><div class="head"><h2>Diagnostics</h2><span class="pill" id="dg_state"></span></div>
+<div class="sm mid">Once a day this controller sends a short technical report to the maker of its firmware, and after a crash, where it crashed. It is how problems with scales, pushers and machines in other homes are found and fixed in new releases.</div>
+<label class="chk"><input type="checkbox" id="diagnosticsOn" onchange="post('/api/settings',{diagnosticsOn:this.checked}).then(r=>{done(r,this.checked?'Diagnostics on':'Diagnostics off: nothing is sent');loadDiag()})">Send diagnostics reports</label>
+<div class="sm mid" id="dg_line"></div><div class="sm" id="dg_crash"></div>
+<div class="row"><button onclick="diagPreview()">What would be sent</button><button id="dg_send" onclick="post('/api/diagnostics/send').then(r=>{done(r,'Sending a report');setTimeout(loadDiag,8000)})">Send now</button></div>
+<pre id="dg_pre" class="sm" style="display:none;white-space:pre-wrap;word-break:break-word;max-height:360px;overflow:auto"></pre>
+<details class="note"><summary>What is in a report, and what never is.</summary><ul><li><b>Sent:</b> the firmware version and restarts; which scale, pushers and machine type are in use; how their Bluetooth connections went; how shots and power presses ended; memory and Wi-Fi strength; warnings from the log, with names and addresses taken out.</li><li><b>Never sent:</b> Bluetooth or IP addresses, the Wi-Fi name, passwords, tokens, coffee, roaster or drinker names, notes, subscriptions or where you are.</li><li>Reports are signed with this controller's own key (its short id is all that identifies it) and go through a relay to a private repository only the maintainer reads. No GitHub account is needed.</li><li>Off: nothing is built or sent, and reports waiting are dropped.</li></ul></details>
+<details class="note"><summary>Relay address (for testing; diagnostics and the shared library both use it)</summary><div class="row"><input id="dg_relay" maxlength="95" placeholder="blank: the built-in relay" style="flex:1 1 260px"><button onclick="post('/api/diagnostics/relay',{url:$('dg_relay').value.trim()}).then(r=>{done(r,'Saved');loadDiag()})">Save</button></div></details></section>
 </div>
 <div class="page" id="p-logs">
 <div class="head"><h1>Logs</h1></div>
@@ -572,12 +582,25 @@ const fs=v=>fsn(v)+' '+U;
 let U='µm',S=null,L=null,G=null,SH=[],ST=null,C=-1,R=-1,SEL=0,lastShotId=-1;
 const F=["learningEnabled","learningFactor","adaptiveLearning","minValidWeightG","scaleTimeoutMs","dripObserveMs","minShotTimeMs","noFlowTimeoutS","cupMode","cupMinWeightG","autoStartAfterTare","scaleTimer","requireCup","actuationMode","pressDurationMs","releaseSettleMs","botHoldSeconds","grindToleranceS","grindWindow","grindUmPerS","grindMaxStepUm","grindTimeBasis","grindRatedTarget","scaleRestMin"];
 const SB=['shareEnabled','shareCoffees','shareDialIns','shareShots','shareRatings','keepPowerBotConnected','displayFlipped','powerOffWithScale','namedDrinkers'];
+// Diagnostics reports (docs/TELEMETRY.md).
+const ago=s=>{if(!s)return 'never';const d=Math.round(Date.now()/1000-s);return d<90?'just now':d<5400?Math.round(d/60)+' min ago':d<129600?Math.round(d/3600)+' h ago':Math.round(d/86400)+' days ago'};
+async function loadDiag(){let d;try{d=await get('/api/diagnostics/report')}catch(e){return}
+$('diagnosticsOn').checked=!!d.on;$('dg_state').textContent=d.on?'on':'off';$('dg_send').disabled=!d.on;
+if(document.activeElement!==$('dg_relay'))$('dg_relay').value=d.relay_default?'':d.relay;
+$('dg_line').textContent=d.on?['Last sent: '+ago(d.last_sent),d.waiting?d.waiting+' waiting':'',d.last_problem?'last try: '+d.last_problem:'',d.key_id?'key '+d.key_id:''].filter(x=>x).join(' · '):'Nothing is sent.';
+let c;try{c=await get('/api/crash')}catch(e){c={}}const dm=c&&c.dump;
+$('dg_crash').innerHTML=c&&c.t?`<b style="color:var(--warn)">Last crash:</b> ${esc(c.fw||'')} ${esc(c.reset||'')}${dm?`, in ${esc(dm.task)} at ${esc(dm.pc)}${dm.cause?' ('+esc(dm.cause)+')':''}`:''}${c.at?' · '+esc(ago(c.at)):''}`:''}
+// Once, after the update that brought them: diagnostics are on, and where to turn them off.
+function diagNotice(){if(!S||!S.diagnosticsOn)return;let seen=null;try{seen=localStorage.getItem('bbwDiagSeen')}catch(e){}if(seen)return;
+try{localStorage.setItem('bbwDiagSeen','1')}catch(e){}say('Diagnostics reports are on: a short technical report a day helps fix problems. Setup, Diagnostics shows what is sent and turns it off.',true)}
+async function diagPreview(){const p=$('dg_pre');if(p.style.display!='none'){p.style.display='none';return}let t;try{t=await get('/api/diagnostics/preview')}catch(e){return}p.textContent=JSON.stringify(t,null,1);p.style.display=''}
 async function loadShare(){let s;try{s=await get('/api/share')}catch(e){return}SH_=s;if(L){drawCoffees();drawGrinder()}
 $('sh_state').textContent=!S.shareEnabled?'off':s.can_send?'sending':'queueing';$('sh_state').className='pill '+(S.shareEnabled?'ok':'');
 $('sh_key').textContent=s.key_ready?'This controller\'s key id: '+s.key_id+'. '+(s.real_signatures?'Signatures: ES256. Records travel by '+(s.via||'HTTPS')+'.':'This is the PC emulator: it has no real key, and marks what it writes as '+s.algorithm+'. The library will not accept these records; they are for trying the flow.'):'No device key: nothing can be shared.';
 $('sh_queue').textContent=s.waiting+' waiting to send (room for '+s.capacity+'), '+s.sent+' sent.';
 if(document.activeElement!=$('sh_repo'))$('sh_repo').value=s.repository||'';
-$('sh_link').textContent=(s.real_signatures?(!s.configured?(s.repository?'No token stored yet.':'Not connected: records wait on the controller.'):s.problem?'Not reaching the library: '+s.problem+(s.last_answer?' (answer '+s.last_answer+')':'')+'.':s.can_send?'Connected'+(s.last_ok?', last reached '+new Date(s.last_ok*1000).toLocaleString():'')+'.':'Waiting to try again.')+(s.token_set?' A token is stored.':''):'This PC has no OpenSSL, so the emulator cannot sign: records go to a folder beside its data and no further.')+(s.real_signatures&&!s.to_library?' Not reaching the library: set the repository above, and log the GitHub CLI in on this PC (gh auth login).':'')}
+if(s.repository&&!$('sh_own').open)$('sh_own').open=true;
+$('sh_link').textContent=(s.real_signatures&&s.via_relay?'Through the relay ('+s.relay+'). ':'')+(s.real_signatures?(!s.configured?(s.repository?'No token stored yet.':'Not connected: records wait on the controller.'):s.problem?'Not reaching the library: '+s.problem+(s.last_answer?' (answer '+s.last_answer+')':'')+'.':s.can_send?'Connected'+(s.last_ok?', last reached '+new Date(s.last_ok*1000).toLocaleString():'')+'.':'Waiting to try again.')+(s.token_set?' A token is stored.':''):'This PC has no OpenSSL, so the emulator cannot sign: records go to a folder beside its data and no further.')+(s.real_signatures&&!s.to_library?' Not reaching the library: set the repository above, and log the GitHub CLI in on this PC (gh auth login).':'')}
 // The Shared library card has one Save: the connection (repository, token) when either was changed,
 // then the sharing switches. A token typed here is never left behind by a Save that says Saved.
 function saveShare(){const repo=$('sh_repo').value.trim(),tok=$('sh_token').value.trim(),linkChanged=!!tok||!SH_||repo!==(SH_.repository||'');
@@ -657,7 +680,7 @@ else if(s.bot_switch_mode){a.style.display='block';a.textContent='The SwitchBot 
 if(lastShotId!==s.last_shot_id){lastShotId=s.last_shot_id;loadShots();loadLibrary();if(S)loadShare()}}
 
 async function loadSettings(){S=await get('/api/settings');if(S&&typeof S.uiTheme=='number'&&S.uiTheme!=themeNow())setTheme(S.uiTheme,false);renderThemes();F.forEach(k=>{const e=$(k),v=S[k];e.value=typeof v==='boolean'?(v?1:0):v});
-SB.forEach(k=>$(k).checked=!!S[k]);loadShare();$('staSsid').value=S.net.staSsid;$('webStartEnabled').checked=S.net.webStartEnabled}
+SB.forEach(k=>$(k).checked=!!S[k]);loadShare();loadDiag();diagNotice();$('staSsid').value=S.net.staSsid;$('webStartEnabled').checked=S.net.webStartEnabled}
 // Only what was changed on this page: a page left open since a setting was
 // changed elsewhere (the power card, the API, another browser) must not put
 // the old value back. Seen on the board: the press style and the power bot

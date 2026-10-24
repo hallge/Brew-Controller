@@ -446,6 +446,9 @@ struct Settings {
   // Coffee ratings say which drinker gave them (core/CoffeeTaste.h Drinkers); off: all are the
   // household's. false, as a record saved before it reads.
   bool namedDrinkers = false;
+  // Diagnostics reports (docs/TELEMETRY.md) are sent unless this is set. Stored the other way round
+  // so that a record saved before it existed reads 0: on, as for every controller from this build.
+  bool diagnosticsOff = false;
 };
 
 // The colour schemes, in the order the web page lists them.

@@ -1,0 +1,8 @@
+{
+ "v": 1,
+ "kid": "a1a1a1a1a1b2b2b2b2b2",
+ "alg": "ES256",
+ "pub": "BBERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERE=",
+ "sig": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIg==",
+ "body": "{\"t\":\"diag_crash\",\"v\":1,\"fw\":\"v0.1.19\",\"at\":1792444500,\"reset\":\"CRASH (exception)\",\"boot_count\":9,\"dump\":{\"task\":\"loopTask\",\"pc\":\"0x42012345\",\"cause\":\"LoadProhibited\",\"bt\":[\"0x42012345\",\"0x4200abcd\",\"0x42009876\",\"0x40379999\"],\"corrupted\":false},\"log\":[\"[  12.001] I wifi: connected, # dBm\",\"[  48.768] I update: up to date: v0.1.19 is the latest release\",\"[  61.204] W <scale>: notify timeout, reconnecting\",\"[  61.950] E shot: weight frame after scale freed\"]}"
+}

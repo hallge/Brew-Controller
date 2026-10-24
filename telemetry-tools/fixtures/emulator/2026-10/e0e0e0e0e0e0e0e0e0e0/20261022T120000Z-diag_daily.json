@@ -1,0 +1,8 @@
+{
+ "v": 1,
+ "kid": "e0e0e0e0e0e0e0e0e0e0",
+ "alg": "EMULATOR-UNSIGNED",
+ "pub": "BBERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERE=",
+ "sig": "",
+ "body": "{\"t\":\"diag_daily\",\"v\":1,\"fw\":\"v0.1.20-dev\",\"at\":1792670400,\"since\":1792584000,\"boot\":{\"count\":10,\"uptime_s\":80000,\"slot\":\"app0\",\"resets\":[\"restart requested\"]},\"hw\":{\"scale\":{\"driver\":\"acaia\",\"name\":\"LUNAR\"},\"bots\":[{\"role\":\"brew\",\"kind\":\"SwitchBot Bot\"},{\"role\":\"power\",\"kind\":\"SwitchBot Bot\"}],\"machine\":{\"key\":\"breville-dual-boiler\",\"style\":\"toggle_button\"}},\"links\":{},\"shots\":{},\"power\":{},\"health\":{\"heap_lowest\":41000,\"stack_left\":{\"loop\":8000,\"control\":5300,\"ble\":5500},\"rssi\":{\"min\":-70,\"max\":-60}},\"settings\":{\"scale_rest_min\":5,\"require_cup\":true,\"power_with_scale\":false,\"learning_factor\":0.3},\"warnings\":[],\"recent\":[]}"
+}
