@@ -97,6 +97,7 @@ class NimBLEClient {
     callbacks_ = callbacks;
   }
   bool connect(const NimBLEAddress &address, bool deleteAttributes = true);
+  int getLastError() const { return 0; }  // the emulator's failures are all timeouts
   bool isConnected() const;
   int disconnect(uint8_t reason = 0x13);
   std::vector<NimBLERemoteService *> *getServices(bool refresh = false);

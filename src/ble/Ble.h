@@ -94,6 +94,9 @@ class BlePusher : public IActuator, private PusherWriter {
   void tick(uint32_t nowMs);
   // BLE task
   bool connectTo(const NimBLEAddress &address);
+  // Why the last connectTo() failed: the BLE host's code (0 = no answer in
+  // the connect time), or -1 when it connected but could not be set up.
+  int lastConnectError() const { return connectError_; }
   bool linkUp() const { return client_ && client_->isConnected(); }
   void disconnect();
   // True while a press is in progress or the arm still has to come back up.
@@ -127,6 +130,7 @@ class BlePusher : public IActuator, private PusherWriter {
   QueueHandle_t notes_ = nullptr;
   std::atomic<bool> ready_{false};
   std::atomic<bool> gaveUp_{false};
+  int connectError_ = 0;
   PusherLink link_;
 };
 
