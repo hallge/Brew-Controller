@@ -7,6 +7,8 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+
+#include "SafeTls.h"
 #include <esp_heap_caps.h>
 
 #include <memory>
@@ -94,7 +96,7 @@ int fetchPagePreview(const char *url, PageMeta &out, char *problem, size_t probl
   for (int hop = 0; hop <= MAX_REDIRECTS; ++hop) {
     const bool secure = strncmp(current, "https://", 8) == 0;
     // On the heap, not the loop task's stack: a TLS client carries the whole mbedTLS context.
-    std::unique_ptr<WiFiClientSecure> tls(new WiFiClientSecure());
+    std::unique_ptr<SafeTlsClient> tls(new SafeTlsClient());
     std::unique_ptr<WiFiClient> plain(new WiFiClient());
     if (secure) {
       tls->setCACertBundle(rootca_crt_bundle_start);

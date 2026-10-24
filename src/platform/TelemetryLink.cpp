@@ -8,6 +8,8 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+#include "SafeTls.h"
+
 #include <memory>
 
 #include "LibraryLink.h"
@@ -47,7 +49,7 @@ int diagPost(const char *url, const char *envelope, char *problem, size_t proble
   // One TLS connection at a time: the library's is let go first.
   libraryLinkRelease();
   // On the heap, not the loop task's stack: a TLS client carries the whole mbedTLS context.
-  std::unique_ptr<WiFiClientSecure> tls(new WiFiClientSecure());
+  std::unique_ptr<SafeTlsClient> tls(new SafeTlsClient());
   tls->setCACertBundle(rootca_crt_bundle_start);
   tls->setHandshakeTimeout(HANDSHAKE_TIMEOUT_S);
   HTTPClient http;

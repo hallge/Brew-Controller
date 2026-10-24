@@ -1633,7 +1633,9 @@ void diagBoot() {
     c.depth = static_cast<uint8_t>(summary.exc_bt_info.depth > 16 ? 16 : summary.exc_bt_info.depth);
     for (uint8_t i = 0; i < c.depth; ++i) c.backtrace[i] = summary.exc_bt_info.bt[i];
     c.corrupted = summary.exc_bt_info.corrupted;
-    for (int i = 0; i < 8; ++i) snprintf(c.elf + 2 * i, 3, "%02x", static_cast<unsigned>(summary.app_elf_sha256[i]));
+    // Already text: the first 16 hex digits of the crashed build's ELF SHA-256, terminated.
+    memcpy(c.elf, summary.app_elf_sha256, sizeof(c.elf) - 1);
+    c.elf[sizeof(c.elf) - 1] = '\0';
   }
 #endif
   // The last lines written before the reset: the end of the log file (and of the one before it).

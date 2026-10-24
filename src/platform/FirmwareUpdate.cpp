@@ -56,6 +56,7 @@ bool updateBootSlot(const char *, char *why, size_t whySize) {
 #include <Update.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include "SafeTls.h"
 #include <esp_heap_caps.h>
 #include <esp_image_format.h>
 #include <esp_ota_ops.h>
@@ -219,7 +220,7 @@ bool doCheck() {
   setStatus(UpdatePhase::CHECKING, 0, "asking GitHub for the latest release");
   char url[160];
   snprintf(url, sizeof(url), "https://api.github.com/repos/%s/releases/latest", g_config.repo);
-  WiFiClientSecure client;
+  SafeTlsClient client;
   HTTPClient http;
   apiRequest(http, client, url, "application/vnd.github+json");
   const int code = http.GET();
@@ -288,7 +289,7 @@ int openAsset(uint32_t assetId, HTTPClient &http, WiFiClientSecure &client) {
            static_cast<unsigned>(assetId));
   String location;
   {
-    WiFiClientSecure apiClient;
+    SafeTlsClient apiClient;
     HTTPClient api;
     apiRequest(api, apiClient, url, "application/octet-stream");
     const char *keep[] = {"Location"};
@@ -329,7 +330,7 @@ bool hexToBytes(const char *hex, uint8_t out[32]) {
 }
 
 bool fetchExpectedSha(uint32_t sumsId, uint8_t expected[32]) {
-  WiFiClientSecure client;
+  SafeTlsClient client;
   HTTPClient http;
   const int length = openAsset(sumsId, http, client);
   if (length <= 0 || length > 2048) {
@@ -372,7 +373,7 @@ bool doInstall() {
   setStatus(UpdatePhase::DOWNLOADING, 0, message);
   LOGI("update: %s", message);
 
-  WiFiClientSecure client;
+  SafeTlsClient client;
   HTTPClient http;
   const int length = openAsset(info.firmwareId, http, client);
   if (length != static_cast<int>(info.firmwareBytes)) {

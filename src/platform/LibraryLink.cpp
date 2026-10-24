@@ -8,6 +8,8 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+
+#include "SafeTls.h"
 #include <time.h>
 
 #include "BigMem.h"
@@ -35,8 +37,8 @@ char g_token[128];
 char g_relayBase[96];        // "https://host"; empty: no relay
 bool g_viaRelay = false;
 bool g_keyMissing = false;
-WiFiClientSecure *g_client;  // one connection, kept open between requests
-WiFiClientSecure *g_relayClient;
+SafeTlsClient *g_client;  // one connection, kept open between requests
+SafeTlsClient *g_relayClient;
 char *g_relayBody;           // RELAY_BODY_SIZE, in PSRAM
 // {"path":"...","record":"<the envelope, escaped>"}: every character escaped, at worst.
 constexpr size_t RELAY_BODY_SIZE = 2 * SHARE_ENVELOPE_MAX + 256;
@@ -90,7 +92,7 @@ const char *explain(int code) {
 void begin(HTTPClient &http, const char *url, const char *accept) {
   if (g_viaRelay) {
     if (!g_relayClient) {
-      g_relayClient = new WiFiClientSecure();
+      g_relayClient = new SafeTlsClient();
       g_relayClient->setCACertBundle(rootca_crt_bundle_start);
       g_relayClient->setHandshakeTimeout(15);  // the relay's chain is checked in software too
     }
@@ -103,7 +105,7 @@ void begin(HTTPClient &http, const char *url, const char *accept) {
     return;
   }
   if (!g_client) {
-    g_client = new WiFiClientSecure();
+    g_client = new SafeTlsClient();
     g_client->setCACert(GITHUB_ROOTS_PEM);  // nothing else is trusted
     g_client->setHandshakeTimeout(CONNECT_TIMEOUT_MS / 1000);
   }
