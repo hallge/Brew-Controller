@@ -1,0 +1,25 @@
+# Cloudflare Worker for the Brew Controller diagnostics relay. See README.md for the setup.
+#
+# This file is in a public repository: it holds no secrets and no account id.
+# Wrangler finds the account from `npx wrangler login`. The secrets are set with
+# `npx wrangler secret put` and live only in Cloudflare.
+
+name = "bbw-telemetry-relay"
+main = "src/worker.js"
+compatibility_date = "2026-10-01"
+
+# Counts per key per UTC day. Create it with:
+#   npx wrangler kv namespace create LIMITS
+# and paste the id it prints in place of the placeholder below. (A namespace id is not a secret.)
+[[kv_namespaces]]
+binding = "LIMITS"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[vars]
+# The private repository the reports go to, "owner/name".
+REPORTS_REPO = "REPLACE_WITH_OWNER/bbw-diagnostics"
+
+# Secrets, set once with `npx wrangler secret put <NAME>` (never written here):
+#   GITHUB_APP_KEY          the GitHub App's private key (.pem file contents)
+#   GITHUB_APP_ID           the GitHub App's id
+#   GITHUB_INSTALLATION_ID  the App's installation id on the reports repository
