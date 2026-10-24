@@ -309,10 +309,15 @@ async function handleReport(request, env) {
       status = await commit(env, reportPath(envelope, kind, when, emu), record, kind, envelope.kid);
       if (status !== 422) break; // 422: that path is already taken
     }
-  } catch {
+  } catch (e) {
+    // Why, for `wrangler tail`: never a secret, only what GitHub answered or what could not be done.
+    console.error(`store failed: ${e && e.message ? e.message : e}`);
     return answer(502, 'could not store the report');
   }
-  if (status !== 201 && status !== 200) return answer(502, 'could not store the report');
+  if (status !== 201 && status !== 200) {
+    console.error(`store failed: GitHub answered ${status} for ${env.REPORTS_REPO}`);
+    return answer(502, 'could not store the report');
+  }
 
   // Counted only once stored, so a failed store does not use up the day's allowance.
   await env.LIMITS.put(key, String(count + 1), { expirationTtl: 2 * 24 * 60 * 60 });
