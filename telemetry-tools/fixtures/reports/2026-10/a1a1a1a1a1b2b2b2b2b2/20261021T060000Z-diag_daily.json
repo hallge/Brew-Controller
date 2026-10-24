@@ -1,0 +1,8 @@
+{
+ "v": 1,
+ "kid": "a1a1a1a1a1b2b2b2b2b2",
+ "alg": "ES256",
+ "pub": "BBERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERE=",
+ "sig": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIg==",
+ "body": "{\"t\":\"diag_daily\",\"v\":1,\"fw\":\"v0.1.20\",\"at\":1792562400,\"since\":1792476000,\"boot\":{\"count\":10,\"uptime_s\":80000,\"slot\":\"app0\",\"resets\":[\"restart requested\"]},\"hw\":{\"scale\":{\"driver\":\"acaia\",\"name\":\"LUNAR\"},\"bots\":[{\"role\":\"brew\",\"kind\":\"SwitchBot Bot\"},{\"role\":\"power\",\"kind\":\"SwitchBot Bot\"}],\"machine\":{\"key\":\"breville-dual-boiler\",\"style\":\"toggle_button\"}},\"links\":{\"scale\":{\"attempts\":1,\"failures\":0,\"connects\":1,\"longest_wait_ms\":2000},\"brew\":{\"attempts\":1,\"failures\":0,\"connects\":1,\"longest_wait_ms\":800},\"power\":{\"attempts\":2,\"failures\":0,\"connects\":2,\"longest_wait_ms\":3000}},\"shots\":{\"count\":3,\"end\":{\"weight\":2,\"manual\":1},\"faults\":{\"scale_lost\":1},\"stop_latency_ms\":{\"median\":3300,\"max\":4200},\"overshoot_g\":{\"median\":1.2,\"max\":2.6},\"stop_retried\":1},\"power\":{\"done\":2,\"bot_unreachable\":0,\"machine_busy\":1,\"failed\":0},\"health\":{\"heap_lowest\":41000,\"stack_left\":{\"loop\":8000,\"control\":5300,\"ble\":5500},\"rssi\":{\"min\":-70,\"max\":-60}},\"settings\":{\"scale_rest_min\":5,\"require_cup\":true,\"power_with_scale\":false,\"learning_factor\":0.3},\"warnings\":[{\"n\":1,\"p\":\"<power bot>: connect failed after # ms: timed out (code #); last heard # s before, # dBm\"}],\"recent\":[]}"
+}
