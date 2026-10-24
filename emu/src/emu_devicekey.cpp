@@ -295,10 +295,14 @@ bool libraryTakeKeyMissing() {
   return missing;
 }
 
-void libraryLinkConfigure(const char *repo, const char *) {
+void libraryLinkConfigure(const char *repo, const char *token) {
   g_repo = repo ? repo : "";
-  // The relay only when Setup names one: an emulator's records go to a test library, not the real one.
-  g_viaRelay = !g_relay.empty() && g_realKey;
+  // As on the board: the owner's own repository when both it and a token are given (the emulator then
+  // reaches it through the GitHub CLI's own login), else the relay. Without a real key there is
+  // nothing the relay or a library would take: the folder.
+  const bool own = !g_repo.empty() && token && token[0];
+  if (!own) g_repo.clear();
+  g_viaRelay = !own && !g_relay.empty() && g_realKey;
   g_keyMissing = false;
   g_cliChecked = false;
   g_status = LibraryLinkStatus{};
@@ -399,7 +403,7 @@ LibraryLinkStatus libraryLinkStatus() {
   status.ready = true;
   status.viaRelay = g_viaRelay;
   strncpy(status.repository, g_viaRelay ? g_relay.c_str() : g_repo.c_str(), sizeof(status.repository) - 1);
-  const char *via = g_viaRelay ? "the relay Setup names (curl); simulated shots stay here"
+  const char *via = g_viaRelay ? "the Brew Controller relay (curl); simulated shots stay here"
                     : online() ? "the GitHub CLI on this PC; simulated shots stay here"
                                : "a folder beside the emulator's data (published/), not the library";
   strncpy(status.via, via, sizeof(status.via) - 1);

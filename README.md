@@ -460,11 +460,11 @@ version**, or **Start the safe (factory) version**.
    while it runs. Settings, recipes, pairing and shot history are kept.
 
 Only GitHub's own certificate authorities are trusted for this
-(`src/platform/GithubRoots.h`, `ReleaseRoots.h`). While the repository is
-private the controller needs a token: a fine-grained GitHub token with
-**Contents: read-only** on this repository and nothing else, entered once in
-Setup, Firmware. It is stored on the controller and never shown again. A
-public repository needs none.
+(`src/platform/GithubRoots.h`, `ReleaseRoots.h`). The repository is public,
+so nothing needs setting up. Only a private fork needs a token: a
+fine-grained GitHub token with **Contents: read-only** on that repository and
+nothing else, entered once in Setup, Firmware, stored on the controller and
+never shown again.
 
 **From a file**: download `firmware.bin` from the releases page and choose it
 under "From a file". No internet needed.

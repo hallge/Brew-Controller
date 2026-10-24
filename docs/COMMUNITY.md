@@ -963,6 +963,9 @@ The library is https://github.com/hallge/Community-Coffee (private for now).
   alone verify `api.github.com`; an unrelated one alone does not. If GitHub
   ever moves to another authority the controller refuses the connection and
   records wait until a firmware with the new root is installed.
+- Since Oct 2026 none of this is needed: with no repository and token,
+  records and reads go through the relay (§5, option 3). What follows is the
+  optional own-repository path.
 - The repository (`owner/name`) and the token are entered on the Setup page
   and kept in NVS. No page or API hands the token back. The token should be
   a fine-grained one for this repository only, Contents read and write: it

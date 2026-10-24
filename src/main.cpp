@@ -151,19 +151,23 @@ bool editable() {  // call with the lock held
 // board, the library's repository over HTTPS; in the emulator, a folder.
 bool publishRecord(const char *path, const char *text) { return bbw::libraryPut(path, text); }
 
-// The library: the owner's repository and token when both are given, else the relay. The relay is the
-// one Setup names for diagnostics (its address without "/report"), or on a board the built-in one.
-void configureLibraryLink() {
-  char base[96] = "";
-  if (g_net.diagRelay[0]) {
-    strlcpy(base, g_net.diagRelay, sizeof(base));
-    const size_t n = strlen(base);
-    if (n > 7 && strcmp(base + n - 7, "/report") == 0) base[n - 7] = '\0';
-  } else {
-#ifndef BBW_EMULATOR
-    strlcpy(base, bbw::RELAY_BASE_DEFAULT, sizeof(base));
-#endif
+// The relay everything goes through (diagnostics and the shared library): the one Setup names, given
+// with or without its "/report", else the built-in one. "https://host", no trailing slash.
+void relayBase(char *out, size_t size) {
+  if (!g_net.diagRelay[0]) {
+    strlcpy(out, bbw::RELAY_BASE_DEFAULT, size);
+    return;
   }
+  strlcpy(out, g_net.diagRelay, size);
+  size_t n = strlen(out);
+  while (n > 0 && out[n - 1] == '/') out[--n] = '\0';
+  if (n > 7 && strcmp(out + n - 7, "/report") == 0) out[n - 7] = '\0';
+}
+
+// The library: the owner's repository and token when both are given, else the relay.
+void configureLibraryLink() {
+  char base[96];
+  relayBase(base, sizeof(base));
   bbw::libraryLinkSetRelay(base);
   bbw::libraryLinkConfigure(g_net.libraryRepo, g_net.libraryToken);
 }
@@ -1747,7 +1751,9 @@ void diagService(bool idle) {
     diagSaveState();
     return;
   }
-  const char *relay = g_net.diagRelay[0] ? g_net.diagRelay : bbw::DIAG_RELAY_DEFAULT;
+  char base[96], relay[112];
+  relayBase(base, sizeof(base));
+  snprintf(relay, sizeof(relay), "%s/report", base);
   char problem[80];
   const int code = bbw::diagPost(relay, g_diagEnvelope, problem, sizeof(problem));
   g_diag.lastCode = static_cast<int16_t>(code);
@@ -2815,7 +2821,9 @@ bool diagSendNow() {
 
 void diagStatus(JsonObject out) {
   out["on"] = !g_settings.diagnosticsOff;
-  out["relay"] = g_net.diagRelay[0] ? g_net.diagRelay : bbw::DIAG_RELAY_DEFAULT;
+  char base[96];
+  relayBase(base, sizeof(base));
+  out["relay"] = base;
   out["relay_default"] = g_net.diagRelay[0] == '\0';
   out["waiting"] = g_diag.queueCount;
   out["since"] = g_diag.sinceS;
