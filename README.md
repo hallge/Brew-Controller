@@ -499,6 +499,17 @@ needed to analyse it remotely is in the API (docs/API.md):
 Outside the home network it needs a way in (a VPN to the home network); the
 controller has no login of its own and should not be exposed to the internet.
 
+### Diagnostics reports
+
+Controllers that cannot be reached at all report on their own: once a day a
+short technical report (firmware and restarts, which scale, pushers and machine
+are in use, how their Bluetooth links and shots went, warnings from the log with
+names and addresses taken out), and after a crash, where it crashed. Reports are
+signed with the controller's key and go through a relay to a private repository
+the maintainer reads; `telemetry-tools/` turns them into a fleet view and decodes
+crashes against each release's `firmware.elf`. On by default; Setup, Diagnostics
+shows exactly what would be sent and turns it off. Details: docs/TELEMETRY.md.
+
 ### Memory
 
 | | Size | Used for |

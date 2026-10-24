@@ -18,12 +18,10 @@
 #include <atomic>
 #include <esp_task_wdt.h>
 #include <sys/time.h>
-#ifndef BBW_EMULATOR
 #include <WiFi.h>
-#include <esp_ota_ops.h>
 #ifndef BBW_EMULATOR
+#include <esp_ota_ops.h>
 #include <esp_core_dump.h>
-#endif
 #endif
 
 #include "App.h"
