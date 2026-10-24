@@ -116,6 +116,23 @@ Built at the first start after a panic or watchdog reset.
    signature to check), goes to `emulator/<yyyy>-<mm>/...` instead, and nowhere else;
 5. answers `201 {"ok":true}`, or `4xx {"ok":false,"error":"..."}`. A `429` means try tomorrow.
 
+### The shared library through the relay
+
+The same relay carries the shared coffee library for controllers whose owner has no token of their
+own (docs/COMMUNITY.md §5):
+- `POST /library/put` `{"path","record"}`: a signed library record, committed to the library's
+  `inbox` branch at `inbox/<path>`;
+- `GET /library/get?path=`: `status/<kid>.json` and `index/...json` from the library's `main`,
+  cached for a few minutes.
+
+Rules and tests: `telemetry-relay/README.md`.
+
+### Limits of the free plan
+
+Cloudflare's free plan allows about 1,000 KV writes a day. Each report and each library record is
+one counter write, and a key record one more: plenty for tens of controllers. Past that, the
+counters move to D1 or a paid plan.
+
 ## The controller's side
 
 - Reports are built when due and kept in `/tm/` on the controller's flash: at most 20, the oldest

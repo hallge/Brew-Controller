@@ -151,6 +151,23 @@ bool editable() {  // call with the lock held
 // board, the library's repository over HTTPS; in the emulator, a folder.
 bool publishRecord(const char *path, const char *text) { return bbw::libraryPut(path, text); }
 
+// The library: the owner's repository and token when both are given, else the relay. The relay is the
+// one Setup names for diagnostics (its address without "/report"), or on a board the built-in one.
+void configureLibraryLink() {
+  char base[96] = "";
+  if (g_net.diagRelay[0]) {
+    strlcpy(base, g_net.diagRelay, sizeof(base));
+    const size_t n = strlen(base);
+    if (n > 7 && strcmp(base + n - 7, "/report") == 0) base[n - 7] = '\0';
+  } else {
+#ifndef BBW_EMULATOR
+    strlcpy(base, bbw::RELAY_BASE_DEFAULT, sizeof(base));
+#endif
+  }
+  bbw::libraryLinkSetRelay(base);
+  bbw::libraryLinkConfigure(g_net.libraryRepo, g_net.libraryToken);
+}
+
 constexpr uint32_t SHARE_SEND_PERIOD_MS = 1000;
 constexpr size_t LIBRARY_TEXT_SIZE = 16384;
 char *g_shareBody;      // SHARE_BODY_MAX
@@ -546,6 +563,19 @@ void shareSendOne(bool idle) {
   if (publishRecord(g_sharePath, g_shareEnvelope)) {
     g_store.outboxPop();
     LOGI("share: sent %s", g_sharePath);
+  } else if (bbw::libraryTakeKeyMissing()) {
+    // The relay has no key for this controller: send it now, ahead of the record, which goes next time.
+    bbw::ISigner &signer = bbw::deviceSigner();
+    char kid[bbw::KEY_ID_LEN], keyPath[48];
+    bbw::keyId(signer.publicKey(), kid);
+    snprintf(keyPath, sizeof(keyPath), "keys/%s.json", kid);
+    if (bbw::buildKeyRecord(signer, wallClock(), g_shareBody, bbw::SHARE_BODY_MAX) != 0 &&
+        bbw::sealRecord(signer, g_shareBody, g_shareEnvelope, bbw::SHARE_ENVELOPE_MAX) != 0 &&
+        publishRecord(keyPath, g_shareEnvelope)) {
+      LOGI("share: the relay asked for this controller's key; sent");
+    } else {
+      LOGW("share: the relay asked for this controller's key; not sent");
+    }
   }
 }
 
@@ -2422,7 +2452,7 @@ void setLibraryLink(const char *repo, const char *token) {
   // Never the token itself: whether one came, and whether one is kept.
   LOGI("library: connection saved: %s, %s", g_net.libraryRepo[0] ? g_net.libraryRepo : "no repository",
        token && token[0] ? "new token stored" : g_net.libraryToken[0] ? "token kept" : "no token");
-  bbw::libraryLinkConfigure(g_net.libraryRepo, g_net.libraryToken);
+  configureLibraryLink();
   g_libraryReadSoon = true;
 }
 
@@ -2802,6 +2832,8 @@ size_t lastCrash(char *out, size_t size) { return g_store.readText(DIAG_CRASH_FI
 void setDiagRelay(const char *url) {
   strlcpy(g_net.diagRelay, url ? url : "", sizeof(g_net.diagRelay));
   g_store.saveNet(g_net);
+  configureLibraryLink();  // the library goes through the same relay
+  g_libraryReadSoon = true;
   g_diagRetryAtMs = 0;
   g_diagBackoffMs = 0;
 }
@@ -3254,7 +3286,7 @@ void setup() {
   LOGI("start-up: device key ready");
   g_net = g_store.loadNet();
   g_maintenance = g_store.loadMaintenance();
-  bbw::libraryLinkConfigure(g_net.libraryRepo, g_net.libraryToken);
+  configureLibraryLink();
   const bbw::Pairing pairing = g_store.loadPairing();
   // The cup on the scale before a restart is believed again (core/BrewController.h CupMemory), but
   // not after the power was off: the scale may have been switched off and on meanwhile.

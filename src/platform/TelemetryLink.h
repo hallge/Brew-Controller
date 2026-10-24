@@ -10,7 +10,9 @@
 
 namespace bbw {
 
-// The relay every controller reports to unless Setup names another (for testing).
+// The relay every controller reports to unless Setup names another (for testing). The shared library
+// goes through the same relay (platform/LibraryLink.h) when the owner has no token of their own.
+constexpr const char *RELAY_BASE_DEFAULT = "https://bbw-telemetry-relay.bbw-diagnostics.workers.dev";
 constexpr const char *DIAG_RELAY_DEFAULT = "https://bbw-telemetry-relay.bbw-diagnostics.workers.dev/report";
 
 // Returns the HTTP status (201 when the relay took it), or below 0 when it could not be reached;

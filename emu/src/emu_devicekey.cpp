@@ -214,6 +214,9 @@ bool g_realKey = false;
 // ------------------------------------------------------------- the library --
 
 std::string g_repo;
+std::string g_relay;      // the relay Setup names ("https://host"); empty: none
+bool g_viaRelay = false;
+bool g_keyMissing = false;
 bool g_cliChecked = false, g_cliOk = false;
 bbw::LibraryLinkStatus g_status;
 
@@ -228,7 +231,28 @@ bool cliReady() {
 }
 
 // The real library, as against the folder.
-bool online() { return g_realKey && !g_repo.empty() && cliReady(); }
+bool online() { return g_viaRelay || (g_realKey && !g_repo.empty() && cliReady()); }
+
+// Through the relay, as the board does: curl posts {"path","record"} or reads a file.
+int relayPut(const char *path, const char *text) {
+  static char body[bbw::SHARE_ENVELOPE_MAX * 2 + 256];
+  bbw::JsonOut j(body, sizeof(body));
+  j.open();
+  j.text("path", path);
+  j.text("record", text);
+  j.close();
+  if (!j.ok()) return -2;
+  const std::string file = dataPath("nvs/bbw/relay_put.json");
+  if (!writeFile(file, body, j.length())) return -2;
+  std::string said;
+  run("curl -s -m 20 -o NUL -w \"%{http_code}\" -H \"Content-Type: application/json\" --data-binary \"@" + file +
+          "\" \"" + g_relay + "/library/put\"",
+      &said);
+  std::error_code error;
+  fs::remove(file, error);
+  const int code = atoi(said.c_str());
+  return code == 0 ? -1 : code;
+}
 
 bool folderPut(const char *path, const char *text) {
   return writeFile(dataPath(std::string("published/") + path), text, strlen(text));
@@ -263,8 +287,19 @@ bool beginDeviceKey() {
 
 ISigner &deviceSigner() { return g_realKey ? static_cast<ISigner &>(g_real) : g_standIn; }
 
+void libraryLinkSetRelay(const char *base) { g_relay = base ? base : ""; }
+
+bool libraryTakeKeyMissing() {
+  const bool missing = g_keyMissing;
+  g_keyMissing = false;
+  return missing;
+}
+
 void libraryLinkConfigure(const char *repo, const char *) {
   g_repo = repo ? repo : "";
+  // The relay only when Setup names one: an emulator's records go to a test library, not the real one.
+  g_viaRelay = !g_relay.empty() && g_realKey;
+  g_keyMissing = false;
   g_cliChecked = false;
   g_status = LibraryLinkStatus{};
 }
@@ -275,6 +310,21 @@ bool libraryPut(const char *path, const char *text) {
   // Simulated shots are not measurements: they never leave this PC.
   const bool measurement = strncmp(path, "dialins/", 8) == 0 || strncmp(path, "shots/", 6) == 0;
   if (!online() || measurement) return folderPut(path, text);
+  if (g_viaRelay) {
+    const int code = relayPut(path, text);
+    if (code == 201 || code == 200 || code == 422) {
+      note(code, "");
+      folderPut(path, text);  // and a copy to look at
+      return true;
+    }
+    if (code == 409) g_keyMissing = true;
+    note(code, code == 409 ? "the relay asked for this controller's key first"
+             : code == 403 ? "the relay refused this controller"
+             : code == 429 ? "the relay's daily limit is reached"
+             : code < 0 ? "the relay could not be reached" : "the relay answered with an error");
+    emu::log("emu", "library: relay answered %d for %s", code, path);
+    return false;
+  }
   // The same request the board makes: PUT .../contents/inbox/<path> on `inbox`.
   static char encoded[SHARE_ENVELOPE_MAX * 4 / 3 + 8];
   if (base64Encode(reinterpret_cast<const uint8_t *>(text), strlen(text), encoded, sizeof(encoded)) == 0) {
@@ -307,6 +357,26 @@ void libraryLinkRelease() {}
 
 bool libraryGet(const char *path, char *out, size_t size) {
   if (!online()) return folderGet(path, out, size);
+  if (g_viaRelay) {
+    std::string said;
+    run("curl -s -m 20 -w \"\\n@@@%{http_code}\" \"" + g_relay + "/library/get?path=" + path + "\"", &said);
+    const size_t mark = said.rfind("\n@@@");
+    const int code = mark == std::string::npos ? -1 : atoi(said.c_str() + mark + 4);
+    if (code == 404) {
+      note(404, "");  // not there: an answer
+      return false;
+    }
+    if (code != 200) {
+      note(code, "the relay could not be read");
+      return false;
+    }
+    said.resize(mark);
+    note(200, "");
+    if (said.empty() || said.size() >= size) return false;
+    memcpy(out, said.data(), said.size());
+    out[said.size()] = '\0';
+    return true;
+  }
   std::string said;
   const int code = run("gh api \"repos/" + g_repo + "/contents/" + path +
                            "?ref=main\" -H \"Accept: application/vnd.github.raw+json\"",
@@ -325,11 +395,13 @@ bool libraryGet(const char *path, char *out, size_t size) {
 
 LibraryLinkStatus libraryLinkStatus() {
   LibraryLinkStatus status = g_status;
-  status.configured = !g_repo.empty();
+  status.configured = !g_repo.empty() || g_viaRelay;
   status.ready = true;
-  strncpy(status.repository, g_repo.c_str(), sizeof(status.repository) - 1);
-  const char *via = online() ? "the GitHub CLI on this PC; simulated shots stay here"
-                             : "a folder beside the emulator's data (published/), not the library";
+  status.viaRelay = g_viaRelay;
+  strncpy(status.repository, g_viaRelay ? g_relay.c_str() : g_repo.c_str(), sizeof(status.repository) - 1);
+  const char *via = g_viaRelay ? "the relay Setup names (curl); simulated shots stay here"
+                    : online() ? "the GitHub CLI on this PC; simulated shots stay here"
+                               : "a folder beside the emulator's data (published/), not the library";
   strncpy(status.via, via, sizeof(status.via) - 1);
   status.toLibrary = online();
   return status;

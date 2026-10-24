@@ -1,6 +1,13 @@
 #pragma once
 // The controller's connection to the shared library: a GitHub repository,
-// reached over HTTPS with a token that is good for that repository alone.
+// reached over HTTPS in one of two ways:
+//
+//   the relay   (the default) the Brew Controller relay (telemetry-relay/), which
+//               holds the only GitHub credential: the owner needs no account or
+//               token. It checks each record's signature against the key the
+//               controller sent first, and commits it to the library's inbox.
+//   a token     the owner's own repository and a fine-grained token good for
+//               that repository alone (Setup, "Use your own library repository").
 //
 //   put   a signed record goes to  inbox/<path>  on the repository's `inbox`
 //         branch. Nothing there is trusted; the library's own Intake checks
@@ -29,6 +36,7 @@ struct LibraryLinkStatus {
   char repository[64] = {};
   char problem[64] = {};     // in words, empty when there is none
   char via[80] = {};         // how records travel, in words
+  bool viaRelay = false;     // through the relay, not the owner's token
   // false when what is "sent" does not reach the library at all (the
   // emulator writing to its folder).
   bool toLibrary = true;
@@ -36,7 +44,16 @@ struct LibraryLinkStatus {
 
 // repo: "owner/name". token: a fine-grained token with Contents read and write
 // on that repository only. Either may be empty: nothing is sent or read then.
+// Both given: that repository, with that token. Otherwise the relay (libraryLinkSetRelay).
 void libraryLinkConfigure(const char *repo, const char *token);
+
+// The relay's address, "https://host" without a path; empty: none (the emulator, unless Setup names
+// one). Takes effect at the next libraryLinkConfigure().
+void libraryLinkSetRelay(const char *base);
+
+// True once after the relay answered that it does not know this controller's key yet: the caller
+// sends the key record, then the record again.
+bool libraryTakeKeyMissing();
 
 // False while there is no point in trying: not set up, no Wi-Fi, clock not
 // set (certificates cannot be checked), or backing off after a failure.

@@ -69,6 +69,7 @@ described; the rest are as the page uses them.
 | `/api/subscriptions/prefs` | POST | `{country, matters:[sourcing values]}` for recommendations |
 | `/extension.zip` | GET | the Brew Controller helper for Chrome (browser-extension/), packed when the firmware was built |
 | `/api/subscriptions/recommend?drinker=` | GET | up to 5 services from the library: `service` (its library entry), `why`, `people`; `basis` (`taste`, `reviews`, `none`) |
+| `/api/share` | GET | the shared library link, among the sharing figures: `via_relay` (true: through the Brew Controller relay, no token), `relay` (its host), `repository` (the owner's own, empty with the relay), `configured`, `token_set`, `problem`, `via`, `to_library`, `last_answer` |
 | others | | `/api/cmd`, `/api/devices`, `/api/pair`, `/api/pusher`, `/api/power`, `/api/machine`, `/api/recipe`, `/api/share*`, `/api/net`, `/api/time`, `/api/log*`, `/api/update`, `/api/history/clear`, `/api/offset/reset`, `/api/last`, `/api/bot/test`, `/api/shot/grind`, `/api/shot/vote`, `/api/coffee/adopt` |
 
 ## Settings are stored steps

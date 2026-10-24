@@ -281,10 +281,20 @@ Instead:
 2. **A community.** Every contributor does the same with their own
    repository. The library only ever pulls. Removing a bad contributor is one
    deleted line in `contributors.json`, and no secret is shared at all.
-3. **Later, if GitHub accounts are a barrier.** A small relay (a serverless
-   function holding a GitHub App key) that accepts a record, validates it and
-   commits it. Controllers then hold no GitHub credential. Not needed to
-   start.
+3. **Built (Oct 2026): the relay.** `telemetry-relay/`, a Cloudflare Worker
+   holding a GitHub App key, takes a controller's signed record, checks it and
+   commits it to the library's inbox; it also serves `status/` and `index/`.
+   Controllers hold no GitHub credential and owners need no account. It is the
+   default; option 1 (the owner's own repository and token) stays, under
+   Setup, "Use your own library repository".
+   - A controller's key record goes first. The relay keeps the key and checks
+     every later record's signature against it; a record whose key it does
+     not have is answered 409, and the controller sends its key then.
+   - A record is only taken at an inbox path carrying its own key id, so no
+     controller can file under another's.
+   - Limits per key per day, a block list for a bad contributor, and the
+     library's own Intake and review behind it, as before.
+   - Details and the setup: `telemetry-relay/README.md`, docs/TELEMETRY.md.
 
 There is a plain-text file `C:\tools\github keys.txt` next to this project. I
 did not open it. If it holds live tokens, they should be rotated and kept in

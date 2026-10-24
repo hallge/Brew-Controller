@@ -495,10 +495,12 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <details class="note"><summary>Download <b>firmware.bin</b> for the version you want from the <a id="fwrel" href="#" target="_blank" rel="noopener">releases page</a>, then choose it here.</summary><ul><li>Not while a shot is in hand.</li><li>The new firmware goes into the spare slot and is on trial for its first 45 seconds: if it crashes or hangs in that time the controller goes back to this one by itself.</li><li>Settings, recipes and shot history are kept.</li></ul></details></section>
 <section class="card com"><div class="head"><h2>Shared library</h2><span class="pill" id="sh_state"></span></div>
 <div class="sm mid" id="sh_key"></div>
+<div class="sm mid">Sharing goes through the Brew Controller relay: no GitHub account or token is needed. The relay checks each record's signature and passes it to the library's review.</div>
+<div class="sm mid" id="sh_link"></div>
+<details class="note" id="sh_own"><summary>Use your own library repository (optional)</summary>
 <div class="grid"><label>Library repository (owner/name)<input id="sh_repo" maxlength="63" placeholder="e.g. hallge/Community-Coffee" autocomplete="off"></label>
 <label>Token for that repository only (blank keeps the one stored)<input id="sh_token" type="password" maxlength="127" autocomplete="new-password"></label></div>
-<div class="sm mid" id="sh_link"></div>
-<div class="sm mid">The token should be a fine-grained one limited to this repository, with Contents: read and write and nothing else. Save below stores it on the controller; it is never shown again.</div>
+<div class="sm mid">For running another library, or testing. The token should be a fine-grained one limited to this repository, with Contents: read and write and nothing else. Save below stores it on the controller; it is never shown again. Both filled in, they are used instead of the relay; clear the repository to go back to the relay.</div></details>
 <label class="chk"><input type="checkbox" id="shareEnabled" style="accent-color:var(--com)">Share from this controller</label>
 <fieldset><legend>What it shares</legend>
 <label class="chk"><input type="checkbox" id="shareCoffees" style="accent-color:var(--com)">Coffees I add or change (name, roaster, origin, process, roast level, notes)</label>
@@ -597,7 +599,8 @@ $('sh_state').textContent=!S.shareEnabled?'off':s.can_send?'sending':'queueing';
 $('sh_key').textContent=s.key_ready?'This controller\'s key id: '+s.key_id+'. '+(s.real_signatures?'Signatures: ES256. Records travel by '+(s.via||'HTTPS')+'.':'This is the PC emulator: it has no real key, and marks what it writes as '+s.algorithm+'. The library will not accept these records; they are for trying the flow.'):'No device key: nothing can be shared.';
 $('sh_queue').textContent=s.waiting+' waiting to send (room for '+s.capacity+'), '+s.sent+' sent.';
 if(document.activeElement!=$('sh_repo'))$('sh_repo').value=s.repository||'';
-$('sh_link').textContent=(s.real_signatures?(!s.configured?(s.repository?'No token stored yet.':'Not connected: records wait on the controller.'):s.problem?'Not reaching the library: '+s.problem+(s.last_answer?' (answer '+s.last_answer+')':'')+'.':s.can_send?'Connected'+(s.last_ok?', last reached '+new Date(s.last_ok*1000).toLocaleString():'')+'.':'Waiting to try again.')+(s.token_set?' A token is stored.':''):'This PC has no OpenSSL, so the emulator cannot sign: records go to a folder beside its data and no further.')+(s.real_signatures&&!s.to_library?' Not reaching the library: set the repository above, and log the GitHub CLI in on this PC (gh auth login).':'')}
+if(s.repository&&!$('sh_own').open)$('sh_own').open=true;
+$('sh_link').textContent=(s.real_signatures&&s.via_relay?'Through the relay ('+s.relay+'). ':'')+(s.real_signatures?(!s.configured?(s.repository?'No token stored yet.':'Not connected: records wait on the controller.'):s.problem?'Not reaching the library: '+s.problem+(s.last_answer?' (answer '+s.last_answer+')':'')+'.':s.can_send?'Connected'+(s.last_ok?', last reached '+new Date(s.last_ok*1000).toLocaleString():'')+'.':'Waiting to try again.')+(s.token_set?' A token is stored.':''):'This PC has no OpenSSL, so the emulator cannot sign: records go to a folder beside its data and no further.')+(s.real_signatures&&!s.to_library?' Not reaching the library: set the repository above, and log the GitHub CLI in on this PC (gh auth login).':'')}
 // The Shared library card has one Save: the connection (repository, token) when either was changed,
 // then the sharing switches. A token typed here is never left behind by a Save that says Saved.
 function saveShare(){const repo=$('sh_repo').value.trim(),tok=$('sh_token').value.trim(),linkChanged=!!tok||!SH_||repo!==(SH_.repository||'');

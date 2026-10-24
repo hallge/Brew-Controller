@@ -1018,7 +1018,10 @@ void handleShare() {
   // Only ES256 is a signature the library can check.
   doc["real_signatures"] = strcmp(st.algorithm, "ES256") == 0;
   doc["can_send"] = st.canSend;
-  doc["repository"] = st.link.repository;
+  // The owner's own repository (empty when sharing goes through the relay), and the relay's host.
+  doc["repository"] = st.link.viaRelay ? "" : st.link.repository;
+  doc["via_relay"] = st.link.viaRelay;
+  doc["relay"] = st.link.viaRelay ? st.link.repository : "";
   doc["configured"] = st.link.configured;
   doc["token_set"] = st.tokenSet;   // whether there is one; never the token itself
   doc["problem"] = st.link.problem;
