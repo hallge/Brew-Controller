@@ -1285,6 +1285,7 @@ struct DiagState {
   char scaleDriver[16] = {};   // as last seen connected
   char scaleName[24] = {};
   int8_t rssiMin = 0, rssiMax = 0;
+  char lastFw[16] = {};        // the firmware that ran before this start
 };
 
 DiagState g_diag;
@@ -1561,16 +1562,28 @@ void diagBoot() {
                        || reason == ESP_RST_WDT
 #endif
       ;
-  if (!crashed) return;
+  // A core dump still in flash from an earlier crash (one the restart after it did not report, such
+  // as a crash under an older firmware followed by an update): reported too, without a log.
+  char previousFw[16];
+  strlcpy(previousFw, g_diag.lastFw, sizeof(previousFw));
+  if (strcmp(g_diag.lastFw, BBW_VERSION) != 0) {
+    strlcpy(g_diag.lastFw, BBW_VERSION, sizeof(g_diag.lastFw));
+    diagSaveState();
+  }
+  bool dumpWaiting = false;
+#ifndef BBW_EMULATOR
+  dumpWaiting = esp_core_dump_image_check() == ESP_OK;
+#endif
+  if (!crashed && !dumpWaiting) return;
 
   static bbw::CrashInput c;
   c = bbw::CrashInput();
 #ifdef BBW_EMULATOR
   c.emulator = true;
 #endif
-  c.firmware = BBW_VERSION;
+  c.firmware = crashed ? BBW_VERSION : (previousFw[0] ? previousFw : "unknown");
   c.atS = static_cast<uint32_t>(time(nullptr));
-  c.reset = resetReasonText();
+  c.reset = crashed ? resetReasonText() : "an earlier crash, found at start-up";
   c.bootCount = g_bootCount;
 #ifndef BBW_EMULATOR
   static esp_core_dump_summary_t summary;
@@ -1590,11 +1603,12 @@ void diagBoot() {
   }
 #endif
   // The last lines written before the reset: the end of the log file (and of the one before it).
-  // Once, at start-up: in PSRAM, not inside the chip.
+  // Once, at start-up: in PSRAM, not inside the chip. Not for an earlier crash: the log's end is then
+  // about the restart since.
   constexpr size_t TAIL = 12288;
   char *tail = bbw::bigArray<char>(TAIL);
   size_t got = 0;
-  {
+  if (crashed) {
     File f = LittleFS.open(bbw::LOG_FILE, "r");
     if (f) {
       const size_t size = f.size();
@@ -1635,7 +1649,8 @@ void diagBoot() {
 #ifndef BBW_EMULATOR
   if (c.haveDump) esp_core_dump_image_erase();
 #endif
-  LOGW("diagnostics: the controller restarted after a crash%s%s", c.haveDump ? " in " : "", c.haveDump ? c.task : "");
+  LOGW("diagnostics: %s%s%s", crashed ? "the controller restarted after a crash" : "a record of an earlier crash was found",
+       c.haveDump ? " in " : "", c.haveDump ? c.task : "");
 }
 
 // Loop task. `idle`: no shot is running or being set up.

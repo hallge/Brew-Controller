@@ -98,6 +98,10 @@ Built at the first start after a panic or watchdog reset.
 - `dump` is the core dump's summary (`esp_core_dump_get_summary`). It is absent when there is none.
 - Addresses are decoded against that version's `firmware.elf`, which every release carries.
 - `log` holds the last 60 lines written before the reset, cleaned as above.
+- A core dump still in flash at a normal start (a crash the start after it did not report, such as
+  one under an older firmware followed by an update) is reported too: `reset` then says "an
+  earlier crash, found at start-up", `fw` is the firmware that ran before this start (or
+  "unknown"), and there is no `log`. Its `elf` names the build exactly.
 
 ## The relay
 
