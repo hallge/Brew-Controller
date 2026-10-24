@@ -289,6 +289,14 @@ test('an emulator report skips the signature and is filed under emulator/ only',
   assert.ok([...env.LIMITS.map.keys()].every((k) => k.startsWith('emu:')));
 });
 
+test('a signed report whose body says emu:1 is filed under emulator/ only', async () => {
+  const { status } = await send(env, await signedEnvelope(dailyBody({ emu: 1 })));
+  assert.equal(status, 201);
+  assert.equal(github.puts.length, 1);
+  assert.match(github.puts[0], /^emulator\//);
+  assert.ok([...env.LIMITS.map.keys()].every((k) => k.startsWith('emu:')));
+});
+
 test('an emulator report still needs a kid that matches its pub, and a clean body', async () => {
   const envelope = { v: 1, kid: '0123456789abcdef0123', alg: 'EMULATOR-UNSIGNED', pub: b64(devicePub), sig: '', body: dailyBody() };
   assert.equal((await send(env, envelope)).status, 401);

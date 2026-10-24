@@ -154,9 +154,15 @@ function checkClean(envelope) {
 
 // ------------------------------------------------------------------------------- counting --
 
-function limitKey(envelope, kind, now) {
+// Made by the PC emulator: unsigned, or signed by an emulator with a real key and saying so in its
+// body ("emu":1). Its shots are simulated: kept apart from boards' reports.
+function fromEmulator(envelope, body) {
+  return envelope.alg === ALG_EMULATOR || (body && body.emu === 1);
+}
+
+function limitKey(envelope, kind, now, emu = envelope.alg === ALG_EMULATOR) {
   const day = now.toISOString().slice(0, 10);
-  const space = envelope.alg === ALG_EMULATOR ? 'emu' : 'dev';
+  const space = emu ? 'emu' : 'dev';
   return `${space}:${envelope.kid}:${day}:${kind}`;
 }
 
@@ -168,11 +174,11 @@ async function countSoFar(env, key) {
 
 // ------------------------------------------------------------------------------ the store --
 
-export function reportPath(envelope, kind, now) {
+export function reportPath(envelope, kind, now, emu = envelope.alg === ALG_EMULATOR) {
   const iso = now.toISOString(); // 2026-10-23T08:15:30.123Z
   const month = iso.slice(0, 7);
   const stamp = `${iso.slice(0, 4)}${iso.slice(5, 7)}${iso.slice(8, 10)}T${iso.slice(11, 13)}${iso.slice(14, 16)}${iso.slice(17, 19)}Z`;
-  const top = envelope.alg === ALG_EMULATOR ? 'emulator' : 'reports';
+  const top = emu ? 'emulator' : 'reports';
   return `${top}/${month}/${envelope.kid}/${stamp}-${kind}.json`;
 }
 
@@ -280,7 +286,8 @@ async function handleReport(request, env) {
 
   const now = new Date(Date.now());
   const kind = body.t;
-  const key = limitKey(envelope, kind, now);
+  const emu = fromEmulator(envelope, body);
+  const key = limitKey(envelope, kind, now, emu);
   const count = await countSoFar(env, key);
   if (count >= KINDS[kind]) refuse(429, 'too many reports today');
 
@@ -299,7 +306,7 @@ async function handleReport(request, env) {
   try {
     for (let step = 0; step < 5; step++) {
       const when = new Date(now.getTime() + step * 1000);
-      status = await commit(env, reportPath(envelope, kind, when), record, kind, envelope.kid);
+      status = await commit(env, reportPath(envelope, kind, when, emu), record, kind, envelope.kid);
       if (status !== 422) break; // 422: that path is already taken
     }
   } catch {
