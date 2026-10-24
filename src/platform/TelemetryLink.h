@@ -11,7 +11,7 @@
 namespace bbw {
 
 // The relay every controller reports to unless Setup names another (for testing).
-constexpr const char *DIAG_RELAY_DEFAULT = "https://bbw-diagnostics.hallge.workers.dev/report";
+constexpr const char *DIAG_RELAY_DEFAULT = "https://bbw-telemetry-relay.bbw-diagnostics.workers.dev/report";
 
 // Returns the HTTP status (201 when the relay took it), or below 0 when it could not be reached;
 // `problem` says what went wrong, in words.
