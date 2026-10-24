@@ -35,6 +35,8 @@ struct NetConfig {
   // they existed still loads.
   char libraryRepo[64] = {};             // "owner/name"
   char libraryToken[128] = {};           // never sent back to the web page
+  // Where diagnostics reports go, for testing (a relay run on a PC); empty: the built-in relay.
+  char diagRelay[96] = {};
 };
 
 class Store {

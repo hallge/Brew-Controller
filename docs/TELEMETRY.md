@@ -41,13 +41,14 @@ most 32 KB:
 | `pub` | The P-256 public key, uncompressed (`04 \| X \| Y`). |
 | `kid` | The lowercase hex of the first 10 bytes of SHA-256(`pub` bytes). |
 | `sig` | ECDSA P-256 over SHA-256 of the `body` string's UTF-8 bytes, as `r \| s`, 32 bytes each, big endian (WebCrypto's `ECDSA` / `SHA-256` format). |
-| `alg` | `ES256`. The emulator sends `EMULATOR-UNSIGNED`, with an empty `sig`; the relay files those under `emulator/` and nowhere else. |
+| `alg` | `ES256`. An emulator on a PC without OpenSSL sends `EMULATOR-UNSIGNED`, with an empty `sig`. |
 
 ## The report bodies
 
 Every body has:
 - `t`: the kind, `diag_daily` or `diag_crash`;
 - `v`: 1;
+- `emu`: 1 when the PC emulator made it (its shots are simulated), absent from a board;
 - `fw`: the firmware version, e.g. `v0.1.20`;
 - `at`: UTC seconds when built.
 
@@ -87,11 +88,13 @@ Built at the first start after a panic or watchdog reset.
 
 ```
 {"t":"diag_crash","v":1,"fw":"v0.1.19","at":1792806700,"reset":"CRASH (exception)","boot_count":58,
- "dump":{"task":"loopTask","pc":"0x42012345","cause":"LoadProhibited","bt":["0x42012345","0x4200abcd"],
+ "dump":{"task":"loopTask","pc":"0x42012345","cause":"LoadProhibited (28)","vaddr":"0x00000000",
+         "elf":"1a2b3c4d5e6f7081","bt":["0x42012345","0x4200abcd"],
          "corrupted":false},
  "log":["[  48.768] I update: up to date: v0.1.19 is the latest release", "..."]}
 ```
 
+- `elf` is the start of the crashed build's ELF SHA-256 (the core dump's `app_elf_sha256`).
 - `dump` is the core dump's summary (`esp_core_dump_get_summary`). It is absent when there is none.
 - Addresses are decoded against that version's `firmware.elf`, which every release carries.
 - `log` holds the last 60 lines written before the reset, cleaned as above.
@@ -104,8 +107,9 @@ Built at the first start after a panic or watchdog reset.
    a MAC (`xx:xx:xx:xx:xx:xx`) or an IPv4 address;
 3. counts per key per UTC day: at most 4 `diag_daily` and 10 `diag_crash`;
 4. commits it to the private repository, at
-   `reports/<yyyy>-<mm>/<kid>/<yyyymmddThhmmssZ>-<t>.json` (emulator reports at
-   `emulator/<yyyy>-<mm>/...`), as the GitHub App, through the contents API;
+   `reports/<yyyy>-<mm>/<kid>/<yyyymmddThhmmssZ>-<t>.json`, as the GitHub App, through the
+   contents API. A report whose body has `"emu":1`, or whose `alg` is `EMULATOR-UNSIGNED` (no
+   signature to check), goes to `emulator/<yyyy>-<mm>/...` instead, and nowhere else;
 5. answers `201 {"ok":true}`, or `4xx {"ok":false,"error":"..."}`. A `429` means try tomorrow.
 
 ## The controller's side

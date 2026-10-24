@@ -35,11 +35,11 @@ struct ScrubList {
     char from[40];
     char to[16];
   };
-  Pair pairs[64];
+  Pair pairs[96];  // 24 coffees and their roasters, the drinkers, the network, the devices
   uint8_t count = 0;
 
   void add(const char *from, const char *to) {
-    if (!from || strlen(from) < 3 || count >= 64) return;
+    if (!from || strlen(from) < 3 || count >= 96) return;
     for (uint8_t i = 0; i < count; ++i) {
       if (strcasecmp(pairs[i].from, from) == 0) return;
     }
@@ -259,6 +259,7 @@ struct DiagLink {
 };
 
 struct DiagInput {
+  bool emulator = false;  // made by the PC emulator: its shots are simulated
   const char *firmware = "";
   uint32_t atS = 0;      // UTC seconds now
   uint32_t sinceS = 0;   // start of the period covered
@@ -392,6 +393,7 @@ inline size_t buildDailyReport(const DiagInput &in, const WarnTally &w, char *ou
   j.open();
   j.text("t", "diag_daily");
   j.integer("v", 1);
+  if (in.emulator) j.integer("emu", 1);
   j.text("fw", in.firmware);
   j.integer("at", static_cast<long>(in.atS));
   j.integer("since", static_cast<long>(in.sinceS));
@@ -527,6 +529,7 @@ inline size_t buildDailyReport(const DiagInput &in, const WarnTally &w, char *ou
 }
 
 struct CrashInput {
+  bool emulator = false;
   const char *firmware = "";
   uint32_t atS = 0;
   const char *reset = "";
@@ -534,7 +537,9 @@ struct CrashInput {
   bool haveDump = false;
   char task[20] = {};
   uint32_t pc = 0;
+  uint32_t vaddr = 0;    // the address the failing load or store used
   const char *cause = "";
+  char elf[17] = {};     // the start of the crashed build's ELF SHA-256: which firmware.elf decodes it
   uint32_t backtrace[16] = {};
   uint8_t depth = 0;
   bool corrupted = false;
@@ -547,6 +552,7 @@ inline size_t buildCrashReport(const CrashInput &in, const char *const *lines, u
   j.open();
   j.text("t", "diag_crash");
   j.integer("v", 1);
+  if (in.emulator) j.integer("emu", 1);
   j.text("fw", in.firmware);
   j.integer("at", static_cast<long>(in.atS));
   j.text("reset", in.reset);
@@ -558,6 +564,9 @@ inline size_t buildCrashReport(const CrashInput &in, const char *const *lines, u
     snprintf(hex, sizeof(hex), "0x%08lx", static_cast<unsigned long>(in.pc));
     j.text("pc", hex);
     j.textIf("cause", in.cause);
+    snprintf(hex, sizeof(hex), "0x%08lx", static_cast<unsigned long>(in.vaddr));
+    j.text("vaddr", hex);
+    j.textIf("elf", in.elf);
     j.openArray("bt");
     for (uint8_t i = 0; i < in.depth && i < 16; ++i) {
       snprintf(hex, sizeof(hex), "0x%08lx", static_cast<unsigned long>(in.backtrace[i]));

@@ -243,6 +243,16 @@ void radioTestReport(JsonObject out);
 // GET /api/diagnostics: firmware, memory, stacks, Wi-Fi, Bluetooth links and
 // their connection statistics, storage, update state.
 void diagnostics(JsonObject out);
+// Diagnostics reports (docs/TELEMETRY.md). The next daily report's body, as it would be sent now.
+void diagPreview(String &out);
+// Builds a report now and sends it as soon as it can; false when diagnostics are off.
+bool diagSendNow();
+// On or off, the relay, how many wait, when the last went and how.
+void diagStatus(JsonObject out);
+// The last crash's report body (JSON); 0 when there has been none.
+size_t lastCrash(char *out, size_t size);
+// Empty: the built-in relay.
+void setDiagRelay(const char *url);
 // The scale has been seen taring itself (an auto-tare mode).
 bool scaleZeroesItself();
 const char *testPressState();

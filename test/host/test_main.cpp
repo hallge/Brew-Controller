@@ -4790,6 +4790,10 @@ static void testDiagnostics() {
   CHECK(strstr(body, "\"machine_busy\":1"));
   CHECK(strstr(body, "\"n\":5,\"p\":\"power: connect failed after # ms: timed out (code #)\""));
   CHECK(!strstr(body, "brew\":{"));  // no stats for a role with nothing paired
+  CHECK(!strstr(body, "\"emu\""));
+  in.emulator = true;
+  CHECK(buildDailyReport(in, *w, body, sizeof(body)) > 0 && strstr(body, "\"v\":1,\"emu\":1,"));
+  in.emulator = false;
   // Too small: nothing rather than half a report.
   CHECK(buildDailyReport(in, *w, body, 300) == 0);
 
@@ -4806,7 +4810,7 @@ static void testDiagnostics() {
   c.depth = 2;
   const char *lines[] = {"[  48.768] I update: up to date: v0.1.19 is the latest release"};
   CHECK(buildCrashReport(c, lines, 1, body, sizeof(body)) > 0);
-  CHECK(strstr(body, "\"dump\":{\"task\":\"loopTask\",\"pc\":\"0x42012345\",\"cause\":\"LoadProhibited\",\"bt\":[\"0x42012345\",\"0x4200abcd\"]"));
+  CHECK(strstr(body, "\"dump\":{\"task\":\"loopTask\",\"pc\":\"0x42012345\",\"cause\":\"LoadProhibited\",\"vaddr\":\"0x00000000\",\"bt\":[\"0x42012345\",\"0x4200abcd\"]"));
 
   // The envelope: the library's, plus the key; signed over the body as it is sent.
   FakeSigner signer;
