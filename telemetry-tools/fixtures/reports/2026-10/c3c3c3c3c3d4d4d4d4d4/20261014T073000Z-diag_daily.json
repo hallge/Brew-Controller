@@ -1,0 +1,8 @@
+{
+ "v": 1,
+ "kid": "c3c3c3c3c3d4d4d4d4d4",
+ "alg": "ES256",
+ "pub": "BBERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERE=",
+ "sig": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIg==",
+ "body": "{\"t\":\"diag_daily\",\"v\":1,\"fw\":\"v0.1.19\",\"at\":1791963000,\"since\":1791876600,\"boot\":{\"count\":10,\"uptime_s\":80000,\"slot\":\"app0\",\"resets\":[\"restart requested\"]},\"hw\":{\"scale\":{\"driver\":\"bookoo\",\"name\":\"Themis Mini\"},\"bots\":[{\"role\":\"brew\",\"kind\":\"Fingerbot\"},{\"role\":\"stop\",\"kind\":\"Fingerbot\"}],\"machine\":{\"key\":\"lever-generic\",\"style\":\"momentary_button\"}},\"links\":{\"scale\":{\"attempts\":5,\"failures\":3,\"connects\":2,\"longest_wait_ms\":12000},\"brew\":{\"attempts\":3,\"failures\":1,\"connects\":2,\"longest_wait_ms\":5200},\"stop\":{\"attempts\":3,\"failures\":0,\"connects\":3,\"longest_wait_ms\":1100},\"scale_frames\":{\"frames\":900,\"bad\":4,\"dropped\":7}},\"shots\":{\"count\":4,\"end\":{\"weight\":1,\"timeout\":2,\"scale_lost\":1},\"faults\":{\"stop_not_confirmed\":2},\"stop_latency_ms\":{\"median\":5200,\"max\":8100},\"overshoot_g\":{\"median\":4.5,\"max\":7.0},\"stop_retried\":2},\"power\":{\"done\":0,\"bot_unreachable\":0,\"machine_busy\":0,\"failed\":0},\"health\":{\"heap_lowest\":41000,\"stack_left\":{\"loop\":8000,\"control\":5300,\"ble\":5500},\"rssi\":{\"min\":-70,\"max\":-60}},\"settings\":{\"scale_rest_min\":5,\"require_cup\":true,\"power_with_scale\":false,\"learning_factor\":0.3},\"warnings\":[{\"n\":5,\"p\":\"<scale>: notify timeout, reconnecting\"},{\"n\":2,\"p\":\"<stop bot>: press not confirmed after # ms\"}],\"recent\":[]}"
+}
