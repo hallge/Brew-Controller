@@ -2,6 +2,7 @@
 //
 // POST /report takes one signed report envelope from a controller, checks it and commits it to the
 // private reports repository as a GitHub App. The contract is docs/TELEMETRY.md.
+// POST /library/put and GET /library/get carry the shared coffee library (see the section below).
 //
 // Environment:
 //   LIMITS                  KV namespace for the per-key daily counts
@@ -9,6 +10,9 @@
 //   GITHUB_INSTALLATION_ID  the App's installation on the reports repository
 //   GITHUB_APP_KEY          the App's private key, PEM (PKCS#8, or the PKCS#1 file GitHub hands out)
 //   REPORTS_REPO            "owner/name" of the private repository
+//   KEYS                    KV namespace: library contributors' public keys, by kid
+//   LIBRARY_REPO            "owner/name" of the coffee library (records go to its inbox branch)
+// A kid is blocked from the library by a key "blocked:<kid>" in LIMITS.
 
 const MAX_BYTES = 32 * 1024;
 const KINDS = { diag_daily: 4, diag_crash: 10 }; // the kind and its limit per key per UTC day
@@ -135,16 +139,19 @@ async function checkKey(envelope) {
   // The emulator has no key anyone can check: its reports are kept apart, never verified.
   if (envelope.alg === ALG_EMULATOR) return;
 
-  const sig = base64ToBytes(envelope.sig);
-  if (!sig || sig.length !== 64) refuse(401, 'bad signature');
-  let ok = false;
+  if (!(await es256Valid(pub, envelope.sig, envelope.body))) refuse(401, 'bad signature');
+}
+
+// ECDSA P-256 over SHA-256 of the text exactly as sent; sig is base64 of r|s (64 bytes).
+async function es256Valid(pub, sigText, text) {
+  const sig = base64ToBytes(sigText);
+  if (!sig || sig.length !== 64) return false;
   try {
     const key = await crypto.subtle.importKey('raw', pub, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
-    ok = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, sig, encoder.encode(envelope.body));
+    return await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, sig, encoder.encode(text));
   } catch {
-    ok = false; // a point not on the curve lands here
+    return false; // a point not on the curve lands here
   }
-  if (!ok) refuse(401, 'bad signature');
 }
 
 function checkClean(envelope) {
@@ -257,23 +264,36 @@ async function installationToken(env) {
   return cachedToken.token;
 }
 
-async function commit(env, path, record, kind, kid) {
-  const content = bytesToBase64(encoder.encode(JSON.stringify(record, null, 1) + '\n'));
-  const url = `${GITHUB_API}/repos/${env.REPORTS_REPO}/contents/${path}`;
+// One GitHub API call as the App, with one retry on a fresh token if GitHub says 401.
+async function githubCall(env, url, init = {}, accept) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const token = await installationToken(env);
-    const response = await fetch(url, {
-      method: 'PUT',
-      headers: { ...githubHeaders(`Bearer ${token}`), 'content-type': 'application/json' },
-      body: JSON.stringify({ message: `${kind} from ${kid}`, content }),
-    });
+    const headers = { ...githubHeaders(`Bearer ${token}`), ...(init.headers ?? {}) };
+    if (accept) headers.accept = accept;
+    const response = await fetch(url, { ...init, headers });
     if (response.status === 401 && attempt === 0) {
       forgetToken(); // revoked or expired early: get a fresh one once
       continue;
     }
-    return response.status;
+    return response;
   }
-  return 401;
+  return new Response('', { status: 401 });
+}
+
+// Creates a file through the contents API. Answers GitHub's status (422: the path is taken).
+async function putFile(env, repo, path, text, message, branch) {
+  const payload = { message, content: bytesToBase64(encoder.encode(text)) };
+  if (branch) payload.branch = branch;
+  const response = await githubCall(env, `${GITHUB_API}/repos/${repo}/contents/${path}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return response.status;
+}
+
+async function commit(env, path, record, kind, kid) {
+  return putFile(env, env.REPORTS_REPO, path, JSON.stringify(record, null, 1) + '\n', `${kind} from ${kid}`);
 }
 
 // -------------------------------------------------------------------------------- handler --
@@ -324,17 +344,243 @@ async function handleReport(request, env) {
   return answer(201);
 }
 
+// ------------------------------------------------------------------------ shared library --
+//
+// POST /library/put files one signed library record (src/core/Share.h sealRecord) in the coffee
+// library's inbox, so an owner needs no GitHub token. GET /library/get reads the library's published
+// status and index files. The library's own intake checks every record again before using it.
+
+const LIBRARY_MAX_BYTES = 16 * 1024; // the whole request
+const LIBRARY_MAX_RECORD = 8 * 1024; // the record (the library intake's MAX_RECORD_BYTES)
+const LIBRARY_PER_KID = 60; // records per kid per UTC day
+const LIBRARY_KEYS_PER_ADDRESS = 20; // key records per network address per UTC day
+const LIBRARY_FIELDS = ['v', 'kid', 'alg', 'sig', 'body'];
+const LIBRARY_INBOX = 'inbox';
+const LIBRARY_CACHE_INDEX_S = 600;
+const LIBRARY_CACHE_STATUS_S = 120;
+const DAY_S = 24 * 60 * 60;
+
+// The inbox paths the firmware writes (src/main.cpp), and the record type each folder holds.
+// Numbers are printed with %u; the month folder is "yyyy/mm", or "undated" with no clock.
+const KID = '([0-9a-f]{20})';
+const NUM = '(?:0|[1-9]\\d{0,9})';
+const MONTH = '(?:\\d{4}/(?:0[1-9]|1[0-2])|undated)';
+const LIBRARY_PATHS = [
+  [new RegExp(`^keys/${KID}\\.json$`), 'key'],
+  [new RegExp(`^coffees/${KID}/c${NUM}-${NUM}\\.json$`), 'coffee'],
+  [new RegExp(`^grinders/${KID}/g${NUM}-${NUM}\\.json$`), 'grinder'],
+  [new RegExp(`^services/${KID}/s${NUM}-${NUM}\\.json$`), 'service'],
+  [new RegExp(`^machines/${KID}/m1-${NUM}\\.json$`), 'machine'],
+  [new RegExp(`^tastes/${KID}-r${NUM}\\.json$`), 'taste'],
+  [new RegExp(`^svcreviews/${KID}-v${NUM}\\.json$`), 'service_review'],
+  [new RegExp(`^shots/${MONTH}/${KID}-${NUM}\\.json$`), 'shot'],
+  [new RegExp(`^dialins/${MONTH}/${KID}-${NUM}\\.json$`), 'dialin'],
+];
+
+// What GET /library/get may read: a controller's status, or a published index file.
+const STATUS_PATH = /^status\/[0-9a-f]{20}\.json$/;
+const INDEX_PATH = /^index\/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/)*[A-Za-z0-9_-][A-Za-z0-9._-]*\.json$/;
+
+export function libraryPathKind(path) {
+  for (const [pattern, type] of LIBRARY_PATHS) {
+    const match = pattern.exec(path);
+    if (match) return { kid: match[1], type };
+  }
+  return null;
+}
+
+export function libraryReadable(path) {
+  if (typeof path !== 'string' || path.includes('..')) return null;
+  if (STATUS_PATH.test(path)) return LIBRARY_CACHE_STATUS_S;
+  if (INDEX_PATH.test(path)) return LIBRARY_CACHE_INDEX_S;
+  return null;
+}
+
+async function sha256Hex(text) {
+  return hex(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(text))));
+}
+
+async function readLibraryPut(request) {
+  const declared = Number(request.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > LIBRARY_MAX_BYTES) refuse(413, 'request too large');
+  const raw = new Uint8Array(await request.arrayBuffer());
+  if (raw.length > LIBRARY_MAX_BYTES) refuse(413, 'request too large');
+
+  let put;
+  try {
+    put = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw));
+  } catch {
+    refuse(400, 'not JSON');
+  }
+  if (!put || typeof put !== 'object' || typeof put.path !== 'string' || typeof put.record !== 'string') {
+    refuse(400, 'expected {"path": "...", "record": "..."}');
+  }
+  if (encoder.encode(put.record).length > LIBRARY_MAX_RECORD) refuse(413, 'record too large');
+  return put;
+}
+
+function readLibraryEnvelope(text) {
+  let envelope;
+  try {
+    envelope = JSON.parse(text);
+  } catch {
+    refuse(400, 'record is not JSON');
+  }
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) refuse(400, 'not an envelope');
+  const keys = Object.keys(envelope);
+  if (keys.length !== LIBRARY_FIELDS.length || !LIBRARY_FIELDS.every((k) => keys.includes(k))) {
+    refuse(400, 'envelope fields must be exactly v, kid, alg, sig, body');
+  }
+  if (envelope.v !== 1) refuse(400, 'unknown envelope version');
+  if (typeof envelope.kid !== 'string' || !/^[0-9a-f]{20}$/.test(envelope.kid)) refuse(400, 'bad kid');
+  if (typeof envelope.alg !== 'string' || typeof envelope.sig !== 'string') refuse(400, 'bad alg or sig');
+  if (typeof envelope.body !== 'string') refuse(400, 'body must be a string');
+  return envelope;
+}
+
+async function handleLibraryPut(request, env) {
+  const put = await readLibraryPut(request);
+  const target = libraryPathKind(put.path);
+  if (!target) refuse(400, 'not a library inbox path');
+  const envelope = readLibraryEnvelope(put.record);
+  if (envelope.alg === ALG_EMULATOR) refuse(403, 'the emulator has no key: its records are not shared');
+  if (envelope.alg !== ALG_SIGNED) refuse(400, 'unknown alg');
+  if (target.kid !== envelope.kid) refuse(403, 'the path names another key');
+  if ((await env.LIMITS.get(`blocked:${envelope.kid}`)) !== null) refuse(403, 'this key is blocked');
+
+  let body;
+  try {
+    body = JSON.parse(envelope.body);
+  } catch {
+    refuse(400, 'body is not JSON');
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) refuse(400, 'body is not an object');
+  if (body.t !== target.type) refuse(400, `a ${target.type} path must hold a ${target.type} record`);
+
+  // Keys: a key record vouches for itself; anything else is checked against the key on file.
+  const isKey = target.type === 'key';
+  let keyText;
+  if (isKey) {
+    if (body.alg !== ALG_SIGNED) refuse(400, 'key record for another algorithm');
+    const pub = base64ToBytes(body.key);
+    if (!pub || pub.length !== 65 || pub[0] !== 0x04) refuse(400, 'key must be an uncompressed P-256 point');
+    if ((await kidOf(pub)) !== envelope.kid) refuse(401, 'kid is not the fingerprint of the key');
+    if (!(await es256Valid(pub, envelope.sig, envelope.body))) refuse(401, 'bad signature');
+    keyText = body.key;
+  } else {
+    const stored = await env.KEYS.get(envelope.kid);
+    if (stored === null) refuse(409, 'send the key first');
+    const pub = base64ToBytes(stored);
+    if (!pub || !(await es256Valid(pub, envelope.sig, envelope.body))) refuse(401, 'bad signature');
+  }
+
+  // Limits, per UTC day: records per kid, and key records per network address (kept only hashed).
+  const day = new Date(Date.now()).toISOString().slice(0, 10);
+  const kidKey = `lib:${envelope.kid}:${day}`;
+  const kidCount = await countSoFar(env, kidKey);
+  if (kidCount >= LIBRARY_PER_KID) refuse(429, 'too many records today');
+  let addressKey;
+  let addressCount = 0;
+  if (isKey) {
+    const address = request.headers.get('cf-connecting-ip') ?? 'unknown';
+    addressKey = `libkey:${await sha256Hex(address)}:${day}`;
+    addressCount = await countSoFar(env, addressKey);
+    if (addressCount >= LIBRARY_KEYS_PER_ADDRESS) refuse(429, 'too many keys today');
+  }
+
+  let status;
+  try {
+    status = await putFile(
+      env,
+      env.LIBRARY_REPO,
+      `${LIBRARY_INBOX}/${put.path}`,
+      put.record, // exactly as received: the signature is over the body inside it
+      `${target.type} from ${envelope.kid}`,
+      LIBRARY_INBOX,
+    );
+  } catch (e) {
+    console.error(`library store failed: ${e && e.message ? e.message : e}`);
+    return answer(502, 'could not store the record');
+  }
+  // 422: already there, which counts as sent (a controller resending after a lost answer).
+  if (status !== 201 && status !== 200 && status !== 422) {
+    console.error(`library store failed: GitHub answered ${status}`);
+    return answer(502, 'could not store the record');
+  }
+
+  // Counted, and the key kept, only once stored.
+  const ttl = { expirationTtl: 2 * DAY_S };
+  await env.LIMITS.put(kidKey, String(kidCount + 1), ttl);
+  if (isKey) {
+    await env.LIMITS.put(addressKey, String(addressCount + 1), ttl);
+    if ((await env.KEYS.get(envelope.kid)) !== keyText) await env.KEYS.put(envelope.kid, keyText);
+  }
+  return answer(201);
+}
+
+async function handleLibraryGet(request, env, ctx) {
+  const url = new URL(request.url);
+  const path = url.searchParams.get('path');
+  const maxAge = libraryReadable(path);
+  if (maxAge === null) refuse(400, 'only status/<kid>.json and index/...json can be read');
+
+  const cache = globalThis.caches?.default;
+  const cacheKey = new Request(`${url.origin}/library/get?path=${encodeURIComponent(path)}`);
+  if (cache) {
+    const hit = await cache.match(cacheKey);
+    if (hit) return hit;
+  }
+
+  let response;
+  try {
+    response = await githubCall(
+      env,
+      `${GITHUB_API}/repos/${env.LIBRARY_REPO}/contents/${path}?ref=main`,
+      { method: 'GET' },
+      'application/vnd.github.raw+json',
+    );
+  } catch (e) {
+    console.error(`library read failed: ${e && e.message ? e.message : e}`);
+    return answer(502, 'could not read the library');
+  }
+  if (response.status === 404) return answer(404, 'not found');
+  if (!response.ok) {
+    console.error(`library read failed: GitHub answered ${response.status}`);
+    return answer(502, 'could not read the library');
+  }
+
+  const fresh = new Response(await response.text(), {
+    status: 200,
+    headers: { 'content-type': 'application/json', 'cache-control': `public, max-age=${maxAge}` },
+  });
+  if (cache) {
+    const storing = cache.put(cacheKey, fresh.clone());
+    if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(storing);
+    else await storing;
+  }
+  return fresh;
+}
+
+// -------------------------------------------------------------------------------- routing --
+
+const ROUTES = {
+  '/report': ['POST', handleReport],
+  '/library/put': ['POST', handleLibraryPut],
+  '/library/get': ['GET', handleLibraryGet],
+};
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const { pathname } = new URL(request.url);
-    if (pathname !== '/report') return answer(404, 'not found');
-    if (request.method !== 'POST') {
-      const response = answer(405, 'POST only');
-      response.headers.set('allow', 'POST');
+    if (!Object.hasOwn(ROUTES, pathname)) return answer(404, 'not found');
+    const [method, handle] = ROUTES[pathname];
+    if (request.method !== method) {
+      const response = answer(405, `${method} only`);
+      response.headers.set('allow', method);
       return response;
     }
     try {
-      return await handleReport(request, env);
+      return await handle(request, env, ctx);
     } catch (e) {
       if (e instanceof Refusal) return answer(e.status, e.message);
       return answer(500, 'relay error');
