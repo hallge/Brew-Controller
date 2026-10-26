@@ -41,7 +41,7 @@ a.btn{display:inline-flex;align-items:center;border-radius:10px;border:1px solid
 .meter{height:6px;border-radius:3px;background:var(--up);overflow:hidden;margin-top:4px}.meter i{display:block;height:100%;background:var(--ok);border-radius:3px}.meter.warn i{background:var(--warn)}
 .stat{background:var(--up);border-radius:12px;padding:12px 14px;min-width:0}.stat b{display:block;font-size:22px;font-weight:600;letter-spacing:-.02em;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chips{display:flex;flex-wrap:wrap;gap:6px}.chips button{min-height:34px;padding:0 12px;border-radius:999px;font-size:13px}.chips button.on{border-color:var(--acc);background:var(--accbg);color:var(--acctext)}
-.sub .why{display:flex;flex-wrap:wrap;gap:4px}.sub .why span{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--up);color:var(--mid)}
+#fychips{display:flex;flex-wrap:wrap;gap:8px}#fychips a{padding:8px 12px;border-radius:999px;background:var(--accbg);color:var(--acctext);text-decoration:none;font-size:14px;line-height:1.3}.sub .why{display:flex;flex-wrap:wrap;gap:4px}.sub .why span{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--up);color:var(--mid)}
 .sub .lib{position:absolute;left:10px;top:10px}.sub .lib .pill{font-size:11px;padding:3px 9px;background:var(--combg);color:var(--comtext);border:1px solid var(--comline)}
 .remind{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;background:var(--warnbg);border:1px solid var(--line);border-left:4px solid var(--warn);border-radius:12px;padding:10px 14px}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:700px){.two{grid-template-columns:1fr}}
@@ -207,10 +207,10 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 @media(max-width:760px){.srow{grid-template-columns:58px minmax(0,1fr) 56px 50px}.srow .g{display:none}#sdetail .tiles{grid-template-columns:1fr 1fr}}
 </style></head><body><div class="app">
 <nav aria-label="Sections"><b>Brew by Weight</b><span class="pill" id="navstate" title="What the controller is doing">--</span>
-<a href="#home">Home</a><a href="#shots">Shots</a><a href="#insights">Insights</a><a href="#coffees">Coffees</a><a href="#recipes">Recipes</a><a href="#grinder">Grinder</a><a href="#machine">Espresso machine</a><a href="#subscriptions">Subscriptions</a><a href="#setup">Setup</a><a href="#logs">Logs</a>
+<a href="#home">Home</a><a href="#discover">Discover</a><a href="#shots">Shots</a><a href="#insights">Insights</a><a href="#coffees">Coffees</a><a href="#recipes">Recipes</a><a href="#grinder">Grinder</a><a href="#machine">Espresso machine</a><a href="#subscriptions">Subscriptions</a><a href="#setup">Setup</a><a href="#logs">Logs</a>
 <div id="link"></div></nav>
 <div id="bnav" role="navigation" aria-label="Sections"><a href="#home">Home</a><a href="#shots">Shots</a><a href="#coffees">Coffees</a><a href="#grinder">Grinder</a><button type="button" id="bmore" aria-expanded="false" aria-controls="more">More</button></div>
-<div id="more" role="menu"><a href="#insights">Insights</a><a href="#recipes">Recipes</a><a href="#machine">Espresso machine</a><a href="#subscriptions">Subscriptions</a><a href="#setup">Setup</a><a href="#logs">Logs</a></div>
+<div id="more" role="menu"><a href="#discover">Discover</a><a href="#insights">Insights</a><a href="#recipes">Recipes</a><a href="#machine">Espresso machine</a><a href="#subscriptions">Subscriptions</a><a href="#setup">Setup</a><a href="#logs">Logs</a></div>
 <main>
 <div id="ctip" role="tooltip"></div>
 <div id="askbox" role="dialog" aria-modal="true" aria-labelledby="asktxt"><div id="asktxt"></div><div class="row"><button id="askyes" class="pri">Yes</button><button id="askno">Cancel</button></div></div>
@@ -224,6 +224,7 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <div class="live"><div><span class="big" id="w">--</span> <span class="dim">g</span></div><div><span class="big" id="t">--</span> <span class="dim">s</span></div><div><span class="big" id="f">--</span> <span class="dim">g/s</span></div></div>
 <div class="row"><span class="mid" id="ihint"></span><button class="go" id="bstart" onclick="cmd('start')">Start</button><button class="stop" id="bstop" style="display:none" onclick="cmd('stop')">Stop</button><button id="btare" onclick="cmd('tare')">Tare</button><button id="back" style="display:none" onclick="cmd('ack')">Done with this shot</button></div></div>
 <div class="row sm dim"><span><i class="dot" id="ds"></i>Scale <span id="sbat"></span></span><span><i class="dot" id="db"></i>Brew bot <span id="bat"></span></span><span id="cut"></span><span id="res"></span></div></section>
+<section class="card" id="foryou" style="display:none"><div class="head"><h2>For you</h2><a class="sm" href="#discover">All recommendations</a></div><div class="why" id="fychips"></div></section>
 <div class="cols">
 <section class="card"><div class="head"><h2>Brewing now</h2><a class="sm" href="#coffees">Coffees</a></div>
 <label>What the controller will brew<select id="psel" onchange="act('preset_select',+this.value)"></select></label>
@@ -611,9 +612,11 @@ const RF=['name','doseG','useRatio','targetWeightG','ratio','targetTimeS','prein
 const coffee=id=>L.coffees.find(c=>c.id==id),recipe=id=>L.recipes.find(r=>r.id==id);
 const plabel=p=>{const c=coffee(p.coffeeId),r=recipe(p.recipeId);return (c?c.name+' — ':'')+(r?r.name:'?')};
 
-function show(){const h=(location.hash||'#home').slice(1);document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on',p.id=='p-'+h));
+function show(){let h=(location.hash||'#home').slice(1);
+// Discover: the recommendations, on Insights (coffees) with a way on to Subscriptions (services).
+const disc=h=='discover';if(disc)h='insights';document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on',p.id=='p-'+h));
 document.querySelectorAll('nav a,#bnav a,#more a').forEach(a=>a.classList.toggle('on',a.getAttribute('href')=='#'+h));
-$('bmore').classList.toggle('on',['recipes','insights','machine','subscriptions','setup','logs'].includes(h));$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadRatings();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees'){loadCommunityCoffees();loadRatings()}if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights')drawInsights();if(h=='subscriptions')loadSubs();}
+$('bmore').classList.toggle('on',['recipes','insights','machine','subscriptions','setup','logs'].includes(h));$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadRatings();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees'){loadCommunityCoffees();loadRatings()}if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights'){drawInsights();if(disc){const go=()=>{const r=$('ireco');if(r)r.scrollIntoView({behavior:'smooth',block:'start'})};setTimeout(go,150);setTimeout(go,900)}}if(h=='home')loadForYou();if(h=='subscriptions')loadSubs();}
 // Colour schemes, in the controller's order (bbw::UiTheme): name, and a strip of its colours.
 const THEMES=[['dark','Dark',['#0e0f11','#17191c','#f08a24','#4cc38a']],['light','Light',['#f4f3f0','#ffffff','#c2560c','#1e8e4e']],
 ['nord','Nord',['#2e3440','#3b4252','#d08770','#a3be8c']],['solarized','Solarized Dark',['#002b36','#073642','#cb4b16','#859900']],
@@ -760,6 +763,15 @@ $('itnote').innerHTML=!p.coffees?'<span class="dim">No coffees rated yet. Rate t
 (!p.shown?`<span class="dim">Early days: ${p.coffees} coffee${p.coffees==1?'':'s'} rated; the profile shows from 3.</span> `:'')+(to.length?`You lean towards <b>${to.join(', ')}</b>`:'')+(from.length?`${to.length?'; ':'You lean '}away from <b>${from.join(', ')}</b>`:'')+(to.length||from.length?'.':'')+(p.shown&&!p.settled?` <span class="dim">(${p.coffees} coffees rated: settles from 8)</span>`:'');
 drawReco();$('itbest').innerHTML=(t.best||[]).length?'<div class="subh">Liked best</div><div class="likes">'+t.best.map(b=>{const c=coffee(b.coffee);return c?`<a href="#coffees" onclick="C=${c.id}" title="${esc(c.roaster||'')}">${esc(c.name)}<b>${'★'.repeat(b.stars)}</b></a>`:''}).join('')+'</div>':''}finally{TPBUSY=false}}
 
+// Home, For you: what there is to discover, as chips that lead to it. Hidden when there is nothing.
+async function loadForYou(){const box=$('foryou');if(!box)return;const chips=[];
+const tr=await get('/api/taste/recommend?drinker='+(typeof TPD!='undefined'?TPD:0)).catch(()=>null);
+if(tr&&tr.shown&&tr.items&&tr.items.length)chips.push(`<a href="#discover">Coffees you might like: <b>${esc(tr.items[0].name||'')}</b>${tr.items.length>1?' and '+(tr.items.length-1)+' more':''}</a>`);
+else if(tr&&!tr.shown)chips.push(`<a href="#coffees">Rate ${Math.max(1,3-(tr.coffees||0))} more coffee${3-(tr.coffees||0)==1?'':'s'} to get coffee recommendations</a>`);
+const sr=await get('/api/subscriptions/recommend?drinker='+(typeof TPD!='undefined'?TPD:0)).catch(()=>null);
+if(sr&&sr.items&&sr.items.length)chips.push(`<a href="#subscriptions" onclick="setTimeout(()=>{const e=$('subreco');if(e)e.scrollIntoView({behavior:'smooth'})},300)">Subscriptions you might like: <b>${esc(sr.items[0].service.name)}</b></a>`);
+if(G&&G.has_number&&(G.action=='finer'||G.action=='coarser')&&G.suggested_um)chips.push(`<a href="#grinder">Next shot: ${G.action} ${fdn(G.delta_um)} ${fdu()}, to ${fs(G.suggested_um)}</a>`);
+$('fychips').innerHTML=chips.join('');box.style.display=chips.length?'':'none'}
 async function drawReco(){const el=$('ireco');if(!el)return;let r;try{r=await get('/api/taste/recommend?drinker='+TPD)}catch(e){el.style.display='none';return}el.style.display='';
 $('irwho').textContent=TPD&&RT?drinkerName(TPD):'';
 const fromTxt={shelf:'Your shelf',library:'Library',community:'Library ratings'};
