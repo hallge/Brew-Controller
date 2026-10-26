@@ -357,6 +357,14 @@ Each shot also stores the shape of its pour: flow at 25, 50 and 75 % of the
 yield, how much it sped up, and how rough it was. Nothing acts on these yet;
 they are recorded so that later analysis has history (`docs/FEATURES.md`).
 
+A coffee new to you can still get a starting point from the shared library:
+what others settled on, translated to your grinder. With your own coffees in
+common with others it goes through your grinder's own fit; before that,
+through what other owners of your grinder model set, or where that model's
+owners typically sit. The Home card shows it as "Start your grinder at X ± Y"
+with how it was found, and it is used only if you tap it. Your grinder's own
+advice and history are never changed by it (`docs/COMMUNITY.md`, section 6).
+
 ### When no grind advice is given
 
 Advice compares shots made at the same recorded grind setting. If the last

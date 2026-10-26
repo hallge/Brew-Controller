@@ -170,6 +170,7 @@ bool shareGrinder(uint16_t grinderId);
 struct CommunityView {
   bbw::CommunityDialin dialin;
   bbw::CommunityFit fit;
+  bbw::CommunityModel model;   // this grinder's model, from all its owners (index/models.json)
   bbw::CommunityStart start;
   bbw::AgeModel age;
   int myAgeDays = -1;          // this controller's bag

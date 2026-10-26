@@ -275,7 +275,10 @@ inline size_t buildCoffeeRecord(const Coffee &coffee, uint32_t record, uint32_t 
 inline void grinderFields(JsonOut &j, const Grinder &g) {
   j.open("grinder");
   if (g.modelId) j.integer("model_id", g.modelId);
-  j.textIf("library_id", g.libraryId);  // its entry in the library's list of grinders
+  // Its entry in the library's list of grinders: the owner's pick from that list, or the one a
+  // built-in model is seeded as, so owners of one model are pooled under one key.
+  const GrinderModel *builtin = g.libraryId[0] ? nullptr : findGrinderModel(g.modelId);
+  j.textIf("library_id", builtin ? builtin->libraryId : g.libraryId);
   j.textIf("model", g.model);
   j.textIf("burrs", g.burrs);
   j.text("unit", g.unit);

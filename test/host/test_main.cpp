@@ -5083,7 +5083,7 @@ static void testShare() {
                           body, sizeof(body)) != 0);
   CHECK(strstr(body, "\"t\":\"dialin\"") && strstr(body, "\"roast_date\":\"2026-03-03\"") &&
         strstr(body, "\"recipe\":{\"dose_g\":18,\"yield_g\":36,\"target_time_s\":26}") &&
-        strstr(body, "\"grinder\":{\"model_id\":1,\"model\":\"Mahlkonig E64 WS\",\"burrs\":\"64 mm flat\","
+        strstr(body, "\"grinder\":{\"model_id\":1,\"library_id\":\"mahlkonig-e64-ws\",\"model\":\"Mahlkonig E64 WS\",\"burrs\":\"64 mm flat\","
                      "\"unit\":\"um\",\"um_per_unit\":1,\"calibration\":0}") &&
         strstr(body, "\"grind\":246,\"result\":{\"time_s\":25.6,\"basis\":\"total\",\"shots\":3,"
                      "\"min_s\":25.3,\"max_s\":25.9}}"));
@@ -5191,6 +5191,67 @@ static void testShare() {
 }
 
 // What the shared library says, turned into a setting for this grinder.
+static void testCommunityModel() {
+  printf("community: a new owner placed by what the library learned of their grinder model\n");
+  // A Sette 270 owner with no coffee in common with anyone; a coffee dialled by others on grinders
+  // linked into one relative axis (no grinder marked in microns there).
+  Grinder sette;
+  sette.modelId = 11;
+  normalizeGrinder(sette);
+  CommunityDialin d;
+  d.found = true;
+  d.contributors = 3;
+  d.dialins = 4;
+  d.finenessUm = 50.0f;      // on axis 7
+  d.spreadUm = 1.0f;
+  d.axis = 7;
+  CommunityFit noFit;
+  CommunityModel m;
+  m.known = true;
+  m.scale = 2.0f;            // two of its steps per axis step
+  m.zero = 30.0f;
+  m.zeroSpread = 4.0f;
+  m.zeroN = 4;
+  m.axis = 7;
+  CommunityStart s = communityStart(d, noFit, sette, AgeModel{}, -1, 0.0f, 255, m);
+  CHECK(s.basis == StartBasis::MODEL && s.setting == 130);                // 2 x 50 + 30
+  CHECK(s.range == 8);                                                     // 1.5 x 4 + 2 x 1
+  // With two owners only, the range doubles.
+  m.zeroN = 2;
+  CHECK(communityStart(d, noFit, sette, AgeModel{}, -1, 0.0f, 255, m).range == 16);
+  // One grinder's zero is not the model's: nothing from one owner.
+  m.zeroN = 1;
+  CHECK(communityStart(d, noFit, sette, AgeModel{}, -1, 0.0f, 255, m).basis == StartBasis::NONE);
+  m.zeroN = 4;
+  // A fineness on another axis cannot be read with this model's scale.
+  m.axis = 8;
+  CHECK(communityStart(d, noFit, sette, AgeModel{}, -1, 0.0f, 255, m).basis == StartBasis::NONE);
+  m.axis = 7;
+  // Others with the same model dialled this coffee: their median comes first.
+  d.modelCount = 2;
+  d.modelMedian = 128.0f;
+  CHECK(communityStart(d, noFit, sette, AgeModel{}, -1, 0.0f, 255, m).basis == StartBasis::SAME_MODEL);
+  d.modelCount = 0;
+  d.modelMedian = 0.0f;
+  // Once this grinder has its own fit on the axis, that is what is used.
+  CommunityFit own;
+  own.known = true;
+  own.scale = 2.1f;
+  own.offset = 25.0f;
+  own.coffeesInCommon = 2;
+  own.axis = 7;
+  s = communityStart(d, own, sette, AgeModel{}, -1, 0.0f, 255, m);
+  CHECK(s.basis == StartBasis::FITTED && s.setting == 130);                // 2.1 x 50 + 25
+  CHECK(strcmp(startBasisName(StartBasis::MODEL), "model") == 0);
+  // The model's library entry goes out in records, so its owners are pooled under one key.
+  static char body[SHARE_BODY_MAX];
+  JsonOut j(body, sizeof(body));
+  j.open();
+  grinderFields(j, sette);
+  j.close();
+  CHECK(strstr(body, "\"model_id\":11,\"library_id\":\"baratza-sette-270\"") != nullptr);
+}
+
 static void testCommunity() {
   printf("community: a starting grind from the shared library\n");
   Grinder e64;
@@ -7398,6 +7459,7 @@ int main() {
   testShotDataSet();
   testReadingNewerThanTick();
   testResultScreenLetsGo();
+  testCommunityModel();
   testPowerBeliefDrift();
   testCupNotTrustedAfterScaleSleep();
   testBuiltinGrinders();

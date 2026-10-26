@@ -604,7 +604,8 @@ constexpr const char *MACHINES_CACHE = "/lmachines.json";
 constexpr const char *AGE_CACHE = "/lage.json";
 constexpr const char *SERVICES_CACHE = "/lservices.json";  // index/services.json: subscription services
 constexpr const char *TASTE_CACHE = "/ltaste.json";   // index/taste.json: coffee ratings from everyone
-constexpr uint8_t LIBRARY_FIXED_STEPS = 7;  // fit, coffees, grinders, ageing rate, machines, taste, services; then a dial-in per coffee
+constexpr const char *MODELS_CACHE = "/lmodels.json"; // index/models.json: what each grinder model's owners show
+constexpr uint8_t LIBRARY_FIXED_STEPS = 8;  // fit, coffees, grinders, ageing rate, machines, taste, services, models; then a dial-in per coffee
 uint32_t g_communityStamp = 1;  // goes up when anything cached changes
 
 void dialinCache(uint16_t coffeeId, char *out, size_t size) {
@@ -671,6 +672,11 @@ void libraryRefresh(bool idle) {
   } else if (step == 6) {
     if (fetchLibraryFile("index/services.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
       g_store.writeTextIfChanged(SERVICES_CACHE, g_libraryText);
+    }
+  } else if (step == 7) {
+    if (fetchLibraryFile("index/models.json", g_libraryText, LIBRARY_TEXT_SIZE) &&
+        g_store.writeTextIfChanged(MODELS_CACHE, g_libraryText)) {
+      ++g_communityStamp;
     }
   } else if (step - LIBRARY_FIXED_STEPS < count) {
     char file[bbw::LIBRARY_ID_LEN * 2], cache[20];
@@ -2311,8 +2317,9 @@ CommunityView community(uint16_t coffeeId, uint16_t recipeId) {
         // The same model: by the firmware's own number for it, or by its
         // entry in the library's list.
         const bool byNumber = grinder.modelId != 0 && (m["model_id"] | 0) == grinder.modelId;
-        const bool byEntry = grinder.libraryId[0] != '\0' &&
-                             strcmp(m["library_id"] | "", grinder.libraryId) == 0;
+        const bbw::GrinderModel *builtin = bbw::findGrinderModel(grinder.modelId);
+        const char *entry = grinder.libraryId[0] ? grinder.libraryId : builtin ? builtin->libraryId : "";
+        const bool byEntry = entry[0] != '\0' && strcmp(m["library_id"] | "", entry) == 0;
         char unitKey[24];
         bbw::grinderUnitKey(grinder, unitKey, sizeof(unitKey));   // "dial/d10": how it is read, too
         if ((byNumber || byEntry) && strcmp(m["unit"] | "", unitKey) == 0) {
@@ -2335,13 +2342,36 @@ CommunityView community(uint16_t coffeeId, uint16_t recipeId) {
       break;
     }
   }
+  // What the library knows of this grinder's model: its scale and where its owners' zeros sit.
+  if (g_store.readText(MODELS_CACHE, g_libraryText, LIBRARY_TEXT_SIZE) != 0) {
+    doc.clear();
+    if (!deserializeJson(doc, g_libraryText) && doc["v"] == 1) {
+      const bbw::GrinderModel *builtin = bbw::findGrinderModel(grinder.modelId);
+      const char *entry = grinder.libraryId[0] ? grinder.libraryId : builtin ? builtin->libraryId : "";
+      char unitKey[24];
+      bbw::grinderUnitKey(grinder, unitKey, sizeof(unitKey));
+      for (JsonObjectConst m : doc["models"].as<JsonArrayConst>()) {
+        const bool same = (entry[0] && strcmp(m["library_id"] | "", entry) == 0) ||
+                          (grinder.modelId != 0 && (m["model_id"] | 0) == grinder.modelId);
+        if (!same || strcmp(m["unit"] | "", unitKey) != 0) continue;
+        view.model.known = true;
+        view.model.scale = m["scale"] | 0.0f;
+        view.model.zero = m["zero"] | 0.0f;
+        view.model.zeroSpread = m["zero_spread"] | 0.0f;
+        view.model.zeroN = m["zero_n"] | 0;
+        view.model.axis = m["axis"] | 0UL;
+        break;
+      }
+    }
+  }
   doc.clear();
   view.age = ageModel();
   view.myAgeDays = bbw::effectiveAgeDays(roastDate, frozenDate, thawDate, epochNow());
   // The flow this recipe aims for, on the time basis it is steered by.
   const float myFlow = def.targetTimeS > 0.0f ? def.targetWeightG / def.targetTimeS : 0.0f;
   const uint8_t myBasis = settings().grindTimeBasis == bbw::GrindTimeBasis::POUR ? 1 : 0;
-  view.start = bbw::communityStart(view.dialin, view.fit, grinder, view.age, view.myAgeDays, myFlow, myBasis);
+  view.start = bbw::communityStart(view.dialin, view.fit, grinder, view.age, view.myAgeDays, myFlow, myBasis,
+                                   view.model);
   return view;
 }
 

@@ -124,9 +124,25 @@ def read_json(path):
         return json.load(f)
 
 
+def model_numbers(root):
+    """The firmware's model numbers mapped to their entries in the library's list of grinders (each
+    built-in is seeded as an entry with its model_id), so a dial-in that names its grinder only by
+    number pools with those that name the entry: one model, one key."""
+    numbers = {}
+    for path in glob.glob(os.path.join(root, "grinders", "*.json")):
+        try:
+            entry = read_json(path)
+            if isinstance(entry.get("model_id"), int) and entry["model_id"] > 0 and library_file(entry.get("id")):
+                numbers[entry["model_id"]] = entry["id"]
+        except (ValueError, OSError, AttributeError):
+            pass
+    return numbers
+
+
 def load_observations(root, accept_unsigned=False, log=print):
     """Returns a list of dicts, one per accepted dial-in."""
     keys = vr.load_keys(os.path.join(root, "keys"))
+    numbers = model_numbers(root)
     published = {}   # (kid, local id) -> library id
     for path in glob.glob(os.path.join(root, "status", "*.json")):
         kid = os.path.splitext(os.path.basename(path))[0]
@@ -167,8 +183,10 @@ def load_observations(root, accept_unsigned=False, log=print):
             "um_per_unit": grinder.get("um_per_unit", 0) or 0,
             "model_id": grinder.get("model_id", 0) or 0,
             # The same model, for comparing owners of one: the library's entry if it has
-            # one, else the firmware's own number for it.
-            "model_key": grinder.get("library_id") or (grinder.get("model_id", 0) or 0),
+            # one (named in the record, or the entry the firmware's number is listed as), else the
+            # firmware's own number for it.
+            "model_key": (grinder.get("library_id") or numbers.get(grinder.get("model_id", 0) or 0)
+                          or (grinder.get("model_id", 0) or 0)),
             "item": (library_id, recipe_class(body["recipe"])),
             "setting": float(body["grind"]),
             "time_s": float(body["result"]["time_s"]),
@@ -450,9 +468,17 @@ def _fit_component(insts, by_instance, group_of, maker):
         if all(abs(fineness[i] - before.get(i, 1e9)) < 1e-6 for i in fineness):
             break
     scale = {g: group_scale[group_of[g]] for g in offset}
-    groups = {grp: {"scale": group_scale[grp], "known": grp in maker, "instances": len(members[grp]),
-                    "axis": axis, "offset_spread": zero_spread([offset[g] for g in members[grp] if g in offset])}
-              for grp in members if grp in group_scale}
+    groups = {}
+    for grp in members:
+        if grp not in group_scale:
+            continue
+        zeros = [offset[g] for g in members[grp] if g in offset]
+        groups[grp] = {"scale": group_scale[grp], "known": grp in maker, "instances": len(members[grp]),
+                       "axis": axis, "offset_spread": zero_spread(zeros),
+                       # where a grinder of this model typically sits: for a new owner who has no
+                       # coffee in common with anyone yet. Not from one grinder alone.
+                       "offset_zero": statistics.median(zeros) if len(zeros) >= 2 else None,
+                       "offset_n": len(zeros)}
     return fineness, scale, offset, axis, groups
 
 
@@ -848,6 +874,9 @@ def build(root, accept_unsigned=False, min_contributors=2, log=print):
                      source="maker" if info["known"] else "fitted")
         if info.get("offset_spread") is not None:
             entry["zero_spread"] = round(info["offset_spread"], 2)
+        if info.get("offset_zero") is not None:
+            entry["zero"] = round(info["offset_zero"], 2)
+            entry["zero_n"] = info["offset_n"]
         if info["axis"]:
             entry["axis"] = info["axis"]
         else:
@@ -1241,6 +1270,38 @@ def self_test():
         assert "spread" not in df_m                      # two owners and no model-wide figure: none claimed
         sens = read_json(os.path.join(root, "index", "flow.json"))["sensitivity"]
         assert sens == [{"axis": 0, "kappa": 84.0, "n": 0, "source": "prior"}], sens
+    # 4. One model, one key: three Niche owners, one whose records name the grinder only by the
+    #    firmware's number (5), two by the library's entry for it, which lists that number. They
+    #    pool into one model, whose typical zero is published, and that zero with the model's scale
+    #    places a coffee for an owner who has none in common with anyone (a new owner).
+    niche_number = {"model_id": 5, "model": "Niche Zero", "unit": "dial"}
+    niche_entry = {"model_id": 5, "library_id": "niche-zero", "model": "Niche Zero", "unit": "dial"}
+    people = {"m1": (0x5201, niche_number, 0.2, 4.0, cs[:3]), "m2": (0x5202, niche_entry, 0.2, -6.0, cs[:3]),
+              "m3": (0x5203, niche_entry, 0.2, 11.0, cs[:3])}
+    with tempfile.TemporaryDirectory() as root:
+        truth = make_example(root, log=lambda *_: None, people=people)
+        os.makedirs(os.path.join(root, "grinders"), exist_ok=True)
+        with open(os.path.join(root, "grinders", "niche-zero.json"), "w", encoding="utf-8") as f:
+            json.dump({"id": "niche-zero", "model": "Niche Zero", "unit": "dial", "model_id": 5}, f)
+        build(root, log=lambda *_: None)
+        models = read_json(os.path.join(root, "index", "models.json"))["models"]
+        niche_models = [m for m in models if m.get("library_id") == "niche-zero" or m.get("model_id") == 5]
+        assert len(niche_models) == 1 and niche_models[0].get("library_id") == "niche-zero", models
+        nm = niche_models[0]
+        assert nm["owners"] == 3 and nm["zero_n"] == 3 and "zero" in nm, nm
+        # The median owner (offset 4) is where a new owner is placed: within a step of his setting.
+        first = read_json(os.path.join(root, "index", "dialin", "portrait__idjwi-island.json"))["recipes"][0]
+        m1 = kid_of(0x5201)
+        placed = nm["scale"] * first["fineness_um"] + nm["zero"]
+        assert abs(placed - truth[(m1, "portrait/idjwi-island")]) <= 1.5, (placed, truth)
+    # 5. A model fitted for one grinder only gives no zero: one grinder's zero is not the model's.
+    people = {"o1": (0x5301, niche_entry, 0.2, 4.0, cs[:3]),
+              "o2": (0x5302, {"model_id": 3, "model": "DF64", "unit": "dial"}, 0.25, 9.0, cs[:3])}
+    with tempfile.TemporaryDirectory() as root:
+        make_example(root, log=lambda *_: None, people=people)
+        build(root, log=lambda *_: None)
+        for m in read_json(os.path.join(root, "index", "models.json"))["models"]:
+            assert "zero" not in m, m
     print("self-test passed")
 
 

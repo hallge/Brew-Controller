@@ -334,6 +334,27 @@ setting(owner, coffee) = fineness(coffee, recipe class, days since roast)
 - Medians and a minimum count before anything is published, so one odd entry
   cannot move a suggestion.
 
+**How a controller turns a coffee's fineness into its own setting** (Oct 2026,
+`src/core/Community.h` `communityStart`), the first route that applies:
+
+| Route | When | Setting |
+| --- | --- | --- |
+| fitted | this grinder has its own fit (a coffee in common with others) | its scale x fineness + its offset |
+| same model | owners of the same model dialled this coffee | their median |
+| model | a new owner: no fit yet, but the library knows the model (`index/models.json`, two owners or more) | the model's scale x fineness + where its owners' zeros typically sit (`zero`); range from how far they sit apart (`zero_spread`) |
+| microns | the maker publishes microns per step | fineness / microns per step |
+
+- **One model, one key.** A built-in grinder's records name its library entry
+  (the seeded `grinders/<id>.json`, which lists the firmware's `model_id`), and
+  the index maps any record that names only the number to that entry. So the
+  owners of a Sette 270 picked from the firmware's list and from the library's
+  are one model, and pool their scale and zeros.
+- **It is only a suggestion.** Shown on the Home card with its range and how
+  it was found, and applied only when the owner taps it. The controller's own
+  grind advice, its learned figures for this grinder and the shot history are
+  never changed by it; from the first shots on, the controller steers by its
+  own grinder as before.
+
 The honest limits, in the spirit of FEATURES.md:
 
 - The first coffee on a new controller gets a suggestion no better than the
