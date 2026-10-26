@@ -569,6 +569,13 @@ inline void normalizeGrinder(Grinder &g) {
     copyText(g.model, m->model, GRINDER_NAME_LEN);
     copyText(g.unit, m->unit, GRINDER_UNIT_LEN);
     g.umPerUnit = m->umPerUnit;
+    if (m->subSteps >= 2) {
+      g.subSteps = m->subSteps;
+      g.divisor = 1;
+    } else if (m->divisor > 1) {
+      g.divisor = m->divisor;
+      g.subSteps = 0;
+    }
     if (g.burrs[0] == '\0') copyText(g.burrs, m->burrs, GRINDER_BURRS_LEN);
   } else {
     g.modelId = 0;

@@ -743,7 +743,14 @@ def build(root, accept_unsigned=False, min_contributors=2, log=print):
             vr.check_reading(entry)
             if not library_file(entry.get("id")) or "/" in entry["id"]:
                 raise vr.Refused("id is not a plain lower-case name")
-            listed.append({k: entry[k] for k in ("id", "model", "burrs", "unit", "um_per_unit", "divisor", "sub_steps") if k in entry})
+            # The setting's range, in stored steps, where it is given.
+            if "min" in entry or "max" in entry:
+                vr._number(entry, "min", 1, 2000)
+                vr._number(entry, "max", 1, 2000)
+                if entry["min"] >= entry["max"]:
+                    raise vr.Refused("min is not below max")
+            listed.append({k: entry[k] for k in ("id", "model", "burrs", "unit", "um_per_unit", "divisor", "sub_steps",
+                                                 "min", "max") if k in entry})
         except (vr.Refused, ValueError, OSError, AttributeError, TypeError) as error:
             log(f"grinder entry ignored: {path}: {error}")
     write(os.path.join(out, "grinders.json"), {"v": 1, "grinders": listed})

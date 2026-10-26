@@ -692,6 +692,13 @@ void handleLibrary() {
       o["burrs"] = m.burrs;
       o["unit"] = m.unit;
       o["umPerUnit"] = m.umPerUnit;
+      o["divisor"] = m.divisor;
+      o["subSteps"] = m.subSteps;
+      if (m.maxStep) {
+        o["min"] = m.minStep;
+        o["max"] = m.maxStep;
+      }
+      o["libraryId"] = m.libraryId;
     }
     JsonArray presets = doc["presets"].to<JsonArray>();
     for (uint8_t i = 0; i < lib.presetCount; ++i) {

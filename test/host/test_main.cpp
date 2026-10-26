@@ -2174,6 +2174,56 @@ static void testPowerControl() {
   CHECK(config.schedule[2].minuteOfDay == 0 && config.belief == 2 && config.utcOffsetMin == 0);
 }
 
+static void testBuiltinGrinders() {
+  printf("grinders: every built-in model reads and writes its own range\n");
+  // Ids that existed before must keep how their setting is read (stored settings would change).
+  CHECK(findGrinderModel(1) && findGrinderModel(1)->umPerUnit == 1.0f && findGrinderModel(1)->divisor == 1);
+  for (uint16_t id : {3, 4, 5}) {
+    const GrinderModel *m = findGrinderModel(id);
+    CHECK(m && m->divisor == 1 && m->subSteps == 0);
+  }
+  CHECK(!findGrinderModel(2));  // taken out; never given again
+  for (size_t i = 0; i < GRINDER_MODEL_COUNT; ++i) {
+    const GrinderModel &m = GRINDER_MODELS[i];
+    for (size_t k = i + 1; k < GRINDER_MODEL_COUNT; ++k) {
+      CHECK(GRINDER_MODELS[k].id != m.id);
+      CHECK(strcmp(GRINDER_MODELS[k].libraryId, m.libraryId) != 0);
+    }
+    CHECK(strlen(m.model) < GRINDER_NAME_LEN && strlen(m.burrs) < GRINDER_BURRS_LEN && strlen(m.unit) < GRINDER_UNIT_LEN);
+    CHECK(strlen(m.libraryId) > 0 && strlen(m.libraryId) < LIBRARY_ID_LEN);
+    // Picked by an owner: the model's name, unit and reading come with it.
+    Grinder g;
+    g.modelId = m.id;
+    g.divisor = 1;
+    g.subSteps = 0;
+    normalizeGrinder(g);
+    CHECK(g.modelId == m.id && strcmp(g.model, m.model) == 0 && strcmp(g.unit, m.unit) == 0);
+    if (m.subSteps >= 2) CHECK(g.subSteps == m.subSteps);
+    if (!m.maxStep) continue;
+    CHECK(m.minStep >= 1 && m.minStep < m.maxStep && m.maxStep <= SETTING_MAX);
+    // Both ends written in its own unit and read back to the same step.
+    for (uint16_t v : {m.minStep, static_cast<uint16_t>((m.minStep + m.maxStep) / 2), m.maxStep}) {
+      char text[24];
+      uint16_t back = 0;
+      CHECK(formatSetting(v, g, text, sizeof(text)) > 0);
+      CHECK(parseSetting(text, g, back) && back == v);
+    }
+  }
+  // A Sette 270 reads macro:micro; its top is 31:9.
+  Grinder sette;
+  sette.modelId = 11;
+  normalizeGrinder(sette);
+  char text[24];
+  formatSetting(279, sette, text, sizeof(text));
+  CHECK(strcmp(text, "31:9") == 0);
+  // An owner's own divisor on a model without one of its own is kept.
+  Grinder niche;
+  niche.modelId = 5;
+  niche.divisor = 4;
+  normalizeGrinder(niche);
+  CHECK(niche.divisor == 4);
+}
+
 static void testResultScreenLetsGo() {
   printf("a shot's result left showing: power may be pressed, and the scale gone sends it home\n");
   Rig r;
@@ -7251,6 +7301,7 @@ int main() {
   testShotDataSet();
   testReadingNewerThanTick();
   testResultScreenLetsGo();
+  testBuiltinGrinders();
   testDiagnostics();
   testEmptyScaleZeroed();
   testScaleRest();
