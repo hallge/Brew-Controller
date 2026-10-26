@@ -302,8 +302,13 @@ def build_taste(root, min_contributors=2, log=print):
                     if len(tasted) >= 2 else {})
         services[sid] = {"n": len(rs), "contributors": len({kid for kid, _, _ in rs}),
                          "stars": round(statistics.fmean(stars), 2), "cup": cup, "flavours": flavours}
-    # Who is who stays in the library: a keyed hash, the key from the build's secrets, else new each build.
-    salt = (os.environ.get("BBW_PEOPLE_SALT") or os.urandom(16).hex()).encode()
+    # Who is who stays in the library: a keyed hash, the key from the build's secrets (BBW_PEOPLE_SALT).
+    # Without it a fixed key, so the file does not change at every build; the ids are then traceable.
+    salt = os.environ.get("BBW_PEOPLE_SALT", "").encode()
+    if not salt:
+        salt = b"bbw-people-unsalted"
+        if ratings:
+            log("warning: BBW_PEOPLE_SALT is not set: drinker ids in index/taste.json can be traced to keys")
 
     def person_of(kid, drinker):
         return hmac.new(salt, f"{kid}/{drinker}".encode(), hashlib.sha256).hexdigest()[:12]
