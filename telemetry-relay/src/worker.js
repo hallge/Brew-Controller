@@ -12,14 +12,18 @@
 //   REPORTS_REPO            "owner/name" of the private repository
 //   KEYS                    KV namespace: library contributors' public keys, by kid
 //   LIBRARY_REPO            "owner/name" of the coffee library (records go to its inbox branch)
+//   AUDIT                   D1 database (optional): relay counters per day and the audit log
+//   ACCESS_TEAM, ACCESS_AUD the Cloudflare Access team and audience guarding /admin (src/admin.js)
 // A kid is blocked from the library by a key "blocked:<kid>" in LIMITS.
+
+import { handleAdmin, recordRelayOutcome } from './admin.js';
 
 const MAX_BYTES = 32 * 1024;
 const KINDS = { diag_daily: 4, diag_crash: 10 }; // the kind and its limit per key per UTC day
 const ALG_SIGNED = 'ES256';
 const ALG_EMULATOR = 'EMULATOR-UNSIGNED';
 const ENVELOPE_FIELDS = ['v', 'kid', 'alg', 'pub', 'sig', 'body'];
-const GITHUB_API = 'https://api.github.com';
+export const GITHUB_API = 'https://api.github.com';
 const USER_AGENT = 'bbw-telemetry-relay';
 const TOKEN_MARGIN_MS = 5 * 60 * 1000; // renew the installation token this long before it expires
 
@@ -54,7 +58,7 @@ function refuse(status, message) {
 
 // ---------------------------------------------------------------------------------- bytes --
 
-function base64ToBytes(text) {
+export function base64ToBytes(text) {
   if (typeof text !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(text) || text.length % 4 !== 0) {
     return null;
   }
@@ -143,7 +147,7 @@ async function checkKey(envelope) {
 }
 
 // ECDSA P-256 over SHA-256 of the text exactly as sent; sig is base64 of r|s (64 bytes).
-async function es256Valid(pub, sigText, text) {
+export async function es256Valid(pub, sigText, text) {
   const sig = base64ToBytes(sigText);
   if (!sig || sig.length !== 64) return false;
   try {
@@ -265,7 +269,7 @@ async function installationToken(env) {
 }
 
 // One GitHub API call as the App, with one retry on a fresh token if GitHub says 401.
-async function githubCall(env, url, init = {}, accept) {
+export async function githubCall(env, url, init = {}, accept) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const token = await installationToken(env);
     const headers = { ...githubHeaders(`Bearer ${token}`), ...(init.headers ?? {}) };
@@ -298,8 +302,9 @@ async function commit(env, path, record, kind, kid) {
 
 // -------------------------------------------------------------------------------- handler --
 
-async function handleReport(request, env) {
+async function handleReport(request, env, ctx, info = {}) {
   const envelope = await readEnvelope(request);
+  info.kid = envelope.kid; // as claimed: checked below
   const body = readBody(envelope);
   await checkKey(envelope);
   checkClean(envelope);
@@ -396,7 +401,7 @@ export function libraryReadable(path) {
   return null;
 }
 
-async function sha256Hex(text) {
+export async function sha256Hex(text) {
   return hex(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(text))));
 }
 
@@ -438,10 +443,13 @@ function readLibraryEnvelope(text) {
   return envelope;
 }
 
-async function handleLibraryPut(request, env) {
+async function handleLibraryPut(request, env, ctx, info = {}) {
   const put = await readLibraryPut(request);
+  info.libraryPath = put.path.slice(0, 120);
   const target = libraryPathKind(put.path);
   if (!target) refuse(400, 'not a library inbox path');
+  info.kid = target.kid; // as claimed: checked below
+  info.type = target.type;
   const envelope = readLibraryEnvelope(put.record);
   if (envelope.alg === ALG_EMULATOR) refuse(403, 'the emulator has no key: its records are not shared');
   if (envelope.alg !== ALG_SIGNED) refuse(400, 'unknown alg');
@@ -513,7 +521,10 @@ async function handleLibraryPut(request, env) {
   await env.LIMITS.put(kidKey, String(kidCount + 1), ttl);
   if (isKey) {
     await env.LIMITS.put(addressKey, String(addressCount + 1), ttl);
-    if ((await env.KEYS.get(envelope.kid)) !== keyText) await env.KEYS.put(envelope.kid, keyText);
+    // First seen: the admin console's Devices view lists it.
+    if ((await env.KEYS.get(envelope.kid)) !== keyText) {
+      await env.KEYS.put(envelope.kid, keyText, { metadata: { first_seen: new Date(Date.now()).toISOString() } });
+    }
   }
   return answer(201);
 }
@@ -569,9 +580,19 @@ const ROUTES = {
   '/library/get': ['GET', handleLibraryGet],
 };
 
+// Counts the outcome and audits a refusal (D1), after the answer when the runtime allows it.
+async function record(request, env, ctx, pathname, status, refusal, info) {
+  const writing = recordRelayOutcome(request, env, pathname, status, refusal, info).catch((e) => {
+    console.error(`record failed: ${e && e.message ? e.message : e}`);
+  });
+  if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(writing);
+  else await writing;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const { pathname } = new URL(request.url);
+    if (pathname === '/admin' || pathname.startsWith('/admin/')) return handleAdmin(request, env, ctx);
     if (!Object.hasOwn(ROUTES, pathname)) return answer(404, 'not found');
     const [method, handle] = ROUTES[pathname];
     if (request.method !== method) {
@@ -579,11 +600,20 @@ export default {
       response.headers.set('allow', method);
       return response;
     }
+    const info = {};
+    let response;
+    let refusal = null;
     try {
-      return await handle(request, env, ctx);
+      response = await handle(request, env, ctx, info);
     } catch (e) {
-      if (e instanceof Refusal) return answer(e.status, e.message);
-      return answer(500, 'relay error');
+      if (e instanceof Refusal) {
+        refusal = e.message;
+        response = answer(e.status, e.message);
+      } else {
+        response = answer(500, 'relay error');
+      }
     }
+    if (env.AUDIT) await record(request, env, ctx, pathname, response.status, refusal, info);
+    return response;
   },
 };

@@ -8,6 +8,10 @@ name = "bbw-telemetry-relay"
 main = "src/worker.js"
 compatibility_date = "2026-10-01"
 
+# The admin console's pages (admin/) are bundled into src/admin-pages.js before each deploy.
+[build]
+command = "node tools/build-admin.mjs"
+
 # Counts per key per UTC day. Create it with:
 #   npx wrangler kv namespace create LIMITS
 # and paste the id it prints in place of the placeholder below. (A namespace id is not a secret.)
@@ -23,12 +27,25 @@ id = "REPLACE_WITH_KV_NAMESPACE_ID"
 binding = "KEYS"
 id = "REPLACE_WITH_KEYS_NAMESPACE_ID"
 
+# The audit log and the relay's daily counters (admin console). Create it with:
+#   npx wrangler d1 create bbw-audit
+# paste the database_id it prints in place of the placeholder, then apply the schema:
+#   npx wrangler d1 execute bbw-audit --remote --file=schema.sql
+[[d1_databases]]
+binding = "AUDIT"
+database_name = "bbw-audit"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
 [vars]
 # The private repository the reports go to, "owner/name".
 REPORTS_REPO = "REPLACE_WITH_OWNER/bbw-diagnostics"
 # The shared coffee library, "owner/name". Records go to its `inbox` branch; status and index files
 # are read from `main`.
 LIBRARY_REPO = "REPLACE_WITH_OWNER/Community-Coffee"
+# The admin console (/admin) is shut until both are set: the Zero Trust team name
+# (<team>.cloudflareaccess.com) and the Access application's audience (AUD) tag.
+ACCESS_TEAM = "REPLACE_WITH_ACCESS_TEAM"
+ACCESS_AUD = "REPLACE_WITH_ACCESS_AUD"
 
 # Secrets, set once with `npx wrangler secret put <NAME>` (never written here):
 #   GITHUB_APP_KEY          the GitHub App's private key (.pem file contents)
