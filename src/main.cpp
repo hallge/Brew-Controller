@@ -1495,6 +1495,16 @@ void diagFillInput(bbw::DiagInput &in, uint32_t nowS) {
     links[k]->connects = s.connects >= b.connects ? s.connects - b.connects : s.connects;
     links[k]->longestWaitMs = s.longestWaitMs;
   }
+  // Each one's signal as last heard advertising (a weak one, under about -70 dBm, is a bot mounted
+  // flat on metal: its connections time out).
+  static bbw::SeenDevice seen[bbw::BleManager::MAX_SEEN];
+  const size_t heard = g_ble.seen(seen, bbw::BleManager::MAX_SEEN);
+  const char *addresses[4] = {pairing.scaleAddress, pairing.botAddress, power, stop};
+  for (int k = 0; k < 4; ++k) {
+    for (size_t i = 0; i < heard && addresses[k][0]; ++i) {
+      if (strcasecmp(seen[i].address, addresses[k]) == 0) links[k]->rssi = seen[i].rssi;
+    }
+  }
   const bbw::ScaleDiag sd = g_scale.diag();
   in.frames = sameBoot && sd.frames >= g_diag.framesAtStart ? sd.frames - g_diag.framesAtStart : sd.frames;
   in.badFrames = sameBoot && sd.badFrames >= g_diag.badAtStart ? sd.badFrames - g_diag.badAtStart : sd.badFrames;
@@ -3551,11 +3561,12 @@ void loop() {
 }
 
 #ifndef BBW_EMULATOR
-// The loop task serves the web pages, parses the library's JSON and takes
-// firmware uploads: twice the Arduino default of 8 kB (measured on the board:
-// about 5.4 kB used at the default). This must be at global scope: inside a
-// namespace the core does not see it and silently keeps 8 kB.
-SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+// The loop task serves the web pages, parses the library's JSON and takes firmware uploads. It had
+// 16 kB while it also made the HTTPS requests and signatures: measured on the board, 13 kB used with
+// diagnostics and the relay (v0.1.20), 8 kB before them. Those now run on the update task's stack
+// (platform/NetWorker.h), so 12 kB, and the 4 kB go to that task. This must be at global scope:
+// inside a namespace the core does not see it and silently keeps 8 kB.
+SET_LOOP_TASK_STACK_SIZE(12 * 1024);
 
 // Arduino would otherwise mark a new firmware as good the moment it starts.
 // confirmFirmware() does that once it has run for a while instead.

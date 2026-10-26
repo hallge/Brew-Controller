@@ -256,6 +256,7 @@ struct DiagLink {
   uint32_t failures = 0;
   uint32_t connects = 0;
   uint32_t longestWaitMs = 0;
+  int8_t rssi = 0;       // dBm, as last heard advertising; 0 = not heard
 };
 
 struct DiagInput {
@@ -370,6 +371,7 @@ inline void link(JsonOut &j, const char *key, const DiagLink &l) {
   j.integer("failures", l.failures);
   j.integer("connects", l.connects);
   j.integer("longest_wait_ms", l.longestWaitMs);
+  if (l.rssi) j.integer("rssi", l.rssi);
   j.close();
 }
 

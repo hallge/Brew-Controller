@@ -12,6 +12,7 @@
 #include <mbedtls/entropy.h>
 
 #include "Log.h"
+#include "NetWorker.h"
 
 namespace bbw {
 
@@ -71,7 +72,17 @@ class MbedSigner : public ISigner {
   const uint8_t *publicKey() const override { return publicKey_; }
   const char *algorithm() const override { return "ES256"; }
 
+  // On the network task's stack (NetWorker.h): an ECDSA signature takes kilobytes of it.
   bool sign(const uint8_t hash[32], uint8_t signature[SIGNATURE_LEN]) override {
+    struct Job { MbedSigner *self; const uint8_t *hash; uint8_t *signature; bool ok; } job{this, hash, signature, false};
+    netRun([](void *c) {
+      Job &j = *static_cast<Job *>(c);
+      j.ok = j.self->signHere(j.hash, j.signature);
+    }, &job);
+    return job.ok;
+  }
+
+  bool signHere(const uint8_t hash[32], uint8_t signature[SIGNATURE_LEN]) {
     if (!ready_) return false;
     mbedtls_mpi r, s;
     mbedtls_mpi_init(&r);

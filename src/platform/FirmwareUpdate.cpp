@@ -1,4 +1,5 @@
 #include "FirmwareUpdate.h"
+#include "NetWorker.h"
 
 #include <string.h>
 
@@ -27,6 +28,7 @@ UpdateConfig g_config;
 }
 
 void tlsUseExternalMemory() {}
+void netRun(void (*fn)(void *), void *context) { fn(context); }
 void updateBegin(const UpdateConfig &config) { g_config = config; }
 void updateConfigure(const UpdateConfig &config) { g_config = config; }
 UpdateConfig updateConfig() { return g_config; }
@@ -106,6 +108,16 @@ UpdateStatus g_status;
 SemaphoreHandle_t g_mutex;
 TaskHandle_t g_task;
 volatile uint8_t g_want = WANT_NONE;
+// netRun(): one job at a time, handed over and waited for.
+struct NetJob {
+  void (*fn)(void *);
+  void *context;
+};
+SemaphoreHandle_t g_jobLock;   // one caller at a time
+SemaphoreHandle_t g_jobDone;   // given by the task when the job has run
+volatile bool g_jobWaiting = false;
+NetJob g_job;
+volatile bool g_working = false;  // a check or an install is under way
 uint8_t *g_chunk;  // CHUNK bytes, PSRAM
 
 struct SlotVersions {
@@ -466,12 +478,19 @@ bool doInstall() {
 
 void updateTask(void *) {
   for (;;) {
+    if (g_jobWaiting) {
+      g_jobWaiting = false;
+      g_job.fn(g_job.context);
+      xSemaphoreGive(g_jobDone);
+      continue;
+    }
     const uint8_t want = g_want;
     if (want == WANT_NONE) {
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
       continue;
     }
     g_want = WANT_NONE;
+    g_working = true;
     if (want == WANT_INSTALL) {
       if (doInstall()) {
         delay(1500);  // the page gets to see "installed"
@@ -481,6 +500,7 @@ void updateTask(void *) {
     } else {
       doCheck();
     }
+    g_working = false;
   }
 }
 
@@ -495,8 +515,32 @@ bool request(uint8_t want) {
 
 }  // namespace
 
+void netRun(void (*fn)(void *), void *context) {
+  // Here, as before: no task yet, called from it, or it is busy with a firmware (a download takes
+  // minutes, and the caller must not wait that long).
+  if (!g_task || !g_jobLock || xTaskGetCurrentTaskHandle() == g_task || g_working || g_want != WANT_NONE) {
+    fn(context);
+    return;
+  }
+  xSemaphoreTake(g_jobLock, portMAX_DELAY);
+  if (g_working || g_want != WANT_NONE) {  // a check was asked for meanwhile
+    xSemaphoreGive(g_jobLock);
+    fn(context);
+    return;
+  }
+  g_job.fn = fn;
+  g_job.context = context;
+  g_jobWaiting = true;
+  xTaskNotifyGive(g_task);
+  // Not bounded: the job is a request with its own time-outs, and it uses the caller's data.
+  xSemaphoreTake(g_jobDone, portMAX_DELAY);
+  xSemaphoreGive(g_jobLock);
+}
+
 void updateBegin(const UpdateConfig &config) {
   g_mutex = xSemaphoreCreateMutex();
+  g_jobLock = xSemaphoreCreateMutex();
+  g_jobDone = xSemaphoreCreateBinary();
   g_config = config;
   const esp_partition_t *running = esp_ota_get_running_partition();
   if (running) recordSlotVersion(running->label, BBW_VERSION);
@@ -513,7 +557,8 @@ void updateBegin(const UpdateConfig &config) {
   // its own, waiting until it is asked for something. On the loop task's
   // core: a TLS handshake takes seconds of processor time, and on core 0 it
   // kept the idle task (which the watchdog watches) from running.
-  xTaskCreatePinnedToCore(updateTask, "update", 12288, nullptr, 1, &g_task, 1);
+  // 16 KB: it also runs the HTTPS requests and signatures other tasks hand it (NetWorker.h).
+  xTaskCreatePinnedToCore(updateTask, "update", 16384, nullptr, 1, &g_task, 1);
 }
 
 void updateConfigure(const UpdateConfig &config) { g_config = config; }

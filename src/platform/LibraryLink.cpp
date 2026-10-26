@@ -3,6 +3,7 @@
 #ifndef BBW_EMULATOR
 
 #include "LibraryLink.h"
+#include "NetWorker.h"
 
 #include <Arduino.h>
 #include <HTTPClient.h>
@@ -190,7 +191,7 @@ bool relayPut(const char *path, const char *text) {
   return false;
 }
 
-bool libraryPut(const char *path, const char *text) {
+bool putHere(const char *path, const char *text) {
   if (!libraryLinkReady() || !path || !text) return false;
   if (g_viaRelay) return relayPut(path, text);
   if (!g_body) g_body = bigArray<char>(BODY_SIZE);
@@ -218,7 +219,7 @@ bool libraryPut(const char *path, const char *text) {
   return false;
 }
 
-bool libraryGet(const char *path, char *out, size_t size) {
+bool getHere(const char *path, char *out, size_t size) {
   if (!libraryLinkReady() || !path || !out || size < 2) return false;
   out[0] = '\0';
   char url[224];
@@ -271,6 +272,25 @@ bool libraryGet(const char *path, char *out, size_t size) {
   }
   succeeded(code);
   return true;
+}
+
+// On the network task's stack (NetWorker.h).
+bool libraryPut(const char *path, const char *text) {
+  struct Job { const char *path, *text; bool ok; } job{path, text, false};
+  netRun([](void *c) {
+    Job &j = *static_cast<Job *>(c);
+    j.ok = putHere(j.path, j.text);
+  }, &job);
+  return job.ok;
+}
+
+bool libraryGet(const char *path, char *out, size_t size) {
+  struct Job { const char *path; char *out; size_t size; bool ok; } job{path, out, size, false};
+  netRun([](void *c) {
+    Job &j = *static_cast<Job *>(c);
+    j.ok = getHere(j.path, j.out, j.size);
+  }, &job);
+  return job.ok;
 }
 
 LibraryLinkStatus libraryLinkStatus() {

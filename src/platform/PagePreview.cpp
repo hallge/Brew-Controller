@@ -16,6 +16,7 @@
 #include "BigMem.h"
 #include "Log.h"
 #include "LibraryLink.h"
+#include "NetWorker.h"
 
 // Mozilla's root certificates in ESP-IDF's bundle format, linked in by board_build.embed_files.
 extern const uint8_t rootca_crt_bundle_start[] asm("_binary_certs_x509_crt_bundle_bin_start");
@@ -66,7 +67,19 @@ size_t readHead(HTTPClient &http) {
 
 }  // namespace
 
+int fetchHere(const char *url, PageMeta &out, char *problem, size_t problemSize);
+
+// On the network task's stack (NetWorker.h).
 int fetchPagePreview(const char *url, PageMeta &out, char *problem, size_t problemSize) {
+  struct Job { const char *url; PageMeta *out; char *problem; size_t size; int code; } job{url, &out, problem, problemSize, -1};
+  netRun([](void *c) {
+    Job &j = *static_cast<Job *>(c);
+    j.code = fetchHere(j.url, *j.out, j.problem, j.size);
+  }, &job);
+  return job.code;
+}
+
+int fetchHere(const char *url, PageMeta &out, char *problem, size_t problemSize) {
   out = PageMeta{};
   say(problem, problemSize, "");
   if (!url || (strncmp(url, "https://", 8) != 0 && strncmp(url, "http://", 7) != 0)) {

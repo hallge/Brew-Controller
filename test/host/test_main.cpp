@@ -4763,6 +4763,7 @@ static void testDiagnostics() {
   in.power.used = true;
   in.power.attempts = 11;
   in.power.failures = 9;
+  in.power.rssi = -77;
   ShotRecord a{}, b{};
   a.endReason = static_cast<uint8_t>(EndReason::WEIGHT);
   a.flags = SHOT_FLAG_FINAL_VALID;
@@ -4784,6 +4785,7 @@ static void testDiagnostics() {
   CHECK(strstr(body, "\"t\":\"diag_daily\"") && strstr(body, "\"resets\":[\"restart requested\",\"CRASH (exception)\"]"));
   CHECK(strstr(body, "\"scale\":{\"driver\":\"acaia\",\"name\":\"LUNAR\"}"));
   CHECK(strstr(body, "\"power\":{\"attempts\":11,\"failures\":9"));
+  CHECK(strstr(body, "\"longest_wait_ms\":0,\"rssi\":-77}"));
   CHECK(strstr(body, "\"end\":{\"weight\":2}") && strstr(body, "\"stop_retried\":1"));
   CHECK(strstr(body, "\"stop_latency_ms\":{\"median\":3691,\"max\":3691}"));
   CHECK(strstr(body, "\"overshoot_g\":{\"median\":1.8,\"max\":1.8}"));
