@@ -1392,6 +1392,12 @@ uint32_t g_diagLogPos = 0;
 uint32_t g_diagRetryAtMs = 0, g_diagBackoffMs = 0;
 uint32_t g_diagBusyAtMs = 0;         // a shot was in hand
 bool g_diagSendNow = false;
+// A problem the owner reported, to go with the next report (sent at once). Scrubbed when it is taken.
+char *g_bugText;          // BUG_TEXT_MAX + 1, PSRAM
+char g_bugContact[bbw::BUG_CONTACT_MAX + 1];
+const char *g_bugKind = "";
+bool g_bugWaiting = false;   // taken, not yet in a report
+uint32_t g_bugSentS = 0;     // when the last one went into a report
 
 void diagSlotPath(uint8_t slot, char *out, size_t size) { snprintf(out, size, "/tm%u.json", slot); }
 
@@ -1621,6 +1627,11 @@ size_t diagBuildDaily(uint32_t nowS) {
   bbw::DiagInput &in = *inp;
   in = bbw::DiagInput();
   diagFillInput(in, nowS);
+  if (g_bugWaiting && g_bugText) {
+    in.bugKind = g_bugKind;
+    in.bugText = g_bugText;
+    in.bugContact = g_bugContact;
+  }
   for (uint8_t recent = bbw::DIAG_RECENT;; recent = recent > 10 ? recent - 10 : 0) {
     const size_t n = bbw::buildDailyReport(in, *g_warns, g_diagBody, bbw::DIAG_BODY_MAX, recent);
     if (n || recent == 0) return n;
@@ -1806,6 +1817,11 @@ void diagService(bool idle) {
     g_diagSendNow = false;
     if (diagBuildDaily(nowS) && diagSeal()) {
       diagQueue(g_diagEnvelope);
+      if (g_bugWaiting) {
+        g_bugWaiting = false;
+        g_bugSentS = nowS;
+        LOGI("diagnostics: the reported problem goes with this report");
+      }
       g_diag.resetCount = 0;  // reported
       diagStartPeriod(nowS);
       diagSaveState();
@@ -2921,6 +2937,24 @@ bool diagSendNow() {
   return true;
 }
 
+// The owner's words, with addresses, network and device names, coffee and drinker names and anything
+// like a token taken out, as in every other line of a report.
+bool diagReportBug(const char *kind, const char *text, const char *contact) {
+  if (g_settings.diagnosticsOff || !text || !text[0]) return false;
+  if (!g_bugText) g_bugText = bbw::bigArray<char>(bbw::BUG_TEXT_MAX + 1);
+  diagBuildScrubList();
+  bbw::scrubLine(text, g_bugText, bbw::BUG_TEXT_MAX + 1, g_scrub);
+  bbw::scrubLine(contact ? contact : "", g_bugContact, sizeof(g_bugContact), g_scrub);
+  g_bugKind = bbw::BUG_KINDS[0];
+  for (size_t i = 0; i < bbw::BUG_KIND_COUNT; ++i) {
+    if (kind && strcmp(kind, bbw::BUG_KINDS[i]) == 0) g_bugKind = bbw::BUG_KINDS[i];
+  }
+  g_bugWaiting = true;
+  g_diagSendNow = true;
+  LOGI("diagnostics: a problem was reported (%s); it goes with a report now", g_bugKind);
+  return true;
+}
+
 void diagStatus(JsonObject out) {
   out["on"] = !g_settings.diagnosticsOff;
   char base[96];
@@ -2935,6 +2969,8 @@ void diagStatus(JsonObject out) {
   char kid[bbw::KEY_ID_LEN] = "";
   if (bbw::deviceSigner().ready()) bbw::keyId(bbw::deviceSigner().publicKey(), kid);
   out["key_id"] = kid;
+  out["bug_waiting"] = g_bugWaiting;
+  out["bug_sent"] = g_bugSentS;
 }
 
 size_t lastCrash(char *out, size_t size) { return g_store.readText(DIAG_CRASH_FILE, out, size); }

@@ -205,12 +205,15 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 #sdetail{display:flex;flex-direction:column;gap:12px;padding:14px 14px 18px;background:var(--up);border-radius:0 0 8px 8px;margin-bottom:10px;animation:fade .18s ease-out}
 #sdetail .tile{background:var(--card)}#sdetail .tiles{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}#sdetail .tile b{font-size:18px}#sdetail .tile a{text-decoration:underline dotted}
 @media(max-width:760px){.srow{grid-template-columns:58px minmax(0,1fr) 56px 50px}.srow .g{display:none}#sdetail .tiles{grid-template-columns:1fr 1fr}}
+body:not(.pn-insights) [data-panel~="insights"],body:not(.pn-discover) [data-panel~="discover"],body:not(.pn-subscriptions) [data-panel~="subscriptions"],body:not(.pn-community) [data-panel~="community"],body:not(.pn-logs) [data-panel~="logs"],body:not(.pn-hub) [data-panel~="hub"]{display:none!important}
+.panels{display:grid;gap:10px;margin-top:8px}.panels label.chk{align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:10px;margin:0}.panels label.chk b{display:block}
+.empty{padding:14px 16px;border:1px dashed var(--line);border-radius:10px;color:var(--mid);font-size:13px;line-height:1.5}
 </style></head><body><div class="app">
 <nav aria-label="Sections"><b>Brew by Weight</b><span class="pill" id="navstate" title="What the controller is doing">--</span>
-<a href="#home">Home</a><a href="#discover">Discover</a><a href="#shots">Shots</a><a href="#insights">Insights</a><a href="#coffees">Coffees</a><a href="#recipes">Recipes</a><a href="#grinder">Grinder</a><a href="#machine">Espresso machine</a><a href="#subscriptions">Subscriptions</a><a href="#setup">Setup</a><a href="#logs">Logs</a>
+<a href="#home">Home</a><a href="#discover" data-panel="discover">Discover</a><a href="#shots">Shots</a><a href="#insights" data-panel="insights">Insights</a><a href="#coffees">Coffees</a><a href="#recipes">Recipes</a><a href="#grinder">Grinder</a><a href="#machine">Espresso machine</a><a href="#subscriptions" data-panel="subscriptions">Subscriptions</a><a href="#setup">Setup</a><a href="#logs" data-panel="logs">Logs</a>
 <div id="link"></div></nav>
 <div id="bnav" role="navigation" aria-label="Sections"><a href="#home">Home</a><a href="#shots">Shots</a><a href="#coffees">Coffees</a><a href="#grinder">Grinder</a><button type="button" id="bmore" aria-expanded="false" aria-controls="more">More</button></div>
-<div id="more" role="menu"><a href="#discover">Discover</a><a href="#insights">Insights</a><a href="#recipes">Recipes</a><a href="#machine">Espresso machine</a><a href="#subscriptions">Subscriptions</a><a href="#setup">Setup</a><a href="#logs">Logs</a></div>
+<div id="more" role="menu"><a href="#discover" data-panel="discover">Discover</a><a href="#insights" data-panel="insights">Insights</a><a href="#recipes">Recipes</a><a href="#machine">Espresso machine</a><a href="#subscriptions" data-panel="subscriptions">Subscriptions</a><a href="#setup">Setup</a><a href="#logs" data-panel="logs">Logs</a></div>
 <main>
 <div id="ctip" role="tooltip"></div>
 <div id="askbox" role="dialog" aria-modal="true" aria-labelledby="asktxt"><div id="asktxt"></div><div class="row"><button id="askyes" class="pri">Yes</button><button id="askno">Cancel</button></div></div>
@@ -224,7 +227,7 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <div class="live"><div><span class="big" id="w">--</span> <span class="dim">g</span></div><div><span class="big" id="t">--</span> <span class="dim">s</span></div><div><span class="big" id="f">--</span> <span class="dim">g/s</span></div></div>
 <div class="row"><span class="mid" id="ihint"></span><button class="go" id="bstart" onclick="cmd('start')">Start</button><button class="stop" id="bstop" style="display:none" onclick="cmd('stop')">Stop</button><button id="btare" onclick="cmd('tare')">Tare</button><button id="back" style="display:none" onclick="cmd('ack')">Done with this shot</button></div></div>
 <div class="row sm dim"><span><i class="dot" id="ds"></i>Scale <span id="sbat"></span></span><span><i class="dot" id="db"></i>Brew bot <span id="bat"></span></span><span id="cut"></span><span id="res"></span></div></section>
-<section class="card" id="foryou" style="display:none"><div class="head"><h2>For you</h2><a class="sm" href="#discover">All recommendations</a></div><div class="why" id="fychips"></div></section>
+<section class="card" id="foryou" data-panel="discover" style="display:none"><div class="head"><h2>For you</h2><a class="sm" href="#discover">All recommendations</a></div><div class="why" id="fychips"></div></section>
 <div class="cols">
 <section class="card"><div class="head"><h2>Brewing now</h2><a class="sm" href="#coffees">Coffees</a></div>
 <label>What the controller will brew<select id="psel" onchange="act('preset_select',+this.value)"></select></label>
@@ -237,7 +240,7 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <section class="card"><div class="head"><h2>Most recent shot</h2><a class="sm" href="#shots">All shots</a></div>
 <div id="hshot" class="dim">No shot yet.</div><canvas id="hchart" width="900" height="200"></canvas>
 <div class="row sm dim" id="hrate"></div></section>
-<section class="card com"><div class="head"><h2>Community</h2><a class="sm" href="#coffees" style="color:var(--com)">Coffees</a></div><div id="hcom" class="sm mid"></div></section>
+<section class="card com" data-panel="community"><div class="head"><h2>Community</h2><a class="sm" href="#coffees" style="color:var(--com)">Coffees</a></div><div id="hcom" class="sm mid"></div></section>
 </div>
 
 <div class="page" id="p-shots">
@@ -296,7 +299,7 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <section class="card" id="cpairs"><div class="head"><h2>Brew it with</h2><a class="sm" href="#recipes">Recipes</a></div>
 <div class="list" id="cplist"></div><div class="sm dim" id="cpinfo"></div></section>
 <section class="card"><h2>Add coffees from elsewhere</h2><div class="row"><label style="flex:1 1 240px">Look up a coffee on visualizer.coffee<input id="vzq" placeholder="coffee or roaster" onkeydown="if(event.key==='Enter')vzLookup()"></label><button style="align-self:flex-end" onclick="vzLookup()">Search</button></div><div id="vzres" class="sm mid"></div><details class="note"><summary>Fills the form above with what that shared database knows about the coffee.</summary><ul><li>You add the roast date and your own notes, then Save.</li><li>Needs a phone that is online.</li><li>The data is community-contributed and has its own terms.</li></ul></details><div class="row" style="margin-top:12px"><label style="flex:1 1 240px">Bring in coffees from a Beanconqueror backup<input type="file" accept=".json,application/json" onchange="importBeanconqueror(this)"></label><label class="chk" style="align-self:flex-end"><input type="checkbox" id="bcfin">include finished beans</label></div><details class="note"><summary>Adds the beans in a Beanconqueror export file that you do not have yet.</summary><ul><li>They come with their roast dates, opening dates, weights and any time in the freezer.</li><li>The file stays in your browser.</li><li>Shots are not imported: Beanconqueror does not know this machine's timing, so they would only confuse the grind advice.</li></ul></details></section>
-<section class="card com"><h2>Community dial-in</h2><div id="ccom" class="sm mid"></div></section>
+<section class="card com" data-panel="community"><h2>Community dial-in</h2><div id="ccom" class="sm mid"></div></section>
 </div></div></div>
 
 <div class="page" id="p-recipes">
@@ -366,18 +369,18 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 </div>
 
 <div class="page" id="p-insights">
-<div class="head"><h1>Insights</h1><label class="sm">Coffee<select id="icoffee" onchange="drawInsights()"></select></label></div>
-<section class="card" id="itaste"><div class="head"><h2>Your coffee taste</h2><div class="row" id="itwho" style="margin:0"></div></div>
+<div class="head"><h1 id="ititle">Insights</h1><label class="sm" data-panel="insights">Coffee<select id="icoffee" onchange="drawInsights()"></select></label></div>
+<section class="card" id="itaste" data-panel="insights"><div class="head"><h2>Your coffee taste</h2><div class="row" id="itwho" style="margin:0"></div></div>
 <div class="two"><div><div class="sm dim">The cup</div><canvas id="itcup" width="440" height="340" style="height:auto"></canvas></div><div><div class="sm dim">Flavours</div><canvas id="itfl" width="440" height="340" style="height:auto"></canvas></div></div>
 <div class="sm" id="itnote"></div><div id="itbest"></div>
 <details class="note"><summary>From your coffee ratings: coffees you loved pull it their way, ones you disliked push it away.</summary><ul><li>The middle ring is no lean either way; further out is more of it, further in less.</li><li>A pale point says little is known about it yet. The profile shows from 3 rated coffees and is settled from 8.</li><li>Values you did not give are filled in from each coffee's tasting notes, process and roast level, with less weight.</li></ul></details></section>
-<section class="card" id="ireco"><div class="head"><h2>Coffees you might like</h2><span class="sm dim" id="irwho"></span></div>
+<section class="card" id="ireco" data-panel="discover"><div class="head"><h2>Coffees you might like</h2><span class="sm dim" id="irwho"></span></div>
 <div class="recos" id="irlist"></div><div class="sm" id="iragain" style="margin-top:10px"></div>
 <details class="note"><summary>Coffees you have not rated, ranked by how well they match your taste.</summary><ul><li>A coffee's taste comes from the library's ratings when there are enough, else from its tasting notes, process and roast (less sure).</li><li>With ratings shared, drinkers whose stars agree with yours count too.</li><li>Shown once 3 coffees are rated. Fixed rules on the controller; never touches the grind advice.</li></ul></details></section>
-<section class="card"><div class="head"><h2>Roast level against grind setting</h2><span class="sm dim" id="irnote"></span></div><canvas id="irchart" width="900" height="240" style="height:240px"></canvas><div class="row sm" id="irleg"></div><details class="note"><summary>One dot per shot on this grinder: its setting and roast level, coloured by the coffee's age.</summary><ul><li>Blue is fresh, red is old; grey: no roast date. A larger dot poured faster.</li><li>The green band on each roast level: the settings whose shots ran on time (within the tolerance of their target time); the line marks the middle one.</li><li>Hover or tap a dot to see the shot; click it to open it.</li></ul></details></section>
-<section class="card"><div class="head"><h2>Coffee age against brew time</h2><span class="sm dim" id="ianote"></span></div><canvas id="iachart" width="900" height="260" style="height:260px"></canvas><div class="row sm" id="ialeg"></div><details class="note"><summary>Brew time against target, by days off roast. Darker squares hold more shots.</summary><ul><li>Rows above the outlined band ran slow, rows below ran fast.</li><li>Shots without a roast date or a target time are left out.</li></ul></details></section>
-<section class="card"><div class="head"><h2>Brewing calendar</h2><div class="row" id="icmode" role="group" aria-label="What the calendar shows"><button data-m="shots" onclick="CALMODE='shots';drawCalendar()">Shots</button><button data-m="brew" onclick="CALMODE='brew';drawCalendar()">Coffee &amp; recipe</button><button data-m="drift" onclick="CALMODE='drift';drawCalendar()">Drift</button><button data-m="hours" onclick="CALMODE='hours';drawCalendar()">Time of day</button></div></div><div class="scroll"><canvas id="icchart" width="900" height="180" style="height:180px;min-width:620px"></canvas></div><div class="row sm" id="icleg"></div></section>
-<section class="card"><div class="head"><h2>Dial-in shots per bag</h2><span class="sm dim" id="idnote"></span></div><canvas id="idchart" width="900" height="240" style="height:240px"></canvas><div class="row sm" id="idleg"></div><details class="note"><summary>Per bag: shots to the first on-time shot, then how the rest ran.</summary><ul><li>On time: within the tolerance of that shot's target. Only shots stopped by weight count.</li><li>The shots after the first on-time one are coloured by how they ran: green on time, yellow fast, red slow. A dashed bar: no shot on time yet.</li></ul></details></section>
+<section class="card" data-panel="insights"><div class="head"><h2>Roast level against grind setting</h2><span class="sm dim" id="irnote"></span></div><canvas id="irchart" width="900" height="240" style="height:240px"></canvas><div class="row sm" id="irleg"></div><details class="note"><summary>One dot per shot on this grinder: its setting and roast level, coloured by the coffee's age.</summary><ul><li>Blue is fresh, red is old; grey: no roast date. A larger dot poured faster.</li><li>The green band on each roast level: the settings whose shots ran on time (within the tolerance of their target time); the line marks the middle one.</li><li>Hover or tap a dot to see the shot; click it to open it.</li></ul></details></section>
+<section class="card" data-panel="insights"><div class="head"><h2>Coffee age against brew time</h2><span class="sm dim" id="ianote"></span></div><canvas id="iachart" width="900" height="260" style="height:260px"></canvas><div class="row sm" id="ialeg"></div><details class="note"><summary>Brew time against target, by days off roast. Darker squares hold more shots.</summary><ul><li>Rows above the outlined band ran slow, rows below ran fast.</li><li>Shots without a roast date or a target time are left out.</li></ul></details></section>
+<section class="card" data-panel="insights"><div class="head"><h2>Brewing calendar</h2><div class="row" id="icmode" role="group" aria-label="What the calendar shows"><button data-m="shots" onclick="CALMODE='shots';drawCalendar()">Shots</button><button data-m="brew" onclick="CALMODE='brew';drawCalendar()">Coffee &amp; recipe</button><button data-m="drift" onclick="CALMODE='drift';drawCalendar()">Drift</button><button data-m="hours" onclick="CALMODE='hours';drawCalendar()">Time of day</button></div></div><div class="scroll"><canvas id="icchart" width="900" height="180" style="height:180px;min-width:620px"></canvas></div><div class="row sm" id="icleg"></div></section>
+<section class="card" data-panel="insights"><div class="head"><h2>Dial-in shots per bag</h2><span class="sm dim" id="idnote"></span></div><canvas id="idchart" width="900" height="240" style="height:240px"></canvas><div class="row sm" id="idleg"></div><details class="note"><summary>Per bag: shots to the first on-time shot, then how the rest ran.</summary><ul><li>On time: within the tolerance of that shot's target. Only shots stopped by weight count.</li><li>The shots after the first on-time one are coloured by how they ran: green on time, yellow fast, red slow. A dashed bar: no shot on time yet.</li></ul></details></section>
 </div>
 <div class="page" id="p-machine">
 <div class="head"><h1>Espresso machine</h1></div>
@@ -405,7 +408,7 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <section class="card" id="subimp" style="display:none"><div class="head"><h2>From the shops: check and apply</h2><button class="tbtn" onclick="IMP={};drawImport()">Dismiss</button></div><div id="sibody"></div>
 <div class="row"><button class="pri" onclick="applyImport()">Apply what is ticked</button><span class="sm dim">Nothing changes until you apply.</span></div></section>
 <div class="subs" id="sublist"></div>
-<section class="card" id="subreco"><div class="head"><h2>Services you might like</h2><span class="sm dim" id="srbasis"></span></div>
+<section class="card" id="subreco" data-panel="discover"><div class="head"><h2>Services you might like</h2><span class="sm dim" id="srbasis"></span></div>
 <div class="row" style="align-items:flex-end"><label style="flex:0 0 130px">Your country<input id="sr_country" maxlength="2" placeholder="e.g. US" onchange="subPrefs()"></label><div style="flex:1 1 300px"><div class="sm dim" style="margin-bottom:6px">What matters to you</div><div class="chips" id="srmatters"></div></div></div>
 <div class="subs" id="srlist"></div></section>
 <section class="card com" id="sublib"><div class="head"><h2>From the shared library</h2><span class="sm" id="slcount"></span></div>
@@ -446,6 +449,7 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <div class="page" id="p-setup">
 <div class="head"><h1>Setup</h1></div>
 <section class="card"><h2>Appearance</h2><p class="sm dim">For this page and the controller's screen; every browser follows it.</p><div class="row" id="themes"></div></section>
+<section class="card" id="panelcard"><div class="head"><h2>Web page panels</h2><span class="sm dim" id="pn_note"></span></div><p class="sm dim">Extra pages and cards, off until you want them. Saved on the controller, so every browser shows the same. Brewing, shots, coffees, recipes, the grinder, the machine and Setup are always there.</p><div class="panels" id="panels"></div></section>
 <section class="card"><h2>Drinkers</h2><label class="chk"><input type="checkbox" id="namedDrinkers" onchange="post('/api/settings',{namedDrinkers:this.checked}).then(r=>{done(r,'Saved');loadRatings()})"><span>Named drinkers <span class="dim">(each rating says who gave it; each drinker gets their own taste and recommendations. Off: one household profile)</span></span></label>
 <div class="grid" id="drnames"></div><div class="row"><button onclick="saveDrinkers()">Save names</button><span class="sm dim">Clearing a name keeps that drinker's ratings.</span></div></section>
 <section class="card"><h2>Devices</h2><div id="dev" class="mid"></div><div id="scaledata" class="sm dim"></div><div class="scroll"><table id="seen"></table></div>
@@ -518,6 +522,13 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 <div class="row"><button onclick="diagPreview()">What would be sent</button><button id="dg_send" onclick="post('/api/diagnostics/send').then(r=>{done(r,'Sending a report');setTimeout(loadDiag,8000)})">Send now</button></div>
 <pre id="dg_pre" class="sm" style="display:none;white-space:pre-wrap;word-break:break-word;max-height:360px;overflow:auto"></pre>
 <details class="note"><summary>What is in a report, and what never is.</summary><ul><li><b>Sent:</b> the firmware version and restarts; which scale, pushers and machine type are in use; how their Bluetooth connections went; how shots and power presses ended; memory and Wi-Fi strength; warnings from the log, with names and addresses taken out.</li><li><b>Never sent:</b> Bluetooth or IP addresses, the Wi-Fi name, passwords, tokens, coffee, roaster or drinker names, notes, subscriptions or where you are.</li><li>Reports are signed with this controller's own key (its short id is all that identifies it) and go through a relay to a private repository only the maintainer reads. No GitHub account is needed.</li><li>Off: nothing is built or sent, and reports waiting are dropped.</li></ul></details>
+<div class="subh" id="bugrep">Report a problem</div>
+<div class="sm mid">Something not working as it should? Say what happened: it goes to the maintainer with a diagnostics report, so the log and the state of the controller come with it.</div>
+<div class="grid"><label>What it is about<select id="bg_kind"><option value="brewing">Brewing: starting, stopping, weights</option><option value="grind_advice">Grind advice or a starting point</option><option value="scale">The scale</option><option value="pushers">Button pushers (bots)</option><option value="machine_power">Switching the machine on or off</option><option value="web_page">This web page</option><option value="sharing">Sharing and the community library</option><option value="firmware_update">Firmware updates</option><option value="other" selected>Something else</option></select></label>
+<label>How to reach you (optional)<input id="bg_contact" maxlength="64" placeholder="a GitHub name or an email"></label></div>
+<label>What happened<textarea id="bg_text" rows="4" maxlength="1000" placeholder="What you did, what you expected, and what happened instead. When, if you know." oninput="$('bg_n').textContent=this.value.length+' / 1000'"></textarea></label>
+<div class="row"><button class="pri" id="bg_send" onclick="sendBug()">Send the report</button><span class="sm dim" id="bg_n">0 / 1000</span><span class="sm" id="bg_state"></span></div>
+<div class="sm dim">Addresses, network and device names, coffee and drinker names are taken out before it is sent, as for every report. The contact goes as you type it.</div>
 <details class="note"><summary>Relay address (for testing; diagnostics and the shared library both use it)</summary><div class="row"><input id="dg_relay" maxlength="95" placeholder="blank: the built-in relay" style="flex:1 1 260px"><button onclick="post('/api/diagnostics/relay',{url:$('dg_relay').value.trim()}).then(r=>{done(r,'Saved');loadDiag()})">Save</button></div></details></section>
 </div>
 <div class="page" id="p-logs">
@@ -586,7 +597,8 @@ const SB=['shareEnabled','shareCoffees','shareDialIns','shareShots','shareRating
 // Diagnostics reports (docs/TELEMETRY.md).
 const ago=s=>{if(!s)return 'never';const d=Math.round(Date.now()/1000-s);return d<90?'just now':d<5400?Math.round(d/60)+' min ago':d<129600?Math.round(d/3600)+' h ago':Math.round(d/86400)+' days ago'};
 async function loadDiag(){let d;try{d=await get('/api/diagnostics/report')}catch(e){return}
-$('diagnosticsOn').checked=!!d.on;$('dg_state').textContent=d.on?'on':'off';$('dg_send').disabled=!d.on;
+$('diagnosticsOn').checked=!!d.on;$('dg_state').textContent=d.on?'on':'off';$('dg_send').disabled=!d.on;$('bg_send').disabled=!d.on;
+$('bg_state').textContent=!d.on?'Turn diagnostics on to send a report.':d.bug_waiting?'Your report goes with the next one, in a moment.':d.bug_sent?'Last report sent '+new Date(d.bug_sent*1000).toLocaleString()+'.':'';
 if(document.activeElement!==$('dg_relay'))$('dg_relay').value=d.relay_default?'':d.relay;
 $('dg_line').textContent=d.on?['Last sent: '+ago(d.last_sent),d.waiting?d.waiting+' waiting':'',d.last_problem?'last try: '+d.last_problem:'',d.key_id?'key '+d.key_id:''].filter(x=>x).join(' · '):'Nothing is sent.';
 let c;try{c=await get('/api/crash')}catch(e){c={}}const dm=c&&c.dump;
@@ -594,6 +606,8 @@ $('dg_crash').innerHTML=c&&c.t?`<b style="color:var(--warn)">Last crash:</b> ${e
 // Once, after the update that brought them: diagnostics are on, and where to turn them off.
 function diagNotice(){if(!S||!S.diagnosticsOn)return;let seen=null;try{seen=localStorage.getItem('bbwDiagSeen')}catch(e){}if(seen)return;
 try{localStorage.setItem('bbwDiagSeen','1')}catch(e){}say('Diagnostics reports are on: a short technical report a day helps fix problems. Setup, Diagnostics shows what is sent and turns it off.',true)}
+function sendBug(){const t=$('bg_text').value.trim();if(!t)return say('Say what happened first',false);
+post('/api/diagnostics/bug',{kind:$('bg_kind').value,text:t,contact:$('bg_contact').value.trim()}).then(r=>{done(r,'Thank you: the report is on its way');if(r.ok){$('bg_text').value='';$('bg_n').textContent='0 / 1000';setTimeout(loadDiag,8000)}})}
 async function diagPreview(){const p=$('dg_pre');if(p.style.display!='none'){p.style.display='none';return}let t;try{t=await get('/api/diagnostics/preview')}catch(e){return}p.textContent=JSON.stringify(t,null,1);p.style.display=''}
 async function loadShare(){let s;try{s=await get('/api/share')}catch(e){return}SH_=s;if(L){drawCoffees();drawGrinder()}
 $('sh_state').textContent=!S.shareEnabled?'off':s.can_send?'sending':'queueing';$('sh_state').className='pill '+(S.shareEnabled?'ok':'');
@@ -613,10 +627,27 @@ const coffee=id=>L.coffees.find(c=>c.id==id),recipe=id=>L.recipes.find(r=>r.id==
 const plabel=p=>{const c=coffee(p.coffeeId),r=recipe(p.recipeId);return (c?c.name+' — ':'')+(r?r.name:'?')};
 
 function show(){let h=(location.hash||'#home').slice(1);
+// A hidden panel's page: Insights falls back to Discover when only that is on, else Home.
+if(h=='insights'&&!panelOn('insights')&&panelOn('discover'))h='discover';
+if((h=='insights'&&!panelOn('insights'))||(h=='discover'&&!panelOn('discover'))||(h=='subscriptions'&&!panelOn('subscriptions'))||(h=='logs'&&!panelOn('logs'))){if(location.hash!='#home')history.replaceState(null,'','#home');h='home'}
 // Discover: the recommendations, on Insights (coffees) with a way on to Subscriptions (services).
-const disc=h=='discover';if(disc)h='insights';document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on',p.id=='p-'+h));
+const disc=h=='discover';if(disc)h='insights';{const t=$('ititle');if(t)t.textContent=panelOn('insights')?'Insights':'Discover'}document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on',p.id=='p-'+h));
 document.querySelectorAll('nav a,#bnav a,#more a').forEach(a=>a.classList.toggle('on',a.getAttribute('href')=='#'+h));
-$('bmore').classList.toggle('on',['recipes','insights','machine','subscriptions','setup','logs'].includes(h));$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadRatings();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees'){loadCommunityCoffees();loadRatings()}if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights'){drawInsights();if(disc){const go=()=>{const r=$('ireco');if(r)r.scrollIntoView({behavior:'smooth',block:'start'})};setTimeout(go,150);setTimeout(go,900)}}if(h=='home')loadForYou();if(h=='subscriptions')loadSubs();}
+$('bmore').classList.toggle('on',['recipes','insights','machine','subscriptions','setup','logs'].includes(h));$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadRatings();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees'){loadCommunityCoffees();loadRatings()}if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights'){drawInsights();if(disc){const go=()=>{const r=$('ireco');if(r)r.scrollIntoView({behavior:'smooth',block:'start'})};setTimeout(go,150);setTimeout(go,900)}}if(h=='home'&&panelOn('discover'))loadForYou();if(h=='subscriptions')loadSubs();}
+// The optional panels (bbw::WebPanel bits): key, name, what it is, bit.
+const PANELS=[['insights','Insights','Your taste profile from your ratings, and charts: roast level against grind, coffee age against brew time, a brewing calendar, dial-in shots per bag.',1],
+['discover','Discover','Recommendations: coffees and subscription services that match your taste, and the For you card on Home.',2],
+['subscriptions','Subscriptions','Coffee subscriptions: when the next delivery comes, skipping one, what is on its way.',4],
+['community','Community','What other owners dialled in: the Community card on Home and on each coffee.',8],
+['logs','Logs','The controller\'s log, live, for when something needs looking into. It is also always at /log.txt.',16]];
+let PN=0;try{PN=+(localStorage.getItem('bbwPanels')||0)}catch(e){}
+const panelOn=k=>{const p=PANELS.find(x=>x[0]==k);return !p||!!(PN&p[3])};
+function applyPanels(mask,keep){PN=mask|0;PANELS.forEach(p=>document.body.classList.toggle('pn-'+p[0],!!(PN&p[3])));document.body.classList.toggle('pn-hub',!!(PN&32));
+try{localStorage.setItem('bbwPanels',String(PN))}catch(e){}if(!keep)show()}
+function renderPanels(){const el=$('panels');if(!el)return;el.innerHTML=PANELS.map(([k,n,d,b])=>`<label class="chk"><input type="checkbox" ${PN&b?'checked':''} onchange="setPanel(${b},this.checked)"><span><b>${n}</b><span class="sm dim">${d}</span></span></label>`).join('');
+$('pn_note').textContent=S&&!S.webPanelsChosen?'showing what is in use':''}
+function setPanel(bit,on){const m=on?(PN|bit):(PN&~bit);applyPanels(m,true);post('/api/settings',{webPanels:m}).then(r=>{if(r&&r.ok===false)return done(r,'');if(S){S.webPanels=m;S.webPanelsChosen=true}renderPanels();say(on?'Shown':'Hidden')})}
+applyPanels(PN,true);
 // Colour schemes, in the controller's order (bbw::UiTheme): name, and a strip of its colours.
 const THEMES=[['dark','Dark',['#0e0f11','#17191c','#f08a24','#4cc38a']],['light','Light',['#f4f3f0','#ffffff','#c2560c','#1e8e4e']],
 ['nord','Nord',['#2e3440','#3b4252','#d08770','#a3be8c']],['solarized','Solarized Dark',['#002b36','#073642','#cb4b16','#859900']],
@@ -626,7 +657,7 @@ function setTheme(n,save){const t=(THEMES[n]||THEMES[0])[0];if(t=='dark')delete 
 try{localStorage.setItem('bbwTheme',t)}catch(e){}readTC();renderThemes();show();
 if(save)post('/api/settings',{uiTheme:n}).then(r=>{if(r&&r.ok===false)return;if(S)S.uiTheme=n})}
 function renderThemes(){const el=$('themes');if(!el)return;const cur=themeNow();el.innerHTML=THEMES.map(([k,name,cols],i)=>`<button class="theme${i==cur?' on':''}" onclick="setTheme(${i},true)" aria-pressed="${i==cur}"><span class="strip">${cols.map(c=>`<i style="background:${c}"></i>`).join('')}</span>${name}</button>`).join('')}
-window.addEventListener('hashchange',show);loadHomePower();loadSubs();
+window.addEventListener('hashchange',show);loadHomePower();if(panelOn('subscriptions'))loadSubs();
 let LOGT='',LOGN=0,LOGB=false;
 function drawLog(){const f=$('lg_filter').value.toLowerCase(),v=$('lg_view');v.innerHTML=LOGT.split('\n').filter(l=>l&&(!f||l.toLowerCase().includes(f))).map(l=>{const k=l.charAt(11);return '<span'+(k=='E'||k=='W'?' style="color:var(--warn)"':k=='D'?' class="dim"':'')+'>'+esc(l)+'</span>'}).join('\n');if($('lg_follow').checked)v.scrollTop=v.scrollHeight}
 async function pollLog(){if(LOGB||!$('p-logs').classList.contains('on'))return;LOGB=true;try{for(let i=0;i<8;i++){const r=await fetch('/api/log?from='+LOGN),t=await r.text(),n=+r.headers.get('X-Log-Next');if(n<LOGN)LOGT='';LOGN=n;if(!t)break;LOGT=(LOGT+t).slice(-200000)}drawLog()}catch(e){}LOGB=false}
@@ -682,7 +713,7 @@ const a=$('alert');if(s.manual_stop_needed){a.style.display='block';a.textConten
 else if(s.bot_switch_mode){a.style.display='block';a.textContent='The SwitchBot is in Switch mode. Set it to Press mode in the SwitchBot app.'}else a.style.display='none';
 if(lastShotId!==s.last_shot_id){lastShotId=s.last_shot_id;loadShots();loadLibrary();if(S)loadShare()}}
 
-async function loadSettings(){S=await get('/api/settings');if(S&&typeof S.uiTheme=='number'&&S.uiTheme!=themeNow())setTheme(S.uiTheme,false);renderThemes();F.forEach(k=>{const e=$(k),v=S[k];e.value=typeof v==='boolean'?(v?1:0):v});
+async function loadSettings(){S=await get('/api/settings');if(S&&typeof S.uiTheme=='number'&&S.uiTheme!=themeNow())setTheme(S.uiTheme,false);renderThemes();if(S&&typeof S.webPanels=='number'&&S.webPanels!=PN)applyPanels(S.webPanels);renderPanels();F.forEach(k=>{const e=$(k),v=S[k];e.value=typeof v==='boolean'?(v?1:0):v});
 SB.forEach(k=>$(k).checked=!!S[k]);loadShare();loadDiag();diagNotice();$('staSsid').value=S.net.staSsid;$('webStartEnabled').checked=S.net.webStartEnabled}
 // Only what was changed on this page: a page left open since a setting was
 // changed elsewhere (the power card, the API, another browser) must not put
@@ -1076,7 +1107,7 @@ else if(G.action=='inconsistent'){title='Brew times vary: no advice';cls='warn';
 why=`The last ${G.shots_used} shots at ${fs(G.current_um)} ran from ${f1(G.min_time_s)} s to ${f1(G.max_time_s)} s against a target of ${G.target_time_s} s ± ${G.tolerance_s} s, some fast and some slow. Their average (${f1(G.average_time_s)} s) describes none of them, so it is not used. If the grinder was changed between them, enter its setting: shots are only compared at the same setting. Otherwise look at dose, distribution and tamp. A shot can be left out on the Shots page.`+out}
 else if(G.out_of_range){const fin=G.action=='finer';title=`Go ${fin?'finer':'coarser'} ${fdn(G.delta_um)} ${fdu()}, to ${fs(G.suggested_um)}`;cls='warn';why=short=`The last shot ran ${fin?'too short (under 15 s)':'more than 15 s over the target'} to be counted, so its time cannot size the change. The direction is clear: this is the largest single change. The next shot gets the usual advice.`}
 else if(G.action=='hold'&&G.between_steps){title='Keep '+fs(G.current_um)+' (closest step)';cls='ok';why=basis+' The target lies between this setting and the next one, which ran on the other side of it; there is no setting between them, so the closer one is kept.'+out;short=basis}
-else if(G.action=='hold'&&G.at_limit){title='Keep '+fs(G.current_um)+' (end of the range)';cls='warn';why=basis+' The shots ask for a change past the end of this grinder's range, so there is nothing left to turn: try a different dose, or a fresher or older coffee.'+out;short=basis}
+else if(G.action=='hold'&&G.at_limit){title='Keep '+fs(G.current_um)+' (end of the range)';cls='warn';why=basis+' The shots ask for a change past the end of this grinder’s range, so there is nothing left to turn: try a different dose, or a fresher or older coffee.'+out;short=basis}
 else if(G.action=='hold'){title='Keep '+fs(G.current_um);cls='ok';why=basis+' Inside tolerance.'+out;short=basis}
 else{const fin=G.action=='finer';title=`Go ${fin?'finer':'coarser'} ${fdn(G.delta_um)} ${fdu()}, to ${fs(G.suggested_um)}${G.refined?' (to your liked time)':''}`;cls='warn';short=basis+` Running ${f1(Math.abs(G.error_s))} s ${fin?'fast':'slow'}.`;
 why=short+sens+(G.step_limited?' Limited to the largest single change; expect another step.':'')+out;b.style.display='';b.textContent='I set the grinder to '+fs(G.suggested_um)}

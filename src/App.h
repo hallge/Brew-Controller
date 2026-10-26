@@ -250,6 +250,8 @@ void diagnostics(JsonObject out);
 void diagPreview(String &out);
 // Builds a report now and sends it as soon as it can; false when diagnostics are off.
 bool diagSendNow();
+// A problem the owner describes goes with a diagnostics report, sent at once. False: diagnostics are off.
+bool diagReportBug(const char *kind, const char *text, const char *contact);
 // On or off, the relay, how many wait, when the last went and how.
 void diagStatus(JsonObject out);
 // The last crash's report body (JSON); 0 when there has been none.

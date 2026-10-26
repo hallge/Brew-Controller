@@ -449,7 +449,35 @@ struct Settings {
   // Diagnostics reports (docs/TELEMETRY.md) are sent unless this is set. Stored the other way round
   // so that a record saved before it existed reads 0: on, as for every controller from this build.
   bool diagnosticsOff = false;
+  // The web page's optional panels the owner chose to show (WebPanel bits). Until they choose
+  // (webPanelsChosen 0, as a record saved before these fields reads), each is hidden unless it is
+  // already in use (webPanelsInUse).
+  uint8_t webPanelsChosen = 0;  // WEB_PANELS_CHOSEN once chosen: a marker, so an older record's padding is not a choice
+  uint16_t webPanels = 0;
 };
+constexpr uint8_t WEB_PANELS_CHOSEN = 0x5A;
+
+// The web page's optional panels: hidden unless the owner turns them on in Setup.
+enum WebPanel : uint16_t {
+  PANEL_INSIGHTS = 1u << 0,       // the taste profile and the charts
+  PANEL_DISCOVER = 1u << 1,       // recommendations: Discover, the For you card
+  PANEL_SUBSCRIPTIONS = 1u << 2,  // coffee subscriptions
+  PANEL_COMMUNITY = 1u << 3,      // what other owners dialled in, on Home and on each coffee
+  PANEL_LOGS = 1u << 4,           // the live log
+  PANEL_HUB = 1u << 5,            // the Community Hub (to come)
+};
+constexpr uint16_t WEB_PANELS_ALL = 0x3f;
+
+// The panels shown: the owner's choice once made; before that, those already in use, so that an
+// update hides nothing the owner was using.
+inline uint16_t webPanelsShown(const Settings &s, bool haveSubscriptions, bool haveRatings) {
+  if (s.webPanelsChosen == WEB_PANELS_CHOSEN) return static_cast<uint16_t>(s.webPanels & WEB_PANELS_ALL);
+  uint16_t shown = 0;
+  if (haveSubscriptions) shown |= PANEL_SUBSCRIPTIONS;
+  if (haveRatings) shown |= PANEL_INSIGHTS | PANEL_DISCOVER;
+  if (s.shareEnabled) shown |= PANEL_COMMUNITY;
+  return shown;
+}
 
 // The colour schemes, in the order the web page lists them.
 enum class UiTheme : uint8_t { DARK = 0, LIGHT, NORD, SOLARIZED_DARK, DRACULA, HIGH_CONTRAST };

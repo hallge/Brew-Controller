@@ -5228,6 +5228,44 @@ static void testShare() {
 }
 
 // What the shared library says, turned into a setting for this grinder.
+static void testWebPanels() {
+  printf("web page: optional panels hidden until chosen, except what is in use\n");
+  Settings s;
+  CHECK(webPanelsShown(s, false, false) == 0);                                   // a new controller
+  CHECK(webPanelsShown(s, true, false) == PANEL_SUBSCRIPTIONS);                  // an update: in use
+  CHECK(webPanelsShown(s, false, true) == (PANEL_INSIGHTS | PANEL_DISCOVER));
+  s.shareEnabled = true;
+  CHECK(webPanelsShown(s, false, false) == PANEL_COMMUNITY);
+  s.webPanelsChosen = 1;  // stray bytes from an older record's padding are not a choice
+  CHECK(webPanelsShown(s, false, false) == PANEL_COMMUNITY);
+  s.webPanelsChosen = WEB_PANELS_CHOSEN;  // chosen: exactly that, even nothing
+  s.webPanels = PANEL_LOGS;
+  CHECK(webPanelsShown(s, true, true) == PANEL_LOGS);
+  s.webPanels = 0xffff;
+  CHECK(webPanelsShown(s, false, false) == WEB_PANELS_ALL);
+}
+
+static void testBugReport() {
+  printf("diagnostics: a problem the owner reports goes with the report, scrubbed\n");
+  static DiagInput in;
+  static WarnTally w;
+  static char out[DIAG_BODY_MAX];
+  in = DiagInput();
+  in.firmware = "v0.1.21";
+  CHECK(buildDailyReport(in, w, out, sizeof(out)) != 0 && !strstr(out, "\"bug\""));  // none: no field
+  static char text[BUG_TEXT_MAX + 1];
+  ScrubList list;
+  list.add("Kitchen-WiFi", "<wifi>");
+  scrubLine("The scale at aa:bb:cc:dd:ee:ff dropped on Kitchen-WiFi, 192.168.0.7", text, sizeof(text), &list);
+  in.bugKind = "scale";
+  in.bugText = text;
+  in.bugContact = "gh:someone";
+  CHECK(buildDailyReport(in, w, out, sizeof(out)) != 0);
+  CHECK(strstr(out, "\"bug\":{\"kind\":\"scale\",\"text\":\"The scale at <mac> dropped on <wifi>, <ip>\",\"contact\":\"gh:someone\"}"));
+  CHECK(!strstr(out, "aa:bb") && !strstr(out, "192.168") && !strstr(out, "Kitchen"));
+  CHECK(strcmp(BUG_KINDS[0], "other") == 0 && BUG_KIND_COUNT == 9);
+}
+
 static void testGrindRange() {
   printf("grind advice: never past the ends of the grinder's range\n");
   const StepRange niche = stepRange(5);  // Niche Zero: 1 to 50
@@ -7542,6 +7580,8 @@ int main() {
   testCommunityModel();
   testShareWithdrawAndLinks();
   testGrindRange();
+  testBugReport();
+  testWebPanels();
   testPowerBeliefDrift();
   testCupNotTrustedAfterScaleSleep();
   testBuiltinGrinders();

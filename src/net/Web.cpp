@@ -158,6 +158,19 @@ void handleGetSettings() {
   doc["powerOffWithScale"] = s.powerOffWithScale;
   doc["diagnosticsOn"] = !s.diagnosticsOff;
   doc["namedDrinkers"] = s.namedDrinkers;  // colour scheme, 0 Dark .. 5 High contrast (bbw::UiTheme)
+  {
+    // The web page's optional panels (bbw::WebPanel bits): what is shown now, and whether chosen.
+    bool haveSubs = false, haveRatings = false;
+    app::readSubscriptions([](const bbw::Subscription *, size_t count, void *c) {
+      *static_cast<bool *>(c) = count != 0;
+    }, &haveSubs);
+    app::store().scanRatings([](const bbw::CoffeeRating &, void *c) {
+      *static_cast<bool *>(c) = true;
+      return false;
+    }, &haveRatings);
+    doc["webPanels"] = bbw::webPanelsShown(s, haveSubs, haveRatings);
+    doc["webPanelsChosen"] = s.webPanelsChosen == bbw::WEB_PANELS_CHOSEN;
+  }
   // Minutes idle before the scale is let go so that it can switch itself off; 0: kept connected.
   doc["scaleRestMin"] = s.scaleRestMin == bbw::SCALE_REST_NEVER ? 0 : s.scaleRestMin;
   doc["actuationMode"] = static_cast<int>(s.actuationMode);
@@ -250,6 +263,10 @@ void handlePostSettings() {
   s.powerOffWithScale = doc["powerOffWithScale"] | s.powerOffWithScale;
   s.namedDrinkers = doc["namedDrinkers"] | s.namedDrinkers;
   if (doc["diagnosticsOn"].is<bool>()) s.diagnosticsOff = !doc["diagnosticsOn"].as<bool>();
+  if (doc["webPanels"].is<int>()) {
+    s.webPanels = static_cast<uint16_t>(doc["webPanels"].as<int>() & bbw::WEB_PANELS_ALL);
+    s.webPanelsChosen = bbw::WEB_PANELS_CHOSEN;
+  }
   if (doc["uiTheme"].is<int>()) {
     const int theme = doc["uiTheme"].as<int>();
     if (theme >= 0 && theme < bbw::UI_THEME_COUNT) s.uiTheme = static_cast<uint8_t>(theme);
@@ -2991,6 +3008,20 @@ void begin() {
   });
   server.on("/api/diagnostics/send", HTTP_POST, []() {
     if (!app::diagSendNow()) return sendError(409, "Diagnostics are off (Setup, Diagnostics)");
+    sendOk();
+  });
+  // {kind, text, contact}: a problem in the owner's words, sent with a diagnostics report now.
+  server.on("/api/diagnostics/bug", HTTP_POST, []() {
+    JsonDocument doc;
+    if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "not JSON");
+    const char *text = doc["text"] | "";
+    const char *contact = doc["contact"] | "";
+    if (!text[0]) return sendError(400, "say what happened first");
+    if (strlen(text) > bbw::BUG_TEXT_MAX) return sendError(400, "at most 1000 characters, please");
+    if (strlen(contact) > bbw::BUG_CONTACT_MAX) return sendError(400, "the contact is too long");
+    if (!app::diagReportBug(doc["kind"] | "other", text, contact)) {
+      return sendError(409, "Diagnostics are off: turn them on above to send a report");
+    }
     sendOk();
   });
   server.on("/api/diagnostics/relay", HTTP_POST, []() {

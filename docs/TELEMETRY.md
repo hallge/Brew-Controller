@@ -81,6 +81,9 @@ Notes on the fields:
 - `warnings` holds each distinct `W` or `E` line once, with its numbers turned into `#` and its
   count. There are at most 32, the most frequent first.
 - `recent` holds the last 30 such lines, cleaned the same way and cut at 160 characters.
+- `bug`, only when the owner reported a problem (Setup, Diagnostics, Report a problem): `kind`, `text`
+  (their words, cleaned the same way as log lines) and `contact` if they gave one. The report goes at
+  once; `telemetry-tools/fleet.py` lists these under "Problems reported by owners".
 
 ### `diag_crash`
 
