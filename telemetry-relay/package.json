@@ -2,5 +2,5 @@
   "name": "bbw-telemetry-relay",
   "private": true,
   "type": "module",
-  "scripts": { "test": "node --test test" }
+  "scripts": { "test": "node --test test", "build:admin": "node tools/build-admin.mjs" }
 }
