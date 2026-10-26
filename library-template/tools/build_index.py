@@ -57,6 +57,8 @@ import zlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import verify_record as vr  # noqa: E402
 
+INDEX_WARN_BYTES = 57344  # 56 kB: controllers read an index file into 64 kB (LIBRARY_TEXT_SIZE)
+
 MIN_ITEMS_FOR_SCALE = 3     # coffees in common before an unmarked dial's scale is fitted
 # Bean age. As roasted coffee ages a shot runs faster at the same grind, so its owner grinds
 # finer. The rate is measured, not assumed: from contributors who settled the same coffee on
@@ -227,8 +229,8 @@ def build_taste(root, min_contributors=2, log=print):
         try:
             with open(path, encoding="utf-8") as f:
                 kind, kid, body = vr.verify(f.read(), keys)
-            if kind != "taste":
-                continue
+            if kind != "taste" or body.get("withdrawn"):
+                continue    # a withdrawn rating counts for nothing
         except (vr.Refused, ValueError, KeyError, OSError) as error:
             log(f"skipped {path}: {error}")
             continue
@@ -729,8 +731,12 @@ def build(root, accept_unsigned=False, min_contributors=2, log=print):
     os.makedirs(os.path.join(out, "fit"), exist_ok=True)
 
     def write(path, value):
+        text = json.dumps(value, separators=(",", ":"), sort_keys=True)
         with open(path, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(value, f, separators=(",", ":"), sort_keys=True)
+            f.write(text)
+        # Controllers read an index file into 64 kB: warn well before one stops fitting.
+        if len(text.encode("utf-8")) > INDEX_WARN_BYTES:
+            log(f"warning: {os.path.relpath(path, root)} is {len(text)} bytes; controllers read at most 65535")
 
     # Published coffees.
     coffees = []

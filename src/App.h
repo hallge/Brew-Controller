@@ -231,6 +231,8 @@ bool powerRequest(bool on);       // false: refused, powerView().lastOutcome say
 // (it is shared from the main loop when sharing is on).
 bool coffeeExists(uint16_t id);
 void ratingSaved(uint32_t id);
+// A rating was deleted; wasShared: it had gone (or was going) to the library, which is told to drop it.
+void ratingDeleted(uint32_t id, bool wasShared);
 const char *communityTaste();   // index/taste.json as cached; good until the next library read
 bool powerPressAnyway();
 // One press of the brew bot, to see which pusher it is. False if a shot is in

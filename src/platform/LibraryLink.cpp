@@ -38,6 +38,7 @@ char g_token[128];
 char g_relayBase[96];        // "https://host"; empty: no relay
 bool g_viaRelay = false;
 bool g_keyMissing = false;
+bool g_refused = false;
 SafeTlsClient *g_client;  // one connection, kept open between requests
 SafeTlsClient *g_relayClient;
 char *g_relayBody;           // RELAY_BODY_SIZE, in PSRAM
@@ -126,6 +127,12 @@ void begin(HTTPClient &http, const char *url, const char *accept) {
 
 void libraryLinkSetRelay(const char *base) { strlcpy(g_relayBase, base ? base : "", sizeof(g_relayBase)); }
 
+bool libraryTakeRefused() {
+  const bool refused = g_refused;
+  g_refused = false;
+  return refused;
+}
+
 bool libraryTakeKeyMissing() {
   const bool missing = g_keyMissing;
   g_keyMissing = false;
@@ -138,6 +145,7 @@ void libraryLinkConfigure(const char *repo, const char *token) {
   const bool own = g_repo[0] != '\0' && g_token[0] != '\0';
   g_viaRelay = !own && g_relayBase[0] != '\0';
   g_keyMissing = false;
+  g_refused = false;
   strlcpy(g_status.repository, g_viaRelay ? g_relayBase + (strncmp(g_relayBase, "https://", 8) == 0 ? 8 : 0) : g_repo,
           sizeof(g_status.repository));
   g_status.configured = own || g_viaRelay;
@@ -185,6 +193,13 @@ bool relayPut(const char *path, const char *text) {
     g_keyMissing = true;
     g_status.lastHttp = code;
     strlcpy(g_status.problem, "the relay asked for this controller's key first", sizeof(g_status.problem));
+    return false;
+  }
+  if (code == 400 || code == 401 || code == 403 || code == 413) {
+    g_refused = true;
+    g_status.lastHttp = code;
+    strlcpy(g_status.problem, "the relay refused a record; it was dropped", sizeof(g_status.problem));
+    LOGW("library: the relay refused %s for good (answer %d)", path, code);
     return false;
   }
   fail(code, explain(code));

@@ -371,8 +371,9 @@ const LIBRARY_PATHS = [
   [new RegExp(`^grinders/${KID}/g${NUM}-${NUM}\\.json$`), 'grinder'],
   [new RegExp(`^services/${KID}/s${NUM}-${NUM}\\.json$`), 'service'],
   [new RegExp(`^machines/${KID}/m1-${NUM}\\.json$`), 'machine'],
-  [new RegExp(`^tastes/${KID}-r${NUM}\\.json$`), 'taste'],
-  [new RegExp(`^svcreviews/${KID}-v${NUM}\\.json$`), 'service_review'],
+  // -<record>: each version of a rating under its own name (an edit is not "already there").
+  [new RegExp(`^tastes/${KID}-r${NUM}(?:-${NUM})?\\.json$`), 'taste'],
+  [new RegExp(`^svcreviews/${KID}-v${NUM}(?:-${NUM})?\\.json$`), 'service_review'],
   [new RegExp(`^shots/${MONTH}/${KID}-${NUM}\\.json$`), 'shot'],
   [new RegExp(`^dialins/${MONTH}/${KID}-${NUM}\\.json$`), 'dialin'],
 ];

@@ -5200,6 +5200,22 @@ static void testShare() {
 }
 
 // What the shared library says, turned into a setting for this grinder.
+static void testShareWithdrawAndLinks() {
+  printf("share: a deleted rating is withdrawn; shop links go as https\n");
+  static char body[SHARE_BODY_MAX];
+  CHECK(buildTasteWithdrawal(42, 1790000000u, body, sizeof(body)) != 0);
+  CHECK(strstr(body, "\"t\":\"taste\"") && strstr(body, "\"id\":42") && strstr(body, "\"withdrawn\":true"));
+  CHECK(!strstr(body, "coffee") && !strstr(body, "stars"));
+  char link[32] = "http://shop.example/";
+  httpsLink(link, sizeof(link));
+  CHECK(strcmp(link, "https://shop.example/") == 0);
+  httpsLink(link, sizeof(link));  // already https: unchanged
+  CHECK(strcmp(link, "https://shop.example/") == 0);
+  char tight[21] = "http://shop.example/";  // no room for the s: no link rather than a cut one
+  httpsLink(tight, sizeof(tight));
+  CHECK(tight[0] == '\0');
+}
+
 static void testCommunityModel() {
   printf("community: a new owner placed by what the library learned of their grinder model\n");
   // A Sette 270 owner with no coffee in common with anyone; a coffee dialled by others on grinders
@@ -7469,6 +7485,7 @@ int main() {
   testReadingNewerThanTick();
   testResultScreenLetsGo();
   testCommunityModel();
+  testShareWithdrawAndLinks();
   testPowerBeliefDrift();
   testCupNotTrustedAfterScaleSleep();
   testBuiltinGrinders();

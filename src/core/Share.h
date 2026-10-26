@@ -149,6 +149,11 @@ class JsonOut {
     raw(digits);
   }
 
+  void boolean(const char *key, bool value) {
+    name(key);
+    raw(value ? "true" : "false");
+  }
+
   // An array of strings: openArray, an item each, closeArray.
   void openArray(const char *key) {
     name(key);
@@ -356,6 +361,21 @@ inline void machineFields(JsonOut &j, const MachineProfile &m) {
 // machine: the machine the shot was made on; nullptr leaves it out.
 // How a drinker liked a coffee (core/CoffeeTaste.h). The drinker goes as its number, never its name.
 // service: the shared library's id of the subscription service the bag came with ("" = none).
+// A shared rating the owner deleted: the library drops the one with this id from this controller.
+inline size_t buildTasteWithdrawal(uint32_t id, uint32_t epochS, char *out, size_t size) {
+  char at[21];
+  timeText(epochS, at);
+  JsonOut j(out, size);
+  j.open();
+  j.text("t", "taste");
+  j.integer("v", 1);
+  j.integer("id", static_cast<long>(id));
+  j.textIf("at", at);
+  j.boolean("withdrawn", true);
+  j.close();
+  return j.ok() ? j.length() : 0;
+}
+
 inline size_t buildTasteRecord(const CoffeeRating &r, const Coffee &coffee, uint32_t roastDate, char *out,
                                size_t size, const char *service = nullptr) {
   char at[21], roast[11];
@@ -779,6 +799,18 @@ inline bool serviceCanBeShared(const Subscription &s) {
   return s.name[0] && strncmp(s.url, "https://", 8) == 0;
 }
 
+// The library takes https links only; a shop's http link is the same page over https.
+inline void httpsLink(char *link, size_t size) {
+  if (strncmp(link, "http://", 7) != 0) return;
+  const size_t n = strlen(link);
+  if (n + 2 > size) {
+    link[0] = '\0';  // no room for the "s": better no link than a cut one
+    return;
+  }
+  memmove(link + 5, link + 4, n - 4 + 1);
+  link[4] = 's';
+}
+
 // A subscription service as its owner set it up, for a reviewer: the links and what it offers. Never
 // the owner's own price, dates, stock or notes.
 inline size_t buildServiceRecord(const Subscription &s, uint32_t record, uint32_t epochS, char *out,
@@ -798,8 +830,10 @@ inline size_t buildServiceRecord(const Subscription &s, uint32_t record, uint32_
   // The shop's general pages, never the owner's own links (shareableLink, core/Subscriptions.h).
   char link[200];
   shareableLink(s.url, false, s.platform, link, sizeof(link));
+  httpsLink(link, sizeof(link));
   j.text("url", link);
   shareableLink(s.manageUrl, true, s.platform, link, sizeof(link));
+  httpsLink(link, sizeof(link));
   j.textIf("manage_url", link);
   j.textIf("platform", s.platform);
   j.text("kind", subKindName(s.kind));
@@ -833,8 +867,17 @@ inline size_t buildServiceRecord(const Subscription &s, uint32_t record, uint32_
     for (uint8_t i = 0; i < SERVICE_SOURCING_COUNT; ++i) if ((s.sourcingMask >> i) & 1u) j.item(SERVICE_SOURCING[i]);
     j.closeArray();
   }
-  if (!linkHasCredential(s.image)) j.textIf("image", s.image);
-  if (!linkHasCredential(s.icon)) j.textIf("icon", s.icon);
+  char picture[256];
+  if (!linkHasCredential(s.image)) {
+    snprintf(picture, sizeof(picture), "%s", s.image);
+    httpsLink(picture, sizeof(picture));
+    j.textIf("image", picture);
+  }
+  if (!linkHasCredential(s.icon)) {
+    snprintf(picture, sizeof(picture), "%s", s.icon);
+    httpsLink(picture, sizeof(picture));
+    j.textIf("icon", picture);
+  }
   j.textIf("color", s.color);
   asciiText(s.description, text, 161);
   j.textIf("about", text);

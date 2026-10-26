@@ -1627,9 +1627,10 @@ void handlePostMachine() {
       return sendError(400, "text too long");
     }
     const bbw::MachineProfile before = app::machineProfile();
-    strlcpy(m.maker, maker, sizeof(m.maker));
-    strlcpy(m.model, model, sizeof(m.model));
-    strlcpy(m.control, control, sizeof(m.control));
+    cleanText(maker, m.maker, sizeof(m.maker));
+    cleanText(model, m.model, sizeof(m.model));
+    cleanText(control, m.control, sizeof(m.control));
+    if (!m.maker[0] || !m.model[0]) return sendError(400, "maker and model need letters or numbers");
     m.style = bbw::machineStyleFromName(doc["style"] | "toggle_button");
     m.manualStart = strcmp(doc["manual_start"] | "tap", "first_drip") == 0 ? 1 : 0;
     m.holdPreinfusion = (doc["hold_preinfusion"] | false) ? 1 : 0;
@@ -2392,7 +2393,15 @@ void handleGetRecommend() {
 
 void handleDeleteRating() {
   const uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 10);
+  struct Find { uint32_t id; bool shared; } find{id, false};
+  app::store().scanRatings([](const bbw::CoffeeRating &r, void *c) {
+    Find &f = *static_cast<Find *>(c);
+    if (r.id != f.id) return true;
+    f.shared = r.shareState != static_cast<uint8_t>(bbw::ShareState::LOCAL);
+    return false;
+  }, &find);
   if (!app::store().deleteRating(id)) return sendError(404, "no such rating");
+  app::ratingDeleted(id, find.shared);
   sendOk();
 }
 

@@ -86,6 +86,7 @@ bbw::PowerControl g_powerControl;
 bbw::ScaleRest g_scaleRest;  // control task, under the lock
 std::atomic<bool> g_pushersDirty{false};
 std::atomic<uint32_t> g_ratingToShare{0};  // a coffee rating just saved, for the main loop to share
+std::atomic<uint32_t> g_ratingToWithdraw{0};  // a shared coffee rating just deleted
 // Power presses that ended, waiting to be logged by the main loop (control task, under the lock).
 bbw::PowerEvent g_powerEventQueue[4];
 uint8_t g_powerEventsQueued = 0;
@@ -173,7 +174,8 @@ void configureLibraryLink() {
 }
 
 constexpr uint32_t SHARE_SEND_PERIOD_MS = 1000;
-constexpr size_t LIBRARY_TEXT_SIZE = 16384;
+// The largest index file read (index/coffees.json grows with the library): in PSRAM.
+constexpr size_t LIBRARY_TEXT_SIZE = 65536;
 char *g_shareBody;      // SHARE_BODY_MAX
 char *g_shareEnvelope;  // SHARE_ENVELOPE_MAX
 // Whatever was last read from the library, or from its copy on flash. Enough
@@ -486,14 +488,28 @@ void shareRating(uint32_t id) {
   if (bbw::buildTasteRecord(find.r, g_shareCoffee, roastDate, g_shareBody, bbw::SHARE_BODY_MAX, service) == 0) return;
   char kid[bbw::KEY_ID_LEN];
   bbw::keyId(bbw::deviceSigner().publicKey(), kid);
-  snprintf(g_sharePath, sizeof(g_sharePath), "tastes/%s-r%u.json", kid, static_cast<unsigned>(id));
   const uint32_t seq = g_store.outboxNext();
+  snprintf(g_sharePath, sizeof(g_sharePath), "tastes/%s-r%u-%u.json", kid, static_cast<unsigned>(id),
+           static_cast<unsigned>(seq));
   if (!shareQueue(g_sharePath)) {
     LOGW("share: coffee rating %u not queued", static_cast<unsigned>(id));
     return;
   }
   g_store.setRatingShare(id, static_cast<uint8_t>(bbw::ShareState::QUEUED), seq);
   LOGI("share: coffee rating %u queued", static_cast<unsigned>(id));
+}
+
+// A shared rating the owner deleted: the library is told to drop it (filed in its place). Whether
+// or not ratings are still shared: what was sent is taken back.
+void withdrawRating(uint32_t id) {
+  if (!bbw::deviceSigner().ready() || !ensureKeyQueued()) return;
+  if (bbw::buildTasteWithdrawal(id, wallClock(), g_shareBody, bbw::SHARE_BODY_MAX) == 0) return;
+  char kid[bbw::KEY_ID_LEN];
+  bbw::keyId(bbw::deviceSigner().publicKey(), kid);
+  const uint32_t seq = g_store.outboxNext();
+  snprintf(g_sharePath, sizeof(g_sharePath), "tastes/%s-r%u-%u.json", kid, static_cast<unsigned>(id),
+           static_cast<unsigned>(seq));
+  if (shareQueue(g_sharePath)) LOGI("share: coffee rating %u withdrawn", static_cast<unsigned>(id));
 }
 
 // After a shot is stored: the shot itself if shots are shared, and a dial-in
@@ -556,18 +572,38 @@ void shareAfterShot(const bbw::ShotRecord &shot) {
 
 // One record a second, and never while a shot needs the radio.
 void shareSendOne(bool idle) {
-  static uint32_t lastMs = 0;
+  static uint32_t lastMs = 0, holdMs = 0;
+  static char keySentFor[sizeof(g_sharePath)] = {};  // the record the key was last sent ahead of
+  static uint8_t keyTries = 0;
   if (!idle || g_store.outboxWaiting() == 0 || !bbw::libraryLinkReady()) return;
-  if (millis() - lastMs < SHARE_SEND_PERIOD_MS) return;
+  if (millis() - lastMs < (holdMs ? holdMs : SHARE_SEND_PERIOD_MS)) return;
   lastMs = millis();
+  holdMs = 0;
   if (!g_store.outboxPeek(g_sharePath, sizeof(g_sharePath), g_shareEnvelope,
                           bbw::SHARE_ENVELOPE_MAX)) {
     return;
   }
   if (publishRecord(g_sharePath, g_shareEnvelope)) {
     g_store.outboxPop();
+    keySentFor[0] = '\0';
     LOGI("share: sent %s", g_sharePath);
+  } else if (bbw::libraryTakeRefused()) {
+    // Refused for good: sending it again would only be refused again, and it would hold up the rest.
+    g_store.outboxPop();
+    LOGW("share: %s refused by the library and dropped", g_sharePath);
   } else if (bbw::libraryTakeKeyMissing()) {
+    if (strcmp(keySentFor, g_sharePath) == 0 && ++keyTries >= 3) {
+      // The key went ahead of it three times and it is still not taken: not this record's key.
+      g_store.outboxPop();
+      keySentFor[0] = '\0';
+      LOGW("share: %s still waits for a key after three tries; dropped", g_sharePath);
+      return;
+    }
+    if (strcmp(keySentFor, g_sharePath) != 0) {
+      strlcpy(keySentFor, g_sharePath, sizeof(keySentFor));
+      keyTries = 0;
+    }
+    holdMs = 90000;  // the relay's store of keys takes up to a minute to show a new one everywhere
     // The relay has no key for this controller: send it now, ahead of the record, which goes next time.
     bbw::ISigner &signer = bbw::deviceSigner();
     char kid[bbw::KEY_ID_LEN], keyPath[48];
@@ -1195,8 +1231,9 @@ void shareServiceReview(uint32_t id) {
   if (bbw::buildServiceReviewRecord(r, service, g_shareBody, bbw::SHARE_BODY_MAX) == 0) return;
   char kid[bbw::KEY_ID_LEN];
   bbw::keyId(bbw::deviceSigner().publicKey(), kid);
-  snprintf(g_sharePath, sizeof(g_sharePath), "svcreviews/%s-v%u.json", kid, static_cast<unsigned>(id));
   const uint32_t seq = g_store.outboxNext();
+  snprintf(g_sharePath, sizeof(g_sharePath), "svcreviews/%s-v%u-%u.json", kid, static_cast<unsigned>(id),
+           static_cast<unsigned>(seq));
   if (!shareQueue(g_sharePath)) return;
   Lock lock;
   for (size_t i = 0; i < g_reviewCount; ++i) {
@@ -2750,6 +2787,9 @@ bool coffeeExists(uint16_t id) {
   return id != 0 && bbw::findCoffee(g_library, id) != nullptr;
 }
 void ratingSaved(uint32_t id) { g_ratingToShare = id; }
+void ratingDeleted(uint32_t id, bool wasShared) {
+  if (wasShared) g_ratingToWithdraw = id;
+}
 
 bool powerRequest(bool on) {
   Lock lock;
@@ -3597,6 +3637,7 @@ void loop() {
   }
   // A coffee rating just saved: to the library, when ratings are shared.
   if (const uint32_t ratingId = g_ratingToShare.exchange(0)) shareRating(ratingId);
+  if (const uint32_t ratingId = g_ratingToWithdraw.exchange(0)) withdrawRating(ratingId);
   if (g_pushersDirty.exchange(false)) {
     bbw::PusherConfig copy;
     {

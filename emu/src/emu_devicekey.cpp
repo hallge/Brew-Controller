@@ -217,6 +217,7 @@ std::string g_repo;
 std::string g_relay;      // the relay Setup names ("https://host"); empty: none
 bool g_viaRelay = false;
 bool g_keyMissing = false;
+bool g_refused = false;
 bool g_cliChecked = false, g_cliOk = false;
 bbw::LibraryLinkStatus g_status;
 
@@ -289,6 +290,12 @@ ISigner &deviceSigner() { return g_realKey ? static_cast<ISigner &>(g_real) : g_
 
 void libraryLinkSetRelay(const char *base) { g_relay = base ? base : ""; }
 
+bool libraryTakeRefused() {
+  const bool refused = g_refused;
+  g_refused = false;
+  return refused;
+}
+
 bool libraryTakeKeyMissing() {
   const bool missing = g_keyMissing;
   g_keyMissing = false;
@@ -322,6 +329,7 @@ bool libraryPut(const char *path, const char *text) {
       return true;
     }
     if (code == 409) g_keyMissing = true;
+    if (code == 400 || code == 401 || code == 403 || code == 413) g_refused = true;
     note(code, code == 409 ? "the relay asked for this controller's key first"
              : code == 403 ? "the relay refused this controller"
              : code == 429 ? "the relay's daily limit is reached"

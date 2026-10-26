@@ -55,6 +55,11 @@ void libraryLinkSetRelay(const char *base);
 // sends the key record, then the record again.
 bool libraryTakeKeyMissing();
 
+// True once after the relay refused a record for good (malformed, too large, a signature that does
+// not check, a path or key it will never take): sending it again would be refused again, so the
+// caller drops it. Not backed off from: the next record, and reading, carry on.
+bool libraryTakeRefused();
+
 // False while there is no point in trying: not set up, no Wi-Fi, clock not
 // set (certificates cannot be checked), or backing off after a failure.
 bool libraryLinkReady();
