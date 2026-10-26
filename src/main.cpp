@@ -1387,14 +1387,14 @@ void diagLoadState() {
 // Into the queue; the oldest goes when it is full.
 void diagQueue(const char *envelope) {
   char path[16];
-  if (g_diag.queueCount == DIAG_QUEUE) --g_diag.queueCount;  // the oldest slot is the one written over
+  const bool full = g_diag.queueCount == DIAG_QUEUE;  // then the oldest slot is the one written over
   diagSlotPath(g_diag.queueNext, path, sizeof(path));
   if (!g_store.saveText(path, envelope)) {
     LOGW("diagnostics: report not kept (flash)");
     return;
   }
   g_diag.queueNext = static_cast<uint8_t>((g_diag.queueNext + 1) % DIAG_QUEUE);
-  ++g_diag.queueCount;
+  if (!full) ++g_diag.queueCount;
   diagSaveState();
 }
 
@@ -1648,7 +1648,8 @@ void diagBoot() {
 #ifdef BBW_EMULATOR
   c.emulator = true;
 #endif
-  c.firmware = crashed ? BBW_VERSION : (previousFw[0] ? previousFw : "unknown");
+  const bool changedSince = previousFw[0] && strcmp(previousFw, BBW_VERSION) != 0;
+  c.firmware = crashed && !changedSince ? BBW_VERSION : (previousFw[0] ? previousFw : "unknown");
   c.atS = static_cast<uint32_t>(time(nullptr));
   c.reset = crashed ? resetReasonText() : "an earlier crash, found at start-up";
   c.bootCount = g_bootCount;
@@ -1716,7 +1717,7 @@ void diagBoot() {
     if (!g_settings.diagnosticsOff && diagSeal()) diagQueue(g_diagEnvelope);
   }
 #ifndef BBW_EMULATOR
-  if (c.haveDump) esp_core_dump_image_erase();
+  if (c.haveDump || dumpWaiting) esp_core_dump_image_erase();
 #endif
   LOGW("diagnostics: %s%s%s", crashed ? "the controller restarted after a crash" : "a record of an earlier crash was found",
        c.haveDump ? " in " : "", c.haveDump ? c.task : "");
@@ -2950,7 +2951,7 @@ bool powerPressAnyway() {
 
 void powerBelieve(bbw::PowerBelief belief) {
   Lock lock;
-  g_powerControl.believe(belief);
+  g_powerControl.believe(belief, millis());
   if (g_powerControl.takeDirty()) g_pushersDirty = true;
 }
 
@@ -3613,9 +3614,10 @@ void loop() {
 // The loop task serves the web pages, parses the library's JSON and takes firmware uploads. It had
 // 16 kB while it also made the HTTPS requests and signatures: measured on the board, 13 kB used with
 // diagnostics and the relay (v0.1.20), 8 kB before them. Those now run on the update task's stack
-// (platform/NetWorker.h), so 12 kB, and the 4 kB go to that task. This must be at global scope:
-// inside a namespace the core does not see it and silently keeps 8 kB.
-SET_LOOP_TASK_STACK_SIZE(12 * 1024);
+// (platform/NetWorker.h) whenever it is free; while it is busy with a firmware check or install
+// they still run here, so the loop task keeps its 16 kB. This must be at global scope: inside a
+// namespace the core does not see it and silently keeps 8 kB.
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 // Arduino would otherwise mark a new firmware as good the moment it starts.
 // confirmFirmware() does that once it has run for a while instead.

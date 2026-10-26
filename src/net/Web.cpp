@@ -2558,6 +2558,7 @@ bool idleForUpdate() {
 }
 
 char g_updateError[96];
+bool g_uploadOwnsUpdate = false;  // the Update under way is this upload's, not a GitHub install's
 
 void handleUpdateInfo() {
   JsonDocument doc;
@@ -2621,12 +2622,20 @@ void handleUpdateUpload() {
   };
   if (upload.status == UPLOAD_FILE_START) {
     g_updateError[0] = '\0';
+    g_uploadOwnsUpdate = false;
     if (!idleForUpdate()) {
       fail("not while a shot is in hand");
+    } else if (bbw::updateBusy()) {
+      fail("a firmware check or install is under way: try again when it has finished");
     } else {
       LOGI("update: receiving %s", upload.filename.c_str());
       bbw::logFlush();
-      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) fail(Update.errorString());
+      bbw::updateUploadActive(true);
+      if (Update.begin(UPDATE_SIZE_UNKNOWN)) g_uploadOwnsUpdate = true;
+      else {
+        bbw::updateUploadActive(false);
+        fail(Update.errorString());
+      }
     }
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (!g_updateError[0] && Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
@@ -2641,7 +2650,9 @@ void handleUpdateUpload() {
       }
     }
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
-    Update.abort();
+    if (g_uploadOwnsUpdate) Update.abort();
+    g_uploadOwnsUpdate = false;
+    bbw::updateUploadActive(false);
     fail("the upload was interrupted");
   }
 }
@@ -2652,7 +2663,9 @@ void handleUpdateDone() {
   sendError(501, "the emulator cannot be updated this way: rebuild it");
 #else
   if (g_updateError[0]) {
-    if (Update.isRunning()) Update.abort();
+    if (g_uploadOwnsUpdate && Update.isRunning()) Update.abort();
+    g_uploadOwnsUpdate = false;
+    bbw::updateUploadActive(false);
     LOGW("update: refused, %s", g_updateError);
     return sendError(400, g_updateError);
   }

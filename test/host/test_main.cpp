@@ -2264,6 +2264,15 @@ static void testPowerBeliefDrift() {
   power.believe(PowerBelief::OFF);
   power.noteUse(now);
   CHECK(power.belief() == PowerBelief::ON && power.takeBelievedOnByShot());
+  // Believed off by the timer, then the owner says it is on (switched on at the machine): the
+  // timer starts from that moment, not from the shot long before.
+  power.tick(now += 21 * 60000, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::OFF && power.takeAutoOff());
+  power.believe(PowerBelief::ON, now += 3 * 3600000u);
+  power.tick(now += 1000, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::ON && !power.takeAutoOff());
+  power.tick(now += 19 * 60000, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::ON);
   // Without an off-timer nothing changes by itself.
   power.setAutoOffMin(0);
   power.tick(now += 24 * 3600000u, 0, true, bot);

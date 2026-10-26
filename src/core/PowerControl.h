@@ -173,8 +173,13 @@ class PowerControl {
     return dirty;
   }
 
-  // The owner says what the machine is doing; nothing is pressed.
-  void believe(PowerBelief belief) {
+  // The owner says what the machine is doing; nothing is pressed. Saying it is on counts as using
+  // it: the machine's own auto-off clock starts from here, not from a shot hours ago.
+  void believe(PowerBelief belief, uint32_t nowMs = 0) {
+    if (belief == PowerBelief::ON && nowMs) {
+      lastUseMs_ = nowMs;
+      if (config_->belief != static_cast<uint8_t>(belief)) onSinceMs_ = nowMs;
+    }
     if (config_->belief == static_cast<uint8_t>(belief)) return;
     config_->belief = static_cast<uint8_t>(belief);
     dirty_ = true;

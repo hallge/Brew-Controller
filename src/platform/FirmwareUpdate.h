@@ -77,6 +77,9 @@ UpdateConfig updateConfig();
 bool updateCheck();      // look for the latest release; false if busy or not possible
 bool updateInstall();    // download and install it; false if busy, nothing found, or not idle
 bool updateBusy();
+// A firmware file is arriving from the browser (Web.cpp): both write through the one Update, so
+// neither starts while the other is under way.
+void updateUploadActive(bool active);
 UpdateStatus updateStatus();
 // Loop task. idle: no shot in hand. Starts the daily check.
 void updateService(bool idle, bool online);

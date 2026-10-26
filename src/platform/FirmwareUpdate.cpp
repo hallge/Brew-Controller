@@ -35,6 +35,7 @@ UpdateConfig updateConfig() { return g_config; }
 bool updateCheck() { return false; }
 bool updateInstall() { return false; }
 bool updateBusy() { return false; }
+void updateUploadActive(bool) {}
 UpdateStatus updateStatus() {
   UpdateStatus s;
   strlcpy(s.message, "the PC emulator is updated by rebuilding it", sizeof(s.message));
@@ -118,6 +119,7 @@ SemaphoreHandle_t g_jobDone;   // given by the task when the job has run
 volatile bool g_jobWaiting = false;
 NetJob g_job;
 volatile bool g_working = false;  // a check or an install is under way
+volatile bool g_uploading = false;  // a firmware file is arriving from the browser
 uint8_t *g_chunk;  // CHUNK bytes, PSRAM
 
 struct SlotVersions {
@@ -489,8 +491,8 @@ void updateTask(void *) {
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
       continue;
     }
-    g_want = WANT_NONE;
     g_working = true;
+    g_want = WANT_NONE;
     if (want == WANT_INSTALL) {
       if (doInstall()) {
         delay(1500);  // the page gets to see "installed"
@@ -505,7 +507,7 @@ void updateTask(void *) {
 }
 
 bool request(uint8_t want) {
-  if (!g_task || g_want != WANT_NONE) return false;
+  if (!g_task || g_want != WANT_NONE || g_uploading) return false;
   const UpdatePhase phase = updateStatus().phase;
   if (phase == UpdatePhase::CHECKING || phase == UpdatePhase::DOWNLOADING) return false;
   g_want = want;
@@ -567,9 +569,11 @@ UpdateConfig updateConfig() { return g_config; }
 bool updateCheck() { return request(WANT_CHECK); }
 bool updateInstall() { return request(WANT_INSTALL); }
 
+void updateUploadActive(bool active) { g_uploading = active; }
+
 bool updateBusy() {
   const UpdatePhase phase = updateStatus().phase;
-  return g_want != WANT_NONE || phase == UpdatePhase::CHECKING || phase == UpdatePhase::DOWNLOADING ||
+  return g_working || g_want != WANT_NONE || phase == UpdatePhase::CHECKING || phase == UpdatePhase::DOWNLOADING ||
          phase == UpdatePhase::INSTALLED;
 }
 
