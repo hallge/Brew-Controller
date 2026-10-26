@@ -202,13 +202,33 @@ def load_observations(root, accept_unsigned=False, log=print):
     return observations
 
 
+KEY_PART = 24   # the controller's COFFEE_KEY_PART (src/net/Web.cpp tasteKey): 23 characters a part
+
+
+def key_part(text):
+    """Lower case, runs of spaces as one, none at the ends, at most 23 characters: exactly as the
+    controller's tasteKey squeezes a roaster or a name, so the two keys match."""
+    out, space = [], False
+    for c in str(text or ""):
+        if len(out) + 1 >= KEY_PART:
+            break
+        if c.isspace():
+            space = len(out) > 0
+            continue
+        if space and len(out) + 2 < KEY_PART:
+            out.append(" ")
+        space = False
+        out.append(c.lower() if c.isascii() else c)
+    return "".join(out)
+
+
 def taste_key(coffee, kid, published):
     """The coffee a rating is about: its library entry, else its roaster and name."""
     library_id = coffee.get("library_id") or published.get((kid, coffee.get("local_id")))
     if library_file(library_id):
         return library_id
-    roaster = " ".join(str(coffee.get("roaster", "")).lower().split())
-    name = " ".join(str(coffee.get("name", "")).lower().split())
+    roaster = key_part(coffee.get("roaster", ""))
+    name = key_part(coffee.get("name", ""))
     return f"~{roaster}/{name}" if name else None
 
 

@@ -912,13 +912,18 @@ inline size_t buildServiceReviewRecord(const ServiceReview &r, const char *servi
 // what was sent never reached the library, or the controller has a new key
 // and the library knows nothing signed with it. What came from the library
 // itself (a coffee or grinder picked from its lists) keeps its entry.
+// One shared thing's standing, forgotten the same way (also for the machine and subscription services).
+inline void forgetShared(uint8_t &state, uint32_t &seq, uint32_t &hash, char *note, char *libraryId) {
+  const bool fromLibrary = state == static_cast<uint8_t>(ShareState::PUBLISHED) && seq == 0;
+  if (fromLibrary) return;
+  state = 0;
+  seq = hash = 0;
+  note[0] = libraryId[0] = '\0';
+}
+
 inline void forgetSharing(Library &lib) {
   auto forget = [](uint8_t &state, uint32_t &seq, uint32_t &hash, char *note, char *libraryId) {
-    const bool fromLibrary = state == static_cast<uint8_t>(ShareState::PUBLISHED) && seq == 0;
-    if (fromLibrary) return;
-    state = 0;
-    seq = hash = 0;
-    note[0] = libraryId[0] = '\0';
+    forgetShared(state, seq, hash, note, libraryId);
   };
   for (uint8_t i = 0; i < lib.coffeeCount; ++i) {
     Coffee &c = lib.coffees[i];

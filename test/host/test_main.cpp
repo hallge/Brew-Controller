@@ -7364,6 +7364,15 @@ static void testSubscriptions() {
   CHECK(strcmp(link, "https://shop.example/") == 0);
   shareableLink("https://shop.example/login/session-token/x", true, "", link, sizeof(link));
   CHECK(strcmp(link, "https://shop.example/account") == 0);
+  // An order or customer number further along, and a token in capitals: one customer's.
+  shareableLink("https://shopify.com/12345678901/account/orders/5551234567", true, "", link, sizeof(link));
+  CHECK(strcmp(link, "https://shopify.com/account") == 0);
+  shareableLink("https://shop.example/subscriptions/887766", true, "", link, sizeof(link));
+  CHECK(strcmp(link, "https://shop.example/account") == 0);
+  shareableLink("https://shop.example/portal/ACCESS-TOKEN/x", true, "", link, sizeof(link));
+  CHECK(strcmp(link, "https://shop.example/account") == 0);
+  shareableLink("https://shop.example/products/blend-2024", false, "", link, sizeof(link));
+  CHECK(strcmp(link, "https://shop.example/products/blend-2024") == 0);  // a product, kept
   shareableLink("javascript:alert(1)", true, "", link, sizeof(link));
   CHECK(link[0] == '\0');
   CHECK(linkHasCredential("https://x.example/i.png?token=abc") && linkHasCredential("https://x.example/i.png?X-Amz-Signature=1"));

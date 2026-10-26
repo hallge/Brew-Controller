@@ -1879,7 +1879,8 @@ void handleGetTasteProfile() {
 }
 
 // ---- Recommendations (docs/COFFEE-TASTE.md)
-constexpr size_t COFFEE_KEY_PART = 24;
+constexpr size_t COFFEE_KEY_PART = 24;  // the library tools key_part() squeezes the same way: keep them equal
+// A key is "~" + roaster + "/" + name: at most 48 characters, so key buffers are LIBRARY_ID_LEN + 10.
 // A coffee's name in the library: its entry, else "~roaster/name" in lower case (the library tools'
 // taste_key does the same).
 void tasteKey(const char *libraryId, const char *roaster, const char *name, char *out, size_t size) {
@@ -1908,7 +1909,7 @@ void tasteKey(const char *libraryId, const char *roaster, const char *name, char
 }
 
 struct Candidate {
-  char key[bbw::LIBRARY_ID_LEN + 8];
+  char key[bbw::LIBRARY_ID_LEN + 10];
   char name[32], roaster[32], origin[24], process[16];
   uint16_t localId = 0;     // on the shelf: the coffee's id
   uint8_t from = 0;         // 0 shelf, 1 library, 2 community only
@@ -2092,7 +2093,7 @@ void handleGetServiceRecommend() {
   }, nullptr);
   // My stars per coffee key, for "drinkers like you".
   struct Mine {
-    char key[bbw::LIBRARY_ID_LEN + 8];
+    char key[bbw::LIBRARY_ID_LEN + 10];
     uint8_t stars;
   };
   static Mine mine[bbw::MAX_COFFEES];
@@ -2244,7 +2245,7 @@ void handleGetRecommend() {
   size_t nc = 0;
   // My stars per coffee key, for "drinkers like you".
   struct Mine {
-    char key[bbw::LIBRARY_ID_LEN + 8];
+    char key[bbw::LIBRARY_ID_LEN + 10];
     uint8_t stars;
   };
   Mine *mine = new Mine[bbw::MAX_COFFEES];
@@ -2266,7 +2267,7 @@ void handleGetRecommend() {
       for (size_t k = 0; k < x.set->n; ++k) {
         if (x.set->items[k].coffeeId == coffee.id && x.set->items[k].stars > best) best = x.set->items[k].stars;
       }
-      char key[bbw::LIBRARY_ID_LEN + 8];
+      char key[bbw::LIBRARY_ID_LEN + 10];
       tasteKey(coffee.libraryId, coffee.roaster, coffee.name, key, sizeof(key));
       if (best) {
         strlcpy(x.mine[*x.nm].key, key, sizeof(x.mine[*x.nm].key));
@@ -2300,7 +2301,7 @@ void handleGetRecommend() {
   for (JsonObjectConst e : catalog["coffees"].as<JsonArrayConst>()) {
     const char *id = e["id"] | "";
     if (!id[0] || known(id) || nc >= 64) continue;
-    char byName[bbw::LIBRARY_ID_LEN + 8];  // the same coffee on the shelf, not linked to the library yet
+    char byName[bbw::LIBRARY_ID_LEN + 10];  // the same coffee on the shelf, not linked to the library yet
     tasteKey("", e["roaster"] | "", e["name"] | "", byName, sizeof(byName));
     if (known(byName)) continue;
     bbw::Coffee c;

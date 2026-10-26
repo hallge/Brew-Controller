@@ -191,6 +191,7 @@ bbw::Subscription *g_subs;    // MAX_SUBSCRIPTIONS
 size_t g_subCount = 0;
 uint16_t g_nextSubId = 1;
 bool g_subsDirty = false;
+bool g_keyChanged = false;  // at start-up: the device key is not the one records were signed with
 char *g_subsText;             // SUBS_TEXT_SIZE
 // The page fetch for a card: one at a time.
 struct PreviewJob {
@@ -3424,6 +3425,14 @@ void setup() {
         bbw::forgetSharing(g_library);
         g_store.saveLibrary(g_library);
         g_store.outboxForgetKey();
+        // The subscription services likewise (the machine once it is read, below): the library's
+        // verdicts on them come under the old key and would never arrive.
+        for (size_t i = 0; i < g_subCount; ++i) {
+          bbw::Subscription &s = g_subs[i];
+          bbw::forgetShared(s.shareState, s.shareSeq, s.shareHash, s.reviewNote, s.libraryId);
+        }
+        g_subsDirty = true;
+        g_keyChanged = true;
         LOGW("share: this controller's key has changed; what was sent before is forgotten");
       }
       g_store.writeTextIfChanged("/sharekey.txt", kid);
@@ -3448,6 +3457,11 @@ void setup() {
   g_controller.epochNow = app::epochNow;
   g_scale.begin();
   g_machine = g_store.loadMachine();
+  if (g_keyChanged) {
+    bbw::forgetShared(g_machine.shareState, g_machine.shareSeq, g_machine.shareHash, g_machine.reviewNote,
+                      g_machine.libraryId);
+    g_store.saveMachine(g_machine);
+  }
   g_controller.setMachine(&g_machine);
   g_pushers = g_store.loadPushers();
   g_powerControl.begin(&g_pushers);
