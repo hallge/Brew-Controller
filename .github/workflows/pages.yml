@@ -1,0 +1,68 @@
+name: Web flasher
+
+# Publishes flasher/ to GitHub Pages (https://hallge.github.io/Brew-Controller/) with a release's
+# factory.bin beside it, so the browser loads the image from the same origin.
+#
+# release.yml starts this after it publishes a release. It cannot rely on the `release:
+# published` event: a release made with the workflow's own token starts no other workflow. It
+# runs on main because the github-pages environment only deploys from the default branch.
+# It can also be run by hand (Actions, Web flasher, Run workflow); an empty tag means the latest.
+#
+# Pages must be enabled once: Settings, Pages, Source: GitHub Actions.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (empty: the latest release)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the release's factory image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          fi
+          echo "Publishing $TAG"
+          mkdir dl
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -D dl -p factory.bin -p SHA256SUMS.txt
+          (cd dl && grep '  factory.bin$' SHA256SUMS.txt | sha256sum -c -)
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Assemble the site
+        run: |
+          mkdir _site
+          cp flasher/index.html _site/
+          cp dl/factory.bin _site/
+          python3 - <<'EOF'
+          import json, os
+          m = json.load(open("flasher/manifest.json"))
+          m["version"] = os.environ["TAG"]
+          json.dump(m, open("_site/manifest.json", "w"), indent=2)
+          EOF
+          cat _site/manifest.json
+          ls -l _site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
