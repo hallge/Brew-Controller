@@ -214,10 +214,10 @@ body:not(.pn-insights) [data-panel~="insights"],body:not(.pn-discover) [data-pan
 textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 </style></head><body><div class="app">
 <nav aria-label="Sections"><b>Brew by Weight</b><span class="pill" id="navstate" title="What the controller is doing">--</span>
-<a href="#home">Home</a><a href="#discover" data-panel="discover">Discover</a><a href="#shots">Shots</a><a href="#insights" data-panel="insights">Insights</a><a href="#coffees">Coffees</a><a href="#recipes">Recipes</a><a href="#grinder">Grinder</a><a href="#machine">Espresso machine</a><a href="#subscriptions" data-panel="subscriptions">Subscriptions</a><a href="#setup">Setup</a><a href="#logs" data-panel="logs">Logs</a>
+<a href="#home">Home</a><a href="#shots">Shots</a><a href="#insights" data-panel="insights">Insights</a><a href="#coffees">Coffees</a><a href="#recipes">Recipes</a><a href="#grinder">Grinder</a><a href="#machine">Espresso machine</a><a href="#subscriptions" data-panel="subscriptions">Subscriptions</a><a href="#discover" data-panel="discover">Discover</a><a href="#community" data-panel="community">Community</a><a href="#setup">Setup</a><a href="#logs" data-panel="logs">Logs</a>
 <div id="link"></div></nav>
 <div id="bnav" role="navigation" aria-label="Sections"><a href="#home">Home</a><a href="#shots">Shots</a><a href="#coffees">Coffees</a><a href="#grinder">Grinder</a><button type="button" id="bmore" aria-expanded="false" aria-controls="more">More</button></div>
-<div id="more" role="menu"><a href="#discover" data-panel="discover">Discover</a><a href="#insights" data-panel="insights">Insights</a><a href="#recipes">Recipes</a><a href="#machine">Espresso machine</a><a href="#subscriptions" data-panel="subscriptions">Subscriptions</a><a href="#setup">Setup</a><a href="#logs" data-panel="logs">Logs</a></div>
+<div id="more" role="menu"><a href="#insights" data-panel="insights">Insights</a><a href="#recipes">Recipes</a><a href="#machine">Espresso machine</a><a href="#subscriptions" data-panel="subscriptions">Subscriptions</a><a href="#discover" data-panel="discover">Discover</a><a href="#community" data-panel="community">Community</a><a href="#setup">Setup</a><a href="#logs" data-panel="logs">Logs</a></div>
 <main>
 <div id="ctip" role="tooltip"></div>
 <div id="askbox" role="dialog" aria-modal="true" aria-labelledby="asktxt"><div id="asktxt"></div><div class="row"><button id="askyes" class="pri">Yes</button><button id="askno">Cancel</button></div></div>
@@ -231,7 +231,6 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <div class="live"><div><span class="big" id="w">--</span> <span class="dim">g</span></div><div><span class="big" id="t">--</span> <span class="dim">s</span></div><div><span class="big" id="f">--</span> <span class="dim">g/s</span></div></div>
 <div class="row"><span class="mid" id="ihint"></span><button class="go" id="bstart" onclick="cmd('start')">Start</button><button class="stop" id="bstop" style="display:none" onclick="cmd('stop')">Stop</button><button id="btare" onclick="cmd('tare')">Tare</button><button id="back" style="display:none" onclick="cmd('ack')">Done with this shot</button></div></div>
 <div class="row sm dim"><span><i class="dot" id="ds"></i>Scale <span id="sbat"></span></span><span><i class="dot" id="db"></i>Brew bot <span id="bat"></span></span><span id="cut"></span><span id="res"></span></div></section>
-<section class="card" id="foryou" data-panel="discover" style="display:none"><div class="head"><h2>For you</h2><a class="sm" href="#discover">All recommendations</a></div><div class="why" id="fychips"></div></section>
 <div class="cols">
 <section class="card"><div class="head"><h2>Brewing now</h2><a class="sm" href="#coffees">Coffees</a></div>
 <label>What the controller will brew<select id="psel" onchange="act('preset_select',+this.value)"></select></label>
@@ -244,6 +243,7 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <section class="card"><div class="head"><h2>Most recent shot</h2><a class="sm" href="#shots">All shots</a></div>
 <div id="hshot" class="dim">No shot yet.</div><canvas id="hchart" width="900" height="200"></canvas>
 <div class="row sm dim" id="hrate"></div></section>
+<section class="card" id="foryou" data-panel="discover" style="display:none"><div class="head"><h2>For you</h2><a class="sm" href="#discover">All recommendations</a></div><div class="why" id="fychips"></div></section>
 <section class="card com" data-panel="community"><div class="head"><h2>Community</h2><a class="sm" href="#coffees" style="color:var(--com)">Coffees</a></div><div id="hcom" class="sm mid"></div></section>
 </div>
 
@@ -378,9 +378,6 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <div class="two"><div><div class="sm dim">The cup</div><canvas id="itcup" width="440" height="340" style="height:auto"></canvas></div><div><div class="sm dim">Flavours</div><canvas id="itfl" width="440" height="340" style="height:auto"></canvas></div></div>
 <div class="sm" id="itnote"></div><div id="itbest"></div>
 <details class="note"><summary>From your coffee ratings: coffees you loved pull it their way, ones you disliked push it away.</summary><ul><li>The middle ring is no lean either way; further out is more of it, further in less.</li><li>A pale point says little is known about it yet. The profile shows from 3 rated coffees and is settled from 8.</li><li>Values you did not give are filled in from each coffee's tasting notes, process and roast level, with less weight.</li></ul></details></section>
-<section class="card" id="ireco" data-panel="discover"><div class="head"><h2>Coffees you might like</h2><span class="sm dim" id="irwho"></span></div>
-<div class="recos" id="irlist"></div><div class="sm" id="iragain" style="margin-top:10px"></div>
-<details class="note"><summary>Coffees you have not rated, ranked by how well they match your taste.</summary><ul><li>A coffee's taste comes from the library's ratings when there are enough, else from its tasting notes, process and roast (less sure).</li><li>With ratings shared, drinkers whose stars agree with yours count too.</li><li>Shown once 3 coffees are rated. Fixed rules on the controller; never touches the grind advice.</li></ul></details></section>
 <section class="card" data-panel="insights"><div class="head"><h2>Roast level against grind setting</h2><span class="sm dim" id="irnote"></span></div><canvas id="irchart" width="900" height="240" style="height:240px"></canvas><div class="row sm" id="irleg"></div><details class="note"><summary>One dot per shot on this grinder: its setting and roast level, coloured by the coffee's age.</summary><ul><li>Blue is fresh, red is old; grey: no roast date. A larger dot poured faster.</li><li>The green band on each roast level: the settings whose shots ran on time (within the tolerance of their target time); the line marks the middle one.</li><li>Hover or tap a dot to see the shot; click it to open it.</li></ul></details></section>
 <section class="card" data-panel="insights"><div class="head"><h2>Coffee age against brew time</h2><span class="sm dim" id="ianote"></span></div><canvas id="iachart" width="900" height="260" style="height:260px"></canvas><div class="row sm" id="ialeg"></div><details class="note"><summary>Brew time against target, by days off roast. Darker squares hold more shots.</summary><ul><li>Rows above the outlined band ran slow, rows below ran fast.</li><li>Shots without a roast date or a target time are left out.</li></ul></details></section>
 <section class="card" data-panel="insights"><div class="head"><h2>Brewing calendar</h2><div class="row" id="icmode" role="group" aria-label="What the calendar shows"><button data-m="shots" onclick="CALMODE='shots';drawCalendar()">Shots</button><button data-m="brew" onclick="CALMODE='brew';drawCalendar()">Coffee &amp; recipe</button><button data-m="drift" onclick="CALMODE='drift';drawCalendar()">Drift</button><button data-m="hours" onclick="CALMODE='hours';drawCalendar()">Time of day</button></div></div><div class="scroll"><canvas id="icchart" width="900" height="180" style="height:180px;min-width:620px"></canvas></div><div class="row sm" id="icleg"></div></section>
@@ -412,9 +409,6 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <section class="card" id="subimp" style="display:none"><div class="head"><h2>From the shops: check and apply</h2><button class="tbtn" onclick="IMP={};drawImport()">Dismiss</button></div><div id="sibody"></div>
 <div class="row"><button class="pri" onclick="applyImport()">Apply what is ticked</button><span class="sm dim">Nothing changes until you apply.</span></div></section>
 <div class="subs" id="sublist"></div>
-<section class="card" id="subreco" data-panel="discover"><div class="head"><h2>Services you might like</h2><span class="sm dim" id="srbasis"></span></div>
-<div class="row" style="align-items:flex-end"><label style="flex:0 0 130px">Your country<input id="sr_country" maxlength="2" placeholder="e.g. US" onchange="subPrefs()"></label><div style="flex:1 1 300px"><div class="sm dim" style="margin-bottom:6px">What matters to you</div><div class="chips" id="srmatters"></div></div></div>
-<div class="subs" id="srlist"></div></section>
 <section class="card com" id="sublib"><div class="head"><h2>From the shared library</h2><span class="sm" id="slcount"></span></div>
 <label>Search services<input type="search" id="slq" oninput="drawLib()" placeholder="name, style, sourcing"></label>
 <div class="subs" id="sllist"></div></section>
@@ -449,6 +443,24 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <div class="grid" id="sanew"><label>Name<input id="sa_name" maxlength="23"></label><label>Roaster<input id="sa_roaster" maxlength="23"></label><label>Tasting notes<input id="sa_notes" maxlength="47"></label></div>
 <div class="row"><button class="pri" data-save onclick="subArrSave()">Put it on the shelf</button><span class="sm dim">Unopened: nothing is tracked until you open it, or it comes up next by roast date when a bag is finished.</span></div></section>
 <details class="note"><summary>Why skip and pause happen on the shop's page.</summary><ul><li>Shops run subscriptions on systems (Recharge, Ordergroove and the like) that only the shop can reach: there is no way in for your controller.</li><li>So the card links to where you manage it, and keeps its own track here: when it comes, what it costs, how much is left.</li><li>Arrived and Skip move the date on here. Skipping at the shop is still yours to do.</li><li>The picture and name come from the shop's page, read once by the controller when you add the link.</li></ul></details>
+</div>
+<div class="page" id="p-discover" data-panel="discover">
+<div class="head"><h1>Discover</h1><div class="row" id="dwho" style="margin:0"></div></div>
+<section class="card" id="ireco"><div class="head"><h2>Coffees you might like</h2><span class="sm dim" id="irwho"></span></div>
+<div class="recos" id="irlist"></div><div class="sm" id="iragain" style="margin-top:10px"></div>
+<details class="note"><summary>Coffees you have not rated, ranked by how well they match your taste.</summary><ul><li>A coffee's taste comes from the library's ratings when there are enough, else from its tasting notes, process and roast (less sure).</li><li>With ratings shared, drinkers whose stars agree with yours count too.</li><li>Shown once 3 coffees are rated. Fixed rules on the controller; never touches the grind advice.</li></ul></details></section>
+<section class="card" id="subreco"><div class="head"><h2>Subscriptions you might like</h2><span class="sm dim" id="srbasis"></span></div>
+<div class="row" style="align-items:flex-end"><label style="flex:0 0 130px">Your country<input id="sr_country" maxlength="2" placeholder="e.g. US" onchange="subPrefs()"></label><div style="flex:1 1 300px"><div class="sm dim" style="margin-bottom:6px">What matters to you</div><div class="chips" id="srmatters"></div></div></div>
+<div class="subs" id="srlist"></div></section>
+</div>
+<div class="page" id="p-community" data-panel="community">
+<div class="head"><h1>Community</h1><a class="sm" href="#setup" onclick="setTimeout(()=>{const e=$('sh_state');if(e)e.closest('.card').scrollIntoView({behavior:'smooth'})},300)" style="color:var(--com)">Sharing settings</a></div>
+<section class="card com"><div class="head"><h2>For what you are brewing</h2><span class="sm dim" id="cmcoffee"></span></div><div id="cmnow" class="sm mid"></div></section>
+<section class="card com"><div class="head"><h2>Coffees in the shared library</h2><span class="sm" id="cmcount"></span></div>
+<label>Search<input type="search" id="cmq" oninput="drawCommunityCoffees()" placeholder="name, roaster, origin, process"></label>
+<div id="cmlist" style="margin-top:10px"></div></section>
+<section class="card com"><div class="head"><h2>Grinders in the shared library</h2><a class="sm" href="#grinder" style="color:var(--com)">Your grinder</a></div><div id="cmgrinders" class="sm mid"></div></section>
+<section class="card com"><div class="head"><h2>What you share</h2><span class="pill" id="cmstate"></span></div><div id="cmshare" class="sm mid"></div></section>
 </div>
 <div class="page" id="p-setup">
 <div class="head"><h1>Setup</h1></div>
@@ -631,18 +643,16 @@ const coffee=id=>L.coffees.find(c=>c.id==id),recipe=id=>L.recipes.find(r=>r.id==
 const plabel=p=>{const c=coffee(p.coffeeId),r=recipe(p.recipeId);return (c?c.name+' — ':'')+(r?r.name:'?')};
 
 function show(){let h=(location.hash||'#home').slice(1);
-// A hidden panel's page: Insights falls back to Discover when only that is on, else Home.
-if(h=='insights'&&!panelOn('insights')&&panelOn('discover'))h='discover';
-if((h=='insights'&&!panelOn('insights'))||(h=='discover'&&!panelOn('discover'))||(h=='subscriptions'&&!panelOn('subscriptions'))||(h=='logs'&&!panelOn('logs'))){if(location.hash!='#home')history.replaceState(null,'','#home');h='home'}
-// Discover: the recommendations, on Insights (coffees) with a way on to Subscriptions (services).
-const disc=h=='discover';if(disc)h='insights';{const t=$('ititle');if(t)t.textContent=panelOn('insights')?'Insights':'Discover'}document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on',p.id=='p-'+h));
+// A hidden panel's page goes Home.
+if(['insights','discover','subscriptions','community','logs'].includes(h)&&!panelOn(h)){if(location.hash!='#home')history.replaceState(null,'','#home');h='home'}
+const disc=false;document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on',p.id=='p-'+h));
 document.querySelectorAll('nav a,#bnav a,#more a').forEach(a=>a.classList.toggle('on',a.getAttribute('href')=='#'+(disc?'discover':h)));
-$('bmore').classList.toggle('on',['recipes','insights','machine','subscriptions','setup','logs'].includes(h));$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadRatings();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees'){loadCommunityCoffees();loadRatings()}if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights'){drawInsights();if(disc){const go=()=>{const r=$('ireco');if(r)r.scrollIntoView({behavior:'smooth',block:'start'})};setTimeout(go,150);setTimeout(go,900)}}if(h=='home'&&panelOn('discover'))loadForYou();if(h=='subscriptions')loadSubs();}
+$('bmore').classList.toggle('on',['recipes','insights','machine','subscriptions','discover','community','setup','logs'].includes(h));$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadRatings();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees'){loadCommunityCoffees();loadRatings()}if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights')drawInsights();if(h=='discover')loadDiscover();if(h=='community')loadCommunityPage();if(h=='home'&&panelOn('discover'))loadForYou();if(h=='subscriptions')loadSubs();}
 // The optional panels (bbw::WebPanel bits): key, name, what it is, bit.
 const PANELS=[['insights','Insights','Your taste profile from your ratings, and charts: roast level against grind, coffee age against brew time, a brewing calendar, dial-in shots per bag.',1],
-['discover','Discover','Recommendations: coffees and subscription services that match your taste, and the For you card on Home.',2],
 ['subscriptions','Subscriptions','Coffee subscriptions: when the next delivery comes, skipping one, what is on its way.',4],
-['community','Community','What other owners dialled in: the Community card on Home and on each coffee.',8],
+['discover','Discover','A page of recommendations: coffees and subscriptions that match your taste, coffees to buy again, and the For you card on Home.',2],
+['community','Community','A page of what other owners share: where to start your grinder for what you are brewing, the shared library\'s coffees and grinders, and what you share. Also the Community cards on Home and on each coffee.',8],
 ['logs','Logs','The controller\'s log, live, for when something needs looking into. It is also always at /log.txt.',16]];
 let PN=0;try{PN=+(localStorage.getItem('bbwPanels')||0)}catch(e){}
 const panelOn=k=>{const p=PANELS.find(x=>x[0]==k);return !p||!!(PN&p[3])};
@@ -806,9 +816,30 @@ const tr=await get('/api/taste/recommend?drinker='+(typeof TPD!='undefined'?TPD:
 if(tr&&tr.shown&&tr.items&&tr.items.length)chips.push(`<a href="#discover">Coffees you might like: <b>${esc(tr.items[0].name||'')}</b>${tr.items.length>1?' and '+(tr.items.length-1)+' more':''}</a>`);
 else if(tr&&!tr.shown)chips.push(`<a href="#coffees">Rate ${moreTxt(tr.coffees)} to get coffee recommendations</a>`);
 const sr=await get('/api/subscriptions/recommend?drinker='+(typeof TPD!='undefined'?TPD:0)).catch(()=>null);
-if(sr&&sr.items&&sr.items.length)chips.push(`<a href="#subscriptions" onclick="setTimeout(()=>{const e=$('subreco');if(e)e.scrollIntoView({behavior:'smooth'})},300)">Subscriptions you might like: <b>${esc(sr.items[0].service.name)}</b></a>`);
+if(sr&&sr.items&&sr.items.length)chips.push(`<a href="#discover" onclick="setTimeout(()=>{const e=$('subreco');if(e)e.scrollIntoView({behavior:'smooth'})},300)">Subscriptions you might like: <b>${esc(sr.items[0].service.name)}</b></a>`);
 if(G&&G.has_number&&(G.action=='finer'||G.action=='coarser')&&G.suggested_um)chips.push(`<a href="#grinder">Next shot: ${G.action} ${fdn(G.delta_um)} ${fdu()}, to ${fs(G.suggested_um)}</a>`);
 $('fychips').innerHTML=chips.join('');box.style.display=chips.length?'':'none'}
+// Discover: who it is for (named drinkers), the coffees and the subscriptions.
+async function loadDiscover(){if(!RT&&typeof loadRatings=='function')await loadRatings();
+const named=RT&&RT.named,people=named?RT.drinkers.map((n,i)=>[i+1,n]).filter(x=>x[1]):[];
+$('dwho').innerHTML=people.length?[[0,'Household'],...people].map(([id,n])=>`<button class="${id==TPD?'on':''}" onclick="TPD=${id};loadDiscover()">${esc(n)}</button>`).join(''):'';
+drawReco();if(!SUBS)await loadSubs();loadSubReco()}
+// Community: what others settled on for what is being brewed, the library's coffees and grinders, and
+// what this controller shares.
+async function loadCommunityPage(){if(!L)return;const ps=L.presets[L.activePreset]||{},c=coffee(ps.coffeeId);
+$('cmcoffee').textContent=c?c.name:'';drawCommunity('cmnow',ps.coffeeId||0);
+if(!CC.length)await loadCommunityCoffees();drawCommunityCoffees();
+if(!GM.length)await loadCommunityGrinders();const g=GM.filter(x=>x.id);
+$('cmgrinders').innerHTML=g.length?g.length+' grinder models, each with how its setting reads and its range. '+'<span class="dim">'+g.slice(0,12).map(x=>esc(x.model)).join(' · ')+(g.length>12?' and '+(g.length-12)+' more':'')+'</span>. Pick yours on the <a href="#grinder">Grinder</a> page; owners of the same model pool what they learn.':'<div class="empty">The shared grinder list cannot be read yet.</div>';
+let sh;try{sh=await get('/api/share')}catch(e){sh=null}
+$('cmstate').textContent=!sh?'':S&&S.shareEnabled?'sharing':'not sharing';
+$('cmshare').innerHTML=!sh?'':!(S&&S.shareEnabled)?'<div class="empty">You are not sharing yet. Turn it on in <a href="#setup">Setup › Shared library</a> to send your coffees, dial-ins and (if you choose) ratings. Nothing personal leaves the controller, and no account is needed.</div>':
+`${sh.sent} record${sh.sent==1?'':'s'} sent, ${sh.waiting} waiting. ${sh.problem?'<span style="color:var(--warn)">Not reaching the library: '+esc(sh.problem)+'.</span> ':sh.last_ok?'Last reached '+new Date(sh.last_ok*1000).toLocaleString()+'. ':''}What each coffee shares, and what reviewers said, is on its page under <a href="#coffees">Coffees</a>.`}
+function drawCommunityCoffees(){const el=$('cmlist');if(!el)return;const q=($('cmq').value||'').toLowerCase(),have=new Set((L?L.coffees:[]).map(c=>c.libraryId).filter(x=>x));
+const hit=CC.filter(c=>!q||[c.name,c.roaster,c.origin,c.region,c.process,c.varietal].join(' ').toLowerCase().includes(q));
+$('cmcount').textContent=CC.length?CC.length+' coffee'+(CC.length==1?'':'s'):'';
+el.innerHTML=!CC.length?'<div class="empty">No coffees published in the shared library yet. When owners share coffees and a reviewer publishes them, they appear here, ready to add to your shelf.</div>':!hit.length?'<div class="empty">No shared coffee matches that.</div>':
+hit.slice(0,40).map(c=>`<div class="pair" style="background:var(--combg);border-color:var(--comline)"><span class="what"><b>${esc(c.name)}</b> <span class="dim">${esc([c.roaster,c.origin,c.process].filter(x=>x).join(', '))}</span></span>${have.has(c.id)?'<span class="sm dim">on your shelf</span>':`<button onclick="adopt('${esc(c.id)}')">Add to my coffees</button>`}</div>`).join('')+(hit.length>40?'<div class="sm dim">and '+(hit.length-40)+' more: search to narrow it down.</div>':'')}
 async function drawReco(){const el=$('ireco');if(!el)return;let r;try{r=await get('/api/taste/recommend?drinker='+TPD)}catch(e){el.style.display='none';return}el.style.display='';
 $('irwho').textContent=TPD&&RT?drinkerName(TPD):'';
 const fromTxt={shelf:'Your shelf',library:'Library',community:'Library ratings'};
@@ -944,7 +975,7 @@ const c=await post('/api/coffee',{name,roaster:(r.coffee.roaster||r.sub.site||r.
 const b=await post('/api/bag',r.kind=='otw'?{coffeeId:cid,onTheWay:true,expectedDate:r.coffee.eta||0,subscriptionId:r.sub.id}:{coffeeId:cid,roastDate:0,unopened:true,subscriptionId:r.sub.id});if(b.ok)n++;else done(b,'')}}
 say(n?n+(n==1?' change applied':' changes applied'):'Nothing applied',!!n);IMP={};await loadLibrary();await loadSubs();drawImport()}
 async function loadSubs(){try{SUBS=await get('/api/subscriptions')}catch(e){SUBS=null}drawSubs();drawExt();
-if(location.hash=='#subscriptions'){loadLib();loadReviews();loadSubReco();if(!RT&&typeof loadRatings=='function')loadRatings()}}
+if(location.hash=='#subscriptions'){loadLib();loadReviews();if(!RT&&typeof loadRatings=='function')loadRatings()}}
 // ---- The shared library's services, reviews and recommendations (docs/SUBSCRIPTIONS.md).
 let LIBS=[],SREV=[],SV=null;
 const hostOf=u=>{try{return new URL(u).hostname.replace(/^www\./,'')}catch(e){return ''}};
@@ -1661,7 +1692,9 @@ shots:'Every shot pulled. Open one for its curve, its taste, or to leave it out 
 coffees:'Your coffees and their bags, and which recipes you brew each one with.',
 recipes:'Dose, yield, time, pre-infusion and bloom. One recipe can serve every coffee.',
 grinder:'Your grinder, where it is set now, and which way to turn it.',
-insights:'Your taste, coffees to try, and patterns across your shots.',
+insights:'Your taste, and patterns across your shots.',
+discover:'What to try next, picked by how the coffees you rated tasted to you.',
+community:'What other owners share through the community library, and what you share with it.',
 machine:'Power, schedule and upkeep for your machine.',
 setup:'Scale, pushers, network, firmware and sharing: mostly set once.',
 logs:'What the controller recorded, for looking into problems.'};
