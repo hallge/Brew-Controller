@@ -1,4 +1,5 @@
 #include "FirmwareUpdate.h"
+#include "NetWorker.h"
 
 #include <string.h>
 
@@ -27,12 +28,14 @@ UpdateConfig g_config;
 }
 
 void tlsUseExternalMemory() {}
+void netRun(void (*fn)(void *), void *context) { fn(context); }
 void updateBegin(const UpdateConfig &config) { g_config = config; }
 void updateConfigure(const UpdateConfig &config) { g_config = config; }
 UpdateConfig updateConfig() { return g_config; }
 bool updateCheck() { return false; }
 bool updateInstall() { return false; }
 bool updateBusy() { return false; }
+void updateUploadActive(bool) {}
 UpdateStatus updateStatus() {
   UpdateStatus s;
   strlcpy(s.message, "the PC emulator is updated by rebuilding it", sizeof(s.message));
@@ -56,6 +59,7 @@ bool updateBootSlot(const char *, char *why, size_t whySize) {
 #include <Update.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include "SafeTls.h"
 #include <esp_heap_caps.h>
 #include <esp_image_format.h>
 #include <esp_ota_ops.h>
@@ -105,6 +109,17 @@ UpdateStatus g_status;
 SemaphoreHandle_t g_mutex;
 TaskHandle_t g_task;
 volatile uint8_t g_want = WANT_NONE;
+// netRun(): one job at a time, handed over and waited for.
+struct NetJob {
+  void (*fn)(void *);
+  void *context;
+};
+SemaphoreHandle_t g_jobLock;   // one caller at a time
+SemaphoreHandle_t g_jobDone;   // given by the task when the job has run
+volatile bool g_jobWaiting = false;
+NetJob g_job;
+volatile bool g_working = false;  // a check or an install is under way
+volatile bool g_uploading = false;  // a firmware file is arriving from the browser
 uint8_t *g_chunk;  // CHUNK bytes, PSRAM
 
 struct SlotVersions {
@@ -219,7 +234,7 @@ bool doCheck() {
   setStatus(UpdatePhase::CHECKING, 0, "asking GitHub for the latest release");
   char url[160];
   snprintf(url, sizeof(url), "https://api.github.com/repos/%s/releases/latest", g_config.repo);
-  WiFiClientSecure client;
+  SafeTlsClient client;
   HTTPClient http;
   apiRequest(http, client, url, "application/vnd.github+json");
   const int code = http.GET();
@@ -288,7 +303,7 @@ int openAsset(uint32_t assetId, HTTPClient &http, WiFiClientSecure &client) {
            static_cast<unsigned>(assetId));
   String location;
   {
-    WiFiClientSecure apiClient;
+    SafeTlsClient apiClient;
     HTTPClient api;
     apiRequest(api, apiClient, url, "application/octet-stream");
     const char *keep[] = {"Location"};
@@ -329,7 +344,7 @@ bool hexToBytes(const char *hex, uint8_t out[32]) {
 }
 
 bool fetchExpectedSha(uint32_t sumsId, uint8_t expected[32]) {
-  WiFiClientSecure client;
+  SafeTlsClient client;
   HTTPClient http;
   const int length = openAsset(sumsId, http, client);
   if (length <= 0 || length > 2048) {
@@ -372,7 +387,7 @@ bool doInstall() {
   setStatus(UpdatePhase::DOWNLOADING, 0, message);
   LOGI("update: %s", message);
 
-  WiFiClientSecure client;
+  SafeTlsClient client;
   HTTPClient http;
   const int length = openAsset(info.firmwareId, http, client);
   if (length != static_cast<int>(info.firmwareBytes)) {
@@ -465,11 +480,18 @@ bool doInstall() {
 
 void updateTask(void *) {
   for (;;) {
+    if (g_jobWaiting) {
+      g_jobWaiting = false;
+      g_job.fn(g_job.context);
+      xSemaphoreGive(g_jobDone);
+      continue;
+    }
     const uint8_t want = g_want;
     if (want == WANT_NONE) {
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
       continue;
     }
+    g_working = true;
     g_want = WANT_NONE;
     if (want == WANT_INSTALL) {
       if (doInstall()) {
@@ -480,11 +502,12 @@ void updateTask(void *) {
     } else {
       doCheck();
     }
+    g_working = false;
   }
 }
 
 bool request(uint8_t want) {
-  if (!g_task || g_want != WANT_NONE) return false;
+  if (!g_task || g_want != WANT_NONE || g_uploading) return false;
   const UpdatePhase phase = updateStatus().phase;
   if (phase == UpdatePhase::CHECKING || phase == UpdatePhase::DOWNLOADING) return false;
   g_want = want;
@@ -494,8 +517,32 @@ bool request(uint8_t want) {
 
 }  // namespace
 
+void netRun(void (*fn)(void *), void *context) {
+  // Here, as before: no task yet, called from it, or it is busy with a firmware (a download takes
+  // minutes, and the caller must not wait that long).
+  if (!g_task || !g_jobLock || xTaskGetCurrentTaskHandle() == g_task || g_working || g_want != WANT_NONE) {
+    fn(context);
+    return;
+  }
+  xSemaphoreTake(g_jobLock, portMAX_DELAY);
+  if (g_working || g_want != WANT_NONE) {  // a check was asked for meanwhile
+    xSemaphoreGive(g_jobLock);
+    fn(context);
+    return;
+  }
+  g_job.fn = fn;
+  g_job.context = context;
+  g_jobWaiting = true;
+  xTaskNotifyGive(g_task);
+  // Not bounded: the job is a request with its own time-outs, and it uses the caller's data.
+  xSemaphoreTake(g_jobDone, portMAX_DELAY);
+  xSemaphoreGive(g_jobLock);
+}
+
 void updateBegin(const UpdateConfig &config) {
   g_mutex = xSemaphoreCreateMutex();
+  g_jobLock = xSemaphoreCreateMutex();
+  g_jobDone = xSemaphoreCreateBinary();
   g_config = config;
   const esp_partition_t *running = esp_ota_get_running_partition();
   if (running) recordSlotVersion(running->label, BBW_VERSION);
@@ -512,7 +559,8 @@ void updateBegin(const UpdateConfig &config) {
   // its own, waiting until it is asked for something. On the loop task's
   // core: a TLS handshake takes seconds of processor time, and on core 0 it
   // kept the idle task (which the watchdog watches) from running.
-  xTaskCreatePinnedToCore(updateTask, "update", 12288, nullptr, 1, &g_task, 1);
+  // 16 KB: it also runs the HTTPS requests and signatures other tasks hand it (NetWorker.h).
+  xTaskCreatePinnedToCore(updateTask, "update", 16384, nullptr, 1, &g_task, 1);
 }
 
 void updateConfigure(const UpdateConfig &config) { g_config = config; }
@@ -521,9 +569,11 @@ UpdateConfig updateConfig() { return g_config; }
 bool updateCheck() { return request(WANT_CHECK); }
 bool updateInstall() { return request(WANT_INSTALL); }
 
+void updateUploadActive(bool active) { g_uploading = active; }
+
 bool updateBusy() {
   const UpdatePhase phase = updateStatus().phase;
-  return g_want != WANT_NONE || phase == UpdatePhase::CHECKING || phase == UpdatePhase::DOWNLOADING ||
+  return g_working || g_want != WANT_NONE || phase == UpdatePhase::CHECKING || phase == UpdatePhase::DOWNLOADING ||
          phase == UpdatePhase::INSTALLED;
 }
 

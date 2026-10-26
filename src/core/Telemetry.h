@@ -256,6 +256,7 @@ struct DiagLink {
   uint32_t failures = 0;
   uint32_t connects = 0;
   uint32_t longestWaitMs = 0;
+  int8_t rssi = 0;       // dBm, as last heard advertising; 0 = not heard
 };
 
 struct DiagInput {
@@ -322,7 +323,20 @@ struct DiagInput {
     }
     if (resetCount < 8) resets[resetCount++] = reason;
   }
+
+  // A problem the owner reported with this report (Setup, Diagnostics), already scrubbed: what kind,
+  // what happened in their words, and how to reach them if they gave a way. Empty: none.
+  const char *bugKind = "";
+  const char *bugText = "";
+  const char *bugContact = "";
 };
+
+// The kinds of problem the owner can pick from (the page lists them in this order).
+constexpr const char *BUG_KINDS[] = {"other", "brewing", "grind_advice", "scale", "pushers", "machine_power",
+                                     "web_page", "sharing", "firmware_update"};
+constexpr size_t BUG_KIND_COUNT = sizeof(BUG_KINDS) / sizeof(BUG_KINDS[0]);
+constexpr size_t BUG_TEXT_MAX = 1000;     // characters of the owner's description
+constexpr size_t BUG_CONTACT_MAX = 64;
 
 // A scale's advertised name without what tells one scale from another: "LUNAR-9E4079" -> "LUNAR".
 inline void scaleModelName(const char *advertised, char *out, size_t size) {
@@ -370,6 +384,7 @@ inline void link(JsonOut &j, const char *key, const DiagLink &l) {
   j.integer("failures", l.failures);
   j.integer("connects", l.connects);
   j.integer("longest_wait_ms", l.longestWaitMs);
+  if (l.rssi) j.integer("rssi", l.rssi);
   j.close();
 }
 
@@ -524,6 +539,13 @@ inline size_t buildDailyReport(const DiagInput &in, const WarnTally &w, char *ou
   const uint8_t from = w.recentCount > recentLines ? w.recentCount - recentLines : 0;
   for (uint8_t i = from; i < w.recentCount; ++i) j.item(w.recentLine(i));
   j.closeArray();
+  if (in.bugText && in.bugText[0]) {
+    j.open("bug");
+    j.text("kind", in.bugKind && in.bugKind[0] ? in.bugKind : "other");
+    j.text("text", in.bugText);
+    j.textIf("contact", in.bugContact);
+    j.close();
+  }
   j.close();
   return j.ok() ? j.length() : 0;
 }

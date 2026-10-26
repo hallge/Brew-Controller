@@ -181,6 +181,8 @@ describe('library', () => {
       [`services/${kid}/s2-40.json`]: 'service',
       [`machines/${kid}/m1-9.json`]: 'machine',
       [`tastes/${kid}-r12.json`]: 'taste',
+      [`tastes/${kid}-r12-40.json`]: 'taste',
+      [`svcreviews/${kid}-v3-41.json`]: 'service_review',
       [`svcreviews/${kid}-v3.json`]: 'service_review',
       [`shots/2026/10/${kid}-301.json`]: 'shot',
       [`shots/undated/${kid}-5.json`]: 'shot',
@@ -198,6 +200,8 @@ describe('library', () => {
       `keys/${kid}.json/../x.json`,
       `keys/${kid.toUpperCase()}.json`,
       `status/${kid}.json`,
+      `tastes/${kid}-r12-.json`,
+      `tastes/${kid}-r12-4-5.json`,
     ];
     for (const path of bad) assert.equal(libraryPathKind(path), null, path);
   });

@@ -158,6 +158,19 @@ void handleGetSettings() {
   doc["powerOffWithScale"] = s.powerOffWithScale;
   doc["diagnosticsOn"] = !s.diagnosticsOff;
   doc["namedDrinkers"] = s.namedDrinkers;  // colour scheme, 0 Dark .. 5 High contrast (bbw::UiTheme)
+  {
+    // The web page's optional panels (bbw::WebPanel bits): what is shown now, and whether chosen.
+    bool haveSubs = false, haveRatings = false;
+    app::readSubscriptions([](const bbw::Subscription *, size_t count, void *c) {
+      *static_cast<bool *>(c) = count != 0;
+    }, &haveSubs);
+    app::store().scanRatings([](const bbw::CoffeeRating &, void *c) {
+      *static_cast<bool *>(c) = true;
+      return false;
+    }, &haveRatings);
+    doc["webPanels"] = bbw::webPanelsShown(s, haveSubs, haveRatings);
+    doc["webPanelsChosen"] = s.webPanelsChosen == bbw::WEB_PANELS_CHOSEN;
+  }
   // Minutes idle before the scale is let go so that it can switch itself off; 0: kept connected.
   doc["scaleRestMin"] = s.scaleRestMin == bbw::SCALE_REST_NEVER ? 0 : s.scaleRestMin;
   doc["actuationMode"] = static_cast<int>(s.actuationMode);
@@ -250,6 +263,10 @@ void handlePostSettings() {
   s.powerOffWithScale = doc["powerOffWithScale"] | s.powerOffWithScale;
   s.namedDrinkers = doc["namedDrinkers"] | s.namedDrinkers;
   if (doc["diagnosticsOn"].is<bool>()) s.diagnosticsOff = !doc["diagnosticsOn"].as<bool>();
+  if (doc["webPanels"].is<int>()) {
+    s.webPanels = static_cast<uint16_t>(doc["webPanels"].as<int>() & bbw::WEB_PANELS_ALL);
+    s.webPanelsChosen = bbw::WEB_PANELS_CHOSEN;
+  }
   if (doc["uiTheme"].is<int>()) {
     const int theme = doc["uiTheme"].as<int>();
     if (theme >= 0 && theme < bbw::UI_THEME_COUNT) s.uiTheme = static_cast<uint8_t>(theme);
@@ -692,6 +709,13 @@ void handleLibrary() {
       o["burrs"] = m.burrs;
       o["unit"] = m.unit;
       o["umPerUnit"] = m.umPerUnit;
+      o["divisor"] = m.divisor;
+      o["subSteps"] = m.subSteps;
+      if (m.maxStep) {
+        o["min"] = m.minStep;
+        o["max"] = m.maxStep;
+      }
+      o["libraryId"] = m.libraryId;
     }
     JsonArray presets = doc["presets"].to<JsonArray>();
     for (uint8_t i = 0; i < lib.presetCount; ++i) {
@@ -1270,6 +1294,7 @@ void handleGrind() {
   JsonDocument doc;
   doc["recipe"] = active.name;
   doc["action"] = bbw::grindActionName(a.action);
+  doc["at_limit"] = a.atLimit;
   doc["current_um"] = a.currentUm;
   doc["suggested_um"] = a.suggestedUm;
   doc["delta_um"] = a.deltaUm;
@@ -1570,6 +1595,7 @@ void machineToJson(const bbw::MachineProfile &m, JsonObject o) {
   o["tap_preinfusion"] = m.tapPreinfusion != 0;
   o["power_toggle"] = m.powerToggle != 0;
   o["self_stop_s"] = m.selfStopS;
+  o["auto_off_min"] = m.autoOffMin;
   o["builtin"] = m.builtin;
   o["library_id"] = m.libraryId;
 }
@@ -1607,6 +1633,7 @@ void handlePostMachine() {
   const int builtin = doc["builtin"] | 0;
   if (builtin >= 1 && builtin <= static_cast<int>(bbw::MACHINE_BUILTIN_COUNT)) {
     m = bbw::machineBuiltin(static_cast<size_t>(builtin - 1));
+    if (doc["auto_off_min"].is<int>()) m.autoOffMin = static_cast<uint16_t>(doc["auto_off_min"].as<int>());
   } else {
     const char *maker = doc["maker"] | "";
     const char *model = doc["model"] | "";
@@ -1618,15 +1645,17 @@ void handlePostMachine() {
       return sendError(400, "text too long");
     }
     const bbw::MachineProfile before = app::machineProfile();
-    strlcpy(m.maker, maker, sizeof(m.maker));
-    strlcpy(m.model, model, sizeof(m.model));
-    strlcpy(m.control, control, sizeof(m.control));
+    cleanText(maker, m.maker, sizeof(m.maker));
+    cleanText(model, m.model, sizeof(m.model));
+    cleanText(control, m.control, sizeof(m.control));
+    if (!m.maker[0] || !m.model[0]) return sendError(400, "maker and model need letters or numbers");
     m.style = bbw::machineStyleFromName(doc["style"] | "toggle_button");
     m.manualStart = strcmp(doc["manual_start"] | "tap", "first_drip") == 0 ? 1 : 0;
     m.holdPreinfusion = (doc["hold_preinfusion"] | false) ? 1 : 0;
     m.tapPreinfusion = (doc["tap_preinfusion"] | false) ? 1 : 0;
     m.powerToggle = (doc["power_toggle"] | false) ? 1 : 0;
     m.selfStopS = doc["self_stop_s"] | 0;
+    m.autoOffMin = static_cast<uint16_t>(doc["auto_off_min"] | 0);
     m.builtin = 0;
     bbw::sanitizeMachine(m);
     if (libraryId[0]) {
@@ -1850,7 +1879,8 @@ void handleGetTasteProfile() {
 }
 
 // ---- Recommendations (docs/COFFEE-TASTE.md)
-constexpr size_t COFFEE_KEY_PART = 24;
+constexpr size_t COFFEE_KEY_PART = 24;  // the library tools key_part() squeezes the same way: keep them equal
+// A key is "~" + roaster + "/" + name: at most 48 characters, so key buffers are LIBRARY_ID_LEN + 10.
 // A coffee's name in the library: its entry, else "~roaster/name" in lower case (the library tools'
 // taste_key does the same).
 void tasteKey(const char *libraryId, const char *roaster, const char *name, char *out, size_t size) {
@@ -1879,7 +1909,7 @@ void tasteKey(const char *libraryId, const char *roaster, const char *name, char
 }
 
 struct Candidate {
-  char key[bbw::LIBRARY_ID_LEN + 8];
+  char key[bbw::LIBRARY_ID_LEN + 10];
   char name[32], roaster[32], origin[24], process[16];
   uint16_t localId = 0;     // on the shelf: the coffee's id
   uint8_t from = 0;         // 0 shelf, 1 library, 2 community only
@@ -2063,7 +2093,7 @@ void handleGetServiceRecommend() {
   }, nullptr);
   // My stars per coffee key, for "drinkers like you".
   struct Mine {
-    char key[bbw::LIBRARY_ID_LEN + 8];
+    char key[bbw::LIBRARY_ID_LEN + 10];
     uint8_t stars;
   };
   static Mine mine[bbw::MAX_COFFEES];
@@ -2215,7 +2245,7 @@ void handleGetRecommend() {
   size_t nc = 0;
   // My stars per coffee key, for "drinkers like you".
   struct Mine {
-    char key[bbw::LIBRARY_ID_LEN + 8];
+    char key[bbw::LIBRARY_ID_LEN + 10];
     uint8_t stars;
   };
   Mine *mine = new Mine[bbw::MAX_COFFEES];
@@ -2237,7 +2267,7 @@ void handleGetRecommend() {
       for (size_t k = 0; k < x.set->n; ++k) {
         if (x.set->items[k].coffeeId == coffee.id && x.set->items[k].stars > best) best = x.set->items[k].stars;
       }
-      char key[bbw::LIBRARY_ID_LEN + 8];
+      char key[bbw::LIBRARY_ID_LEN + 10];
       tasteKey(coffee.libraryId, coffee.roaster, coffee.name, key, sizeof(key));
       if (best) {
         strlcpy(x.mine[*x.nm].key, key, sizeof(x.mine[*x.nm].key));
@@ -2271,6 +2301,9 @@ void handleGetRecommend() {
   for (JsonObjectConst e : catalog["coffees"].as<JsonArrayConst>()) {
     const char *id = e["id"] | "";
     if (!id[0] || known(id) || nc >= 64) continue;
+    char byName[bbw::LIBRARY_ID_LEN + 10];  // the same coffee on the shelf, not linked to the library yet
+    tasteKey("", e["roaster"] | "", e["name"] | "", byName, sizeof(byName));
+    if (known(byName)) continue;
     bbw::Coffee c;
     strlcpy(c.name, e["name"] | "", sizeof(c.name));
     strlcpy(c.roaster, e["roaster"] | "", sizeof(c.roaster));
@@ -2382,7 +2415,15 @@ void handleGetRecommend() {
 
 void handleDeleteRating() {
   const uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 10);
+  struct Find { uint32_t id; bool shared; } find{id, false};
+  app::store().scanRatings([](const bbw::CoffeeRating &r, void *c) {
+    Find &f = *static_cast<Find *>(c);
+    if (r.id != f.id) return true;
+    f.shared = r.shareState != static_cast<uint8_t>(bbw::ShareState::LOCAL);
+    return false;
+  }, &find);
   if (!app::store().deleteRating(id)) return sendError(404, "no such rating");
+  app::ratingDeleted(id, find.shared);
   sendOk();
 }
 
@@ -2548,6 +2589,7 @@ bool idleForUpdate() {
 }
 
 char g_updateError[96];
+bool g_uploadOwnsUpdate = false;  // the Update under way is this upload's, not a GitHub install's
 
 void handleUpdateInfo() {
   JsonDocument doc;
@@ -2611,12 +2653,20 @@ void handleUpdateUpload() {
   };
   if (upload.status == UPLOAD_FILE_START) {
     g_updateError[0] = '\0';
+    g_uploadOwnsUpdate = false;
     if (!idleForUpdate()) {
       fail("not while a shot is in hand");
+    } else if (bbw::updateBusy()) {
+      fail("a firmware check or install is under way: try again when it has finished");
     } else {
       LOGI("update: receiving %s", upload.filename.c_str());
       bbw::logFlush();
-      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) fail(Update.errorString());
+      bbw::updateUploadActive(true);
+      if (Update.begin(UPDATE_SIZE_UNKNOWN)) g_uploadOwnsUpdate = true;
+      else {
+        bbw::updateUploadActive(false);
+        fail(Update.errorString());
+      }
     }
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (!g_updateError[0] && Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
@@ -2631,7 +2681,9 @@ void handleUpdateUpload() {
       }
     }
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
-    Update.abort();
+    if (g_uploadOwnsUpdate) Update.abort();
+    g_uploadOwnsUpdate = false;
+    bbw::updateUploadActive(false);
     fail("the upload was interrupted");
   }
 }
@@ -2642,7 +2694,9 @@ void handleUpdateDone() {
   sendError(501, "the emulator cannot be updated this way: rebuild it");
 #else
   if (g_updateError[0]) {
-    if (Update.isRunning()) Update.abort();
+    if (g_uploadOwnsUpdate && Update.isRunning()) Update.abort();
+    g_uploadOwnsUpdate = false;
+    bbw::updateUploadActive(false);
     LOGW("update: refused, %s", g_updateError);
     return sendError(400, g_updateError);
   }
@@ -2955,6 +3009,20 @@ void begin() {
   });
   server.on("/api/diagnostics/send", HTTP_POST, []() {
     if (!app::diagSendNow()) return sendError(409, "Diagnostics are off (Setup, Diagnostics)");
+    sendOk();
+  });
+  // {kind, text, contact}: a problem in the owner's words, sent with a diagnostics report now.
+  server.on("/api/diagnostics/bug", HTTP_POST, []() {
+    JsonDocument doc;
+    if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "not JSON");
+    const char *text = doc["text"] | "";
+    const char *contact = doc["contact"] | "";
+    if (!text[0]) return sendError(400, "say what happened first");
+    if (strlen(text) > bbw::BUG_TEXT_MAX) return sendError(400, "at most 1000 characters, please");
+    if (strlen(contact) > bbw::BUG_CONTACT_MAX) return sendError(400, "the contact is too long");
+    if (!app::diagReportBug(doc["kind"] | "other", text, contact)) {
+      return sendError(409, "Diagnostics are off: turn them on above to send a report");
+    }
     sendOk();
   });
   server.on("/api/diagnostics/relay", HTTP_POST, []() {

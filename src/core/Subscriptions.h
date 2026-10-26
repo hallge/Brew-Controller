@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <string.h>
 
 #include "Community.h"
@@ -378,17 +379,25 @@ inline void resolveUrl(const char *base, const char *ref, char *out, size_t size
 
 // A path segment that names one customer or session: long and mixing letters and digits, or saying
 // "token". Shop ids (all digits, like a Shopify shop number) are not.
-inline bool personalSegment(const char *seg, size_t n) {
+// first: the path's first part, where a shop's own number sits (shopify.com/<shop>/account).
+inline bool personalSegment(const char *seg, size_t n, bool first = false) {
   bool digit = false, alpha = false;
+  size_t run = 0, longestRun = 0;  // digits in a row: an order or customer number
   for (size_t i = 0; i < n; ++i) {
     const char c = seg[i];
-    digit |= c >= '0' && c <= '9';
+    const bool d = c >= '0' && c <= '9';
+    digit |= d;
     alpha |= (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    run = d ? run + 1 : 0;
+    if (run > longestRun) longestRun = run;
   }
   for (size_t i = 0; i + 5 <= n; ++i) {
-    if (strncmp(seg + i, "token", 5) == 0 || strncmp(seg + i, "Token", 5) == 0) return true;
+    char word[6];
+    for (size_t k = 0; k < 5; ++k) word[k] = static_cast<char>(tolower(static_cast<unsigned char>(seg[i + k])));
+    word[5] = '\0';
+    if (strcmp(word, "token") == 0) return true;
   }
-  return n >= 16 && digit && alpha;
+  return (!first && longestRun >= 6) || (n >= 16 && digit && alpha);
 }
 
 // `url` made fit to share: the query and fragment dropped; a path with anything personal in it
@@ -401,12 +410,15 @@ inline void shareableLink(const char *url, bool manage, const char *platform, ch
   if (!origin[0]) return;
   const char *path = url + strlen(origin);
   size_t pathLen = strcspn(path, "?#");
-  bool personal = false;
+  bool personal = false, first = true;
   for (const char *seg = path; seg < path + pathLen;) {
     while (seg < path + pathLen && *seg == '/') ++seg;
     const char *end = seg;
     while (end < path + pathLen && *end != '/') ++end;
-    personal |= personalSegment(seg, static_cast<size_t>(end - seg));
+    if (end > seg) {
+      personal |= personalSegment(seg, static_cast<size_t>(end - seg), first);
+      first = false;
+    }
     seg = end;
   }
   if (personal) {

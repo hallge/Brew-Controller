@@ -7,6 +7,8 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+
+#include "SafeTls.h"
 #include <esp_heap_caps.h>
 
 #include <memory>
@@ -14,6 +16,7 @@
 #include "BigMem.h"
 #include "Log.h"
 #include "LibraryLink.h"
+#include "NetWorker.h"
 
 // Mozilla's root certificates in ESP-IDF's bundle format, linked in by board_build.embed_files.
 extern const uint8_t rootca_crt_bundle_start[] asm("_binary_certs_x509_crt_bundle_bin_start");
@@ -64,7 +67,19 @@ size_t readHead(HTTPClient &http) {
 
 }  // namespace
 
+int fetchHere(const char *url, PageMeta &out, char *problem, size_t problemSize);
+
+// On the network task's stack (NetWorker.h).
 int fetchPagePreview(const char *url, PageMeta &out, char *problem, size_t problemSize) {
+  struct Job { const char *url; PageMeta *out; char *problem; size_t size; int code; } job{url, &out, problem, problemSize, -1};
+  netRun([](void *c) {
+    Job &j = *static_cast<Job *>(c);
+    j.code = fetchHere(j.url, *j.out, j.problem, j.size);
+  }, &job);
+  return job.code;
+}
+
+int fetchHere(const char *url, PageMeta &out, char *problem, size_t problemSize) {
   out = PageMeta{};
   say(problem, problemSize, "");
   if (!url || (strncmp(url, "https://", 8) != 0 && strncmp(url, "http://", 7) != 0)) {
@@ -94,7 +109,7 @@ int fetchPagePreview(const char *url, PageMeta &out, char *problem, size_t probl
   for (int hop = 0; hop <= MAX_REDIRECTS; ++hop) {
     const bool secure = strncmp(current, "https://", 8) == 0;
     // On the heap, not the loop task's stack: a TLS client carries the whole mbedTLS context.
-    std::unique_ptr<WiFiClientSecure> tls(new WiFiClientSecure());
+    std::unique_ptr<SafeTlsClient> tls(new SafeTlsClient());
     std::unique_ptr<WiFiClient> plain(new WiFiClient());
     if (secure) {
       tls->setCACertBundle(rootca_crt_bundle_start);

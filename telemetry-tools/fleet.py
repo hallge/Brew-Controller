@@ -138,6 +138,7 @@ def analyse(records, now=None, silent_days=3):
     power_by_machine = defaultdict(Counter)
     warnings = defaultdict(lambda: {"n": 0, "units": set()})
     counts = Counter()
+    bugs = []   # problems owners reported, newest first
 
     for r in records:
         b, kid = r["body"], r["kid"]
@@ -149,6 +150,10 @@ def analyse(records, now=None, silent_days=3):
             u["last_at"], u["fw"] = at, b.get("fw") or "?"
         if b["t"] != "diag_daily":
             continue
+        bug = b.get("bug")
+        if isinstance(bug, dict) and bug.get("text"):
+            bugs.append({"kid": kid, "fw": b.get("fw") or "?", "at": at, "kind": bug.get("kind") or "other",
+                         "text": bug["text"], "contact": bug.get("contact") or ""})
 
         hw = b.get("hw") or {}
         scale = hw.get("scale") or {}
@@ -245,6 +250,7 @@ def analyse(records, now=None, silent_days=3):
                   "by_machine": {m: dict(c) for m, c in sorted(power_by_machine.items())}},
         "warnings": [{"p": p, "n": w["n"], "units": len(w["units"])}
                      for p, w in sorted(warnings.items(), key=lambda kv: (-kv[1]["n"], -len(kv[1]["units"]), kv[0]))],
+        "bugs": [dict(x, at=day(x["at"])) for x in sorted(bugs, key=lambda x: -x["at"])],
         "crashes": [{"key": g["key"], "count": g["count"], "units": g["units"],
                      "versions": g["versions"], "causes": g["causes"], "tasks": g["tasks"],
                      "newest": day(g["newest"]["body"].get("at"))} for g in groups],
@@ -308,6 +314,13 @@ def render(a, problems=()):
     for x in a["warnings"]:
         w(f"  {x['n']:>5}  {x['units']:>3}  {x['p']}")
     if not a["warnings"]:
+        w("  -")
+
+    w("\nProblems reported by owners (newest first)")
+    for x in a["bugs"]:
+        w(f"  {x['at']}  {x['kid']}  {x['fw']}  [{x['kind']}]" + (f"  contact: {x['contact']}" if x["contact"] else ""))
+        w(f"     {x['text']}")
+    if not a["bugs"]:
         w("  -")
 
     w("\nCrashes (pc + first 3 backtrace addresses)")

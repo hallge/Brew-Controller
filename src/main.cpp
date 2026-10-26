@@ -86,6 +86,7 @@ bbw::PowerControl g_powerControl;
 bbw::ScaleRest g_scaleRest;  // control task, under the lock
 std::atomic<bool> g_pushersDirty{false};
 std::atomic<uint32_t> g_ratingToShare{0};  // a coffee rating just saved, for the main loop to share
+std::atomic<uint32_t> g_ratingToWithdraw{0};  // a shared coffee rating just deleted
 // Power presses that ended, waiting to be logged by the main loop (control task, under the lock).
 bbw::PowerEvent g_powerEventQueue[4];
 uint8_t g_powerEventsQueued = 0;
@@ -173,7 +174,8 @@ void configureLibraryLink() {
 }
 
 constexpr uint32_t SHARE_SEND_PERIOD_MS = 1000;
-constexpr size_t LIBRARY_TEXT_SIZE = 16384;
+// The largest index file read (index/coffees.json grows with the library): in PSRAM.
+constexpr size_t LIBRARY_TEXT_SIZE = 65536;
 char *g_shareBody;      // SHARE_BODY_MAX
 char *g_shareEnvelope;  // SHARE_ENVELOPE_MAX
 // Whatever was last read from the library, or from its copy on flash. Enough
@@ -189,6 +191,7 @@ bbw::Subscription *g_subs;    // MAX_SUBSCRIPTIONS
 size_t g_subCount = 0;
 uint16_t g_nextSubId = 1;
 bool g_subsDirty = false;
+bool g_keyChanged = false;  // at start-up: the device key is not the one records were signed with
 char *g_subsText;             // SUBS_TEXT_SIZE
 // The page fetch for a card: one at a time.
 struct PreviewJob {
@@ -486,14 +489,28 @@ void shareRating(uint32_t id) {
   if (bbw::buildTasteRecord(find.r, g_shareCoffee, roastDate, g_shareBody, bbw::SHARE_BODY_MAX, service) == 0) return;
   char kid[bbw::KEY_ID_LEN];
   bbw::keyId(bbw::deviceSigner().publicKey(), kid);
-  snprintf(g_sharePath, sizeof(g_sharePath), "tastes/%s-r%u.json", kid, static_cast<unsigned>(id));
   const uint32_t seq = g_store.outboxNext();
+  snprintf(g_sharePath, sizeof(g_sharePath), "tastes/%s-r%u-%u.json", kid, static_cast<unsigned>(id),
+           static_cast<unsigned>(seq));
   if (!shareQueue(g_sharePath)) {
     LOGW("share: coffee rating %u not queued", static_cast<unsigned>(id));
     return;
   }
   g_store.setRatingShare(id, static_cast<uint8_t>(bbw::ShareState::QUEUED), seq);
   LOGI("share: coffee rating %u queued", static_cast<unsigned>(id));
+}
+
+// A shared rating the owner deleted: the library is told to drop it (filed in its place). Whether
+// or not ratings are still shared: what was sent is taken back.
+void withdrawRating(uint32_t id) {
+  if (!bbw::deviceSigner().ready() || !ensureKeyQueued()) return;
+  if (bbw::buildTasteWithdrawal(id, wallClock(), g_shareBody, bbw::SHARE_BODY_MAX) == 0) return;
+  char kid[bbw::KEY_ID_LEN];
+  bbw::keyId(bbw::deviceSigner().publicKey(), kid);
+  const uint32_t seq = g_store.outboxNext();
+  snprintf(g_sharePath, sizeof(g_sharePath), "tastes/%s-r%u-%u.json", kid, static_cast<unsigned>(id),
+           static_cast<unsigned>(seq));
+  if (shareQueue(g_sharePath)) LOGI("share: coffee rating %u withdrawn", static_cast<unsigned>(id));
 }
 
 // After a shot is stored: the shot itself if shots are shared, and a dial-in
@@ -556,18 +573,38 @@ void shareAfterShot(const bbw::ShotRecord &shot) {
 
 // One record a second, and never while a shot needs the radio.
 void shareSendOne(bool idle) {
-  static uint32_t lastMs = 0;
+  static uint32_t lastMs = 0, holdMs = 0;
+  static char keySentFor[sizeof(g_sharePath)] = {};  // the record the key was last sent ahead of
+  static uint8_t keyTries = 0;
   if (!idle || g_store.outboxWaiting() == 0 || !bbw::libraryLinkReady()) return;
-  if (millis() - lastMs < SHARE_SEND_PERIOD_MS) return;
+  if (millis() - lastMs < (holdMs ? holdMs : SHARE_SEND_PERIOD_MS)) return;
   lastMs = millis();
+  holdMs = 0;
   if (!g_store.outboxPeek(g_sharePath, sizeof(g_sharePath), g_shareEnvelope,
                           bbw::SHARE_ENVELOPE_MAX)) {
     return;
   }
   if (publishRecord(g_sharePath, g_shareEnvelope)) {
     g_store.outboxPop();
+    keySentFor[0] = '\0';
     LOGI("share: sent %s", g_sharePath);
+  } else if (bbw::libraryTakeRefused()) {
+    // Refused for good: sending it again would only be refused again, and it would hold up the rest.
+    g_store.outboxPop();
+    LOGW("share: %s refused by the library and dropped", g_sharePath);
   } else if (bbw::libraryTakeKeyMissing()) {
+    if (strcmp(keySentFor, g_sharePath) == 0 && ++keyTries >= 3) {
+      // The key went ahead of it three times and it is still not taken: not this record's key.
+      g_store.outboxPop();
+      keySentFor[0] = '\0';
+      LOGW("share: %s still waits for a key after three tries; dropped", g_sharePath);
+      return;
+    }
+    if (strcmp(keySentFor, g_sharePath) != 0) {
+      strlcpy(keySentFor, g_sharePath, sizeof(keySentFor));
+      keyTries = 0;
+    }
+    holdMs = 90000;  // the relay's store of keys takes up to a minute to show a new one everywhere
     // The relay has no key for this controller: send it now, ahead of the record, which goes next time.
     bbw::ISigner &signer = bbw::deviceSigner();
     char kid[bbw::KEY_ID_LEN], keyPath[48];
@@ -604,7 +641,8 @@ constexpr const char *MACHINES_CACHE = "/lmachines.json";
 constexpr const char *AGE_CACHE = "/lage.json";
 constexpr const char *SERVICES_CACHE = "/lservices.json";  // index/services.json: subscription services
 constexpr const char *TASTE_CACHE = "/ltaste.json";   // index/taste.json: coffee ratings from everyone
-constexpr uint8_t LIBRARY_FIXED_STEPS = 7;  // fit, coffees, grinders, ageing rate, machines, taste, services; then a dial-in per coffee
+constexpr const char *MODELS_CACHE = "/lmodels.json"; // index/models.json: what each grinder model's owners show
+constexpr uint8_t LIBRARY_FIXED_STEPS = 8;  // fit, coffees, grinders, ageing rate, machines, taste, services, models; then a dial-in per coffee
 uint32_t g_communityStamp = 1;  // goes up when anything cached changes
 
 void dialinCache(uint16_t coffeeId, char *out, size_t size) {
@@ -671,6 +709,11 @@ void libraryRefresh(bool idle) {
   } else if (step == 6) {
     if (fetchLibraryFile("index/services.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
       g_store.writeTextIfChanged(SERVICES_CACHE, g_libraryText);
+    }
+  } else if (step == 7) {
+    if (fetchLibraryFile("index/models.json", g_libraryText, LIBRARY_TEXT_SIZE) &&
+        g_store.writeTextIfChanged(MODELS_CACHE, g_libraryText)) {
+      ++g_communityStamp;
     }
   } else if (step - LIBRARY_FIXED_STEPS < count) {
     char file[bbw::LIBRARY_ID_LEN * 2], cache[20];
@@ -763,7 +806,20 @@ void controlTask(void *) {
       // else, a shot's result or a fault included.
       const bbw::State state = g_controller.state();
       const bool idle = g_controller.idleForPower();
+      g_powerControl.setAutoOffMin(g_machine.autoOffMin);
       g_powerControl.tick(now, static_cast<uint32_t>(time(nullptr)), idle, g_power);
+      {
+        bool skippedOn = false;
+        bbw::PowerControl::Outcome why;
+        if (g_powerControl.takeSkipped(skippedOn, why)) {
+          LOGI("power: schedule: %s not pressed: %s", skippedOn ? "on" : "off", bbw::PowerControl::outcomeText(why));
+        }
+        if (g_powerControl.takeAutoOff()) {
+          LOGI("power: nothing done for %u min: the machine has switched itself off; believed off",
+               static_cast<unsigned>(g_machine.autoOffMin));
+        }
+        if (g_powerControl.takeBelievedOnByShot()) LOGI("power: a shot ran: the machine is on; believed on");
+      }
       if (g_powerControl.takeDirty()) g_pushersDirty = true;
       bbw::PowerEvent powerEvent;
       if (g_powerControl.takeEvent(powerEvent) && g_powerEventsQueued < 4) {
@@ -794,8 +850,12 @@ void controlTask(void *) {
         const uint32_t heardAt = g_ble.scaleHeardAtMs();
         const uint32_t quietMs = scaleConnected ? 0 : (heardAt == 0 ? UINT32_MAX : now - heardAt);
         const bool wasResting = g_scaleRest.resting();
-        const bool restable = state == State::READY ||
-                              ((state == State::SHOT_COMPLETE || bbw::isFault(state)) && g_controller.idleForPower());
+        // Not while the machine is warming up (switched on in the last 30 minutes): someone is
+        // about to brew, and a scale let go switches itself off while they prepare (26 Oct 2026).
+        constexpr uint32_t WARM_UP_MS = 30UL * 60UL * 1000UL;
+        const bool restable = (state == State::READY ||
+                               ((state == State::SHOT_COMPLETE || bbw::isFault(state)) && g_controller.idleForPower())) &&
+                              !g_powerControl.switchedOnWithin(now, WARM_UP_MS);
         const bool resting = g_scaleRest.update(now, g_settings.scaleRestMin, restable,
                                                 scaleConnected, st.weightG, quietMs);
         if (resting != wasResting) {
@@ -1172,8 +1232,9 @@ void shareServiceReview(uint32_t id) {
   if (bbw::buildServiceReviewRecord(r, service, g_shareBody, bbw::SHARE_BODY_MAX) == 0) return;
   char kid[bbw::KEY_ID_LEN];
   bbw::keyId(bbw::deviceSigner().publicKey(), kid);
-  snprintf(g_sharePath, sizeof(g_sharePath), "svcreviews/%s-v%u.json", kid, static_cast<unsigned>(id));
   const uint32_t seq = g_store.outboxNext();
+  snprintf(g_sharePath, sizeof(g_sharePath), "svcreviews/%s-v%u-%u.json", kid, static_cast<unsigned>(id),
+           static_cast<unsigned>(seq));
   if (!shareQueue(g_sharePath)) return;
   Lock lock;
   for (size_t i = 0; i < g_reviewCount; ++i) {
@@ -1332,6 +1393,12 @@ uint32_t g_diagLogPos = 0;
 uint32_t g_diagRetryAtMs = 0, g_diagBackoffMs = 0;
 uint32_t g_diagBusyAtMs = 0;         // a shot was in hand
 bool g_diagSendNow = false;
+// A problem the owner reported, to go with the next report (sent at once). Scrubbed when it is taken.
+char *g_bugText;          // BUG_TEXT_MAX + 1, PSRAM
+char g_bugContact[bbw::BUG_CONTACT_MAX + 1];
+const char *g_bugKind = "";
+bool g_bugWaiting = false;   // taken, not yet in a report
+uint32_t g_bugSentS = 0;     // when the last one went into a report
 
 void diagSlotPath(uint8_t slot, char *out, size_t size) { snprintf(out, size, "/tm%u.json", slot); }
 
@@ -1364,14 +1431,14 @@ void diagLoadState() {
 // Into the queue; the oldest goes when it is full.
 void diagQueue(const char *envelope) {
   char path[16];
-  if (g_diag.queueCount == DIAG_QUEUE) --g_diag.queueCount;  // the oldest slot is the one written over
+  const bool full = g_diag.queueCount == DIAG_QUEUE;  // then the oldest slot is the one written over
   diagSlotPath(g_diag.queueNext, path, sizeof(path));
   if (!g_store.saveText(path, envelope)) {
     LOGW("diagnostics: report not kept (flash)");
     return;
   }
   g_diag.queueNext = static_cast<uint8_t>((g_diag.queueNext + 1) % DIAG_QUEUE);
-  ++g_diag.queueCount;
+  if (!full) ++g_diag.queueCount;
   diagSaveState();
 }
 
@@ -1495,6 +1562,16 @@ void diagFillInput(bbw::DiagInput &in, uint32_t nowS) {
     links[k]->connects = s.connects >= b.connects ? s.connects - b.connects : s.connects;
     links[k]->longestWaitMs = s.longestWaitMs;
   }
+  // Each one's signal as last heard advertising (a weak one, under about -70 dBm, is a bot mounted
+  // flat on metal: its connections time out).
+  static bbw::SeenDevice seen[bbw::BleManager::MAX_SEEN];
+  const size_t heard = g_ble.seen(seen, bbw::BleManager::MAX_SEEN);
+  const char *addresses[4] = {pairing.scaleAddress, pairing.botAddress, power, stop};
+  for (int k = 0; k < 4; ++k) {
+    for (size_t i = 0; i < heard && addresses[k][0]; ++i) {
+      if (strcasecmp(seen[i].address, addresses[k]) == 0) links[k]->rssi = seen[i].rssi;
+    }
+  }
   const bbw::ScaleDiag sd = g_scale.diag();
   in.frames = sameBoot && sd.frames >= g_diag.framesAtStart ? sd.frames - g_diag.framesAtStart : sd.frames;
   in.badFrames = sameBoot && sd.badFrames >= g_diag.badAtStart ? sd.badFrames - g_diag.badAtStart : sd.badFrames;
@@ -1551,6 +1628,11 @@ size_t diagBuildDaily(uint32_t nowS) {
   bbw::DiagInput &in = *inp;
   in = bbw::DiagInput();
   diagFillInput(in, nowS);
+  if (g_bugWaiting && g_bugText) {
+    in.bugKind = g_bugKind;
+    in.bugText = g_bugText;
+    in.bugContact = g_bugContact;
+  }
   for (uint8_t recent = bbw::DIAG_RECENT;; recent = recent > 10 ? recent - 10 : 0) {
     const size_t n = bbw::buildDailyReport(in, *g_warns, g_diagBody, bbw::DIAG_BODY_MAX, recent);
     if (n || recent == 0) return n;
@@ -1615,7 +1697,8 @@ void diagBoot() {
 #ifdef BBW_EMULATOR
   c.emulator = true;
 #endif
-  c.firmware = crashed ? BBW_VERSION : (previousFw[0] ? previousFw : "unknown");
+  const bool changedSince = previousFw[0] && strcmp(previousFw, BBW_VERSION) != 0;
+  c.firmware = crashed && !changedSince ? BBW_VERSION : (previousFw[0] ? previousFw : "unknown");
   c.atS = static_cast<uint32_t>(time(nullptr));
   c.reset = crashed ? resetReasonText() : "an earlier crash, found at start-up";
   c.bootCount = g_bootCount;
@@ -1633,7 +1716,9 @@ void diagBoot() {
     c.depth = static_cast<uint8_t>(summary.exc_bt_info.depth > 16 ? 16 : summary.exc_bt_info.depth);
     for (uint8_t i = 0; i < c.depth; ++i) c.backtrace[i] = summary.exc_bt_info.bt[i];
     c.corrupted = summary.exc_bt_info.corrupted;
-    for (int i = 0; i < 8; ++i) snprintf(c.elf + 2 * i, 3, "%02x", static_cast<unsigned>(summary.app_elf_sha256[i]));
+    // Already text: the first 16 hex digits of the crashed build's ELF SHA-256, terminated.
+    memcpy(c.elf, summary.app_elf_sha256, sizeof(c.elf) - 1);
+    c.elf[sizeof(c.elf) - 1] = '\0';
   }
 #endif
   // The last lines written before the reset: the end of the log file (and of the one before it).
@@ -1681,7 +1766,7 @@ void diagBoot() {
     if (!g_settings.diagnosticsOff && diagSeal()) diagQueue(g_diagEnvelope);
   }
 #ifndef BBW_EMULATOR
-  if (c.haveDump) esp_core_dump_image_erase();
+  if (c.haveDump || dumpWaiting) esp_core_dump_image_erase();
 #endif
   LOGW("diagnostics: %s%s%s", crashed ? "the controller restarted after a crash" : "a record of an earlier crash was found",
        c.haveDump ? " in " : "", c.haveDump ? c.task : "");
@@ -1733,6 +1818,11 @@ void diagService(bool idle) {
     g_diagSendNow = false;
     if (diagBuildDaily(nowS) && diagSeal()) {
       diagQueue(g_diagEnvelope);
+      if (g_bugWaiting) {
+        g_bugWaiting = false;
+        g_bugSentS = nowS;
+        LOGI("diagnostics: the reported problem goes with this report");
+      }
       g_diag.resetCount = 0;  // reported
       diagStartPeriod(nowS);
       diagSaveState();
@@ -2098,6 +2188,7 @@ bbw::GrindAdvice grindAdvice() {
   if (scan.newestSeen && scan.newestSetting == recipe.grindUm) {
     bbw::adviseOutOfRange(g_grindAdvice, scan.newestUse, recipe.grindUm, config);
   }
+  bbw::keepAdviceInRange(g_grindAdvice, bbw::stepRange(grinderNow.modelId));
   g_lastCountedEpochS = scan.newestEpochS;
   g_grindAdviceStale = false;
   return g_grindAdvice;
@@ -2282,8 +2373,9 @@ CommunityView community(uint16_t coffeeId, uint16_t recipeId) {
         // The same model: by the firmware's own number for it, or by its
         // entry in the library's list.
         const bool byNumber = grinder.modelId != 0 && (m["model_id"] | 0) == grinder.modelId;
-        const bool byEntry = grinder.libraryId[0] != '\0' &&
-                             strcmp(m["library_id"] | "", grinder.libraryId) == 0;
+        const bbw::GrinderModel *builtin = bbw::findGrinderModel(grinder.modelId);
+        const char *entry = grinder.libraryId[0] ? grinder.libraryId : builtin ? builtin->libraryId : "";
+        const bool byEntry = entry[0] != '\0' && strcmp(m["library_id"] | "", entry) == 0;
         char unitKey[24];
         bbw::grinderUnitKey(grinder, unitKey, sizeof(unitKey));   // "dial/d10": how it is read, too
         if ((byNumber || byEntry) && strcmp(m["unit"] | "", unitKey) == 0) {
@@ -2306,13 +2398,37 @@ CommunityView community(uint16_t coffeeId, uint16_t recipeId) {
       break;
     }
   }
+  // What the library knows of this grinder's model: its scale and where its owners' zeros sit.
+  if (g_store.readText(MODELS_CACHE, g_libraryText, LIBRARY_TEXT_SIZE) != 0) {
+    doc.clear();
+    if (!deserializeJson(doc, g_libraryText) && doc["v"] == 1) {
+      const bbw::GrinderModel *builtin = bbw::findGrinderModel(grinder.modelId);
+      const char *entry = grinder.libraryId[0] ? grinder.libraryId : builtin ? builtin->libraryId : "";
+      char unitKey[24];
+      bbw::grinderUnitKey(grinder, unitKey, sizeof(unitKey));
+      for (JsonObjectConst m : doc["models"].as<JsonArrayConst>()) {
+        const bool same = (entry[0] && strcmp(m["library_id"] | "", entry) == 0) ||
+                          (grinder.modelId != 0 && (m["model_id"] | 0) == grinder.modelId);
+        if (!same || strcmp(m["unit"] | "", unitKey) != 0) continue;
+        view.model.known = true;
+        view.model.scale = m["scale"] | 0.0f;
+        view.model.zero = m["zero"] | 0.0f;
+        view.model.zeroSpread = m["zero_spread"] | 0.0f;
+        view.model.zeroN = m["zero_n"] | 0;
+        view.model.axis = m["axis"] | 0UL;
+        break;
+      }
+    }
+  }
   doc.clear();
   view.age = ageModel();
   view.myAgeDays = bbw::effectiveAgeDays(roastDate, frozenDate, thawDate, epochNow());
   // The flow this recipe aims for, on the time basis it is steered by.
   const float myFlow = def.targetTimeS > 0.0f ? def.targetWeightG / def.targetTimeS : 0.0f;
   const uint8_t myBasis = settings().grindTimeBasis == bbw::GrindTimeBasis::POUR ? 1 : 0;
-  view.start = bbw::communityStart(view.dialin, view.fit, grinder, view.age, view.myAgeDays, myFlow, myBasis);
+  view.start = bbw::communityStart(view.dialin, view.fit, grinder, view.age, view.myAgeDays, myFlow, myBasis,
+                                   view.model);
+  if (view.start.setting) view.start.setting = bbw::clampToRange(view.start.setting, bbw::stepRange(grinder.modelId));
   return view;
 }
 
@@ -2690,6 +2806,9 @@ bool coffeeExists(uint16_t id) {
   return id != 0 && bbw::findCoffee(g_library, id) != nullptr;
 }
 void ratingSaved(uint32_t id) { g_ratingToShare = id; }
+void ratingDeleted(uint32_t id, bool wasShared) {
+  if (wasShared) g_ratingToWithdraw = id;
+}
 
 bool powerRequest(bool on) {
   Lock lock;
@@ -2819,6 +2938,24 @@ bool diagSendNow() {
   return true;
 }
 
+// The owner's words, with addresses, network and device names, coffee and drinker names and anything
+// like a token taken out, as in every other line of a report.
+bool diagReportBug(const char *kind, const char *text, const char *contact) {
+  if (g_settings.diagnosticsOff || !text || !text[0]) return false;
+  if (!g_bugText) g_bugText = bbw::bigArray<char>(bbw::BUG_TEXT_MAX + 1);
+  diagBuildScrubList();
+  bbw::scrubLine(text, g_bugText, bbw::BUG_TEXT_MAX + 1, g_scrub);
+  bbw::scrubLine(contact ? contact : "", g_bugContact, sizeof(g_bugContact), g_scrub);
+  g_bugKind = bbw::BUG_KINDS[0];
+  for (size_t i = 0; i < bbw::BUG_KIND_COUNT; ++i) {
+    if (kind && strcmp(kind, bbw::BUG_KINDS[i]) == 0) g_bugKind = bbw::BUG_KINDS[i];
+  }
+  g_bugWaiting = true;
+  g_diagSendNow = true;
+  LOGI("diagnostics: a problem was reported (%s); it goes with a report now", g_bugKind);
+  return true;
+}
+
 void diagStatus(JsonObject out) {
   out["on"] = !g_settings.diagnosticsOff;
   char base[96];
@@ -2833,6 +2970,8 @@ void diagStatus(JsonObject out) {
   char kid[bbw::KEY_ID_LEN] = "";
   if (bbw::deviceSigner().ready()) bbw::keyId(bbw::deviceSigner().publicKey(), kid);
   out["key_id"] = kid;
+  out["bug_waiting"] = g_bugWaiting;
+  out["bug_sent"] = g_bugSentS;
 }
 
 size_t lastCrash(char *out, size_t size) { return g_store.readText(DIAG_CRASH_FILE, out, size); }
@@ -2891,7 +3030,7 @@ bool powerPressAnyway() {
 
 void powerBelieve(bbw::PowerBelief belief) {
   Lock lock;
-  g_powerControl.believe(belief);
+  g_powerControl.believe(belief, millis());
   if (g_powerControl.takeDirty()) g_pushersDirty = true;
 }
 
@@ -3286,6 +3425,14 @@ void setup() {
         bbw::forgetSharing(g_library);
         g_store.saveLibrary(g_library);
         g_store.outboxForgetKey();
+        // The subscription services likewise (the machine once it is read, below): the library's
+        // verdicts on them come under the old key and would never arrive.
+        for (size_t i = 0; i < g_subCount; ++i) {
+          bbw::Subscription &s = g_subs[i];
+          bbw::forgetShared(s.shareState, s.shareSeq, s.shareHash, s.reviewNote, s.libraryId);
+        }
+        g_subsDirty = true;
+        g_keyChanged = true;
         LOGW("share: this controller's key has changed; what was sent before is forgotten");
       }
       g_store.writeTextIfChanged("/sharekey.txt", kid);
@@ -3310,6 +3457,11 @@ void setup() {
   g_controller.epochNow = app::epochNow;
   g_scale.begin();
   g_machine = g_store.loadMachine();
+  if (g_keyChanged) {
+    bbw::forgetShared(g_machine.shareState, g_machine.shareSeq, g_machine.shareHash, g_machine.reviewNote,
+                      g_machine.libraryId);
+    g_store.saveMachine(g_machine);
+  }
   g_controller.setMachine(&g_machine);
   g_pushers = g_store.loadPushers();
   g_powerControl.begin(&g_pushers);
@@ -3382,6 +3534,8 @@ void loop() {
   {
     Lock lock;
     haveShot = g_controller.takeCompletedShot(shot);
+    // A shot that poured shows the machine on, and restarts its own off-timer.
+    if (haveShot && shot.finalWeightG > 5.0f) g_powerControl.noteUse(millis());
     if (haveShot) {
       // Every reading of the shot, copied while the controller cannot start
       // the next one; written to flash below, outside the lock.
@@ -3535,6 +3689,7 @@ void loop() {
   }
   // A coffee rating just saved: to the library, when ratings are shared.
   if (const uint32_t ratingId = g_ratingToShare.exchange(0)) shareRating(ratingId);
+  if (const uint32_t ratingId = g_ratingToWithdraw.exchange(0)) withdrawRating(ratingId);
   if (g_pushersDirty.exchange(false)) {
     bbw::PusherConfig copy;
     {
@@ -3549,9 +3704,11 @@ void loop() {
 }
 
 #ifndef BBW_EMULATOR
-// The loop task serves the web pages, parses the library's JSON and takes
-// firmware uploads: twice the Arduino default of 8 kB (measured on the board:
-// about 5.4 kB used at the default). This must be at global scope: inside a
+// The loop task serves the web pages, parses the library's JSON and takes firmware uploads. It had
+// 16 kB while it also made the HTTPS requests and signatures: measured on the board, 13 kB used with
+// diagnostics and the relay (v0.1.20), 8 kB before them. Those now run on the update task's stack
+// (platform/NetWorker.h) whenever it is free; while it is busy with a firmware check or install
+// they still run here, so the loop task keeps its 16 kB. This must be at global scope: inside a
 // namespace the core does not see it and silently keeps 8 kB.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 

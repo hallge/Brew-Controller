@@ -170,6 +170,7 @@ bool shareGrinder(uint16_t grinderId);
 struct CommunityView {
   bbw::CommunityDialin dialin;
   bbw::CommunityFit fit;
+  bbw::CommunityModel model;   // this grinder's model, from all its owners (index/models.json)
   bbw::CommunityStart start;
   bbw::AgeModel age;
   int myAgeDays = -1;          // this controller's bag
@@ -230,6 +231,8 @@ bool powerRequest(bool on);       // false: refused, powerView().lastOutcome say
 // (it is shared from the main loop when sharing is on).
 bool coffeeExists(uint16_t id);
 void ratingSaved(uint32_t id);
+// A rating was deleted; wasShared: it had gone (or was going) to the library, which is told to drop it.
+void ratingDeleted(uint32_t id, bool wasShared);
 const char *communityTaste();   // index/taste.json as cached; good until the next library read
 bool powerPressAnyway();
 // One press of the brew bot, to see which pusher it is. False if a shot is in
@@ -247,6 +250,8 @@ void diagnostics(JsonObject out);
 void diagPreview(String &out);
 // Builds a report now and sends it as soon as it can; false when diagnostics are off.
 bool diagSendNow();
+// A problem the owner describes goes with a diagnostics report, sent at once. False: diagnostics are off.
+bool diagReportBug(const char *kind, const char *text, const char *contact);
 // On or off, the relay, how many wait, when the last went and how.
 void diagStatus(JsonObject out);
 // The last crash's report body (JSON); 0 when there has been none.

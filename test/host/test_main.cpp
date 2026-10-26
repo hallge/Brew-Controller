@@ -2174,6 +2174,162 @@ static void testPowerControl() {
   CHECK(config.schedule[2].minuteOfDay == 0 && config.belief == 2 && config.utcOffsetMin == 0);
 }
 
+static void testBuiltinGrinders() {
+  printf("grinders: every built-in model reads and writes its own range\n");
+  // Ids that existed before must keep how their setting is read (stored settings would change).
+  CHECK(findGrinderModel(1) && findGrinderModel(1)->umPerUnit == 1.0f && findGrinderModel(1)->divisor == 1);
+  for (uint16_t id : {3, 4, 5}) {
+    const GrinderModel *m = findGrinderModel(id);
+    CHECK(m && m->divisor == 1 && m->subSteps == 0);
+  }
+  CHECK(!findGrinderModel(2));  // taken out; never given again
+  for (size_t i = 0; i < GRINDER_MODEL_COUNT; ++i) {
+    const GrinderModel &m = GRINDER_MODELS[i];
+    for (size_t k = i + 1; k < GRINDER_MODEL_COUNT; ++k) {
+      CHECK(GRINDER_MODELS[k].id != m.id);
+      CHECK(strcmp(GRINDER_MODELS[k].libraryId, m.libraryId) != 0);
+    }
+    CHECK(strlen(m.model) < GRINDER_NAME_LEN && strlen(m.burrs) < GRINDER_BURRS_LEN && strlen(m.unit) < GRINDER_UNIT_LEN);
+    CHECK(strlen(m.libraryId) > 0 && strlen(m.libraryId) < LIBRARY_ID_LEN);
+    // Picked by an owner: the model's name, unit and reading come with it.
+    Grinder g;
+    g.modelId = m.id;
+    g.divisor = 1;
+    g.subSteps = 0;
+    normalizeGrinder(g);
+    CHECK(g.modelId == m.id && strcmp(g.model, m.model) == 0 && strcmp(g.unit, m.unit) == 0);
+    if (m.subSteps >= 2) CHECK(g.subSteps == m.subSteps);
+    if (!m.maxStep) continue;
+    CHECK(m.minStep >= 1 && m.minStep < m.maxStep && m.maxStep <= SETTING_MAX);
+    // Both ends written in its own unit and read back to the same step.
+    for (uint16_t v : {m.minStep, static_cast<uint16_t>((m.minStep + m.maxStep) / 2), m.maxStep}) {
+      char text[24];
+      uint16_t back = 0;
+      CHECK(formatSetting(v, g, text, sizeof(text)) > 0);
+      CHECK(parseSetting(text, g, back) && back == v);
+    }
+  }
+  // A Sette 270 reads macro:micro; its top is 31:9.
+  Grinder sette;
+  sette.modelId = 11;
+  normalizeGrinder(sette);
+  char text[24];
+  formatSetting(279, sette, text, sizeof(text));
+  CHECK(strcmp(text, "31:9") == 0);
+  // An owner's own divisor on a model without one of its own is kept.
+  Grinder niche;
+  niche.modelId = 5;
+  niche.divisor = 4;
+  normalizeGrinder(niche);
+  CHECK(niche.divisor == 4);
+}
+
+static void testPowerBeliefDrift() {
+  printf("power bot: a machine that switches itself off; a skipped scheduled press is told\n");
+  PusherConfig config;
+  strcpy(config.powerAddress, "aa:bb:cc:dd:ee:ff");
+  PowerControl power;
+  power.begin(&config);
+  power.setAutoOffMin(20);
+  FakeBot bot;
+  bot.up = true;
+  uint32_t now = 1000;
+  power.believe(PowerBelief::ON);
+  power.takeDirty();
+  // Nothing done on it for 19 minutes: still believed on.
+  power.tick(now, 0, true, bot);
+  power.tick(now += 19 * 60000, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::ON && !power.takeAutoOff());
+  // A shot at 19 minutes restarts the machine's own timer.
+  power.noteUse(now);
+  CHECK(!power.takeBelievedOnByShot());  // believed on already
+  power.tick(now += 19 * 60000, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::ON);
+  // 20 minutes after the shot: it has switched itself off.
+  power.tick(now += 60000, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::OFF && power.takeAutoOff() && power.takeDirty());
+  // So "on" presses the button again instead of finding it on already.
+  CHECK(power.request(true, now));
+  power.tick(now += 10, 0, true, bot);
+  bot.done();
+  power.tick(now += 10, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::ON);
+  // Just switched on: warming up for 30 minutes.
+  CHECK(power.switchedOnWithin(now, 30 * 60000));
+  CHECK(!power.switchedOnWithin(now + 31 * 60000, 30 * 60000));
+  // Not while a shot is in hand (idle false), however long.
+  power.tick(now += 60 * 60000, 0, false, bot);
+  CHECK(power.belief() == PowerBelief::ON);
+  // A shot while it is believed off: it is on after all.
+  power.believe(PowerBelief::OFF);
+  power.noteUse(now);
+  CHECK(power.belief() == PowerBelief::ON && power.takeBelievedOnByShot());
+  // Believed off by the timer, then the owner says it is on (switched on at the machine): the
+  // timer starts from that moment, not from the shot long before.
+  power.tick(now += 21 * 60000, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::OFF && power.takeAutoOff());
+  power.believe(PowerBelief::ON, now += 3 * 3600000u);
+  power.tick(now += 1000, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::ON && !power.takeAutoOff());
+  power.tick(now += 19 * 60000, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::ON);
+  // Without an off-timer nothing changes by itself.
+  power.setAutoOffMin(0);
+  power.tick(now += 24 * 3600000u, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::ON);
+
+  // The schedule's "on" while believed on already: not pressed, and that is told.
+  const uint32_t mondayMidnightUtc = 1791763200u;
+  config.utcOffsetMin = 0;
+  config.schedule[0] = {1, 1, 8 * 60, 0x7f};
+  const int presses = bot.presses;
+  for (uint32_t e = mondayMidnightUtc + 8 * 3600 - 120; e <= mondayMidnightUtc + 8 * 3600 + 120; e += 20) {
+    power.tick(now += 20000, e, true, bot);
+  }
+  bool on = false;
+  PowerControl::Outcome why;
+  CHECK(bot.presses == presses && power.takeSkipped(on, why) && on && why == PowerControl::Outcome::ALREADY);
+  CHECK(!power.takeSkipped(on, why));
+}
+
+static void testCupNotTrustedAfterScaleSleep() {
+  printf("cup: not believed after the scale dropped out or slept, only after a controller restart\n");
+  // As testCupRemembered: a shot, then a fresh cup put on and tared; the scale's timer holds the
+  // shot's time, so the remembered cup would match on the timer.
+  Rig r;
+  r.settings.requireCup = true;
+  r.toReady();
+  r.run(1000);
+  r.sim.trueWeightG += 62.0;
+  r.run(3000);
+  r.ctl.requestStart();
+  CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+  r.ctl.acknowledge();
+  r.run(500);
+  r.sim.trueWeightG -= 62.0 + 36.0;
+  r.run(2000);
+  r.sim.trueWeightG += 70.0;                    // fresh cup
+  r.run(3000);
+  CHECK(r.ctl.status(r.sim.nowMs).cupPresent);
+  const CupMemory kept = r.ctl.cupMemory();
+  CHECK(kept.present && kept.scaleTimerMs > 0);
+  // The scale is let go and naps for 40 s, its stopped timer held; meanwhile the cup is lifted,
+  // and the scale wakes reading 0 g: everything the old rule checked matches.
+  r.sim.timerHeldMs = r.sim.timerMs();
+  r.sim.scaleLink = false;
+  r.run(20000);
+  r.sim.trueWeightG -= 70.0;
+  r.sim.tareOffsetG = r.sim.trueWeightG;
+  r.run(20000);
+  r.sim.scaleLink = true;
+  CHECK(r.runUntil(State::READY, 10000));
+  r.run(3000);
+  CHECK(!r.ctl.status(r.sim.nowMs).cupPresent);   // not believed: no shot onto nothing
+  r.ctl.requestStart();
+  r.run(500);
+  CHECK(r.ctl.state() == State::READY);           // refused until a cup is seen going on
+}
+
 static void testResultScreenLetsGo() {
   printf("a shot's result left showing: power may be pressed, and the scale gone sends it home\n");
   Rig r;
@@ -4486,10 +4642,38 @@ static void testLibrary() {
   setGrinder(gl, g, false);
   CHECK(gl.grinder.modelId == 0 && strcmp(gl.grinder.model, "Home built") == 0);
   CHECK(gl.grinder.umPerUnit == 0.0f && gl.grinder.calibration == 4);
+  // Another model read the same way (a dial in whole numbers): 15 on one is not 15 on the other.
+  gl.presets[0].grindUm = 15;
+  g = Grinder{};
+  copyText(g.model, "Other dial", GRINDER_NAME_LEN);
+  copyText(g.unit, "dial", GRINDER_UNIT_LEN);
+  setGrinder(gl, g, false);
+  CHECK(gl.presets[0].grindUm == 0 && gl.grinder.calibration == 5);
+  // The same grinder named again: kept.
+  gl.presets[0].grindUm = 15;
+  setGrinder(gl, g, false);
+  CHECK(gl.presets[0].grindUm == 15 && gl.grinder.calibration == 5);
+  // A built-in, then the same model picked from the library's list: not another grinder.
+  {
+    Library ml = defaultLibrary();
+    Grinder sette;
+    sette.modelId = 11;
+    setGrinder(ml, sette, false);
+    ml.presets[0].grindUm = 120;
+    Grinder picked = ml.grinder;
+    picked.modelId = 0;
+    copyText(picked.libraryId, "baratza-sette-270", LIBRARY_ID_LEN);
+    setGrinder(ml, picked, false);
+    CHECK(ml.presets[0].grindUm == 120);
+    Grinder niche;
+    niche.modelId = 5;
+    setGrinder(ml, niche, false);
+    CHECK(ml.presets[0].grindUm == 0);
+  }
   static uint8_t gb[LIBRARY_MAX_BYTES];
   const size_t gn = encodeLibrary(gl, gb, sizeof(gb));
-  CHECK(gn != 0 && decodeLibrary(gb, gn, back) && back.grinder.calibration == 4 &&
-        strcmp(back.grinder.model, "Home built") == 0);
+  CHECK(gn != 0 && decodeLibrary(gb, gn, back) && back.grinder.calibration == 5 &&
+        strcmp(back.grinder.model, "Other dial") == 0);
 }
 
 // What an earlier build stored, brought forward: its settings (recipes with
@@ -4763,6 +4947,7 @@ static void testDiagnostics() {
   in.power.used = true;
   in.power.attempts = 11;
   in.power.failures = 9;
+  in.power.rssi = -77;
   ShotRecord a{}, b{};
   a.endReason = static_cast<uint8_t>(EndReason::WEIGHT);
   a.flags = SHOT_FLAG_FINAL_VALID;
@@ -4784,6 +4969,7 @@ static void testDiagnostics() {
   CHECK(strstr(body, "\"t\":\"diag_daily\"") && strstr(body, "\"resets\":[\"restart requested\",\"CRASH (exception)\"]"));
   CHECK(strstr(body, "\"scale\":{\"driver\":\"acaia\",\"name\":\"LUNAR\"}"));
   CHECK(strstr(body, "\"power\":{\"attempts\":11,\"failures\":9"));
+  CHECK(strstr(body, "\"longest_wait_ms\":0,\"rssi\":-77}"));
   CHECK(strstr(body, "\"end\":{\"weight\":2}") && strstr(body, "\"stop_retried\":1"));
   CHECK(strstr(body, "\"stop_latency_ms\":{\"median\":3691,\"max\":3691}"));
   CHECK(strstr(body, "\"overshoot_g\":{\"median\":1.8,\"max\":1.8}"));
@@ -4934,7 +5120,7 @@ static void testShare() {
                           body, sizeof(body)) != 0);
   CHECK(strstr(body, "\"t\":\"dialin\"") && strstr(body, "\"roast_date\":\"2026-03-03\"") &&
         strstr(body, "\"recipe\":{\"dose_g\":18,\"yield_g\":36,\"target_time_s\":26}") &&
-        strstr(body, "\"grinder\":{\"model_id\":1,\"model\":\"Mahlkonig E64 WS\",\"burrs\":\"64 mm flat\","
+        strstr(body, "\"grinder\":{\"model_id\":1,\"library_id\":\"mahlkonig-e64-ws\",\"model\":\"Mahlkonig E64 WS\",\"burrs\":\"64 mm flat\","
                      "\"unit\":\"um\",\"um_per_unit\":1,\"calibration\":0}") &&
         strstr(body, "\"grind\":246,\"result\":{\"time_s\":25.6,\"basis\":\"total\",\"shots\":3,"
                      "\"min_s\":25.3,\"max_s\":25.9}}"));
@@ -5042,6 +5228,148 @@ static void testShare() {
 }
 
 // What the shared library says, turned into a setting for this grinder.
+static void testWebPanels() {
+  printf("web page: optional panels hidden until chosen, except what is in use\n");
+  Settings s;
+  CHECK(webPanelsShown(s, false, false) == 0);                                   // a new controller
+  CHECK(webPanelsShown(s, true, false) == PANEL_SUBSCRIPTIONS);                  // an update: in use
+  CHECK(webPanelsShown(s, false, true) == (PANEL_INSIGHTS | PANEL_DISCOVER));
+  s.shareEnabled = true;
+  CHECK(webPanelsShown(s, false, false) == PANEL_COMMUNITY);
+  s.webPanelsChosen = 1;  // stray bytes from an older record's padding are not a choice
+  CHECK(webPanelsShown(s, false, false) == PANEL_COMMUNITY);
+  s.webPanelsChosen = WEB_PANELS_CHOSEN;  // chosen: exactly that, even nothing
+  s.webPanels = PANEL_LOGS;
+  CHECK(webPanelsShown(s, true, true) == PANEL_LOGS);
+  s.webPanels = 0xffff;
+  CHECK(webPanelsShown(s, false, false) == WEB_PANELS_ALL);
+}
+
+static void testBugReport() {
+  printf("diagnostics: a problem the owner reports goes with the report, scrubbed\n");
+  static DiagInput in;
+  static WarnTally w;
+  static char out[DIAG_BODY_MAX];
+  in = DiagInput();
+  in.firmware = "v0.1.21";
+  CHECK(buildDailyReport(in, w, out, sizeof(out)) != 0 && !strstr(out, "\"bug\""));  // none: no field
+  static char text[BUG_TEXT_MAX + 1];
+  ScrubList list;
+  list.add("Kitchen-WiFi", "<wifi>");
+  scrubLine("The scale at aa:bb:cc:dd:ee:ff dropped on Kitchen-WiFi, 192.168.0.7", text, sizeof(text), &list);
+  in.bugKind = "scale";
+  in.bugText = text;
+  in.bugContact = "gh:someone";
+  CHECK(buildDailyReport(in, w, out, sizeof(out)) != 0);
+  CHECK(strstr(out, "\"bug\":{\"kind\":\"scale\",\"text\":\"The scale at <mac> dropped on <wifi>, <ip>\",\"contact\":\"gh:someone\"}"));
+  CHECK(!strstr(out, "aa:bb") && !strstr(out, "192.168") && !strstr(out, "Kitchen"));
+  CHECK(strcmp(BUG_KINDS[0], "other") == 0 && BUG_KIND_COUNT == 9);
+}
+
+static void testGrindRange() {
+  printf("grind advice: never past the ends of the grinder's range\n");
+  const StepRange niche = stepRange(5);  // Niche Zero: 1 to 50
+  CHECK(niche.known && niche.lo == 1 && niche.hi == 50);
+  CHECK(!stepRange(4).known && stepRange(4).hi == 2000);  // no range published: anything stored
+  GrindAdvice a;
+  a.action = GrindAction::FINER;
+  a.currentUm = 3;
+  a.suggestedUm = 1;
+  a.deltaUm = -2;
+  keepAdviceInRange(a, niche);
+  CHECK(a.action == GrindAction::FINER && a.suggestedUm == 1 && !a.atLimit);  // inside: untouched
+  a.currentUm = 1;  // at the finest already, asked for finer still
+  a.suggestedUm = 1;
+  a.deltaUm = 0;
+  keepAdviceInRange(a, niche);
+  CHECK(a.action == GrindAction::HOLD && a.atLimit && a.deltaUm == 0);
+  GrindAdvice b;
+  b.action = GrindAction::COARSER;
+  b.currentUm = 48;
+  b.suggestedUm = 55;
+  b.deltaUm = 7;
+  keepAdviceInRange(b, niche);
+  CHECK(b.action == GrindAction::COARSER && b.suggestedUm == 50 && b.deltaUm == 2 && b.stepLimited);
+  CHECK(clampToRange(0, niche) == 1 && clampToRange(999, niche) == 50);
+}
+
+static void testShareWithdrawAndLinks() {
+  printf("share: a deleted rating is withdrawn; shop links go as https\n");
+  static char body[SHARE_BODY_MAX];
+  CHECK(buildTasteWithdrawal(42, 1790000000u, body, sizeof(body)) != 0);
+  CHECK(strstr(body, "\"t\":\"taste\"") && strstr(body, "\"id\":42") && strstr(body, "\"withdrawn\":true"));
+  CHECK(!strstr(body, "coffee") && !strstr(body, "stars"));
+  char link[32] = "http://shop.example/";
+  httpsLink(link, sizeof(link));
+  CHECK(strcmp(link, "https://shop.example/") == 0);
+  httpsLink(link, sizeof(link));  // already https: unchanged
+  CHECK(strcmp(link, "https://shop.example/") == 0);
+  char tight[21] = "http://shop.example/";  // no room for the s: no link rather than a cut one
+  httpsLink(tight, sizeof(tight));
+  CHECK(tight[0] == '\0');
+}
+
+static void testCommunityModel() {
+  printf("community: a new owner placed by what the library learned of their grinder model\n");
+  // A Sette 270 owner with no coffee in common with anyone; a coffee dialled by others on grinders
+  // linked into one relative axis (no grinder marked in microns there).
+  Grinder sette;
+  sette.modelId = 11;
+  normalizeGrinder(sette);
+  CommunityDialin d;
+  d.found = true;
+  d.contributors = 3;
+  d.dialins = 4;
+  d.finenessUm = 50.0f;      // on axis 7
+  d.spreadUm = 1.0f;
+  d.axis = 7;
+  CommunityFit noFit;
+  CommunityModel m;
+  m.known = true;
+  m.scale = 2.0f;            // two of its steps per axis step
+  m.zero = 30.0f;
+  m.zeroSpread = 4.0f;
+  m.zeroN = 4;
+  m.axis = 7;
+  CommunityStart s = communityStart(d, noFit, sette, AgeModel{}, -1, 0.0f, 255, m);
+  CHECK(s.basis == StartBasis::MODEL && s.setting == 130);                // 2 x 50 + 30
+  CHECK(s.range == 8);                                                     // 1.5 x 4 + 2 x 1
+  // With two owners only, the range doubles.
+  m.zeroN = 2;
+  CHECK(communityStart(d, noFit, sette, AgeModel{}, -1, 0.0f, 255, m).range == 16);
+  // One grinder's zero is not the model's: nothing from one owner.
+  m.zeroN = 1;
+  CHECK(communityStart(d, noFit, sette, AgeModel{}, -1, 0.0f, 255, m).basis == StartBasis::NONE);
+  m.zeroN = 4;
+  // A fineness on another axis cannot be read with this model's scale.
+  m.axis = 8;
+  CHECK(communityStart(d, noFit, sette, AgeModel{}, -1, 0.0f, 255, m).basis == StartBasis::NONE);
+  m.axis = 7;
+  // Others with the same model dialled this coffee: their median comes first.
+  d.modelCount = 2;
+  d.modelMedian = 128.0f;
+  CHECK(communityStart(d, noFit, sette, AgeModel{}, -1, 0.0f, 255, m).basis == StartBasis::SAME_MODEL);
+  d.modelCount = 0;
+  d.modelMedian = 0.0f;
+  // Once this grinder has its own fit on the axis, that is what is used.
+  CommunityFit own;
+  own.known = true;
+  own.scale = 2.1f;
+  own.offset = 25.0f;
+  own.coffeesInCommon = 2;
+  own.axis = 7;
+  s = communityStart(d, own, sette, AgeModel{}, -1, 0.0f, 255, m);
+  CHECK(s.basis == StartBasis::FITTED && s.setting == 130);                // 2.1 x 50 + 25
+  CHECK(strcmp(startBasisName(StartBasis::MODEL), "model") == 0);
+  // The model's library entry goes out in records, so its owners are pooled under one key.
+  static char body[SHARE_BODY_MAX];
+  JsonOut j(body, sizeof(body));
+  j.open();
+  grinderFields(j, sette);
+  j.close();
+  CHECK(strstr(body, "\"model_id\":11,\"library_id\":\"baratza-sette-270\"") != nullptr);
+}
+
 static void testCommunity() {
   printf("community: a starting grind from the shared library\n");
   Grinder e64;
@@ -7036,6 +7364,15 @@ static void testSubscriptions() {
   CHECK(strcmp(link, "https://shop.example/") == 0);
   shareableLink("https://shop.example/login/session-token/x", true, "", link, sizeof(link));
   CHECK(strcmp(link, "https://shop.example/account") == 0);
+  // An order or customer number further along, and a token in capitals: one customer's.
+  shareableLink("https://shopify.com/12345678901/account/orders/5551234567", true, "", link, sizeof(link));
+  CHECK(strcmp(link, "https://shopify.com/account") == 0);
+  shareableLink("https://shop.example/subscriptions/887766", true, "", link, sizeof(link));
+  CHECK(strcmp(link, "https://shop.example/account") == 0);
+  shareableLink("https://shop.example/portal/ACCESS-TOKEN/x", true, "", link, sizeof(link));
+  CHECK(strcmp(link, "https://shop.example/account") == 0);
+  shareableLink("https://shop.example/products/blend-2024", false, "", link, sizeof(link));
+  CHECK(strcmp(link, "https://shop.example/products/blend-2024") == 0);  // a product, kept
   shareableLink("javascript:alert(1)", true, "", link, sizeof(link));
   CHECK(link[0] == '\0');
   CHECK(linkHasCredential("https://x.example/i.png?token=abc") && linkHasCredential("https://x.example/i.png?X-Amz-Signature=1"));
@@ -7249,6 +7586,14 @@ int main() {
   testShotDataSet();
   testReadingNewerThanTick();
   testResultScreenLetsGo();
+  testCommunityModel();
+  testShareWithdrawAndLinks();
+  testGrindRange();
+  testBugReport();
+  testWebPanels();
+  testPowerBeliefDrift();
+  testCupNotTrustedAfterScaleSleep();
+  testBuiltinGrinders();
   testDiagnostics();
   testEmptyScaleZeroed();
   testScaleRest();

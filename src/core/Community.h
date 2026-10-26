@@ -53,6 +53,20 @@ struct CommunityDialin {
   uint32_t axis = 0;
 };
 
+// What the library has learned about this grinder's MODEL from all its owners (index/models.json):
+// units of its setting per step of the axis, and where a grinder of it typically sits (the median of
+// its owners' zeros, from two owners at least). For an owner with no coffee in common with anyone
+// yet: a coffee dialled on any grinder linked to this model gives them a starting point. Never used
+// once this grinder has its own fit.
+struct CommunityModel {
+  bool known = false;
+  float scale = 0.0f;       // units per axis step (per micron on axis 0)
+  float zero = 0.0f;        // in units
+  float zeroSpread = 0.0f;  // how far owners' zeros sit from each other, in units; 0: not known
+  uint16_t zeroN = 0;       // owners the zero is the median of
+  uint32_t axis = 0;
+};
+
 // How this controller's grinder sits against the common scale (index/fit/...).
 // Only for the calibration the grinder is under now.
 struct CommunityFit {
@@ -67,6 +81,7 @@ enum class StartBasis : uint8_t {
   NONE = 0,     // nothing to go on
   FITTED,       // this grinder's own scale and offset, from coffees in common
   SAME_MODEL,   // what others with the same grinder model set
+  MODEL,        // the model's scale and where its owners' zeros sit: for a new owner (index/models.json)
   MICRONS,      // the common scale read straight off, no offset known
 };
 
@@ -243,7 +258,7 @@ inline float recipeDistance(float dose, float yield, float otherDose, float othe
 inline CommunityStart communityStart(const CommunityDialin &dialin, const CommunityFit &fit,
                                      const Grinder &grinder, const AgeModel &age = AgeModel{},
                                      int myAgeDays = -1, float myFlowGs = 0.0f,
-                                     uint8_t myFlowBasis = 255) {
+                                     uint8_t myFlowBasis = 255, const CommunityModel &model = CommunityModel{}) {
   CommunityStart start;
   if (!dialin.found || dialin.contributors == 0) return start;
   float setting = 0.0f, range = 0.0f;
@@ -277,6 +292,16 @@ inline CommunityStart communityStart(const CommunityDialin &dialin, const Commun
     } else {
       range = setting / 6.0f;
     }
+  } else if (model.known && model.scale > 0.0f && model.zeroN >= 2 && dialin.finenessUm > 0.0f &&
+             model.axis == dialin.axis) {
+    // A new owner: the model's scale, and where its owners' zeros typically sit. How far one
+    // grinder of it sits from another is the range's main part; with two owners only, doubled.
+    start.basis = StartBasis::MODEL;
+    setting = model.scale * dialin.finenessUm + model.zero;
+    range = (model.zeroSpread > 0.0f ? 1.5f * model.zeroSpread : setting / 6.0f) + model.scale * dialin.spreadUm;
+    if (model.zeroN < 3) range *= 2.0f;
+    const float floorUnits = grinder.umPerUnit > 0.0f ? 5.0f / grinder.umPerUnit : 1.0f;
+    if (range < floorUnits) range = floorUnits;
   } else if (grinder.umPerUnit > 0.0f && dialin.finenessUm > 0.0f && dialin.axis == 0) {
     start.basis = StartBasis::MICRONS;
     setting = dialin.finenessUm / grinder.umPerUnit;
@@ -286,12 +311,14 @@ inline CommunityStart communityStart(const CommunityDialin &dialin, const Commun
   }
   // This bag against theirs: older coffee wants a finer grind.
   // The ageing rate is in microns, so it only applies to a fineness in microns.
+  const bool byModel = start.basis == StartBasis::MODEL;
   const float shift = dialin.axis != 0
                           ? 0.0f
-                          : grinderUnitsPerUm(fit, grinder) * ageShiftUm(age, dialin.ageDays, myAgeDays);
+                          : (byModel ? model.scale : grinderUnitsPerUm(fit, grinder)) *
+                                ageShiftUm(age, dialin.ageDays, myAgeDays);
   setting += shift;
   // And this controller's target flow against the one theirs were settled at.
-  const float flowUnits = grinderUnitsPerAxisStep(dialin.axis, fit, grinder);
+  const float flowUnits = byModel ? model.scale : grinderUnitsPerAxisStep(dialin.axis, fit, grinder);
   const float flowShift = flowUnits * flowShiftAxis(dialin, myFlowGs, myFlowBasis);
   setting += flowShift;
   if (!isfinite(setting) || setting < 1.0f || setting > 2000.0f) return CommunityStart{};
@@ -316,6 +343,7 @@ inline const char *startBasisName(StartBasis basis) {
   switch (basis) {
     case StartBasis::FITTED: return "fitted";
     case StartBasis::SAME_MODEL: return "same_model";
+    case StartBasis::MODEL: return "model";
     case StartBasis::MICRONS: return "microns";
     default: return "none";
   }

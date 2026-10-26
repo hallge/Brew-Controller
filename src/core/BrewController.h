@@ -137,7 +137,13 @@ class BrewController {
   // (an auto-tare mode). It can then zero a cup coming off before reporting
   // it at all, and no reading shows the cup is gone.
   bool scaleZeroesItself() const { return scaleZeroesItself_; }
-  void restoreCupMemory(const CupMemory &memory) { cupMemory_ = memory; }
+  // What was on the scale when the controller last stopped. Trusted only at the first connection
+  // after this start: after the scale dropped out or slept, a cup could have been lifted meanwhile
+  // (seen on the board: an empty scale taken for a cup), and a shot must not start onto nothing.
+  void restoreCupMemory(const CupMemory &memory) {
+    cupMemory_ = memory;
+    cupMemoryFromRestart_ = true;
+  }
   const ShotRecord &lastShot() const { return lastShot_; }
   bool hasLastShot() const { return hasLastShot_; }
   void setLastShotGrindVote(uint32_t id, uint8_t vote) {
@@ -226,6 +232,7 @@ class BrewController {
   WeightSample last_;        // last accepted reading
   uint32_t lastRxMs_ = 0;    // last notification, accepted or not
   uint32_t lastGoodRxMs_ = 0;
+  bool cupMemoryFromRestart_ = false;
   uint32_t scaleGoneSinceMs_ = 0;  // the scale's link down while a result or fault shows; 0: it is up
   const char *tareWhy_ = nullptr;
   bool startRefusedNoCup_ = false;  // the last one while the scale was in use, before it went away

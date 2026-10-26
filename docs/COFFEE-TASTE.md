@@ -50,6 +50,13 @@ a signed `taste` record. It carries the coffee, the roast date, the stars, the c
 flavours, and an anonymous number for the drinker. Names never leave the controller. The library's
 Intake checks and files it, like the other records.
 
+- A changed rating goes again, each version under its own name (`tastes/<key>-r<id>-<record>.json`),
+  and the library keeps the latest.
+- A shared rating you delete is withdrawn: a record with only its id and `"withdrawn": true` takes
+  its place, and it counts for nothing in the index.
+- In `index/taste.json` the drinkers are a keyed hash (the key in the library's build secrets), so a
+  row cannot be traced back to a controller.
+
 The library's index adds `index/taste.json`: per coffee, the average taste and star spread, published
 only once at least two contributors have rated it. It also holds an anonymised table of how similar
 drinkers' tastes are. `docs/DATA-TERMS.md` is updated before this is switched on.

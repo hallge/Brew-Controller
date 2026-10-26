@@ -9,6 +9,7 @@
 #include "core/SettingFormat.h"
 #include "core/SettingsUtil.h"
 #include "Log.h"
+#include "Version.h"
 
 using bbw::GrindAction;
 using bbw::State;
@@ -387,9 +388,11 @@ void editStep(int direction, bool held) {
       break;
     case 1: r.doseG += direction * (held ? 0.5f : 0.1f); break;
     case 2: {
-      int um = r.grindUm ? r.grindUm : 250;  // somewhere to start from on first use
+      // Somewhere to start from on first use: the middle of the grinder's range, else 250 (microns).
+      const bbw::StepRange range = bbw::stepRange(app::grinder().modelId);
+      int um = r.grindUm ? r.grindUm : (range.known ? (range.lo + range.hi) / 2 : 250);
       um += direction * (held ? 10 : 1);
-      r.grindUm = static_cast<uint16_t>(um < 1 ? 1 : (um > 2000 ? 2000 : um));
+      r.grindUm = bbw::clampToRange(um, range);
       break;
     }
     case 3: r.targetTimeS += direction * (held ? 1.0f : 0.5f); break;
@@ -873,6 +876,7 @@ void buildFault() {
 void buildSettings() {
   lv_obj_t *p = panels[static_cast<int>(Panel::SETTINGS)] = makePanel();
   makeLabel(p, &lv_font_montserrat_22, COLOR_ACCENT, LV_ALIGN_TOP_LEFT, 16, 12, "SETTINGS");
+  makeLabel(p, &lv_font_montserrat_20, COLOR_DIM, LV_ALIGN_TOP_LEFT, 138, 14, BBW_VERSION);  // the firmware running
   // Beside the title, then three rows of keys: the first has the toggles,
   // the bot and the scale each have a row with their state beside the key.
   makeButton(p, "ROTATE SCREEN", &lv_font_montserrat_20, COLOR_PANEL, 190, 40, LV_ALIGN_TOP_RIGHT,

@@ -110,6 +110,47 @@ class PowerControl {
 
   void begin(PusherConfig *config) { config_ = config; }
 
+  // The machine switches itself off after this many minutes with nothing done on it (the Breville
+  // Dual Boiler: 240, unless its "A OF" menu setting turned Auto Off off); 0: it does not, or it is
+  // not known. A machine believed on with nothing done for that long is then believed off, so the
+  // next "on" presses the button instead of finding it "on already" (seen on the board 26 Oct 2026).
+  void setAutoOffMin(uint16_t minutes) { autoOffMin_ = minutes; }
+  // Something was done on the machine (a shot ran): it is on, and its own off-timer starts again.
+  void noteUse(uint32_t nowMs) {
+    lastUseMs_ = nowMs ? nowMs : 1;
+    if (belief() != PowerBelief::ON) {
+      config_->belief = static_cast<uint8_t>(PowerBelief::ON);
+      onSinceMs_ = lastUseMs_;
+      dirty_ = true;
+      believedOnByShot_ = true;
+    }
+  }
+  // Once, after a shot showed the machine on while it was believed off or not known.
+  bool takeBelievedOnByShot() {
+    const bool b = believedOnByShot_;
+    believedOnByShot_ = false;
+    return b;
+  }
+  // Once, after the off-timer has run out on a machine believed on.
+  bool takeAutoOff() {
+    const bool b = autoOff_;
+    autoOff_ = false;
+    return b;
+  }
+  // Once, after a scheduled press was not made: what it was for, and why (ALREADY, NOT_KNOWN...).
+  bool takeSkipped(bool &on, Outcome &why) {
+    if (!skipped_) return false;
+    skipped_ = false;
+    on = skippedOn_;
+    why = skippedWhy_;
+    return true;
+  }
+  // Switched on (by a press or a shot) within the last `withinMs`: warming up, someone is about to brew.
+  bool switchedOnWithin(uint32_t nowMs, uint32_t withinMs) const {
+    return belief() == PowerBelief::ON && onSinceMs_ != 0 &&
+           static_cast<uint32_t>(nowMs - onSinceMs_) < withinMs;
+  }
+
   PowerBelief belief() const { return static_cast<PowerBelief>(config_->belief); }
   Job job() const { return job_; }
   Outcome lastOutcome() const { return outcome_; }
@@ -132,8 +173,13 @@ class PowerControl {
     return dirty;
   }
 
-  // The owner says what the machine is doing; nothing is pressed.
-  void believe(PowerBelief belief) {
+  // The owner says what the machine is doing; nothing is pressed. Saying it is on counts as using
+  // it: the machine's own auto-off clock starts from here, not from a shot hours ago.
+  void believe(PowerBelief belief, uint32_t nowMs = 0) {
+    if (belief == PowerBelief::ON && nowMs) {
+      lastUseMs_ = nowMs;
+      if (config_->belief != static_cast<uint8_t>(belief)) onSinceMs_ = nowMs;
+    }
     if (config_->belief == static_cast<uint8_t>(belief)) return;
     config_->belief = static_cast<uint8_t>(belief);
     dirty_ = true;
@@ -165,6 +211,13 @@ class PowerControl {
   // or being set up, so the machine may be switched.
   void tick(uint32_t nowMs, uint32_t epochS, bool idle, IActuator &bot) {
     epochS_ = epochS;
+    if (lastUseMs_ == 0) lastUseMs_ = nowMs ? nowMs : 1;  // from start-up: nothing known before
+    if (autoOffMin_ && job_ == Job::IDLE && idle && belief() == PowerBelief::ON &&
+        static_cast<uint32_t>(nowMs - lastUseMs_) >= static_cast<uint32_t>(autoOffMin_) * 60000u) {
+      config_->belief = static_cast<uint8_t>(PowerBelief::OFF);
+      dirty_ = true;
+      autoOff_ = true;
+    }
     schedule(nowMs, epochS);
     switch (job_) {
       case Job::IDLE:
@@ -189,6 +242,7 @@ class PowerControl {
             } else {
               config_->belief = static_cast<uint8_t>(target_ ? PowerBelief::ON : PowerBelief::OFF);
               dirty_ = true;
+              if (target_) onSinceMs_ = lastUseMs_ = nowMs ? nowMs : 1;
             }
             end(Outcome::DONE);
             break;
@@ -270,7 +324,11 @@ class PowerControl {
       const uint16_t ofDay = static_cast<uint16_t>(ofWeek % 1440);
       for (const PowerScheduleEntry &e : config_->schedule) {
         if (e.enabled && e.minuteOfDay == ofDay && (e.days & (1u << day))) {
-          request(e.turnOn != 0, nowMs, PowerBy::SCHEDULE);
+          if (!request(e.turnOn != 0, nowMs, PowerBy::SCHEDULE)) {
+            skipped_ = true;
+            skippedOn_ = e.turnOn != 0;
+            skippedWhy_ = outcome_;
+          }
         }
       }
     }
@@ -288,6 +346,14 @@ class PowerControl {
   bool haveMinute_ = false;
   uint32_t lastMinute_ = 0;
   uint32_t epochS_ = 0;
+  uint16_t autoOffMin_ = 0;
+  uint32_t lastUseMs_ = 0;    // last press that switched it on, or shot; 0 until the first tick
+  uint32_t onSinceMs_ = 0;    // when it was last switched on; 0: not since start-up
+  bool autoOff_ = false;
+  bool believedOnByShot_ = false;
+  bool skipped_ = false;
+  bool skippedOn_ = false;
+  Outcome skippedWhy_ = Outcome::NONE;
   PowerEvent event_;
   bool eventReady_ = false;
 };

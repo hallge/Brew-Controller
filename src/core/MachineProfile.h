@@ -73,6 +73,13 @@ struct MachineProfile {
   uint32_t shareHash = 0;       // machineHash() of what was sent
   char reviewNote[NOTES_LEN] = {};
   char libraryId[LIBRARY_ID_LEN] = {};
+  // Added at the end of the record. The machine switches itself off after this many minutes with
+  // nothing done on it (core/PowerControl.h setAutoOffMin); 0: it does not, or not known. Kept on
+  // this controller only (an owner's setting, not part of a shared description). The Breville Dual
+  // Boiler (BES920XL instruction book, "Power Save Mode"): power save after 1 hour idle, off
+  // completely after 4 hours unused; Auto Off is on by default, and its menu setting (A OF) only
+  // turns it on or off.
+  uint16_t autoOffMin = 240;
 
   MachineStyle machineStyle() const { return static_cast<MachineStyle>(style); }
   // The brew bot starts the shot.
@@ -125,6 +132,7 @@ inline MachineProfile makeMachine(const char *maker, const char *model, const ch
   m.tapPreinfusion = tapPreinfusion ? 1 : 0;
   m.powerToggle = powerToggle ? 1 : 0;
   m.builtin = builtin;
+  m.autoOffMin = 0;  // a general profile: not known
   return m;
 }
 
@@ -167,6 +175,7 @@ inline void sanitizeMachine(MachineProfile &m) {
   // Only a button the bot holds can be held.
   if (m.machineStyle() != MachineStyle::TOGGLE) m.holdPreinfusion = 0;
   if (m.selfStopS > 600) m.selfStopS = 0;
+  if (m.autoOffMin > 1440) m.autoOffMin = 0;
 }
 
 // Of what a machine record says: what it is and how it is worked.

@@ -3,11 +3,14 @@
 #ifndef BBW_EMULATOR
 
 #include "LibraryLink.h"
+#include "NetWorker.h"
 
 #include <Arduino.h>
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+
+#include "SafeTls.h"
 #include <time.h>
 
 #include "BigMem.h"
@@ -35,8 +38,9 @@ char g_token[128];
 char g_relayBase[96];        // "https://host"; empty: no relay
 bool g_viaRelay = false;
 bool g_keyMissing = false;
-WiFiClientSecure *g_client;  // one connection, kept open between requests
-WiFiClientSecure *g_relayClient;
+bool g_refused = false;
+SafeTlsClient *g_client;  // one connection, kept open between requests
+SafeTlsClient *g_relayClient;
 char *g_relayBody;           // RELAY_BODY_SIZE, in PSRAM
 // {"path":"...","record":"<the envelope, escaped>"}: every character escaped, at worst.
 constexpr size_t RELAY_BODY_SIZE = 2 * SHARE_ENVELOPE_MAX + 256;
@@ -90,7 +94,7 @@ const char *explain(int code) {
 void begin(HTTPClient &http, const char *url, const char *accept) {
   if (g_viaRelay) {
     if (!g_relayClient) {
-      g_relayClient = new WiFiClientSecure();
+      g_relayClient = new SafeTlsClient();
       g_relayClient->setCACertBundle(rootca_crt_bundle_start);
       g_relayClient->setHandshakeTimeout(15);  // the relay's chain is checked in software too
     }
@@ -103,7 +107,7 @@ void begin(HTTPClient &http, const char *url, const char *accept) {
     return;
   }
   if (!g_client) {
-    g_client = new WiFiClientSecure();
+    g_client = new SafeTlsClient();
     g_client->setCACert(GITHUB_ROOTS_PEM);  // nothing else is trusted
     g_client->setHandshakeTimeout(CONNECT_TIMEOUT_MS / 1000);
   }
@@ -123,6 +127,12 @@ void begin(HTTPClient &http, const char *url, const char *accept) {
 
 void libraryLinkSetRelay(const char *base) { strlcpy(g_relayBase, base ? base : "", sizeof(g_relayBase)); }
 
+bool libraryTakeRefused() {
+  const bool refused = g_refused;
+  g_refused = false;
+  return refused;
+}
+
 bool libraryTakeKeyMissing() {
   const bool missing = g_keyMissing;
   g_keyMissing = false;
@@ -135,6 +145,7 @@ void libraryLinkConfigure(const char *repo, const char *token) {
   const bool own = g_repo[0] != '\0' && g_token[0] != '\0';
   g_viaRelay = !own && g_relayBase[0] != '\0';
   g_keyMissing = false;
+  g_refused = false;
   strlcpy(g_status.repository, g_viaRelay ? g_relayBase + (strncmp(g_relayBase, "https://", 8) == 0 ? 8 : 0) : g_repo,
           sizeof(g_status.repository));
   g_status.configured = own || g_viaRelay;
@@ -184,11 +195,18 @@ bool relayPut(const char *path, const char *text) {
     strlcpy(g_status.problem, "the relay asked for this controller's key first", sizeof(g_status.problem));
     return false;
   }
+  if (code == 400 || code == 401 || code == 403 || code == 413) {
+    g_refused = true;
+    g_status.lastHttp = code;
+    strlcpy(g_status.problem, "the relay refused a record; it was dropped", sizeof(g_status.problem));
+    LOGW("library: the relay refused %s for good (answer %d)", path, code);
+    return false;
+  }
   fail(code, explain(code));
   return false;
 }
 
-bool libraryPut(const char *path, const char *text) {
+bool putHere(const char *path, const char *text) {
   if (!libraryLinkReady() || !path || !text) return false;
   if (g_viaRelay) return relayPut(path, text);
   if (!g_body) g_body = bigArray<char>(BODY_SIZE);
@@ -216,7 +234,7 @@ bool libraryPut(const char *path, const char *text) {
   return false;
 }
 
-bool libraryGet(const char *path, char *out, size_t size) {
+bool getHere(const char *path, char *out, size_t size) {
   if (!libraryLinkReady() || !path || !out || size < 2) return false;
   out[0] = '\0';
   char url[224];
@@ -269,6 +287,25 @@ bool libraryGet(const char *path, char *out, size_t size) {
   }
   succeeded(code);
   return true;
+}
+
+// On the network task's stack (NetWorker.h).
+bool libraryPut(const char *path, const char *text) {
+  struct Job { const char *path, *text; bool ok; } job{path, text, false};
+  netRun([](void *c) {
+    Job &j = *static_cast<Job *>(c);
+    j.ok = putHere(j.path, j.text);
+  }, &job);
+  return job.ok;
+}
+
+bool libraryGet(const char *path, char *out, size_t size) {
+  struct Job { const char *path; char *out; size_t size; bool ok; } job{path, out, size, false};
+  netRun([](void *c) {
+    Job &j = *static_cast<Job *>(c);
+    j.ok = getHere(j.path, j.out, j.size);
+  }, &job);
+  return job.ok;
 }
 
 LibraryLinkStatus libraryLinkStatus() {

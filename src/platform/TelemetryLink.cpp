@@ -8,9 +8,12 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+#include "SafeTls.h"
+
 #include <memory>
 
 #include "LibraryLink.h"
+#include "NetWorker.h"
 #include "Log.h"
 
 // Mozilla's root certificates in ESP-IDF's bundle format, linked in by board_build.embed_files.
@@ -30,7 +33,19 @@ void say(char *problem, size_t size, const char *text) {
 
 }  // namespace
 
+int postHere(const char *url, const char *envelope, char *problem, size_t problemSize);
+
+// On the network task's stack (NetWorker.h).
 int diagPost(const char *url, const char *envelope, char *problem, size_t problemSize) {
+  struct Job { const char *url, *envelope; char *problem; size_t size; int code; } job{url, envelope, problem, problemSize, -1};
+  netRun([](void *c) {
+    Job &j = *static_cast<Job *>(c);
+    j.code = postHere(j.url, j.envelope, j.problem, j.size);
+  }, &job);
+  return job.code;
+}
+
+int postHere(const char *url, const char *envelope, char *problem, size_t problemSize) {
   say(problem, problemSize, "");
   if (!url || strncmp(url, "https://", 8) != 0) {
     say(problem, problemSize, "the relay's address is not an https link");
@@ -47,7 +62,7 @@ int diagPost(const char *url, const char *envelope, char *problem, size_t proble
   // One TLS connection at a time: the library's is let go first.
   libraryLinkRelease();
   // On the heap, not the loop task's stack: a TLS client carries the whole mbedTLS context.
-  std::unique_ptr<WiFiClientSecure> tls(new WiFiClientSecure());
+  std::unique_ptr<SafeTlsClient> tls(new SafeTlsClient());
   tls->setCACertBundle(rootca_crt_bundle_start);
   tls->setHandshakeTimeout(HANDSHAKE_TIMEOUT_S);
   HTTPClient http;

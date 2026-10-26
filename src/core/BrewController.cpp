@@ -503,9 +503,13 @@ void BrewController::tick(uint32_t nowMs) {
     case State::CONNECTING_SCALE:
       if (scaleUsable(nowMs)) {
         // Nothing is known about what is on a scale that has just connected.
-        if (cupMemory_.present && static_cast<uint32_t>(nowMs - lastGoodRxMs_) > CUP_MEMORY_MAX_GAP_MS) {
-          cupMemory_.present = false;  // away too long: the remembered cup proves nothing
+        if (cupMemory_.present && (!cupMemoryFromRestart_ ||
+                                   static_cast<uint32_t>(nowMs - lastGoodRxMs_) > CUP_MEMORY_MAX_GAP_MS)) {
+          // Back after the scale dropped out or slept, or away too long: the remembered cup proves
+          // nothing. Only the cup from before a controller restart is believed.
+          cupMemory_.present = false;
         }
+        cupMemoryFromRestart_ = false;
         cupPresent_ = false;
         cupInitPending_ = true;
         haveStable_ = false;
