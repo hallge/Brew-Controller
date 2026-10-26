@@ -100,7 +100,28 @@ paired and asleep, which is the normal idle state.
 
 ## 3. Build and flash
 
-PlatformIO, Arduino-ESP32 2.0.x, NimBLE-Arduino 1.4.3, LVGL 8.4.
+A new board needs the firmware put on it once over USB. After that it updates itself over Wi-Fi
+(Setup, Firmware; see [Firmware updates](#firmware-updates)). Pick one of three ways.
+
+**1. In the browser (easiest).** Open **<https://hallge.github.io/Brew-Controller/>** in Chrome or
+Edge on a computer, plug the board in by USB-C, click Install and pick the board. Erase it when
+asked. If the board is not in the list, unplug it, hold BOOT while plugging it back in, and try
+again.
+
+**2. Windows program.** Download `BrewController-Flasher.exe` from the
+[latest release](https://github.com/hallge/Brew-Controller/releases/latest) and run it with the
+board plugged in. It finds the board, downloads the latest `factory.bin`, checks its SHA256, asks
+whether to erase first (yes for a new board) and flashes it. It is not code-signed, so Windows
+SmartScreen says "Windows protected your PC": click *More info*, then *Run anyway*. Options:
+`--port COM5`, `--file factory.bin` for a local image, `--no-erase`.
+
+After either: join the controller's Wi-Fi `BrewByWeight-xxxx`, open <http://192.168.4.1>, and
+continue with [First run](#4-first-run).
+
+Both use `factory.bin` from the release: bootloader, partition table and app in one image,
+written at 0x0, with the app in the factory slot (0x10000), the version kept as the safe one.
+
+**3. Build it yourself with PlatformIO.** Arduino-ESP32 2.0.x, NimBLE-Arduino 1.4.3, LVGL 8.4.
 
 ```bash
 pio run
@@ -116,8 +137,7 @@ pio device monitor
 
 If upload does not start, hold BOOT while plugging in USB.
 
-No board yet? `emu
-un.cmd` runs this firmware on the PC with an emulated
+No board yet? `emu\run.cmd` runs this firmware on the PC with an emulated
 display, Lunar, Bot and machine; see `emu/README.md`.
 
 Host tests for the brew logic (any C++17 compiler):
@@ -125,6 +145,12 @@ Host tests for the brew logic (any C++17 compiler):
 ```bash
 CXX=g++ test/host/run.sh
 ```
+
+**For maintainers.** Each `v*` tag runs `.github/workflows/release.yml`, which attaches
+`factory.bin` and the `.exe` to the release and then runs `.github/workflows/pages.yml` to put
+the web flasher and that `factory.bin` on GitHub Pages. Pages has to be turned on once in the
+repository: Settings, Pages, Source: **GitHub Actions**. The flasher's own tests:
+`python -m unittest discover -s flasher/win`.
 
 ## 4. First run
 

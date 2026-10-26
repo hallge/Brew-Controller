@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  actions: write  # start pages.yml after the release
 
 jobs:
   release:
@@ -32,6 +33,22 @@ jobs:
         env:
           PLATFORMIO_BUILD_FLAGS: -DBBW_VERSION='"${{ github.ref_name }}"'
         run: pio run
+      - name: Factory image
+        # One image for a first flash over USB (web flasher, BrewController-Flasher.exe):
+        # the same files and offsets as `pio run -t upload` on a blank board, with the app in the
+        # factory slot. boot_app0.bin names the empty app0; the bootloader then falls back to
+        # factory, and the firmware corrects the boot record (FirmwareUpdate.cpp, updateBegin).
+        # Flash mode, frequency and size are the ones PlatformIO uses for this board.
+        run: |
+          pip install esptool==5.5.0
+          B=$(ls -d .pio/build/*/ | head -1)
+          python -m esptool --chip esp32s3 merge-bin -o factory.bin \
+            --flash-mode dio --flash-freq 80m --flash-size 16MB \
+            0x0 "$B/bootloader.bin" \
+            0x8000 "$B/partitions.bin" \
+            0xe000 ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin \
+            0x10000 "$B/firmware.bin"
+          python -m esptool --chip esp32s3 image-info factory.bin
       - name: Collect files
         run: |
           mkdir out
@@ -39,11 +56,53 @@ jobs:
           cp .pio/build/*/firmware.elf out/firmware.elf
           cp .pio/build/*/bootloader.bin out/bootloader.bin
           cp .pio/build/*/partitions.bin out/partitions.bin
-          (cd out && sha256sum firmware.bin firmware.elf bootloader.bin partitions.bin > SHA256SUMS.txt)
+          cp factory.bin out/factory.bin
+          # Controllers read the firmware.bin line (FirmwareUpdate.cpp): its format stays, and
+          # factory.bin is added after the existing lines.
+          (cd out && sha256sum firmware.bin firmware.elf bootloader.bin partitions.bin > SHA256SUMS.txt \
+            && sha256sum factory.bin >> SHA256SUMS.txt && cat SHA256SUMS.txt)
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" out/firmware.bin out/firmware.elf out/bootloader.bin out/partitions.bin out/SHA256SUMS.txt \
-            --title "${{ github.ref_name }}" --generate-notes \
-            --notes "Install **firmware.bin** from the controller's web page: Setup, Firmware. bootloader.bin and partitions.bin are only needed for a first flash over USB."
+          cat > notes.md <<'NOTES'
+          Install **firmware.bin** from the controller's web page: Setup, Firmware.
+
+          **A new board** (first flash over USB), either:
+          - **In the browser:** https://hallge.github.io/Brew-Controller/ in Chrome or Edge on a computer.
+          - **On Windows:** run **BrewController-Flasher.exe** (added to this release a few minutes after it appears). It is not code-signed, so Windows SmartScreen shows "Windows protected your PC" with an unknown publisher: click *More info*, then *Run anyway*.
+
+          Both write **factory.bin** (bootloader, partition table and app in one image, at 0x0). bootloader.bin and partitions.bin are the same pieces separately, for flashing with esptool or PlatformIO.
+          NOTES
+          gh release create "${{ github.ref_name }}" out/firmware.bin out/firmware.elf out/bootloader.bin out/partitions.bin out/factory.bin out/SHA256SUMS.txt \
+            --title "${{ github.ref_name }}" --generate-notes --notes-file notes.md
+      - name: Update the web flasher
+        # A release made with this token starts no other workflow by itself, so start the Pages
+        # deploy here, on main (the github-pages environment deploys only from the default branch).
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref "${{ github.event.repository.default_branch }}" -f tag="${{ github.ref_name }}"
+
+  flasher-exe:
+    # BrewController-Flasher.exe: flasher/win/flash.py with esptool, one file, unsigned.
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install esptool==5.5.0 pyinstaller==6.22.3
+      - name: Tests
+        run: python -m unittest discover -s flasher/win -v
+      - name: Build
+        run: >-
+          pyinstaller --onefile --name BrewController-Flasher --collect-data esptool
+          --distpath dist --workpath build-exe flasher/win/flash.py
+      - name: Smoke test
+        run: ./dist/BrewController-Flasher.exe --help
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.ref_name }}" dist/BrewController-Flasher.exe --repo "${{ github.repository }}"

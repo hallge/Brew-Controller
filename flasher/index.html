@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brew Controller Flasher</title>
+<meta name="description" content="Install the Brew Controller firmware on a LILYGO T-Display S3 AMOLED Plus from the browser.">
+<script type="module" src="https://cdn.jsdelivr.net/npm/esp-web-tools@10.4.0/dist/web/install-button.js"></script>
+<style>
+  :root {
+    --bg: #faf8f5; --fg: #2a2420; --muted: #6b6159; --card: #ffffff; --line: #e4ddd5;
+    --accent: #7a4a2a; --accent-fg: #ffffff; --warn-bg: #fff4e0; --warn-line: #e8c58a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1916; --fg: #ede6df; --muted: #a89c91; --card: #26221e; --line: #3a342e;
+      --accent: #d29a6c; --accent-fg: #1c1916; --warn-bg: #33291a; --warn-line: #6b5329;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 680px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 1.7rem; margin: 0 0 4px; }
+  .lead { color: var(--muted); margin: 0 0 24px; }
+  section {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px 20px; margin: 0 0 16px;
+  }
+  h2 { font-size: 1.05rem; margin: 0 0 8px; }
+  ol { margin: 0; padding-left: 1.3em; }
+  li { margin: 4px 0; }
+  .install { text-align: center; padding: 24px 20px; }
+  esp-web-install-button button[slot="activate"] {
+    font: inherit; font-weight: 600; font-size: 1.05rem; cursor: pointer;
+    background: var(--accent); color: var(--accent-fg); border: 0; border-radius: 8px;
+    padding: 12px 28px;
+  }
+  .note {
+    background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 8px;
+    padding: 10px 14px; margin: 12px 0 0; text-align: left;
+  }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: 0.95em; }
+  .small { color: var(--muted); font-size: 0.9rem; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Brew Controller</h1>
+  <p class="lead">Put the firmware on a new controller (LILYGO T-Display S3 AMOLED Plus) straight from this page.
+    <span id="version"></span></p>
+
+  <section>
+    <h2>Before you start</h2>
+    <ol>
+      <li>Use <b>Chrome</b> or <b>Edge</b> on a computer (Windows, Mac, Linux or a Chromebook).
+        Phones, Safari and Firefox cannot talk to USB devices.</li>
+      <li>Plug the board into the computer with a <b>USB-C cable that carries data</b>
+        (some charging cables do not).</li>
+    </ol>
+  </section>
+
+  <section class="install">
+    <esp-web-install-button manifest="manifest.json">
+      <button slot="activate">Install</button>
+      <span slot="unsupported">
+        <div class="note">This browser cannot flash boards. Open this page in Chrome or Edge on a computer.</div>
+      </span>
+      <span slot="not-allowed">
+        <div class="note">Flashing needs a secure page. Open <a href="https://hallge.github.io/Brew-Controller/">hallge.github.io/Brew-Controller</a>.</div>
+      </span>
+    </esp-web-install-button>
+    <p class="small">Click Install, pick the board in the list (it may be called
+      <i>USB JTAG/serial debug unit</i>), and leave it plugged in until it says it is done.
+      A new board should be erased when asked.</p>
+  </section>
+
+  <section>
+    <h2>If the board is not in the list</h2>
+    <ol>
+      <li>Unplug it.</li>
+      <li>Hold the <b>BOOT</b> button on the board, plug it back in, then let go.</li>
+      <li>Click Install again. After flashing, press the reset button or unplug and replug it once.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>After flashing</h2>
+    <ol>
+      <li>The screen shows the controller's own Wi-Fi network, <code>BrewByWeight-xxxx</code>.
+        Join it from your phone or computer.</li>
+      <li>Open <a href="http://192.168.4.1">http://192.168.4.1</a> in a browser.</li>
+      <li>Enter your home Wi-Fi there. Later updates come over Wi-Fi (Setup, Firmware),
+        so you only need this page once.</li>
+    </ol>
+  </section>
+
+  <p class="small">No Chrome or Edge? Each <a href="https://github.com/hallge/Brew-Controller/releases/latest">release</a>
+    also has <code>BrewController-Flasher.exe</code> for Windows. It is not code-signed, so Windows
+    SmartScreen says "Windows protected your PC": click <i>More info</i>, then <i>Run anyway</i>.
+    Source and instructions: <a href="https://github.com/hallge/Brew-Controller">github.com/hallge/Brew-Controller</a>.</p>
+</main>
+<script>
+  fetch("manifest.json").then(r => r.json()).then(m => {
+    if (m.version && m.version !== "dev") document.getElementById("version").textContent = "Version " + m.version + ".";
+  }).catch(() => {});
+</script>
+</body>
+</html>
