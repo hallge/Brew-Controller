@@ -388,9 +388,11 @@ void editStep(int direction, bool held) {
       break;
     case 1: r.doseG += direction * (held ? 0.5f : 0.1f); break;
     case 2: {
-      int um = r.grindUm ? r.grindUm : 250;  // somewhere to start from on first use
+      // Somewhere to start from on first use: the middle of the grinder's range, else 250 (microns).
+      const bbw::StepRange range = bbw::stepRange(app::grinder().modelId);
+      int um = r.grindUm ? r.grindUm : (range.known ? (range.lo + range.hi) / 2 : 250);
       um += direction * (held ? 10 : 1);
-      r.grindUm = static_cast<uint16_t>(um < 1 ? 1 : (um > 2000 ? 2000 : um));
+      r.grindUm = bbw::clampToRange(um, range);
       break;
     }
     case 3: r.targetTimeS += direction * (held ? 1.0f : 0.5f); break;

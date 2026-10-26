@@ -1277,6 +1277,7 @@ void handleGrind() {
   JsonDocument doc;
   doc["recipe"] = active.name;
   doc["action"] = bbw::grindActionName(a.action);
+  doc["at_limit"] = a.atLimit;
   doc["current_um"] = a.currentUm;
   doc["suggested_um"] = a.suggestedUm;
   doc["delta_um"] = a.deltaUm;
@@ -2282,6 +2283,9 @@ void handleGetRecommend() {
   for (JsonObjectConst e : catalog["coffees"].as<JsonArrayConst>()) {
     const char *id = e["id"] | "";
     if (!id[0] || known(id) || nc >= 64) continue;
+    char byName[bbw::LIBRARY_ID_LEN + 8];  // the same coffee on the shelf, not linked to the library yet
+    tasteKey("", e["roaster"] | "", e["name"] | "", byName, sizeof(byName));
+    if (known(byName)) continue;
     bbw::Coffee c;
     strlcpy(c.name, e["name"] | "", sizeof(c.name));
     strlcpy(c.roaster, e["roaster"] | "", sizeof(c.roaster));

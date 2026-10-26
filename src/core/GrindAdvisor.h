@@ -24,6 +24,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "GrinderRegistry.h"
 #include "Types.h"
 
 namespace bbw {
@@ -90,6 +91,9 @@ enum class GrindAction : uint8_t {
   // average says nothing about the grind, so no advice is given.
   INCONSISTENT,
 };
+
+struct GrindAdvice;
+inline void keepAdviceInRange(GrindAdvice &advice, const StepRange &range);
 
 inline const char *grindActionName(GrindAction a) {
   switch (a) {
@@ -218,7 +222,8 @@ struct GrindAdvice {
   float umPerS = 0.0f;         // sensitivity applied
   bool learned = false;        // true: measured from history, false: starting guess
   uint8_t learnShots = 0;      // shots behind the measured sensitivity
-  bool stepLimited = false;    // the full correction exceeded maxStepUm
+  bool stepLimited = false;    // the full correction exceeded maxStepUm (or the grinder's range)
+  bool atLimit = false;        // it wants to go further, but the grinder is at the end of its range
   uint8_t outliersIgnored = 0; // one-off shots left out of the average
   bool newestIgnored = false;  // ...and the most recent shot was one of them
   float newestTimeS = 0.0f;    // brew time of the most recent shot at this setting
@@ -244,6 +249,25 @@ struct GrindAdvice {
   bool betweenSteps = false;   // no setting between the two: the closer one is kept
   bool outOfRange = false;     // from a shot too long or too short to count (adviseOutOfRange)
 };
+
+// The grinder cannot go past the ends of its range: a suggestion beyond one is the end itself, and
+// at the end already there is nothing to turn (atLimit), not "finer by 0".
+inline void keepAdviceInRange(GrindAdvice &advice, const StepRange &range) {
+  if (advice.action != GrindAction::FINER && advice.action != GrindAction::COARSER) return;
+  if (!advice.currentUm) return;
+  const uint16_t kept = clampToRange(advice.suggestedUm, range);
+  if (kept != advice.suggestedUm) {
+    advice.suggestedUm = kept;
+    advice.deltaUm = static_cast<int16_t>(static_cast<int>(kept) - static_cast<int>(advice.currentUm));
+    advice.stepLimited = true;
+  }
+  if (advice.deltaUm == 0 || (advice.action == GrindAction::FINER) != (advice.deltaUm < 0)) {
+    advice.deltaUm = 0;
+    advice.suggestedUm = advice.currentUm;
+    advice.atLimit = true;
+    advice.action = GrindAction::HOLD;
+  }
+}
 
 // Whether the advice can name a setting rather than only a direction: its sensitivity rests on
 // shots (this coffee's, or this grinder's other coffees), not on the guess; or it is the largest step

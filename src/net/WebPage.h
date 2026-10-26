@@ -719,6 +719,8 @@ $('cshared').innerHTML=sm.length?'<h2 style="color:#8cc4ff;margin-top:6px">In th
 let RT=null,RS=null;
 const ATTR_LABEL=['Acidity','Sweetness','Body','Bitterness','Finish'],FAM_LABEL=['Fruity','Floral','Sweet / caramel','Chocolate / nutty','Spicy','Roasty / smoky','Fermented / winey','Earthy / green'];
 const starTxt=n=>'★'.repeat(n)+'☆'.repeat(5-n);
+// "2 more coffees": what is still needed before recommendations appear (3 rated coffees).
+const moreTxt=n=>{const k=Math.max(1,3-(n||0));return k+' more coffee'+(k==1?'':'s')};
 function drinkerName(id){return !id?'Household':(RT&&RT.drinkers[id-1])||('Drinker '+id)}
 async function loadRatings(){try{RT=await get('/api/coffee/ratings')}catch(e){RT=null}drawRating();drawDrinkers();if(location.hash=='#insights'&&typeof drawTaste=='function')drawTaste()}
 function drawDrinkers(){const el=$('drnames');if(!el||!RT)return;el.innerHTML=RT.drinkers.map((n,i)=>`<label>Drinker ${i+1}<input id="drn${i}" maxlength="16" value="${esc(n)}"></label>`).join('')}
@@ -727,8 +729,8 @@ function saveDrinkers(){post('/api/drinkers',{names:[...Array(8)].map((_,i)=>($(
 function ratingFor(cid,bag,dr){return RT?RT.ratings.find(r=>r.coffee==cid&&r.bag==bag&&r.drinker==dr):null}
 function drawRating(){const el=$('crate');if(!el||!L)return;const c=C&&coffee(C);if(!c||!RT){el.style.display='none';return}el.style.display='';
 const named=RT.named,people=named?RT.drinkers.map((n,i)=>[i+1,n]).filter(x=>x[1]):[];
-if(!RS||RS.coffee!=C){const dr=named&&people.length?(RS&&RS.drinker&&RT.drinkers[RS.drinker-1]?RS.drinker:people[0][0]):0,old=ratingFor(C,c.bagId||0,dr);
-RS=old?{coffee:C,id:old.id,drinker:dr,stars:old.stars,attr:[...old.attr],fl:old.flavours}:{coffee:C,id:0,drinker:dr,stars:0,attr:[0,0,0,0,0],fl:0}}
+if(!RS||RS.coffee!=C||(RS.bag==null&&RS.forBag!=(c.bagId||0))){const dr=named&&people.length?(RS&&RS.drinker&&RT.drinkers[RS.drinker-1]?RS.drinker:people[0][0]):0,old=ratingFor(C,c.bagId||0,dr);
+RS=old?{coffee:C,id:old.id,drinker:dr,stars:old.stars,attr:[...old.attr],fl:old.flavours}:{coffee:C,id:0,drinker:dr,stars:0,attr:[0,0,0,0,0],fl:0};RS.forBag=c.bagId||0}
 $('crwho').innerHTML=named?(people.length?'<span class="sm dim">Who is rating:</span>'+people.map(([id,n])=>`<button class="${id==RS.drinker?'on':''}" onclick="pickDrinker(${id})">${esc(n)}</button>`).join(''):'<span class="sm dim">Named drinkers is on, but no names are set: add them in Setup.</span>'):'';
 $('crstars').innerHTML='<span class="stars">'+[1,2,3,4,5].map(n=>`<button class="${n<=RS.stars?'on':''}" aria-label="${n} star${n>1?'s':''}" onclick="RS.stars=${n};drawRating()">★</button>`).join('')+'</span>'+(RS.stars?'':'<span class="sm dim">tap to rate</span>');
 $('crattr').innerHTML=ATTR_LABEL.map((l,i)=>`<label>${l} <span class="dim">${RS.attr[i]?RS.attr[i]+' / 5':'not given'}</span><input type="range" min="0" max="5" step="1" value="${RS.attr[i]}" oninput="RS.attr[${i}]=+this.value;this.previousElementSibling.textContent=+this.value?this.value+' / 5':'not given'"></label>`).join('');
@@ -738,7 +740,7 @@ $('crnote').textContent=RS.id?'Changing your rating of this bag'+(named?' ('+dri
 const mine=RT.ratings.filter(r=>r.coffee==C);
 $('crlist').innerHTML=mine.length?mine.map(r=>{const b=(L.bags||[]).find(x=>x.id==r.bag),attrs=r.attr.map((v,i)=>v?ATTR_LABEL[i].toLowerCase()+' '+v:'').filter(Boolean).join(', '),fl=FAM_LABEL.filter((_,i)=>r.flavours&(1<<i)).map(x=>x.toLowerCase()).join(', ');
 return `<div class="item" style="cursor:default"><div><b style="color:var(--acc)">${starTxt(r.stars)}</b> <span class="sm">${named||r.drinker?esc(drinkerName(r.drinker))+' · ':''}${r.t?new Date(r.t*1000).toLocaleDateString():''}${b&&b.roastDate?' · bag roasted '+fd(b.roastDate):''}</span><div class="sm dim">${[attrs,fl].filter(Boolean).join(' · ')||'stars only'}${r.share&&r.share!='local'?' · shared: '+esc(r.share):''}</div></div><div style="white-space:nowrap"><button class="tbtn" onclick="editRating(${r.id})">Edit</button><button class="tbtn del" onclick="delRating(${r.id})">Delete</button></div></div>`}).join(''):'<div class="sm dim">Not rated yet.</div>'}
-function pickDrinker(id){RS=null;const c=coffee(C),old=ratingFor(C,(c&&c.bagId)||0,id);RS=old?{coffee:C,id:old.id,drinker:id,stars:old.stars,attr:[...old.attr],fl:old.flavours}:{coffee:C,id:0,drinker:id,stars:0,attr:[0,0,0,0,0],fl:0};drawRating()}
+function pickDrinker(id){RS=null;const c=coffee(C),old=ratingFor(C,(c&&c.bagId)||0,id);RS=old?{coffee:C,id:old.id,drinker:id,stars:old.stars,attr:[...old.attr],fl:old.flavours}:{coffee:C,id:0,drinker:id,stars:0,attr:[0,0,0,0,0],fl:0};RS.forBag=(c&&c.bagId)||0;drawRating()}
 function editRating(id){const r=RT.ratings.find(x=>x.id==id);if(!r)return;RS={coffee:C,id:r.id,drinker:r.drinker,stars:r.stars,attr:[...r.attr],fl:r.flavours,bag:r.bag};drawRating();$('crate').scrollIntoView({behavior:'smooth'})}
 function saveRating(){const c=coffee(C);if(!c||!RS)return;if(!RS.stars)return say('Give it 1 to 5 stars first',false);
 post('/api/coffee/rate',{id:RS.id||0,coffee:C,bag:RS.bag!=null?RS.bag:(c.bagId||0),drinker:RS.drinker,stars:RS.stars,attr:RS.attr,flavours:RS.fl}).then(r=>{done(r,'Rating saved');if(r.ok){RS.id=r.id;loadRatings()}})}
@@ -767,7 +769,7 @@ drawReco();$('itbest').innerHTML=(t.best||[]).length?'<div class="subh">Liked be
 async function loadForYou(){const box=$('foryou');if(!box)return;const chips=[];
 const tr=await get('/api/taste/recommend?drinker='+(typeof TPD!='undefined'?TPD:0)).catch(()=>null);
 if(tr&&tr.shown&&tr.items&&tr.items.length)chips.push(`<a href="#discover">Coffees you might like: <b>${esc(tr.items[0].name||'')}</b>${tr.items.length>1?' and '+(tr.items.length-1)+' more':''}</a>`);
-else if(tr&&!tr.shown)chips.push(`<a href="#coffees">Rate ${Math.max(1,3-(tr.coffees||0))} more coffee${3-(tr.coffees||0)==1?'':'s'} to get coffee recommendations</a>`);
+else if(tr&&!tr.shown)chips.push(`<a href="#coffees">Rate ${moreTxt(tr.coffees)} to get coffee recommendations</a>`);
 const sr=await get('/api/subscriptions/recommend?drinker='+(typeof TPD!='undefined'?TPD:0)).catch(()=>null);
 if(sr&&sr.items&&sr.items.length)chips.push(`<a href="#subscriptions" onclick="setTimeout(()=>{const e=$('subreco');if(e)e.scrollIntoView({behavior:'smooth'})},300)">Subscriptions you might like: <b>${esc(sr.items[0].service.name)}</b></a>`);
 if(G&&G.has_number&&(G.action=='finer'||G.action=='coarser')&&G.suggested_um)chips.push(`<a href="#grinder">Next shot: ${G.action} ${fdn(G.delta_um)} ${fdu()}, to ${fs(G.suggested_um)}</a>`);
@@ -775,11 +777,11 @@ $('fychips').innerHTML=chips.join('');box.style.display=chips.length?'':'none'}
 async function drawReco(){const el=$('ireco');if(!el)return;let r;try{r=await get('/api/taste/recommend?drinker='+TPD)}catch(e){el.style.display='none';return}el.style.display='';
 $('irwho').textContent=TPD&&RT?drinkerName(TPD):'';
 const fromTxt={shelf:'Your shelf',library:'Library',community:'Library ratings'};
-if(!r.shown){$('irlist').innerHTML=`<div class="sm dim">Rate ${Math.max(1,3-r.coffees)} more coffee${3-r.coffees==1?'':'s'} (Coffees page) and recommendations appear here.</div>`;$('iragain').innerHTML='';return}
+if(!r.shown){$('irlist').innerHTML=`<div class="empty">Rate ${moreTxt(r.coffees)} on the <a href="#coffees">Coffees</a> page and recommendations appear here.</div>`;$('iragain').innerHTML='';return}
 $('irlist').innerHTML=r.items.length?r.items.map(it=>{const like=it.like&&coffee(it.like);const why=it.why.length?'<b>'+esc(it.why.join(', '))+'</b>':'',likeTxt=like?`Like the ${esc(like.name)} you gave <span style="color:var(--acc)">${starTxt(it.like_stars)}</span>`:'';
 const extra=[it.people_stars?`drinkers like you: ★${it.people_stars}`:'',it.community_n?`library: ★${it.community_stars} from ${it.community_n}`:'',it.sure<.4?'a guess from its description':''].filter(Boolean).join(' · ');
 const desc=[it.roaster,it.origin,it.process].filter(Boolean).map(esc).join(' · ');
-return `<${it.coffee?'a href="#coffees" onclick="C='+it.coffee+'"':'div'} class="reco"><span class="src">${fromTxt[it.from]||''}</span><b>${esc(it.name)}</b>${desc?'<div class="sm dim">'+desc+'</div>':''}${why?'<div class="sm" style="margin-top:6px">'+why+'</div>':''}${likeTxt?'<div class="sm dim">'+likeTxt+'</div>':''}${extra?'<div class="sm dim">'+extra+'</div>':''}</${it.coffee?'a':'div'}>`}).join(''):'<div class="sm dim">Nothing to recommend yet: every coffee on your shelf is rated, and the shared library has none that match your taste.</div>';
+return `<${it.coffee?'a href="#coffees" onclick="C='+it.coffee+'"':'div'} class="reco"><span class="src">${fromTxt[it.from]||''}</span><b>${esc(it.name)}</b>${desc?'<div class="sm dim">'+desc+'</div>':''}${why?'<div class="sm" style="margin-top:6px">'+why+'</div>':''}${likeTxt?'<div class="sm dim">'+likeTxt+'</div>':''}${extra?'<div class="sm dim">'+extra+'</div>':''}</${it.coffee?'a':'div'}>`}).join(''):'<div class="empty">Nothing new to recommend yet. Coffees on your shelf that you have not rated, and coffees in the shared library that match your taste, appear here as they come.</div>';
 $('iragain').innerHTML=(r.buy_again||[]).length?'<span class="dim">Buy again:</span> '+r.buy_again.map(b=>`${esc(b.name)} <span style="color:var(--acc)">${starTxt(b.stars)}</span>`).join(', '):''}
 
 function drawCoffees(){drawCoffeeList();drawRating();const c=coffee(C)||{roastLevel:0};$('ctitle').textContent=C?'Coffee':'New coffee';
@@ -941,7 +943,7 @@ $('srmatters').innerHTML=Object.keys(SRC_TXT).map(k=>`<button class="${m.include
 function toggleMatter(k){SUBS.country=$('sr_country').value.trim().toUpperCase();const m=new Set(SUBS.matters||[]);m.has(k)?m.delete(k):m.add(k);SUBS.matters=[...m];drawPrefs();subPrefs()}
 function subPrefs(){SUBS.country=$('sr_country').value.trim().toUpperCase();post('/api/subscriptions/prefs',{country:SUBS.country,matters:SUBS.matters||[]}).then(r=>{if(r.ok)loadSubReco()})}
 async function loadSubReco(){drawPrefs();let r;try{r=await get('/api/subscriptions/recommend?drinker='+(typeof TPD!='undefined'?TPD:0))}catch(e){return}
-const el=$('srlist');$('srbasis').textContent=r.basis=='taste'?'By how their coffees taste to you':r.basis=='reviews'?'By reviews and what matters to you, until you have rated '+Math.max(0,3-r.coffees)+' more coffees':'';
+const el=$('srlist');$('srbasis').textContent=r.basis=='taste'?'By how their coffees taste to you':r.basis=='reviews'?'By reviews and what matters to you, until you have rated '+moreTxt(r.coffees):'';
 el.innerHTML=(r.items||[]).length?r.items.map(it=>libCard(it.service,`${it.why&&it.why.length?`<div class="why">${it.why.map(w=>`<span style="background:var(--accbg);color:var(--acctext)">${esc(w)}</span>`).join('')}</div>`:''}${it.people?`<span class="sm mid">${esc(it.people)}</span>`:''}`)).join(''):
 `<div class="sm mid" style="grid-column:1/-1">${LIBS.length?'Nothing to suggest yet: services you already have are left out, and so are those that do not ship to your country.':'Suggestions come from the shared library\'s services, how their coffees taste to people like you, and their reviews. The library has none listed yet.'}</div>`}
 // Sharing, on the form.
@@ -1074,6 +1076,7 @@ else if(G.action=='inconsistent'){title='Brew times vary: no advice';cls='warn';
 why=`The last ${G.shots_used} shots at ${fs(G.current_um)} ran from ${f1(G.min_time_s)} s to ${f1(G.max_time_s)} s against a target of ${G.target_time_s} s ± ${G.tolerance_s} s, some fast and some slow. Their average (${f1(G.average_time_s)} s) describes none of them, so it is not used. If the grinder was changed between them, enter its setting: shots are only compared at the same setting. Otherwise look at dose, distribution and tamp. A shot can be left out on the Shots page.`+out}
 else if(G.out_of_range){const fin=G.action=='finer';title=`Go ${fin?'finer':'coarser'} ${fdn(G.delta_um)} ${fdu()}, to ${fs(G.suggested_um)}`;cls='warn';why=short=`The last shot ran ${fin?'too short (under 15 s)':'more than 15 s over the target'} to be counted, so its time cannot size the change. The direction is clear: this is the largest single change. The next shot gets the usual advice.`}
 else if(G.action=='hold'&&G.between_steps){title='Keep '+fs(G.current_um)+' (closest step)';cls='ok';why=basis+' The target lies between this setting and the next one, which ran on the other side of it; there is no setting between them, so the closer one is kept.'+out;short=basis}
+else if(G.action=='hold'&&G.at_limit){title='Keep '+fs(G.current_um)+' (end of the range)';cls='warn';why=basis+' The shots ask for a change past the end of this grinder's range, so there is nothing left to turn: try a different dose, or a fresher or older coffee.'+out;short=basis}
 else if(G.action=='hold'){title='Keep '+fs(G.current_um);cls='ok';why=basis+' Inside tolerance.'+out;short=basis}
 else{const fin=G.action=='finer';title=`Go ${fin?'finer':'coarser'} ${fdn(G.delta_um)} ${fdu()}, to ${fs(G.suggested_um)}${G.refined?' (to your liked time)':''}`;cls='warn';short=basis+` Running ${f1(Math.abs(G.error_s))} s ${fin?'fast':'slow'}.`;
 why=short+sens+(G.step_limited?' Limited to the largest single change; expect another step.':'')+out;b.style.display='';b.textContent='I set the grinder to '+fs(G.suggested_um)}
@@ -1100,7 +1103,7 @@ const today=()=>{const t=new Date();return t.getFullYear()*10000+(t.getMonth()+1
 let GM=[];
 async function loadCommunityGrinders(){try{GM=(await get('/api/community/grinders')).grinders||[]}catch(e){}if(L)drawGrinder()}
 const gmPick=()=>{const v=$('gm_model').value;return v[0]=='L'?{lib:GM.find(x=>x.id==v.slice(2))}:{own:L.grinderModels.find(x=>x.id==+v)}};
-function grinderForm(){const p=gmPick(),m=p.own||(p.lib&&{model:p.lib.model,unit:p.lib.unit,umPerUnit:p.lib.um_per_unit,burrs:p.lib.burrs||''});
+function grinderForm(){const p=gmPick(),m=p.own||(p.lib&&{model:p.lib.model,unit:p.lib.unit,umPerUnit:p.lib.um_per_unit,burrs:p.lib.burrs||'',divisor:p.lib.divisor||1,subSteps:p.lib.sub_steps||0});
 if(m){$('gm_name').value=m.model;$('gm_unit').value=m.unit;$('gm_umPerUnit').value=m.umPerUnit||'';$('gm_divisor').value=m.divisor||1;$('gm_subSteps').value=m.subSteps||m.sub_steps||'';const known=L.grinderModels.map(x=>x.burrs).concat(GM.map(x=>x.burrs||''));if(!$('gm_burrs').value||known.includes($('gm_burrs').value))$('gm_burrs').value=m.burrs}
 $('gm_divisor').disabled=+$('gm_subSteps').value>=2}
 function drawGrinder(){const g=L.grinder,o=L.otherGrinder,libSel=g.libraryId&&GM.some(x=>x.id==g.libraryId);

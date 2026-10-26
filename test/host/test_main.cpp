@@ -4642,10 +4642,38 @@ static void testLibrary() {
   setGrinder(gl, g, false);
   CHECK(gl.grinder.modelId == 0 && strcmp(gl.grinder.model, "Home built") == 0);
   CHECK(gl.grinder.umPerUnit == 0.0f && gl.grinder.calibration == 4);
+  // Another model read the same way (a dial in whole numbers): 15 on one is not 15 on the other.
+  gl.presets[0].grindUm = 15;
+  g = Grinder{};
+  copyText(g.model, "Other dial", GRINDER_NAME_LEN);
+  copyText(g.unit, "dial", GRINDER_UNIT_LEN);
+  setGrinder(gl, g, false);
+  CHECK(gl.presets[0].grindUm == 0 && gl.grinder.calibration == 5);
+  // The same grinder named again: kept.
+  gl.presets[0].grindUm = 15;
+  setGrinder(gl, g, false);
+  CHECK(gl.presets[0].grindUm == 15 && gl.grinder.calibration == 5);
+  // A built-in, then the same model picked from the library's list: not another grinder.
+  {
+    Library ml = defaultLibrary();
+    Grinder sette;
+    sette.modelId = 11;
+    setGrinder(ml, sette, false);
+    ml.presets[0].grindUm = 120;
+    Grinder picked = ml.grinder;
+    picked.modelId = 0;
+    copyText(picked.libraryId, "baratza-sette-270", LIBRARY_ID_LEN);
+    setGrinder(ml, picked, false);
+    CHECK(ml.presets[0].grindUm == 120);
+    Grinder niche;
+    niche.modelId = 5;
+    setGrinder(ml, niche, false);
+    CHECK(ml.presets[0].grindUm == 0);
+  }
   static uint8_t gb[LIBRARY_MAX_BYTES];
   const size_t gn = encodeLibrary(gl, gb, sizeof(gb));
-  CHECK(gn != 0 && decodeLibrary(gb, gn, back) && back.grinder.calibration == 4 &&
-        strcmp(back.grinder.model, "Home built") == 0);
+  CHECK(gn != 0 && decodeLibrary(gb, gn, back) && back.grinder.calibration == 5 &&
+        strcmp(back.grinder.model, "Other dial") == 0);
 }
 
 // What an earlier build stored, brought forward: its settings (recipes with
@@ -5200,6 +5228,33 @@ static void testShare() {
 }
 
 // What the shared library says, turned into a setting for this grinder.
+static void testGrindRange() {
+  printf("grind advice: never past the ends of the grinder's range\n");
+  const StepRange niche = stepRange(5);  // Niche Zero: 1 to 50
+  CHECK(niche.known && niche.lo == 1 && niche.hi == 50);
+  CHECK(!stepRange(4).known && stepRange(4).hi == 2000);  // no range published: anything stored
+  GrindAdvice a;
+  a.action = GrindAction::FINER;
+  a.currentUm = 3;
+  a.suggestedUm = 1;
+  a.deltaUm = -2;
+  keepAdviceInRange(a, niche);
+  CHECK(a.action == GrindAction::FINER && a.suggestedUm == 1 && !a.atLimit);  // inside: untouched
+  a.currentUm = 1;  // at the finest already, asked for finer still
+  a.suggestedUm = 1;
+  a.deltaUm = 0;
+  keepAdviceInRange(a, niche);
+  CHECK(a.action == GrindAction::HOLD && a.atLimit && a.deltaUm == 0);
+  GrindAdvice b;
+  b.action = GrindAction::COARSER;
+  b.currentUm = 48;
+  b.suggestedUm = 55;
+  b.deltaUm = 7;
+  keepAdviceInRange(b, niche);
+  CHECK(b.action == GrindAction::COARSER && b.suggestedUm == 50 && b.deltaUm == 2 && b.stepLimited);
+  CHECK(clampToRange(0, niche) == 1 && clampToRange(999, niche) == 50);
+}
+
 static void testShareWithdrawAndLinks() {
   printf("share: a deleted rating is withdrawn; shop links go as https\n");
   static char body[SHARE_BODY_MAX];
@@ -7486,6 +7541,7 @@ int main() {
   testResultScreenLetsGo();
   testCommunityModel();
   testShareWithdrawAndLinks();
+  testGrindRange();
   testPowerBeliefDrift();
   testCupNotTrustedAfterScaleSleep();
   testBuiltinGrinders();

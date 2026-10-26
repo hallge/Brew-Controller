@@ -2171,6 +2171,7 @@ bbw::GrindAdvice grindAdvice() {
   if (scan.newestSeen && scan.newestSetting == recipe.grindUm) {
     bbw::adviseOutOfRange(g_grindAdvice, scan.newestUse, recipe.grindUm, config);
   }
+  bbw::keepAdviceInRange(g_grindAdvice, bbw::stepRange(grinderNow.modelId));
   g_lastCountedEpochS = scan.newestEpochS;
   g_grindAdviceStale = false;
   return g_grindAdvice;
@@ -2410,6 +2411,7 @@ CommunityView community(uint16_t coffeeId, uint16_t recipeId) {
   const uint8_t myBasis = settings().grindTimeBasis == bbw::GrindTimeBasis::POUR ? 1 : 0;
   view.start = bbw::communityStart(view.dialin, view.fit, grinder, view.age, view.myAgeDays, myFlow, myBasis,
                                    view.model);
+  if (view.start.setting) view.start.setting = bbw::clampToRange(view.start.setting, bbw::stepRange(grinder.modelId));
   return view;
 }
 

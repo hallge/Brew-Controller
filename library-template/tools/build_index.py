@@ -47,6 +47,7 @@ import argparse
 import base64
 import glob
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -281,17 +282,23 @@ def build_taste(root, min_contributors=2, log=print):
                     if len(tasted) >= 2 else {})
         services[sid] = {"n": len(rs), "contributors": len({kid for kid, _, _ in rs}),
                          "stars": round(statistics.fmean(stars), 2), "cup": cup, "flavours": flavours}
+    # Who is who stays in the library: a keyed hash, the key from the build's secrets, else new each build.
+    salt = (os.environ.get("BBW_PEOPLE_SALT") or os.urandom(16).hex()).encode()
+
+    def person_of(kid, drinker):
+        return hmac.new(salt, f"{kid}/{drinker}".encode(), hashlib.sha256).hexdigest()[:12]
+
     people = {}
     for key, kid, drinker, body in ratings:
         if key in coffees:
-            person = hashlib.sha256(f"{kid}/{drinker}".encode()).hexdigest()[:12]
+            person = person_of(kid, drinker)
             people.setdefault(person, {})[key] = int(body["stars"])
     # A drinker's liking for a service: the mean of their stars for the coffees it sent ("svc:<id>").
     liking = {}
     for key, kid, drinker, body in ratings:
         sid = body.get("service")
         if sid in services:
-            person = hashlib.sha256(f"{kid}/{drinker}".encode()).hexdigest()[:12]
+            person = person_of(kid, drinker)
             liking.setdefault((person, sid), []).append(int(body["stars"]))
     for (person, sid), stars in liking.items():
         if person in people:
@@ -474,7 +481,11 @@ def _fit_component(insts, by_instance, group_of, maker):
     for grp in members:
         if grp not in group_scale:
             continue
-        zeros = [offset[g] for g in members[grp] if g in offset]
+        latest = {}
+        for g in members[grp]:
+            if g in offset and (g[0] not in latest or g[1] > latest[g[0]][1]):
+                latest[g[0]] = g
+        zeros = [offset[g] for g in latest.values()]
         groups[grp] = {"scale": group_scale[grp], "known": grp in maker, "instances": len(members[grp]),
                        "axis": axis, "offset_spread": zero_spread(zeros),
                        # where a grinder of this model typically sits: for a new owner who has no

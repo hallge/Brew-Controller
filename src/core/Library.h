@@ -606,8 +606,19 @@ inline void setGrinder(Library &lib, Grinder in, bool rezeroed) {
   in.calibration = was.calibration;
   if (rezeroed || (changed && !firstNaming)) in.calibration = lib.nextCalibration++;
   else if (in.zeroDate == 0) in.zeroDate = was.zeroDate;
-  // Read in another unit, the numbers entered so far mean nothing.
-  if (!firstNaming && unitChanged) {
+  // Read in another unit, or on another model, the numbers entered so far mean nothing here.
+  // The model by its library entry: the one picked, or the one a built-in is seeded as (the same
+  // grinder picked either way is not another model).
+  auto entryOf = [](const Grinder &g) -> const char * {
+    if (g.libraryId[0]) return g.libraryId;
+    const GrinderModel *builtin = findGrinderModel(g.modelId);
+    return builtin ? builtin->libraryId : "";
+  };
+  const char *inEntry = entryOf(in), *wasEntry = entryOf(was);
+  const bool otherModel = inEntry[0] || wasEntry[0] ? strcmp(inEntry, wasEntry) != 0
+                                                    : in.modelId != was.modelId ||
+                                                          (in.modelId == 0 && strcmp(in.model, was.model) != 0);
+  if (!firstNaming && (unitChanged || otherModel)) {
     for (uint8_t i = 0; i < lib.presetCount; ++i) lib.presets[i].grindUm = 0;
   }
   // The same grinder keeps its standing with the library; another model is

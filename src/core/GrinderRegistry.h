@@ -68,4 +68,24 @@ inline const GrinderModel *findGrinderModel(uint16_t id) {
   return nullptr;
 }
 
+// The settings a grinder can be at, in stored steps: its model's range, else anything the
+// controller stores (1 to 2000).
+struct StepRange {
+  uint16_t lo = 1, hi = 2000;
+  bool known = false;
+};
+inline StepRange stepRange(uint16_t modelId) {
+  StepRange r;
+  const GrinderModel *m = findGrinderModel(modelId);
+  if (m && m->maxStep > m->minStep) {
+    r.lo = m->minStep ? m->minStep : 1;
+    r.hi = m->maxStep;
+    r.known = true;
+  }
+  return r;
+}
+inline uint16_t clampToRange(int value, const StepRange &r) {
+  return static_cast<uint16_t>(value < r.lo ? r.lo : (value > r.hi ? r.hi : value));
+}
+
 }  // namespace bbw
