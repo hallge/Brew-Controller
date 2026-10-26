@@ -763,7 +763,20 @@ void controlTask(void *) {
       // else, a shot's result or a fault included.
       const bbw::State state = g_controller.state();
       const bool idle = g_controller.idleForPower();
+      g_powerControl.setAutoOffMin(g_machine.autoOffMin);
       g_powerControl.tick(now, static_cast<uint32_t>(time(nullptr)), idle, g_power);
+      {
+        bool skippedOn = false;
+        bbw::PowerControl::Outcome why;
+        if (g_powerControl.takeSkipped(skippedOn, why)) {
+          LOGI("power: schedule: %s not pressed: %s", skippedOn ? "on" : "off", bbw::PowerControl::outcomeText(why));
+        }
+        if (g_powerControl.takeAutoOff()) {
+          LOGI("power: nothing done for %u min: the machine has switched itself off; believed off",
+               static_cast<unsigned>(g_machine.autoOffMin));
+        }
+        if (g_powerControl.takeBelievedOnByShot()) LOGI("power: a shot ran: the machine is on; believed on");
+      }
       if (g_powerControl.takeDirty()) g_pushersDirty = true;
       bbw::PowerEvent powerEvent;
       if (g_powerControl.takeEvent(powerEvent) && g_powerEventsQueued < 4) {
@@ -794,8 +807,12 @@ void controlTask(void *) {
         const uint32_t heardAt = g_ble.scaleHeardAtMs();
         const uint32_t quietMs = scaleConnected ? 0 : (heardAt == 0 ? UINT32_MAX : now - heardAt);
         const bool wasResting = g_scaleRest.resting();
-        const bool restable = state == State::READY ||
-                              ((state == State::SHOT_COMPLETE || bbw::isFault(state)) && g_controller.idleForPower());
+        // Not while the machine is warming up (switched on in the last 30 minutes): someone is
+        // about to brew, and a scale let go switches itself off while they prepare (26 Oct 2026).
+        constexpr uint32_t WARM_UP_MS = 30UL * 60UL * 1000UL;
+        const bool restable = (state == State::READY ||
+                               ((state == State::SHOT_COMPLETE || bbw::isFault(state)) && g_controller.idleForPower())) &&
+                              !g_powerControl.switchedOnWithin(now, WARM_UP_MS);
         const bool resting = g_scaleRest.update(now, g_settings.scaleRestMin, restable,
                                                 scaleConnected, st.weightG, quietMs);
         if (resting != wasResting) {
@@ -3394,6 +3411,8 @@ void loop() {
   {
     Lock lock;
     haveShot = g_controller.takeCompletedShot(shot);
+    // A shot that poured shows the machine on, and restarts its own off-timer.
+    if (haveShot && shot.finalWeightG > 5.0f) g_powerControl.noteUse(millis());
     if (haveShot) {
       // Every reading of the shot, copied while the controller cannot start
       // the next one; written to flash below, outside the lock.

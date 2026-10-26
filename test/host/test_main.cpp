@@ -2224,6 +2224,103 @@ static void testBuiltinGrinders() {
   CHECK(niche.divisor == 4);
 }
 
+static void testPowerBeliefDrift() {
+  printf("power bot: a machine that switches itself off; a skipped scheduled press is told\n");
+  PusherConfig config;
+  strcpy(config.powerAddress, "aa:bb:cc:dd:ee:ff");
+  PowerControl power;
+  power.begin(&config);
+  power.setAutoOffMin(20);
+  FakeBot bot;
+  bot.up = true;
+  uint32_t now = 1000;
+  power.believe(PowerBelief::ON);
+  power.takeDirty();
+  // Nothing done on it for 19 minutes: still believed on.
+  power.tick(now, 0, true, bot);
+  power.tick(now += 19 * 60000, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::ON && !power.takeAutoOff());
+  // A shot at 19 minutes restarts the machine's own timer.
+  power.noteUse(now);
+  CHECK(!power.takeBelievedOnByShot());  // believed on already
+  power.tick(now += 19 * 60000, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::ON);
+  // 20 minutes after the shot: it has switched itself off.
+  power.tick(now += 60000, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::OFF && power.takeAutoOff() && power.takeDirty());
+  // So "on" presses the button again instead of finding it on already.
+  CHECK(power.request(true, now));
+  power.tick(now += 10, 0, true, bot);
+  bot.done();
+  power.tick(now += 10, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::ON);
+  // Just switched on: warming up for 30 minutes.
+  CHECK(power.switchedOnWithin(now, 30 * 60000));
+  CHECK(!power.switchedOnWithin(now + 31 * 60000, 30 * 60000));
+  // Not while a shot is in hand (idle false), however long.
+  power.tick(now += 60 * 60000, 0, false, bot);
+  CHECK(power.belief() == PowerBelief::ON);
+  // A shot while it is believed off: it is on after all.
+  power.believe(PowerBelief::OFF);
+  power.noteUse(now);
+  CHECK(power.belief() == PowerBelief::ON && power.takeBelievedOnByShot());
+  // Without an off-timer nothing changes by itself.
+  power.setAutoOffMin(0);
+  power.tick(now += 24 * 3600000u, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::ON);
+
+  // The schedule's "on" while believed on already: not pressed, and that is told.
+  const uint32_t mondayMidnightUtc = 1791763200u;
+  config.utcOffsetMin = 0;
+  config.schedule[0] = {1, 1, 8 * 60, 0x7f};
+  const int presses = bot.presses;
+  for (uint32_t e = mondayMidnightUtc + 8 * 3600 - 120; e <= mondayMidnightUtc + 8 * 3600 + 120; e += 20) {
+    power.tick(now += 20000, e, true, bot);
+  }
+  bool on = false;
+  PowerControl::Outcome why;
+  CHECK(bot.presses == presses && power.takeSkipped(on, why) && on && why == PowerControl::Outcome::ALREADY);
+  CHECK(!power.takeSkipped(on, why));
+}
+
+static void testCupNotTrustedAfterScaleSleep() {
+  printf("cup: not believed after the scale dropped out or slept, only after a controller restart\n");
+  // As testCupRemembered: a shot, then a fresh cup put on and tared; the scale's timer holds the
+  // shot's time, so the remembered cup would match on the timer.
+  Rig r;
+  r.settings.requireCup = true;
+  r.toReady();
+  r.run(1000);
+  r.sim.trueWeightG += 62.0;
+  r.run(3000);
+  r.ctl.requestStart();
+  CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+  r.ctl.acknowledge();
+  r.run(500);
+  r.sim.trueWeightG -= 62.0 + 36.0;
+  r.run(2000);
+  r.sim.trueWeightG += 70.0;                    // fresh cup
+  r.run(3000);
+  CHECK(r.ctl.status(r.sim.nowMs).cupPresent);
+  const CupMemory kept = r.ctl.cupMemory();
+  CHECK(kept.present && kept.scaleTimerMs > 0);
+  // The scale is let go and naps for 40 s, its stopped timer held; meanwhile the cup is lifted,
+  // and the scale wakes reading 0 g: everything the old rule checked matches.
+  r.sim.timerHeldMs = r.sim.timerMs();
+  r.sim.scaleLink = false;
+  r.run(20000);
+  r.sim.trueWeightG -= 70.0;
+  r.sim.tareOffsetG = r.sim.trueWeightG;
+  r.run(20000);
+  r.sim.scaleLink = true;
+  CHECK(r.runUntil(State::READY, 10000));
+  r.run(3000);
+  CHECK(!r.ctl.status(r.sim.nowMs).cupPresent);   // not believed: no shot onto nothing
+  r.ctl.requestStart();
+  r.run(500);
+  CHECK(r.ctl.state() == State::READY);           // refused until a cup is seen going on
+}
+
 static void testResultScreenLetsGo() {
   printf("a shot's result left showing: power may be pressed, and the scale gone sends it home\n");
   Rig r;
@@ -7301,6 +7398,8 @@ int main() {
   testShotDataSet();
   testReadingNewerThanTick();
   testResultScreenLetsGo();
+  testPowerBeliefDrift();
+  testCupNotTrustedAfterScaleSleep();
   testBuiltinGrinders();
   testDiagnostics();
   testEmptyScaleZeroed();

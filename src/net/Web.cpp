@@ -1577,6 +1577,7 @@ void machineToJson(const bbw::MachineProfile &m, JsonObject o) {
   o["tap_preinfusion"] = m.tapPreinfusion != 0;
   o["power_toggle"] = m.powerToggle != 0;
   o["self_stop_s"] = m.selfStopS;
+  o["auto_off_min"] = m.autoOffMin;
   o["builtin"] = m.builtin;
   o["library_id"] = m.libraryId;
 }
@@ -1614,6 +1615,7 @@ void handlePostMachine() {
   const int builtin = doc["builtin"] | 0;
   if (builtin >= 1 && builtin <= static_cast<int>(bbw::MACHINE_BUILTIN_COUNT)) {
     m = bbw::machineBuiltin(static_cast<size_t>(builtin - 1));
+    if (doc["auto_off_min"].is<int>()) m.autoOffMin = static_cast<uint16_t>(doc["auto_off_min"].as<int>());
   } else {
     const char *maker = doc["maker"] | "";
     const char *model = doc["model"] | "";
@@ -1634,6 +1636,7 @@ void handlePostMachine() {
     m.tapPreinfusion = (doc["tap_preinfusion"] | false) ? 1 : 0;
     m.powerToggle = (doc["power_toggle"] | false) ? 1 : 0;
     m.selfStopS = doc["self_stop_s"] | 0;
+    m.autoOffMin = static_cast<uint16_t>(doc["auto_off_min"] | 0);
     m.builtin = 0;
     bbw::sanitizeMachine(m);
     if (libraryId[0]) {

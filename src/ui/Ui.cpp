@@ -9,6 +9,7 @@
 #include "core/SettingFormat.h"
 #include "core/SettingsUtil.h"
 #include "Log.h"
+#include "Version.h"
 
 using bbw::GrindAction;
 using bbw::State;
@@ -873,6 +874,7 @@ void buildFault() {
 void buildSettings() {
   lv_obj_t *p = panels[static_cast<int>(Panel::SETTINGS)] = makePanel();
   makeLabel(p, &lv_font_montserrat_22, COLOR_ACCENT, LV_ALIGN_TOP_LEFT, 16, 12, "SETTINGS");
+  makeLabel(p, &lv_font_montserrat_20, COLOR_DIM, LV_ALIGN_TOP_LEFT, 138, 14, BBW_VERSION);  // the firmware running
   // Beside the title, then three rows of keys: the first has the toggles,
   // the bot and the scale each have a row with their state beside the key.
   makeButton(p, "ROTATE SCREEN", &lv_font_montserrat_20, COLOR_PANEL, 190, 40, LV_ALIGN_TOP_RIGHT,
