@@ -634,6 +634,49 @@ Reviews (`service_review`, filed under `svcreviews/`) and the `service` field of
 the recommendations. `taste.json` gains `services` (each service's coffees' mean taste) and `svc:<id>`
 entries in the anonymous drinkers' rows. Design: docs/SUBSCRIPTIONS.md.
 
+## 8l. The Community Hub and the coffee directory (27 Oct 2026)
+
+The **Community** page (an optional panel, Setup › Web page panels) has, from the top:
+
+- **Community feed.** Videos, playlists, posts, guides, articles and podcasts about espresso that owners
+  suggested and a reviewer approved, filtered by topic (preparation, dialling in, brewing, beans, gear,
+  milk, upkeep, science).
+  - *Suggest a link*: paste it, *Read the page* fills the title (the controller's page preview; a
+    YouTube video's picture from its id), pick what it is and up to three topics, say why in a line,
+    *Send for review*. Below: the owner's suggestions and where each stands.
+  - A suggestion is a signed `link` record (`core/Links.h`, `core/Share.h buildLinkRecord`) sent through
+    the relay to `inbox/links/<kid>/l<id>-<record>.json`. It needs this controller's key, not the
+    sharing switch: the owner sends it themselves. Its verdict comes back in `status/<kid>.json`
+    (`links`), read while any suggestion is waiting.
+  - In the library: `verify_record.py` checks it (an https link; a query is allowed, a credential in it
+    is not; a title, a kind, one to three topics). Intake opens a review pull request that would add
+    `links/<id>.json`; merged, `build_index.py` lists it in `index/links.json`, newest first. Seed links
+    are in `library-template/seed/links/` (`tools/seed.py install` copies any not there yet).
+- **Share a shot to Reddit.** A 1200 x 1200 picture made in the browser: the shot's curve, the recipe
+  and coffee, and the owner's photo if added (the phone's camera, never uploaded); and the post's text
+  in Markdown. *Download image*, *Copy text*, *Open Reddit* (r/espresso, r/Coffee or r/BrevilleCoffee,
+  title filled in; Reddit takes no picture through a link, so the owner attaches it). Also from a shot:
+  *Share to Reddit* on Home and on the Shots page. Nothing is sent by the controller.
+- **Trending recipes.** `index/trending.json`: of the dial-ins of the last 90 days, the recipes (dose,
+  yield, and how the shot starts: straight, held pre-infusion or bloom) at least two controllers settled
+  on, most people first, with their median time. *Make it a recipe* fills in a new recipe.
+- What was there before: where to start your grinder for what you are brewing, the shared library's
+  coffees and grinders, and what this controller shares.
+
+**The coffee directory** (Coffees page): every published coffee, kept on the controller so it works
+offline.
+- `build_index.py` also writes `index/directory/manifest.json` (count, pages with a hash each, and the
+  origins, processes, roast levels and roasters with their counts) and `index/directory/p<NNN>.json`
+  (100 coffees a page, each well under the controller's buffer). `coffees.json` stays for older firmware.
+- The controller reads the manifest at each library pass and fetches only the pages whose hash changed,
+  one per step, into `/dir<NNN>.json`; the manifest is kept only once every page it names is there.
+- `GET /api/directory?q=&origin=&process=&roast=&page=` searches the kept pages (every word of `q` in
+  one of the coffee's fields, filters exact) and answers 20 at a time, with the facets and which
+  coffees are on the shelf; *Add to my coffees* uses the existing library-add path.
+
+**Reviewing** links (and everything else) is done in the pull requests, or in the relay's admin console
+(`telemetry-relay/README.md`, `/admin` behind Cloudflare Access) once it is set up.
+
 ## 8b. Bean age
 
 Roasted coffee goes on changing: as a bag ages, a shot runs faster at the

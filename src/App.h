@@ -234,6 +234,14 @@ void ratingSaved(uint32_t id);
 // A rating was deleted; wasShared: it had gone (or was going) to the library, which is told to drop it.
 void ratingDeleted(uint32_t id, bool wasShared);
 const char *communityTaste();   // index/taste.json as cached; good until the next library read
+// The Community Hub (core/Links.h): index/links.json and index/trending.json as cached ("{}" if not yet).
+const char *communityLinks();
+const char *communityTrending();
+// The links this controller's owner suggested, with where each stands with the library.
+void readLinks(void (*visit)(const bbw::LinkSuggestion *links, size_t count, void *), void *context);
+// A new suggestion, sent for review at once. Its id; below 0: no room.
+int suggestLink(const bbw::LinkSuggestion &link);
+bool deleteLink(uint16_t id);
 bool powerPressAnyway();
 // One press of the brew bot, to see which pusher it is. False if a shot is in
 // hand or no brew bot is paired. Progress: "none", "waiting", "pressed", "failed".

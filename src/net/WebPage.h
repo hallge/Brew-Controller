@@ -259,7 +259,7 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <div class="head sm dim"><span>Click a shot to open it. Brew times outside the tolerance are marked; every stored value is in the CSV.</span>
 <button class="del" onclick="ask('Delete all shot history?').then(ok=>{if(ok){post('/api/history/clear').then(loadShots)}})">Clear history</button></div></section>
 <div id="sstash"><div id="sdetail"><div class="head"><div><h2 id="swhen">No shot selected</h2><div style="font-size:19px;font-weight:650" id="sname"></div></div>
-<div class="row"><button id="scmp" onclick="cmpToggle(SEL)">Add to comparison</button><span class="sm dim">For grind advice</span><span class="row" id="svote"></span></div></div>
+<div class="row"><button id="scmp" onclick="cmpToggle(SEL)">Add to comparison</button><button data-panel="community" onclick="toReddit(SEL)">Share to Reddit</button><span class="sm dim">For grind advice</span><span class="row" id="svote"></span></div></div>
 <div class="tiles" id="stiles"></div><canvas id="schart" width="900" height="200"></canvas>
 <div class="row sm dim"><span id="sdata"></span></div><div class="row sm dim" id="srate"></div></div></div>
 </div>
@@ -303,6 +303,13 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <section class="card" id="cpairs"><div class="head"><h2>Brew it with</h2><a class="sm" href="#recipes">Recipes</a></div>
 <div class="list" id="cplist"></div><div class="sm dim" id="cpinfo"></div></section>
 <section class="card"><h2>Add coffees from elsewhere</h2><div class="row"><label style="flex:1 1 240px">Look up a coffee on visualizer.coffee<input id="vzq" placeholder="coffee or roaster" onkeydown="if(event.key==='Enter')vzLookup()"></label><button style="align-self:flex-end" onclick="vzLookup()">Search</button></div><div id="vzres" class="sm mid"></div><details class="note"><summary>Fills the form above with what that shared database knows about the coffee.</summary><ul><li>You add the roast date and your own notes, then Save.</li><li>Needs a phone that is online.</li><li>The data is community-contributed and has its own terms.</li></ul></details><div class="row" style="margin-top:12px"><label style="flex:1 1 240px">Bring in coffees from a Beanconqueror backup<input type="file" accept=".json,application/json" onchange="importBeanconqueror(this)"></label><label class="chk" style="align-self:flex-end"><input type="checkbox" id="bcfin">include finished beans</label></div><details class="note"><summary>Adds the beans in a Beanconqueror export file that you do not have yet.</summary><ul><li>They come with their roast dates, opening dates, weights and any time in the freezer.</li><li>The file stays in your browser.</li><li>Shots are not imported: Beanconqueror does not know this machine's timing, so they would only confuse the grind advice.</li></ul></details></section>
+<section class="card com" id="dircard" data-panel="community"><div class="head"><h2>Coffee directory</h2><span class="sm dim" id="dircount"></span></div>
+<div class="sm mid">Every coffee published in the shared library, kept on the controller, so it works without the internet too.</div>
+<div class="row" style="margin-top:10px"><label style="flex:2 1 220px">Search<input type="search" id="dirq" placeholder="name, roaster, origin, notes" oninput="clearTimeout(DIRT);DIRT=setTimeout(()=>{DIRP=0;loadDirectory()},250)"></label>
+<label style="flex:1 1 130px">Origin<select id="diro" onchange="DIRP=0;loadDirectory()"></select></label>
+<label style="flex:1 1 130px">Process<select id="dirp" onchange="DIRP=0;loadDirectory()"></select></label>
+<label style="flex:1 1 130px">Roast<select id="dirr" onchange="DIRP=0;loadDirectory()"></select></label></div>
+<div id="dirlist" style="margin-top:10px"></div><div class="row" id="dirpager"></div></section>
 <section class="card com" data-panel="community"><h2>Community dial-in</h2><div id="ccom" class="sm mid"></div></section>
 </div></div></div>
 
@@ -455,6 +462,33 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 </div>
 <div class="page" id="p-community" data-panel="community">
 <div class="head"><h1>Community</h1><a class="sm" href="#setup" onclick="setTimeout(()=>{const e=$('sh_state');if(e)e.closest('.card').scrollIntoView({behavior:'smooth'})},300)" style="color:var(--com)">Sharing settings</a></div>
+<section class="card com" id="cmfeedcard"><div class="head"><h2>Community feed</h2><button class="tbtn" onclick="lkToggle()">Suggest a link</button></div>
+<div class="sm mid">Videos, posts and guides about espresso that owners suggested and a reviewer approved.</div>
+<div class="chips" id="cmtopics" style="margin-top:10px"></div>
+<div class="recos" id="cmfeed" style="margin-top:10px"></div>
+<div id="lkform" style="display:none;margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
+<div class="subh" style="margin-top:0">Suggest a link</div>
+<div class="row"><label style="flex:1 1 300px">Link<input id="lk_url" type="url" placeholder="https://www.youtube.com/watch?v=..." onkeydown="if(event.key==='Enter')lkRead()"></label><button style="align-self:flex-end" onclick="lkRead()">Read the page</button></div>
+<div class="sm dim" id="lk_read"></div>
+<div class="grid"><label>Title<input id="lk_title" maxlength="79"></label><label>What it is<select id="lk_kind"></select></label></div>
+<div class="sm dim" style="margin:8px 0 6px">What it is about (up to three)</div><div class="chips" id="lk_topics"></div>
+<label style="margin-top:10px">Why it is worth it (optional)<textarea id="lk_why" maxlength="160" rows="2" placeholder="What someone gets from it, in a sentence."></textarea></label>
+<input type="hidden" id="lk_image">
+<div class="row"><button class="pri" onclick="lkSend()">Send for review</button><span class="sm dim">A reviewer checks it first; once approved it shows on every controller. It goes with this controller's key: no account, nothing personal.</span></div>
+</div>
+<div id="lkmine"></div></section>
+<section class="card com" id="rdcard"><div class="head"><h2>Share a shot to Reddit</h2><span class="sm dim">Nothing is sent from the controller</span></div>
+<div class="sm mid">A picture of the shot (its curve, the recipe and the coffee, and your photo if you add one) and the post's text, ready for r/espresso.</div>
+<div class="grid" style="margin-top:10px"><label>Shot<select id="rd_shot" onchange="rdBuild()"></select></label>
+<label>Your photo (optional)<input type="file" id="rd_photo" accept="image/*" capture="environment" onchange="rdPhoto(this)"></label>
+<label>Community<select id="rd_sub" onchange="rdBuild()"><option value="espresso">r/espresso</option><option value="Coffee">r/Coffee</option><option value="BrevilleCoffee">r/BrevilleCoffee</option></select></label></div>
+<label>Title<input id="rd_title" maxlength="300"></label>
+<div class="two" style="margin-top:10px"><div><canvas id="rd_img" width="1200" height="1200" style="width:100%;height:auto;border-radius:10px;border:1px solid var(--line)"></canvas></div>
+<div><label>Post text<textarea id="rd_text" rows="14"></textarea></label>
+<div class="row"><button class="pri" onclick="rdDownload()">Download image</button><button onclick="rdCopy()">Copy text</button><button onclick="rdOpen()">Open Reddit</button></div>
+<div class="sm dim">Reddit takes no picture through a link: download the image, then on Reddit attach it to the post and paste the text.</div></div></div>
+<canvas id="rdcurve" width="560" height="235" style="display:none"></canvas></section>
+<section class="card com"><div class="head"><h2>Trending recipes</h2><span class="sm dim" id="cmtrendnote"></span></div><div id="cmtrend" class="sm mid"></div></section>
 <section class="card com"><div class="head"><h2>For what you are brewing</h2><span class="sm dim" id="cmcoffee"></span></div><div id="cmnow" class="sm mid"></div></section>
 <section class="card com"><div class="head"><h2>Coffees in the shared library</h2><span class="sm" id="cmcount"></span></div>
 <label>Search<input type="search" id="cmq" oninput="drawCommunityCoffees()" placeholder="name, roaster, origin, process"></label>
@@ -647,7 +681,7 @@ function show(){let h=(location.hash||'#home').slice(1);
 if(['insights','discover','subscriptions','community','logs'].includes(h)&&!panelOn(h)){if(location.hash!='#home')history.replaceState(null,'','#home');h='home'}
 const disc=false;document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on',p.id=='p-'+h));
 document.querySelectorAll('nav a,#bnav a,#more a').forEach(a=>a.classList.toggle('on',a.getAttribute('href')=='#'+(disc?'discover':h)));
-$('bmore').classList.toggle('on',['recipes','insights','machine','subscriptions','discover','community','setup','logs'].includes(h));$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadRatings();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees'){loadCommunityCoffees();loadRatings()}if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights')drawInsights();if(h=='discover')loadDiscover();if(h=='community')loadCommunityPage();if(h=='home'&&panelOn('discover'))loadForYou();if(h=='subscriptions')loadSubs();}
+$('bmore').classList.toggle('on',['recipes','insights','machine','subscriptions','discover','community','setup','logs'].includes(h));$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadRatings();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees'){loadCommunityCoffees();loadRatings();if(panelOn('community'))loadDirectory()}if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights')drawInsights();if(h=='discover')loadDiscover();if(h=='community')loadCommunityPage();if(h=='home'&&panelOn('discover'))loadForYou();if(h=='subscriptions')loadSubs();}
 // The optional panels (bbw::WebPanel bits): key, name, what it is, bit.
 const PANELS=[['insights','Insights','Your taste profile from your ratings, and charts: roast level against grind, coffee age against brew time, a brewing calendar, dial-in shots per bag.',1],
 ['subscriptions','Subscriptions','Coffee subscriptions: when the next delivery comes, skipping one, what is on its way.',4],
@@ -828,6 +862,7 @@ drawReco();if(!SUBS)await loadSubs();loadSubReco()}
 // what this controller shares.
 async function loadCommunityPage(){if(!L)return;const ps=L.presets[L.activePreset]||{},c=coffee(ps.coffeeId);
 $('cmcoffee').textContent=c?c.name:'';drawCommunity('cmnow',ps.coffeeId||0);
+loadFeed();loadTrending();rdShots();
 if(!CC.length)await loadCommunityCoffees();drawCommunityCoffees();
 if(!GM.length)await loadCommunityGrinders();const g=GM.filter(x=>x.id);
 $('cmgrinders').innerHTML=g.length?g.length+' grinder models, each with how its setting reads and its range. '+'<span class="dim">'+g.slice(0,12).map(x=>esc(x.model)).join(' · ')+(g.length>12?' and '+(g.length-12)+' more':'')+'</span>. Pick yours on the <a href="#grinder">Grinder</a> page; owners of the same model pool what they learn.':'<div class="empty">The shared grinder list cannot be read yet.</div>';
@@ -835,6 +870,87 @@ let sh;try{sh=await get('/api/share')}catch(e){sh=null}
 $('cmstate').textContent=!sh?'':S&&S.shareEnabled?'sharing':'not sharing';
 $('cmshare').innerHTML=!sh?'':!(S&&S.shareEnabled)?'<div class="empty">You are not sharing yet. Turn it on in <a href="#setup">Setup › Shared library</a> to send your coffees, dial-ins and (if you choose) ratings. Nothing personal leaves the controller, and no account is needed.</div>':
 `${sh.sent} record${sh.sent==1?'':'s'} sent, ${sh.waiting} waiting. ${sh.problem?'<span style="color:var(--warn)">Not reaching the library: '+esc(sh.problem)+'.</span> ':sh.last_ok?'Last reached '+new Date(sh.last_ok*1000).toLocaleString()+'. ':''}What each coffee shares, and what reviewers said, is on its page under <a href="#coffees">Coffees</a>.`}
+// ---- The Community Hub: the feed of reviewed links, suggestions, trending recipes, the Reddit packager
+const LK_KINDS=[['video','Video'],['playlist','Playlist'],['post','Post'],['guide','Guide'],['article','Article'],['podcast','Podcast']];
+const LK_TOPICS=[['preparation','Preparation'],['dialing_in','Dialling in'],['brewing','Brewing'],['beans','Beans'],['gear','Gear'],['milk','Milk'],['maintenance','Upkeep'],['science','Science']];
+const LK_STATE={queued:'waiting to send',sent:'sent',review:'with a reviewer',published:'approved: in the feed',declined:'declined',refused:'refused by the library\'s checks',local:'not sent'};
+let LK=null,LKT='',LKSEL=[];
+const ytId=u=>{const m=/(?:youtube\.com\/watch\?(?:.*&)?v=|youtu\.be\/|youtube\.com\/shorts\/)([\w-]{11})/.exec(u||'');return m?m[1]:''};
+const lkThumb=l=>l.image||(ytId(l.url)?'https://i.ytimg.com/vi/'+ytId(l.url)+'/hqdefault.jpg':'');
+const lkLabel=(list,k)=>(list.find(x=>x[0]==k)||[k,k])[1];
+async function loadFeed(){try{LK=await get('/api/links')}catch(e){LK=null}drawFeed()}
+function drawFeed(){if(!$('cmfeed'))return;const listed=(LK&&LK.listed)||[];
+$('cmtopics').innerHTML=[['','All'],...LK_TOPICS].filter(t=>!t[0]||listed.some(l=>(l.topics||[]).includes(t[0]))).map(([k,n])=>`<button class="${k==LKT?'on':''}" onclick="LKT='${k}';drawFeed()">${n}</button>`).join('');
+const shown=listed.filter(l=>!LKT||(l.topics||[]).includes(LKT));
+$('cmfeed').innerHTML=!LK?'<div class="empty">The feed cannot be read from the controller.</div>':!listed.length?'<div class="empty">Nothing in the feed yet. It fills as owners suggest links and a reviewer approves them: suggest the first one.</div>':
+shown.map(l=>{const th=lkThumb(l);return `<a class="reco" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${th?`<img src="${esc(th)}" alt="" loading="lazy" referrerpolicy="no-referrer" style="width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:8px;margin-bottom:8px;background:var(--up)">`:''}<span class="src">${esc(lkLabel(LK_KINDS,l.kind))} · ${esc(l.site||'')}</span><b>${esc(l.title)}</b>${l.why?'<div class="sm" style="margin-top:6px">'+esc(l.why)+'</div>':''}<div class="sm dim" style="margin-top:6px">${(l.topics||[]).map(t=>esc(lkLabel(LK_TOPICS,t))).join(' · ')}${l.added?' · added '+esc(l.added):''}</div></a>`}).join('');
+const mine=(LK&&LK.mine)||[];
+$('lkmine').innerHTML=mine.length?'<div class="subh">Your suggestions</div>'+mine.map(m=>`<div class="pair"><span class="what"><b>${esc(m.title)}</b> <span class="dim">${esc(LK_STATE[m.state]||m.state)}${m.note?': '+esc(m.note):''}</span></span><button class="tbtn del" onclick="lkDelete(${m.id})">Delete</button></div>`).join(''):''}
+function lkToggle(){const f=$('lkform'),open=f.style.display=='none';f.style.display=open?'':'none';if(!open)return;
+$('lk_kind').innerHTML=LK_KINDS.map(([k,n])=>`<option value="${k}">${n}</option>`).join('');LKSEL=[];lkTopics();$('lk_url').focus()}
+function lkTopics(){$('lk_topics').innerHTML=LK_TOPICS.map(([k,n])=>`<button class="${LKSEL.includes(k)?'on':''}" aria-pressed="${LKSEL.includes(k)}" onclick="lkTopic('${k}')">${n}</button>`).join('')}
+function lkTopic(k){const i=LKSEL.indexOf(k);if(i>=0)LKSEL.splice(i,1);else if(LKSEL.length<3)LKSEL.push(k);else return say('Three topics at most',false);lkTopics()}
+async function lkRead(){const u=$('lk_url').value.trim();if(!/^https?:\/\//i.test(u))return say('Paste a link starting https://',false);
+const yt=ytId(u);if(yt){$('lk_kind').value=/list=/.test(u)&&!/v=/.test(u)?'playlist':'video';$('lk_image').value='https://i.ytimg.com/vi/'+yt+'/hqdefault.jpg'}else if(/list=/.test(u))$('lk_kind').value='playlist';
+$('lk_read').textContent='Reading the page...';const r=await post('/api/subscriptions/preview',{url:u});if(r&&r.ok===false){$('lk_read').textContent=r.error||'Could not read it: type the title.';return}
+for(let i=0;i<40;i++){await new Promise(x=>setTimeout(x,750));let g;try{g=await get('/api/subscriptions/preview')}catch(e){continue}
+if(g.state=='done'){if(g.title&&!$('lk_title').value)$('lk_title').value=g.title.slice(0,79);if(g.image&&!$('lk_image').value)$('lk_image').value=g.image;$('lk_read').textContent=g.site?'Read from '+g.site+'. Check the title.':'Read. Check the title.';return}
+if(g.state=='failed'){$('lk_read').textContent='Could not read it ('+(g.problem||'no answer')+'): type the title.';return}}
+$('lk_read').textContent='No answer from the page: type the title.'}
+function lkSend(){const u=$('lk_url').value.trim(),t=$('lk_title').value.trim();if(!u)return say('Paste the link first',false);if(!t)return say('Give it a title',false);if(!LKSEL.length)return say('Pick at least one topic',false);
+post('/api/links/suggest',{url:u,title:t,kind:$('lk_kind').value,topics:LKSEL,why:$('lk_why').value.trim(),image:$('lk_image').value}).then(r=>{done(r,'Sent for review: it shows in the feed once approved');if(r.ok){['lk_url','lk_title','lk_why','lk_image'].forEach(k=>$(k).value='');$('lk_read').textContent='';LKSEL=[];$('lkform').style.display='none';loadFeed()}})}
+async function lkDelete(id){if(!await ask('Delete this suggestion from the list here? What a reviewer already approved stays in the feed.','Delete'))return;post('/api/links/delete?id='+id).then(r=>{done(r,'Deleted');loadFeed()})}
+const METHOD={straight:'straight through',preinfusion:'held pre-infusion',bloom:'bloom'};
+async function loadTrending(){let t;try{t=await get('/api/trending')}catch(e){t=null}const el=$('cmtrend');if(!el)return;const rs=(t&&t.recipes)||[];
+$('cmtrendnote').textContent=t&&t.days?'the last '+t.days+' days':'';
+el.innerHTML=rs.length?'<div class="recos">'+rs.map((r,i)=>`<div class="reco"><span class="src">#${i+1}</span><b>${r.dose_g} g in, ${r.yield_g} g out</b><div class="sm">1:${r.ratio} in about ${r.time_s} s, ${esc(METHOD[r.method]||r.method)}</div><div class="sm dim" style="margin-top:6px">${r.contributors} people, ${r.dialins} dial-in${r.dialins==1?'':'s'}, ${r.coffees} coffee${r.coffees==1?'':'s'}</div><button style="margin-top:8px" onclick="trendRecipe(${r.dose_g},${r.yield_g},${r.time_s},'${esc(r.method)}')">Make it a recipe</button></div>`).join('')+'</div>':
+'<div class="empty">Coming as more people share: the recipes owners settled on lately, once at least two people settled on the same one.</div>'}
+function trendRecipe(dose,out,time,method){location.hash='#recipes';setTimeout(()=>{R=0;drawRecipes();const set=(k,v)=>{const e=$('r_'+k);if(e){e.value=v;e.dispatchEvent(new Event('input'))}};set('name',dose+' g in, '+out+' g out');set('doseG',dose);set('targetWeightG',out);set('targetTimeS',Math.round(time));say('Filled in: check it and save')},400)}
+// The Reddit packager: a 1200 x 1200 picture and the post's text, made here in the browser.
+let RDP=null;
+function rdShots(){const sel=$('rd_shot');if(!sel||typeof SH=='undefined'||!SH)return;const cur=+sel.value||0;
+sel.innerHTML=SH.slice(0,40).map(s=>`<option value="${s.id}">${esc(when(s))} · ${esc(s.coffee||s.recipe)} · ${f1(s.final_weight_g)} g in ${f1(s.shot_time_s)} s</option>`).join('');if(cur&&SH.some(s=>s.id==cur))sel.value=cur;if(SH.length)rdBuild()}
+function toReddit(id){location.hash='#community';setTimeout(()=>{rdShots();$('rd_shot').value=id;rdBuild();$('rdcard').scrollIntoView({behavior:'smooth'})},500)}
+function rdPhoto(inp){const f=inp.files&&inp.files[0];if(!f){RDP=null;return rdBuild()}const img=new Image();img.onload=()=>{RDP=img;rdBuild()};img.src=URL.createObjectURL(f)}
+async function rdBuild(){const id=+$('rd_shot').value,s=(SH||[]).find(x=>x.id==id);if(!s)return;
+let d=null;if(s.has_data){try{d=await get('/api/shot/data?id='+id)}catch(e){}}if(+$('rd_shot').value!=id)return;
+const c=L&&L.coffees.find(x=>x.id==s.coffee_id),g=L?L.grinder:{},cs=getComputedStyle(document.documentElement),col=k=>cs.getPropertyValue(k).trim()||'#888';
+const dose=s.dose_g>0?s.dose_g:0,out=s.final_weight_g,ratio=dose?(out/dose).toFixed(1):'',days=c&&c.roastDate&&s.timestamp?Math.round((Date.parse(s.timestamp)-Date.parse(dateIso(c.roastDate)))/864e5):null;
+const name=c?c.name:(s.coffee||'Espresso');
+if(!$('rd_title').dataset.edited||$('rd_title').dataset.for!=id){$('rd_title').value=`${name}${c&&c.roaster?' ('+c.roaster+')':''}: ${dose?f1(dose)+' g in, ':''}${f1(out)} g out in ${f1(s.shot_time_s)} s`;$('rd_title').dataset.for=id;$('rd_title').oninput=()=>$('rd_title').dataset.edited=1}
+const cv=$('rd_img'),x=cv.getContext('2d'),W=1200;x.fillStyle=col('--bg');x.fillRect(0,0,W,W);
+x.fillStyle=col('--fg');x.font='600 52px sans-serif';x.fillText(name.slice(0,34),48,96);x.fillStyle=col('--dim');x.font='28px sans-serif';
+x.fillText([c&&c.roaster,c&&c.origin,c&&c.process].filter(Boolean).join(' · ').slice(0,70),48,140);
+if(d&&d.time_s&&d.time_s.length>1){draw('rdcurve',s,d.time_s,d.weight_g,d.flow_g_s);x.fillStyle=col('--card');x.fillRect(40,170,W-80,500);x.drawImage($('rdcurve'),40,185,W-80,470)}
+else{x.fillStyle=col('--card');x.fillRect(40,170,W-80,500);x.fillStyle=col('--dim');x.font='28px sans-serif';x.fillText('No curve stored for this shot',80,430)}
+const lines=[['Dose',dose?f1(dose)+' g':'not set'],['Yield',f1(out)+' g'+(ratio?' (1:'+ratio+')':'')],['Time',f1(s.shot_time_s)+' s'+(s.first_drop_s>0?', first drops '+f1(s.first_drop_s)+' s':'')],['Flow',f2(s.pour_flow_g_s)+' g/s, peak '+f2(s.peak_flow_g_s)],
+['Grind',(s.grind_um?fs(s.grind_um):'not recorded')+(g&&g.model?' on '+g.model:'')],['Start',s.bloom_pause_s?'bloom '+s.bloom_pause_s+' s':s.preinfusion_hold_s?'held pre-infusion':'machine pre-infusion'],['Roasted',c&&c.roastDate?fd(c.roastDate)+(days!=null&&days>=0?' ('+days+' days)':''):'']].filter(l=>l[1]);
+const px=RDP?600:W-80;x.fillStyle=col('--card');x.fillRect(40,700,px-40+(RDP?0:40),440);x.font='30px sans-serif';
+lines.forEach((l,i)=>{x.fillStyle=col('--dim');x.fillText(l[0],70,756+i*56);x.fillStyle=col('--fg');x.fillText(String(l[1]).slice(0,RDP?26:52),230,756+i*56)});
+if(RDP){const sz=460,sx=640,sy=700,r=Math.max(sz/RDP.width,(440)/RDP.height),w=RDP.width*r,h=RDP.height*r;x.save();x.beginPath();x.rect(sx,sy,W-40-sx,440);x.clip();x.drawImage(RDP,sx+(W-40-sx-w)/2,sy+(440-h)/2,w,h);x.restore()}
+x.fillStyle=col('--dim');x.font='22px sans-serif';x.fillText('Brew by Weight controller · github.com/hallge/Brew-Controller',48,1180);
+const md=[`**Coffee:** ${name}${c&&c.roaster?' from '+c.roaster:''}${c&&(c.origin||c.process)?' ('+[c.origin,c.process].filter(Boolean).join(', ')+')':''}${c&&c.roastDate?', roasted '+fd(c.roastDate)+(days!=null&&days>=0?' ('+days+' days before this shot)':''):''}`,
+`**Recipe:** ${dose?f1(dose)+' g in, ':''}${f1(out)} g out${ratio?' (1:'+ratio+')':''} in ${f1(s.shot_time_s)} s${s.first_drop_s>0?'; first drops at '+f1(s.first_drop_s)+' s':''}${s.bloom_pause_s?'; bloom '+s.bloom_pause_s+' s':''}`,
+`**Grind:** ${s.grind_um?fs(s.grind_um):'not recorded'}${g&&g.model?' on a '+g.model:''}`,
+`**Flow:** ${f2(s.pour_flow_g_s)} g/s on average while pouring, peak ${f2(s.peak_flow_g_s)} g/s`,
+s.taste?`**Taste:** ${s.taste}${s.rating?', '+s.rating+'/5':''}`:'',c&&c.notes?`**Tasting notes on the bag:** ${c.notes}`:'',
+'','*Stopped by weight with an open-source brew-by-weight controller: https://github.com/hallge/Brew-Controller*'].filter((l,i,a)=>l||a[i+1]);
+$('rd_text').value=md.join('\n\n').replace(/\n\n\n+/g,'\n\n')}
+function rdDownload(){const id=$('rd_shot').value;$('rd_img').toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='espresso-shot-'+id+'.png';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000)},'image/png')}
+async function rdCopy(){try{await navigator.clipboard.writeText($('rd_text').value);say('Text copied')}catch(e){$('rd_text').select();say('Select-all done: copy it with Ctrl+C',false)}}
+function rdOpen(){window.open('https://www.reddit.com/r/'+$('rd_sub').value+'/submit?title='+encodeURIComponent($('rd_title').value),'_blank','noopener')}
+// ---- The coffee directory: the library's coffees as kept on the controller (/api/directory)
+let DIRP=0,DIRT=0,DIRF=null;
+async function loadDirectory(){const el=$('dirlist');if(!el)return;const q=new URLSearchParams({q:$('dirq').value.trim(),origin:$('diro').value||'',process:$('dirp').value||'',roast:$('dirr').value||'',page:DIRP});
+let d;try{d=await get('/api/directory?'+q)}catch(e){el.innerHTML='<div class="empty">The directory cannot be read from the controller.</div>';return}
+if(d.facets&&!DIRF){DIRF=d.facets;const opt=(id,f,all)=>{$(id).innerHTML=`<option value="">${all}</option>`+Object.entries(f||{}).map(([k,n])=>`<option value="${esc(k)}">${esc(k)} (${n})</option>`).join('')};opt('diro',DIRF.origin,'Any origin');opt('dirp',DIRF.process,'Any process');opt('dirr',DIRF.roast_level,'Any roast')}
+$('dircount').textContent=d.count?d.count+' coffees':'';
+el.innerHTML=!d.kept_pages?'<div class="empty">The directory has not been read from the shared library yet. It comes with the library\'s next read (within the hour, while the controller is idle).</div>':!d.coffees.length?'<div class="empty">No coffee in the directory matches that.</div>':
+d.coffees.map(c=>`<div class="pair" style="background:var(--combg);border-color:var(--comline)"><span class="what"><b>${esc(c.name)}</b> <span class="dim">${esc([c.roaster,c.origin,c.process,c.roast_level].filter(Boolean).join(' · '))}</span>${c.stars?` <span style="color:var(--acc)">★${c.stars}</span> <span class="dim">(${c.n})</span>`:''}${c.notes?'<div class="sm dim">'+esc(c.notes)+'</div>':''}</span>${c.on_shelf?'<span class="sm dim">on your shelf</span>':`<button onclick="dirAdopt('${esc(c.id)}')">Add to my coffees</button>`}</div>`).join('');
+const pages=Math.ceil(d.matched/d.page_size);$('dirpager').innerHTML=pages>1?`<button ${DIRP?'':'disabled'} onclick="DIRP--;loadDirectory()">Previous</button><span class="sm dim">${d.matched} found · page ${DIRP+1} of ${pages}</span><button ${DIRP+1<pages?'':'disabled'} onclick="DIRP++;loadDirectory()">Next</button>`:(d.matched?`<span class="sm dim">${d.matched} found</span>`:'');
+DIRC=d.coffees}
+let DIRC=[];
+function dirAdopt(id){const c=DIRC.find(x=>x.id==id);if(!c)return;if(!CC.find(x=>x.id==id))CC.push(c);adopt(id);setTimeout(loadDirectory,1500)}
 function drawCommunityCoffees(){const el=$('cmlist');if(!el)return;const q=($('cmq').value||'').toLowerCase(),have=new Set((L?L.coffees:[]).map(c=>c.libraryId).filter(x=>x));
 const hit=CC.filter(c=>!q||[c.name,c.roaster,c.origin,c.region,c.process,c.varietal].join(' ').toLowerCase().includes(q));
 $('cmcount').textContent=CC.length?CC.length+' coffee'+(CC.length==1?'':'s'):'';
@@ -1172,8 +1288,14 @@ const gmPick=()=>{const v=$('gm_model').value;return v[0]=='L'?{lib:GM.find(x=>x
 function grinderForm(){const p=gmPick(),m=p.own||(p.lib&&{model:p.lib.model,unit:p.lib.unit,umPerUnit:p.lib.um_per_unit,burrs:p.lib.burrs||'',divisor:p.lib.divisor||1,subSteps:p.lib.sub_steps||0});
 if(m){$('gm_name').value=m.model;$('gm_unit').value=m.unit;$('gm_umPerUnit').value=m.umPerUnit||'';$('gm_divisor').value=m.divisor||1;$('gm_subSteps').value=m.subSteps||m.sub_steps||'';const known=L.grinderModels.map(x=>x.burrs).concat(GM.map(x=>x.burrs||''));if(!$('gm_burrs').value||known.includes($('gm_burrs').value))$('gm_burrs').value=m.burrs}
 $('gm_divisor').disabled=+$('gm_subSteps').value>=2}
+// The maker a model belongs to, for the picker's groups.
+function grinderMaker(n){const m=[['Barista Express','Breville'],['Breville','Breville'],['Baratza','Baratza'],['Eureka','Eureka'],['Niche','Niche'],['DF','Turin (DF)'],['1Zpresso','1Zpresso'],['Comandante','Comandante'],['Timemore','Timemore'],['Fellow','Fellow'],['Mahlk','Mahlkönig']].find(x=>n.startsWith(x[0]));return m?m[1]:(n.split(' ')[0]||'Other')}
 function drawGrinder(){const g=L.grinder,o=L.otherGrinder,libSel=g.libraryId&&GM.some(x=>x.id==g.libraryId);
-$('gm_model').innerHTML=[...L.grinderModels].sort((a,b)=>a.model.localeCompare(b.model)).map(m=>`<option value="${m.id}" ${m.id==g.modelId?'selected':''}>${esc(m.model)}${m.umPerUnit>0?'':' (steps learned from your shots)'}</option>`).join('')+GM.filter(m=>!L.grinderModels.some(x=>x.model==m.model||x.libraryId==m.id)).map(m=>`<option value="L:${esc(m.id)}" ${!g.modelId&&g.libraryId==m.id?'selected':''}>${esc(m.model)} (shared library)</option>`).join('')+`<option value="0" ${g.modelId||libSel?'':'selected'}>${g.model&&!g.modelId&&!libSel?esc(g.model)+' (yours)':g.model||g.modelId?'Another grinder: type it below':'Not set yet: pick one, or type it below'}</option>`;
+// The picker, grouped by maker: the firmware's models and the shared library's others.
+const pick=[...L.grinderModels.map(m=>({v:m.id,name:m.model,sel:m.id==g.modelId,note:m.umPerUnit>0?'':' (steps learned from your shots)'})),
+...GM.filter(m=>!L.grinderModels.some(x=>x.model==m.model||x.libraryId==m.id)).map(m=>({v:'L:'+m.id,name:m.model,sel:!g.modelId&&g.libraryId==m.id,note:' (shared library)'}))];
+const groups={};pick.forEach(m=>{(groups[grinderMaker(m.name)]=groups[grinderMaker(m.name)]||[]).push(m)});
+$('gm_model').innerHTML=Object.keys(groups).sort((a,b)=>a.localeCompare(b)).map(k=>`<optgroup label="${esc(k)}">`+groups[k].sort((a,b)=>a.name.localeCompare(b.name)).map(m=>`<option value="${esc(String(m.v))}" ${m.sel?'selected':''}>${esc(m.name)}${m.note}</option>`).join('')+'</optgroup>').join('')+`<option value="0" ${g.modelId||libSel?'':'selected'}>${g.model&&!g.modelId&&!libSel?esc(g.model)+' (yours)':g.model||g.modelId?'Another grinder: type it below':'Not set yet: pick one, or type it below'}</option>`;
 $('gm_name').value=g.model;$('gm_burrs').value=g.burrs;$('gm_unit').value=g.unit;$('gm_umPerUnit').value=g.umPerUnit||'';$('gm_divisor').value=g.divisor||1;$('gm_subSteps').value=g.subSteps||'';$('gm_zeroDate').value=i2d(g.zeroDate);grinderForm();
 if(!gmPick().own&&!gmPick().lib){$('gm_name').value=g.model;$('gm_unit').value=g.unit;$('gm_umPerUnit').value=g.umPerUnit||''}
 $('gm_info').textContent=(g.model?'In use: '+g.model+(g.burrs?', '+g.burrs:'')+'. ':'No grinder named yet. ')+'Settings are read in the unit shown: whole steps, a dial read in fractions, or two rings ("12:3").'+(()=>{const m=L.grinderModels.find(x=>x.id==g.modelId);const f=v=>{const r=m.subSteps||0,d=m.divisor||1;return r>=2?(Math.floor((v-1)/r)+1)+':'+((v-1)%r+1):d>1?String(v/d):String(v)};return m&&m.max?' Its range: '+f(m.min)+' to '+f(m.max)+'.':''})()+' Change anything to make it your own version, which you can send to the shared list for review.';
@@ -1517,7 +1639,7 @@ function rate(id,rating,taste){post('/api/shot/rate?id='+id+'&rating='+rating+'&
 const TN=['','sour','balanced','bitter'];
 function rateRow(s){const t=TN.indexOf(s.taste||'');return '<span style="display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px"><span>How did it taste?</span>'+[1,2,3].map(i=>`<button class="${t==i?'on':''}" onclick="rate(${s.id},${s.rating||0},${t==i?0:i})">${TN[i][0].toUpperCase()+TN[i].slice(1)}</button>`).join('')+'</span><span style="display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px;margin-left:8px"><span>Rating</span>'+[1,2,3,4,5].map(i=>`<button class="${s.rating==i?'on':''}" aria-label="${i} of 5" onclick="rate(${s.id},${s.rating==i?0:i},${t<0?0:t})">${i}</button>`).join('')+'</span>'+`<span style="display:inline-flex;align-items:center;gap:6px;white-space:nowrap;margin-left:8px"><span>TDS %</span><input style="width:70px" inputmode="decimal" aria-label="TDS percent from a refractometer" value="${s.tds_pct||''}" onchange="setTds(${s.id},this.value.trim())">${s.extraction_pct?`<span class="dim">extraction ${f1(s.extraction_pct)} %</span>`:''}</span>`}
 async function showShot(id,where){const s=SH.find(x=>x.id==id);if(!s)return;const big=where=='h';
-if(big){$('hshot').className='';$('hshot').innerHTML=`<div class="row" style="gap:26px;align-items:baseline"><span><span class="num">${f1(s.final_weight_g)} g</span> <span class="dim">of ${s.target_weight_g}</span></span><span><span class="num">${f1(s.shot_time_s)} s</span>${s.target_time_s?` <span class="dim">of ${s.target_time_s}</span>`:''}</span><span class="dim">${esc((s.coffee?s.coffee+', ':'')+s.recipe)}. First drops ${f1(s.first_drop_s)} s. Pour ${f1(s.pour_time_s)} s at ${f2(s.pour_flow_g_s)} g/s${s.bloom_pause_s?'. Bloom '+s.bloom_pause_s+' s':''}. ${esc(when(s))}.</span></div>`;$('hrate').innerHTML=rateRow(s)+' <button style="margin-left:12px" onclick="toBeanconqueror('+s.id+')">Send to Beanconqueror</button>';
+if(big){$('hshot').className='';$('hshot').innerHTML=`<div class="row" style="gap:26px;align-items:baseline"><span><span class="num">${f1(s.final_weight_g)} g</span> <span class="dim">of ${s.target_weight_g}</span></span><span><span class="num">${f1(s.shot_time_s)} s</span>${s.target_time_s?` <span class="dim">of ${s.target_time_s}</span>`:''}</span><span class="dim">${esc((s.coffee?s.coffee+', ':'')+s.recipe)}. First drops ${f1(s.first_drop_s)} s. Pour ${f1(s.pour_time_s)} s at ${f2(s.pour_flow_g_s)} g/s${s.bloom_pause_s?'. Bloom '+s.bloom_pause_s+' s':''}. ${esc(when(s))}.</span></div>`;$('hrate').innerHTML=rateRow(s)+' <button style="margin-left:12px" onclick="toBeanconqueror('+s.id+')">Send to Beanconqueror</button>'+(panelOn('community')?' <button onclick="toReddit('+s.id+')">Share to Reddit</button>':'');
 const d=s.final_weight_g-s.target_weight_g;$('res').textContent='Last shot '+(Math.abs(d)<0.05?'on target':(d>0?'over +':'under ')+f1(d)+' g')+(s.final_valid?'':', did not settle')}
 else{$('swhen').textContent=when(s);$('sname').textContent=(s.coffee?s.coffee+', ':'')+s.recipe;
 $('stiles').innerHTML=[['In the cup',f1(s.final_weight_g)+' g','target '+s.target_weight_g+', drip '+f1(s.drip_weight_g)],['Brew time',f1(s.shot_time_s)+' s',s.target_time_s?'target '+s.target_time_s:''],['Pour',f1(s.pour_time_s)+' s',f2(s.pour_flow_g_s)+' g/s, first drops '+f1(s.first_drop_s)+' s'],['Grind',(s.grind_um?fs(s.grind_um):'--'),s.dose_g+' g dose · <a href="#" onclick="editGrind('+s.id+','+s.grind_um+');return false">change</a>'],['Flow at 25/50/75 %',[s.flow_25_g_s,s.flow_50_g_s,s.flow_75_g_s].map(f1).join(' / '),'peak '+f2(s.peak_flow_g_s)+' g/s'],['Ended by',esc(s.end_reason.replace(/_/g,' ')),'offset '+f2(s.stop_offset_g)+' → '+f2(s.next_stop_offset_g)+' g'+(s.bloom_pause_s?', bloom '+s.bloom_pause_s+' s':'')]].map(x=>`<div class="tile"><span>${x[0]}</span><b>${x[1]}</b><span>${x[2]}</span></div>`).join('');

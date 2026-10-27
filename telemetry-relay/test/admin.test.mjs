@@ -770,3 +770,16 @@ describe('relay refusals and counters in D1', () => {
     assert.equal(readFileSync(new URL('../src/admin-pages.js', import.meta.url), 'utf8'), bundle(), 'run node tools/build-admin.mjs');
   });
 });
+
+describe('admin: Community Hub links', () => {
+  test('a link entry is checked as the library checks it', async () => {
+    const { checkListed } = await import('../src/admin.js');
+    const ok = { id: 'understanding-espresso', url: 'https://www.youtube.com/playlist?list=PLx', title: 'Understanding Espresso', kind: 'playlist', topics: ['dialing_in'] };
+    assert.doesNotThrow(() => checkListed('link', ok));
+    assert.throws(() => checkListed('link', { ...ok, url: 'https://x.example/?token=1' }), /credential/);
+    assert.throws(() => checkListed('link', { ...ok, topics: ['cats'] }), /topics/);
+    assert.throws(() => checkListed('link', { ...ok, kind: 'meme' }), /kind/);
+    const { topics, ...noTopics } = ok;
+    assert.throws(() => checkListed('link', noTopics), /topics is missing/);
+  });
+});

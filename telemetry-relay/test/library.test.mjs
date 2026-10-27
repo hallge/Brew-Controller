@@ -182,6 +182,7 @@ describe('library', () => {
       [`machines/${kid}/m1-9.json`]: 'machine',
       [`tastes/${kid}-r12.json`]: 'taste',
       [`tastes/${kid}-r12-40.json`]: 'taste',
+      [`links/${kid}/l2-50.json`]: 'link',
       [`svcreviews/${kid}-v3-41.json`]: 'service_review',
       [`svcreviews/${kid}-v3.json`]: 'service_review',
       [`shots/2026/10/${kid}-301.json`]: 'shot',

@@ -44,6 +44,11 @@ described; the rest are as the page uses them.
 | `/api/diagnostics/report` | GET | diagnostics reports (docs/TELEMETRY.md): `on`, `relay` (and `relay_default`), `waiting` (reports queued), `since` (start of the period the next covers), `last_sent`, `last_code` and `last_problem`, and the `key_id` reports are signed with |
 | `/api/diagnostics/preview` | GET | the next daily report's body, exactly as it would be sent now |
 | `/api/diagnostics/send` | POST | builds a report now and sends it as soon as the controller is idle; 409 when diagnostics are off |
+| `/api/links` | GET | the Community Hub: `listed` (the library's reviewed links, `index/links.json`) and `mine` (links this owner suggested: `state` queued, sent, review, published, declined or refused, and the reviewer's `note`) |
+| `/api/links/suggest` | POST | `{"url","title","kind","topics":[...],"why","image"}`: kept here and sent for review at once. `kind` is video, playlist, post, guide, article or podcast; one to three `topics` of preparation, dialing_in, brewing, beans, gear, milk, maintenance, science. An http link is made https; a link with a credential in its query is refused |
+| `/api/links/delete?id=` | POST | forgets a suggestion here (what a reviewer listed stays) |
+| `/api/trending` | GET | `index/trending.json` as kept: the recipes people settled on lately |
+| `/api/directory` | GET | `?q=&origin=&process=&roast=&page=`: the coffee directory kept on the controller, 20 coffees at a time, with `matched`, `count`, `facets` and `on_shelf` per coffee |
 | `/api/diagnostics/bug` | POST | `{"kind","text","contact"}`: a problem in the owner's words (at most 1000 characters; `contact` optional, at most 64), scrubbed and sent with a diagnostics report at once. `kind` is one of `other`, `brewing`, `grind_advice`, `scale`, `pushers`, `machine_power`, `web_page`, `sharing`, `firmware_update`. 409 when diagnostics are off |
 | `/api/diagnostics/relay` | POST | `{"url":"https://..."}` sends reports to another relay, for testing; `""` goes back to the built-in one |
 | `/api/crash` | GET | the last crash's report body (`diag_crash`: version, restart reason, failing task, PC, cause, backtrace, the log before it); `{}` when there has been none |

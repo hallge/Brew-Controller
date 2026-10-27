@@ -21,6 +21,7 @@
 #include "MachineProfile.h"
 #include "GrindAdvisor.h"
 #include "Library.h"
+#include "Links.h"
 #include "Sha256.h"
 #include "Subscriptions.h"
 #include "Types.h"
@@ -881,6 +882,41 @@ inline size_t buildServiceRecord(const Subscription &s, uint32_t record, uint32_
   j.textIf("color", s.color);
   asciiText(s.description, text, 161);
   j.textIf("about", text);
+  j.close();
+  return j.ok() ? j.length() : 0;
+}
+
+// A link suggested for the Community Hub, for a reviewer: the link, its title, what it is and is about,
+// and why it is worth it in the owner's words. Never anything of the owner's own.
+inline size_t buildLinkRecord(const LinkSuggestion &l, uint32_t record, uint32_t epochS, char *out, size_t size) {
+  char at[21], url[LINK_URL_LEN], text[LINK_WHY_LEN], picture[LINK_IMAGE_LEN];
+  if (!cleanLinkUrl(l.url, url, sizeof(url))) return 0;
+  if (l.kind >= LINK_KIND_COUNT || !l.topics || topicCount(l.topics) > LINK_TOPICS_MAX) return 0;
+  timeText(epochS, at);
+  JsonOut j(out, size);
+  j.open();
+  j.text("t", "link");
+  j.integer("v", 1);
+  j.textIf("at", at);
+  j.integer("record", static_cast<long>(record));
+  j.integer("local_id", l.id);
+  j.text("url", url);
+  asciiText(l.title, text, LINK_TITLE_LEN);
+  if (!text[0]) return 0;
+  j.text("title", text);
+  j.text("kind", LINK_KINDS[l.kind]);
+  j.openArray("topics");
+  for (size_t i = 0; i < LINK_TOPIC_COUNT; ++i) {
+    if ((l.topics >> i) & 1u) j.item(LINK_TOPICS[i]);
+  }
+  j.closeArray();
+  asciiText(l.why, text, sizeof(text));
+  j.textIf("why", text);
+  if (l.image[0] && !linkHasCredential(l.image)) {
+    snprintf(picture, sizeof(picture), "%s", l.image);
+    httpsLink(picture, sizeof(picture));
+    if (strncmp(picture, "https://", 8) == 0) j.text("image", picture);
+  }
   j.close();
   return j.ok() ? j.length() : 0;
 }

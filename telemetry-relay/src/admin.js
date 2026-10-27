@@ -257,9 +257,9 @@ function parseJson(text) {
 
 // What intake.py names a review branch: review/<kid>-<letter><local id>-<record>.
 const REVIEW_BRANCH = /^review\/([0-9a-f]{20})-([a-z])(\d{1,10})-(\d{1,10})$/;
-const LETTER_KIND = { c: 'coffee', g: 'grinder', m: 'machine', s: 'service' };
-const KIND_FOLDER = { coffee: 'catalog/', grinder: 'grinders/', machine: 'machines/', service: 'services/' };
-const KIND_SECTION = { coffee: 'coffees', grinder: 'grinders', machine: 'machines', service: 'services' };
+const LETTER_KIND = { c: 'coffee', g: 'grinder', m: 'machine', s: 'service', l: 'link' };
+const KIND_FOLDER = { coffee: 'catalog/', grinder: 'grinders/', machine: 'machines/', service: 'services/', link: 'links/' };
+const KIND_SECTION = { coffee: 'coffees', grinder: 'grinders', machine: 'machines', service: 'services', link: 'links' };
 
 function intakeMeta(body) {
   const match = /<!-- intake (\{.*?\}) -->/.exec(body ?? '');
@@ -336,7 +336,10 @@ function bad(message) {
   throw new Bad(message);
 }
 
-const TYPES = ['key', 'coffee', 'grinder', 'machine', 'dialin', 'shot', 'taste', 'service', 'service_review'];
+const TYPES = ['key', 'coffee', 'grinder', 'machine', 'dialin', 'shot', 'taste', 'service', 'service_review', 'link'];
+// The Community Hub's links (library-template/tools/verify_record.py LINK_KINDS, LINK_TOPICS).
+const LINK_KINDS = ['video', 'playlist', 'post', 'guide', 'article', 'podcast'];
+const LINK_TOPICS = ['preparation', 'dialing_in', 'brewing', 'beans', 'gear', 'milk', 'maintenance', 'science'];
 const CUP = ['acidity', 'sweetness', 'body', 'bitterness', 'finish'];
 const FLAVOURS = ['fruity', 'floral', 'sweet', 'chocolate', 'spicy', 'roasty', 'fermented', 'earthy'];
 const MACHINE_STYLES = ['toggle_button', 'start_button', 'manual', 'start_stop_buttons', 'hold_button'];
@@ -415,7 +418,7 @@ function checkGrinder(g) {
 
 // The link rules: https, printable, no spaces, at most 199 characters (255 for pictures); nothing of
 // one customer's own (no query or fragment, no token-like path segment; no credential in a picture's query).
-function link(obj, name, required = true) {
+function link(obj, name, required = true, hub = false) {
   if (!has(obj, name)) {
     if (required) bad(`${name} is missing`);
     return;
@@ -425,7 +428,7 @@ function link(obj, name, required = true) {
   if (typeof value !== 'string' || !value.startsWith('https://') || value.length > limit || /[^\x21-\x7e]/.test(value)) {
     bad(`${name} is not an https link of at most ${limit} characters`);
   }
-  if (name === 'image' || name === 'icon') {
+  if (name === 'image' || name === 'icon' || hub) { // pictures and Hub links (a video's ?v=) keep a query
     const at = value.indexOf('?');
     const query = at < 0 ? '' : value.slice(at + 1).toLowerCase();
     if (['token', 'key=', 'sig', 'auth', 'session', 'password'].some((word) => query.includes(word))) {
@@ -448,6 +451,20 @@ function choices(obj, name, allowed, limit) {
   const value = obj[name];
   if (!Array.isArray(value) || !value.length || value.length > limit || new Set(value).size !== value.length || value.some((v) => !allowed.includes(v))) {
     bad(`${name} is not a list taken from the controller's own`);
+  }
+}
+
+function checkLink(l, full = true) {
+  link(l, 'url', true, true);
+  text(l, 'title', 79);
+  if (!LINK_KINDS.includes(l.kind)) bad('kind is not one the controller offers');
+  if (!has(l, 'topics')) bad('topics is missing');
+  choices(l, 'topics', LINK_TOPICS, 3);
+  text(l, 'why', 160, false);
+  link(l, 'image', false);
+  if (full) {
+    number(l, 'local_id', 1, 65535);
+    number(l, 'record', 0, 4294967295);
   }
 }
 
@@ -537,6 +554,8 @@ export function checkBody(body) {
     if (!['total', 'pour'].includes(result.basis)) bad('result.basis is neither total nor pour');
   } else if (kind === 'service') {
     checkService(body);
+  } else if (kind === 'link') {
+    checkLink(body);
   } else if (kind === 'service_review') {
     number(body, 'id', 1, 4294967295);
     serviceId(body, 'service');
@@ -595,6 +614,7 @@ export function checkListed(kind, entry) {
     number(entry, 'um_per_unit', 0.01, 1000, false);
   } else if (kind === 'machine') checkMachine(entry, true);
   else if (kind === 'service') checkService(entry, false);
+  else if (kind === 'link') checkLink(entry, false);
 }
 
 // The public key for kid: the relay's KEYS first, then the library's keys/<kid>.json (itself a key
@@ -802,7 +822,7 @@ async function actReject(env, data) {
 }
 
 // What may be hidden: a published coffee, grinder, machine or service file.
-const PUBLISHED_PATH = /^(?:catalog\/[a-z0-9][a-z0-9_-]{0,63}\/[a-z0-9][a-z0-9_-]{0,63}|(?:grinders|machines|services)\/[a-z0-9][a-z0-9_-]{0,63})\.json$/;
+const PUBLISHED_PATH = /^(?:catalog\/[a-z0-9][a-z0-9_-]{0,63}\/[a-z0-9][a-z0-9_-]{0,63}|(?:grinders|machines|services|links)\/[a-z0-9][a-z0-9_-]{0,63})\.json$/;
 const INDEX_WORKFLOW = 'intake.yml'; // rebuilds the index (and takes in the inbox) on workflow_dispatch
 
 // One commit on main that moves a file: Git Data API, retried once if main moved meanwhile.

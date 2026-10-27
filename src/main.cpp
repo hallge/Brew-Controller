@@ -34,6 +34,7 @@
 #include "net/Web.h"
 #include "platform/BigMem.h"
 #include "platform/DeviceKey.h"
+#include "platform/FsUtil.h"
 #include "platform/FirmwareUpdate.h"
 #include "platform/LibraryLink.h"
 #include "platform/PagePreview.h"
@@ -207,6 +208,15 @@ bbw::ServiceReview *g_reviews;   // MAX_SERVICE_REVIEWS
 size_t g_reviewCount = 0;
 uint32_t g_nextReviewId = 1;
 bool g_reviewsDirty = false;
+// The Community Hub: links this controller's owner suggested (core/Links.h), kept in /links.json.
+constexpr const char *LINKS_FILE = "/links.json";
+bbw::LinkSuggestion *g_links;   // MAX_LINK_SUGGESTIONS, PSRAM
+size_t g_linkCount = 0;
+uint16_t g_nextLinkId = 1;
+bool g_linksDirty = false;
+std::atomic<uint16_t> g_linkToSend{0};
+constexpr size_t LINKS_TEXT_SIZE = 16384;
+char *g_linksText;   // LINKS_TEXT_SIZE, PSRAM: /links.json read or written
 app::SubscriptionPrefs g_subPrefs;
 
 void allocateBuffers() {
@@ -368,7 +378,18 @@ void shareReadStatus(bool idle) {
   if (!idle || !bbw::deviceSigner().ready() || !bbw::libraryLinkReady()) return;
   if (lastMs != 0 && millis() - lastMs < SHARE_STATUS_PERIOD_MS) return;
   lastMs = millis();
-  if (!app::settings().shareEnabled) return;
+  // A suggested link waits for its verdict even when sharing is off: the owner sent it themselves.
+  bool linkWaiting = false;
+  {
+    Lock lock;
+    for (size_t i = 0; i < g_linkCount; ++i) {
+      const uint8_t st = g_links[i].shareState;
+      linkWaiting |= st == static_cast<uint8_t>(bbw::ShareState::QUEUED) ||
+                     st == static_cast<uint8_t>(bbw::ShareState::SENT) ||
+                     st == static_cast<uint8_t>(bbw::ShareState::IN_REVIEW);
+    }
+  }
+  if (!app::settings().shareEnabled && !linkWaiting) return;
   char kid[bbw::KEY_ID_LEN];
   bbw::keyId(bbw::deviceSigner().publicKey(), kid);
   if (!fetchStatus(kid, g_libraryText, LIBRARY_TEXT_SIZE)) return;
@@ -422,6 +443,24 @@ void shareReadStatus(bool idle) {
     }
   }
   // And about the subscription services this controller described.
+  for (JsonObjectConst entry : doc["links"].as<JsonArrayConst>()) {
+    const char *name = entry["state"] | "";
+    const bbw::ShareState state = !strcmp(name, "review") ? bbw::ShareState::IN_REVIEW
+                                  : !strcmp(name, "published") ? bbw::ShareState::PUBLISHED
+                                  : !strcmp(name, "declined") ? bbw::ShareState::DECLINED
+                                  : !strcmp(name, "refused") ? bbw::ShareState::REFUSED
+                                  : bbw::ShareState::LOCAL;
+    const uint16_t localId = entry["local_id"] | 0;
+    Lock lock;
+    for (size_t i = 0; i < g_linkCount; ++i) {
+      if (g_links[i].id != localId) continue;
+      if (bbw::applyReviewTo(&g_links[i], entry["record"] | 0u, state, entry["note"] | "",
+                             entry["library_id"] | "")) {
+        g_linksDirty = true;
+        LOGI("share: the library on the link %u: %s", static_cast<unsigned>(localId), name);
+      }
+    }
+  }
   for (JsonObjectConst entry : doc["services"].as<JsonArrayConst>()) {
     const char *name = entry["state"] | "";
     const bbw::ShareState state = !strcmp(name, "review") ? bbw::ShareState::IN_REVIEW
@@ -642,11 +681,87 @@ constexpr const char *AGE_CACHE = "/lage.json";
 constexpr const char *SERVICES_CACHE = "/lservices.json";  // index/services.json: subscription services
 constexpr const char *TASTE_CACHE = "/ltaste.json";   // index/taste.json: coffee ratings from everyone
 constexpr const char *MODELS_CACHE = "/lmodels.json"; // index/models.json: what each grinder model's owners show
-constexpr uint8_t LIBRARY_FIXED_STEPS = 8;  // fit, coffees, grinders, ageing rate, machines, taste, services, models; then a dial-in per coffee
+constexpr const char *LINKS_CACHE = "/llinks.json";    // index/links.json: the Community Hub's listed links
+constexpr const char *TRENDING_CACHE = "/ltrend.json"; // index/trending.json: recipes people settled on lately
+constexpr const char *DIR_MANIFEST = "/dirm.json";     // index/directory/manifest.json, once its pages are here
+constexpr uint8_t DIR_MAX_PAGES = 60;                  // 6000 coffees
+// fit, coffees, grinders, ageing rate, machines, taste, services, models, links, trending, directory;
+// then a dial-in per coffee
+constexpr uint8_t LIBRARY_FIXED_STEPS = 11;
 uint32_t g_communityStamp = 1;  // goes up when anything cached changes
 
 void dialinCache(uint16_t coffeeId, char *out, size_t size) {
   snprintf(out, size, "/ld%u.json", static_cast<unsigned>(coffeeId));
+}
+
+// One step of keeping the coffee directory (index/directory/) on flash. false: more pages to fetch.
+bool directoryStep() {
+  static uint8_t pending[DIR_MAX_PAGES];
+  static uint8_t pendingCount = 0, pendingAt = 0;
+  constexpr size_t MANIFEST_SIZE = 4096;
+  static char *manifest = bbw::bigArray<char>(MANIFEST_SIZE);  // PSRAM
+  static char *kept = bbw::bigArray<char>(MANIFEST_SIZE);
+  static bool haveManifest = false;
+  if (!haveManifest) {
+    if (!fetchLibraryFile("index/directory/manifest.json", g_libraryText, LIBRARY_TEXT_SIZE)) return true;
+    static JsonDocument now, before;
+    if (deserializeJson(now, g_libraryText) || now["v"] != 1) return true;
+    kept[0] = '\0';
+    g_store.readText(DIR_MANIFEST, kept, MANIFEST_SIZE);
+    if (deserializeJson(before, kept)) before.clear();
+    pendingCount = pendingAt = 0;
+    JsonArrayConst pages = now["pages"].as<JsonArrayConst>();
+    for (JsonObjectConst page : pages) {
+      const int n = page["n"] | -1;
+      if (n < 0 || n >= DIR_MAX_PAGES) continue;
+      const char *hash = page["hash"] | "";
+      bool same = false;
+      for (JsonObjectConst old : before["pages"].as<JsonArrayConst>()) {
+        same |= (old["n"] | -1) == n && strcmp(old["hash"] | "", hash) == 0;
+      }
+      char path[16];
+      snprintf(path, sizeof(path), "/dir%03d.json", n);
+      if (!same || !bbw::fileExists(path)) pending[pendingCount++] = static_cast<uint8_t>(n);
+    }
+    // Pages the library no longer has.
+    for (uint8_t n = static_cast<uint8_t>(pages.size()); n < DIR_MAX_PAGES; ++n) {
+      char path[16];
+      snprintf(path, sizeof(path), "/dir%03d.json", n);
+      if (!bbw::fileExists(path)) break;
+      LittleFS.remove(path);
+    }
+    // What is kept: the pages and their hashes (the facets are read from the page each time).
+    {
+      JsonDocument keep;
+      JsonArray list = keep["pages"].to<JsonArray>();
+      for (JsonObjectConst page : pages) {
+        JsonObject o = list.add<JsonObject>();
+        o["n"] = page["n"] | -1;
+        o["hash"] = page["hash"] | "";
+      }
+      keep["count"] = now["count"] | 0;
+      serializeJson(keep, manifest, MANIFEST_SIZE);
+    }
+    g_store.writeTextIfChanged("/dirf.json", g_libraryText);  // the facets, for the search page
+    now.clear();
+    before.clear();
+    haveManifest = true;
+    if (pendingCount) return false;
+  } else if (pendingAt < pendingCount) {
+    char path[48], file[16];
+    snprintf(path, sizeof(path), "index/directory/p%03u.json", static_cast<unsigned>(pending[pendingAt]));
+    snprintf(file, sizeof(file), "/dir%03u.json", static_cast<unsigned>(pending[pendingAt]));
+    if (!fetchLibraryFile(path, g_libraryText, LIBRARY_TEXT_SIZE)) {
+      haveManifest = false;  // try the whole pass again next time
+      return true;
+    }
+    g_store.writeTextIfChanged(file, g_libraryText);
+    if (++pendingAt < pendingCount) return false;
+  }
+  g_store.writeTextIfChanged(DIR_MANIFEST, manifest);
+  if (pendingCount) LOGI("directory: %u page(s) of the coffee directory updated", static_cast<unsigned>(pendingCount));
+  haveManifest = false;
+  return true;
 }
 
 void libraryRefresh(bool idle) {
@@ -715,6 +830,18 @@ void libraryRefresh(bool idle) {
         g_store.writeTextIfChanged(MODELS_CACHE, g_libraryText)) {
       ++g_communityStamp;
     }
+  } else if (step == 8) {
+    if (fetchLibraryFile("index/links.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
+      g_store.writeTextIfChanged(LINKS_CACHE, g_libraryText);
+    }
+  } else if (step == 9) {
+    if (fetchLibraryFile("index/trending.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
+      g_store.writeTextIfChanged(TRENDING_CACHE, g_libraryText);
+    }
+  } else if (step == 10) {
+    // The coffee directory: the manifest, then each page whose hash changed, one per step; the
+    // manifest is kept only once every page it names is here.
+    if (!directoryStep()) return;  // a page fetched: the next one next time, at this step
   } else if (step - LIBRARY_FIXED_STEPS < count) {
     char file[bbw::LIBRARY_ID_LEN * 2], cache[20];
     if (bbw::libraryIdToFile(libraryIds[step - LIBRARY_FIXED_STEPS], file, sizeof(file))) {
@@ -1314,6 +1441,104 @@ void subscriptionsShotTaken() {
 }
 
 // Loop task: a waiting page fetch is made while idle, and the list saved when it has changed.
+// ---------------------------------------------------------------- the Hub's links --
+void loadLinks() {
+  if (!g_links) g_links = bbw::bigArray<bbw::LinkSuggestion>(bbw::MAX_LINK_SUGGESTIONS);
+  if (!g_linksText) g_linksText = bbw::bigArray<char>(LINKS_TEXT_SIZE);
+  g_linkCount = 0;
+  if (!g_store.readText(LINKS_FILE, g_linksText, LINKS_TEXT_SIZE)) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, g_linksText)) {
+    LOGW("links: /links.json not understood");
+    return;
+  }
+  g_nextLinkId = doc["next_id"] | 1;
+  for (JsonObjectConst o : doc["links"].as<JsonArrayConst>()) {
+    if (g_linkCount >= bbw::MAX_LINK_SUGGESTIONS) break;
+    bbw::LinkSuggestion &l = g_links[g_linkCount];
+    l = bbw::LinkSuggestion();
+    l.id = o["id"] | 0;
+    if (!l.id) continue;
+    l.epochS = o["at"] | 0u;
+    strlcpy(l.url, o["url"] | "", sizeof(l.url));
+    strlcpy(l.title, o["title"] | "", sizeof(l.title));
+    l.kind = o["kind"] | 0;
+    l.topics = o["topics"] | 0;
+    strlcpy(l.why, o["why"] | "", sizeof(l.why));
+    strlcpy(l.image, o["image"] | "", sizeof(l.image));
+    l.shareState = o["state"] | 0;
+    l.shareSeq = o["seq"] | 0u;
+    strlcpy(l.reviewNote, o["note"] | "", sizeof(l.reviewNote));
+    strlcpy(l.libraryId, o["library_id"] | "", sizeof(l.libraryId));
+    if (l.id >= g_nextLinkId) g_nextLinkId = static_cast<uint16_t>(l.id + 1);
+    ++g_linkCount;
+  }
+}
+
+void saveLinks() {
+  JsonDocument doc;
+  {
+    Lock lock;
+    doc["next_id"] = g_nextLinkId;
+    JsonArray list = doc["links"].to<JsonArray>();
+    for (size_t i = 0; i < g_linkCount; ++i) {
+      const bbw::LinkSuggestion &l = g_links[i];
+      JsonObject o = list.add<JsonObject>();
+      o["id"] = l.id;
+      o["at"] = l.epochS;
+      o["url"] = l.url;
+      o["title"] = l.title;
+      o["kind"] = l.kind;
+      o["topics"] = l.topics;
+      if (l.why[0]) o["why"] = l.why;
+      if (l.image[0]) o["image"] = l.image;
+      o["state"] = l.shareState;
+      o["seq"] = l.shareSeq;
+      if (l.reviewNote[0]) o["note"] = l.reviewNote;
+      if (l.libraryId[0]) o["library_id"] = l.libraryId;
+    }
+    g_linksDirty = false;
+  }
+  if (!g_linksText) g_linksText = bbw::bigArray<char>(LINKS_TEXT_SIZE);
+  const size_t n = serializeJson(doc, g_linksText, LINKS_TEXT_SIZE);
+  if (n == 0 || n >= LINKS_TEXT_SIZE - 1 || !g_store.saveText(LINKS_FILE, g_linksText)) LOGW("links: not saved");
+}
+
+// A suggested link to the library, for a reviewer. Loop task.
+void queueLink(uint16_t id) {
+  static bbw::LinkSuggestion l;
+  bool found = false;
+  {
+    Lock lock;
+    for (size_t i = 0; i < g_linkCount; ++i) {
+      if (g_links[i].id == id) {
+        l = g_links[i];
+        found = true;
+      }
+    }
+  }
+  if (!found || !bbw::deviceSigner().ready() || !ensureKeyQueued()) return;
+  char kid[bbw::KEY_ID_LEN];
+  bbw::keyId(bbw::deviceSigner().publicKey(), kid);
+  const uint32_t seq = g_store.outboxNext();
+  if (bbw::buildLinkRecord(l, seq, wallClock(), g_shareBody, bbw::SHARE_BODY_MAX) == 0) {
+    LOGW("share: link %u could not be built", static_cast<unsigned>(id));
+    return;
+  }
+  snprintf(g_sharePath, sizeof(g_sharePath), "links/%s/l%u-%u.json", kid, static_cast<unsigned>(id),
+           static_cast<unsigned>(seq));
+  if (!shareQueue(g_sharePath)) return;
+  Lock lock;
+  for (size_t i = 0; i < g_linkCount; ++i) {
+    if (g_links[i].id != id) continue;
+    g_links[i].shareState = static_cast<uint8_t>(bbw::ShareState::QUEUED);
+    g_links[i].shareSeq = seq;
+    g_links[i].reviewNote[0] = '\0';
+    g_linksDirty = true;
+  }
+  LOGI("share: link %u queued for review", static_cast<unsigned>(id));
+}
+
 void subscriptionsService(bool idle) {
   if (!idle) return;
   char url[256];
@@ -1347,6 +1572,11 @@ void subscriptionsService(bool idle) {
     save = g_reviewsDirty;
   }
   if (save) saveServiceReviews();
+  {
+    Lock lock;
+    save = g_linksDirty;
+  }
+  if (save) saveLinks();
 }
 
 // ------------------------------------------------------- diagnostics reports --
@@ -2491,6 +2721,62 @@ const char *communityCoffees() {
 
 // The library's coffee ratings (index/taste.json), cached. Good until the next call that reads the
 // library's cache.
+const char *communityLinks() {
+  if (!g_store.readText(LINKS_CACHE, g_libraryText, LIBRARY_TEXT_SIZE)) strcpy(g_libraryText, "{}");
+  return g_libraryText;
+}
+
+const char *communityTrending() {
+  if (!g_store.readText(TRENDING_CACHE, g_libraryText, LIBRARY_TEXT_SIZE)) strcpy(g_libraryText, "{}");
+  return g_libraryText;
+}
+
+void readLinks(void (*visit)(const bbw::LinkSuggestion *links, size_t count, void *), void *context) {
+  Lock lock;
+  visit(g_links, g_linkCount, context);
+}
+
+int suggestLink(const bbw::LinkSuggestion &in) {
+  Lock lock;
+  if (!g_links) return -1;
+  size_t at = g_linkCount;
+  if (at >= bbw::MAX_LINK_SUGGESTIONS) {
+    // Full: the oldest that has been decided makes room.
+    for (size_t i = 0; i < g_linkCount && at >= bbw::MAX_LINK_SUGGESTIONS; ++i) {
+      const uint8_t st = g_links[i].shareState;
+      if (st == static_cast<uint8_t>(bbw::ShareState::PUBLISHED) || st == static_cast<uint8_t>(bbw::ShareState::DECLINED) ||
+          st == static_cast<uint8_t>(bbw::ShareState::REFUSED)) {
+        memmove(&g_links[i], &g_links[i + 1], (g_linkCount - i - 1) * sizeof(bbw::LinkSuggestion));
+        --g_linkCount;
+        at = g_linkCount;
+      }
+    }
+    if (at >= bbw::MAX_LINK_SUGGESTIONS) return -2;
+  }
+  g_links[at] = in;
+  g_links[at].id = g_nextLinkId++;
+  g_links[at].epochS = static_cast<uint32_t>(time(nullptr));
+  g_links[at].shareState = 0;
+  g_links[at].shareSeq = 0;
+  g_links[at].reviewNote[0] = g_links[at].libraryId[0] = '\0';
+  ++g_linkCount;
+  g_linksDirty = true;
+  g_linkToSend = g_links[at].id;
+  return g_links[at].id;
+}
+
+bool deleteLink(uint16_t id) {
+  Lock lock;
+  for (size_t i = 0; i < g_linkCount; ++i) {
+    if (g_links[i].id != id) continue;
+    memmove(&g_links[i], &g_links[i + 1], (g_linkCount - i - 1) * sizeof(bbw::LinkSuggestion));
+    --g_linkCount;
+    g_linksDirty = true;
+    return true;
+  }
+  return false;
+}
+
 const char *communityTaste() {
   g_store.readText(TASTE_CACHE, g_libraryText, LIBRARY_TEXT_SIZE);
   return g_libraryText;
@@ -3414,6 +3700,7 @@ void setup() {
   LOGI("start-up: library loaded");
   loadSubscriptions();
   loadServiceReviews();
+  loadLinks();
   if (bbw::beginDeviceKey()) {
     char kid[bbw::KEY_ID_LEN], last[bbw::KEY_ID_LEN + 2];
     bbw::keyId(bbw::deviceSigner().publicKey(), kid);
@@ -3433,6 +3720,12 @@ void setup() {
         }
         g_subsDirty = true;
         g_keyChanged = true;
+        for (size_t i = 0; i < g_linkCount; ++i) {
+          uint32_t hash = 0;
+          bbw::forgetShared(g_links[i].shareState, g_links[i].shareSeq, hash, g_links[i].reviewNote,
+                            g_links[i].libraryId);
+        }
+        g_linksDirty = g_linkCount != 0;
         LOGW("share: this controller's key has changed; what was sent before is forgotten");
       }
       g_store.writeTextIfChanged("/sharekey.txt", kid);
@@ -3690,6 +3983,7 @@ void loop() {
   // A coffee rating just saved: to the library, when ratings are shared.
   if (const uint32_t ratingId = g_ratingToShare.exchange(0)) shareRating(ratingId);
   if (const uint32_t ratingId = g_ratingToWithdraw.exchange(0)) withdrawRating(ratingId);
+  if (const uint16_t linkId = g_linkToSend.exchange(0)) queueLink(linkId);
   if (g_pushersDirty.exchange(false)) {
     bbw::PusherConfig copy;
     {

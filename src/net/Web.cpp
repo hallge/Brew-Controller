@@ -18,10 +18,12 @@
 #include "ShotFormat.h"
 #include "WebPage.h"
 #include "ExtensionZip.h"   // made from browser-extension/ by its make_zip.py
+#include "core/Directory.h"
 #include "core/TasteProfile.h"
 #include "core/SettingsUtil.h"
 #include "core/Telemetry.h"
 #include "platform/BigMem.h"
+#include "platform/DeviceKey.h"
 #include "platform/FirmwareUpdate.h"
 #include "platform/FsUtil.h"
 #include "ui/Ui.h"
@@ -2413,6 +2415,134 @@ void handleGetRecommend() {
   sendJson(doc);
 }
 
+// ---- The Community Hub (core/Links.h, docs/COMMUNITY.md)
+// GET /api/links: {listed: the library's links, mine: what this owner suggested and where each stands}.
+void handleGetLinks() {
+  JsonDocument doc, index;
+  if (deserializeJson(index, app::communityLinks())) index.clear();
+  doc["listed"] = index["links"];
+  JsonArray mine = doc["mine"].to<JsonArray>();
+  static JsonArray *out;
+  static uint32_t sentSoFar;
+  out = &mine;
+  sentSoFar = app::outboxSent();
+  app::readLinks([](const bbw::LinkSuggestion *links, size_t count, void *) {
+    for (size_t i = count; i-- > 0;) {  // newest first
+      const bbw::LinkSuggestion &l = links[i];
+      JsonObject o = out->add<JsonObject>();
+      o["id"] = l.id;
+      o["at"] = l.epochS;
+      o["url"] = l.url;
+      o["title"] = l.title;
+      o["kind"] = l.kind < bbw::LINK_KIND_COUNT ? bbw::LINK_KINDS[l.kind] : "";
+      JsonArray topics = o["topics"].to<JsonArray>();
+      for (size_t t = 0; t < bbw::LINK_TOPIC_COUNT; ++t) {
+        if ((l.topics >> t) & 1u) topics.add(bbw::LINK_TOPICS[t]);
+      }
+      o["why"] = l.why;
+      o["image"] = l.image;
+      // Queued, and the outbox has sent past it: sent.
+      const bool sent = l.shareState == static_cast<uint8_t>(bbw::ShareState::QUEUED) && l.shareSeq < sentSoFar;
+      o["state"] = bbw::shareStateName(sent ? bbw::ShareState::SENT : static_cast<bbw::ShareState>(l.shareState));
+      o["note"] = l.reviewNote;
+      o["library_id"] = l.libraryId;
+    }
+  }, nullptr);
+  doc["can_send"] = bbw::deviceSigner().ready();
+  sendJson(doc);
+}
+
+// POST /api/links/suggest {url, title, kind, topics[], why, image}: kept here and sent for review.
+void handleSuggestLink() {
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  static bbw::LinkSuggestion l;
+  l = bbw::LinkSuggestion();
+  if (!bbw::cleanLinkUrl(doc["url"] | "", l.url, sizeof(l.url))) {
+    return sendError(400, "a web link starting https://, without spaces or a login in it");
+  }
+  cleanText(doc["title"] | "", l.title, sizeof(l.title));
+  if (!l.title[0]) return sendError(400, "give it a title");
+  const int kind = bbw::linkKindIndex(doc["kind"] | "");
+  if (kind < 0) return sendError(400, "say what it is: a video, a post, a guide...");
+  l.kind = static_cast<uint8_t>(kind);
+  for (JsonVariantConst t : doc["topics"].as<JsonArrayConst>()) {
+    const int k = bbw::linkTopicIndex(t | "");
+    if (k >= 0) l.topics |= static_cast<uint8_t>(1u << k);
+  }
+  if (!l.topics) return sendError(400, "pick at least one topic");
+  if (bbw::topicCount(l.topics) > bbw::LINK_TOPICS_MAX) return sendError(400, "three topics at most");
+  cleanText(doc["why"] | "", l.why, sizeof(l.why));
+  const char *image = doc["image"] | "";
+  if (strncmp(image, "https://", 8) == 0 && strlen(image) < sizeof(l.image)) strlcpy(l.image, image, sizeof(l.image));
+  if (!bbw::deviceSigner().ready()) return sendError(409, "this controller has no key to sign with");
+  const int id = app::suggestLink(l);
+  if (id < 0) return sendError(409, "too many suggestions waiting: delete one first");
+  JsonDocument out;
+  out["ok"] = true;
+  out["id"] = id;
+  sendJson(out);
+}
+
+void handleDeleteLink() {
+  if (!app::deleteLink(static_cast<uint16_t>(server.arg("id").toInt()))) return sendError(404, "no such link");
+  sendOk();
+}
+
+// GET /api/directory?q=&origin=&process=&roast=&page=: the coffee directory kept on flash, searched here,
+// 20 at a time; with the values to filter by (the library's manifest) and which are on the shelf.
+void handleDirectory() {
+  static char *text = bbw::bigArray<char>(65536);  // PSRAM, one page at a time
+  const String q = server.arg("q"), origin = server.arg("origin"), process = server.arg("process"),
+               roast = server.arg("roast");
+  const int page = server.arg("page").toInt() < 0 ? 0 : server.arg("page").toInt();
+  JsonDocument doc;
+  JsonArray items = doc["coffees"].to<JsonArray>();
+  size_t matched = 0, pages = 0;
+  const size_t skip = static_cast<size_t>(page) * bbw::DIRECTORY_RESULTS;
+  static char shelf[bbw::MAX_COFFEES][bbw::LIBRARY_ID_LEN];
+  static uint8_t shelfCount;
+  shelfCount = 0;
+  app::readLibrary([](const bbw::Library &lib, void *) {
+    for (uint8_t i = 0; i < lib.coffeeCount; ++i) {
+      if (lib.coffees[i].libraryId[0]) strlcpy(shelf[shelfCount++], lib.coffees[i].libraryId, bbw::LIBRARY_ID_LEN);
+    }
+  }, nullptr);
+  for (int n = 0; n < 60; ++n) {
+    char path[16];
+    snprintf(path, sizeof(path), "/dir%03d.json", n);
+    if (!app::store().readText(path, text, 65536)) break;
+    ++pages;
+    JsonDocument pageDoc;
+    if (deserializeJson(pageDoc, text)) continue;
+    for (JsonObjectConst c : pageDoc["coffees"].as<JsonArrayConst>()) {
+      const char *fields[] = {c["name"] | "", c["roaster"] | "", c["origin"] | "", c["region"] | "",
+                              c["process"] | "", c["varietal"] | "", c["notes"] | ""};
+      if (!bbw::directoryMatch(q.c_str(), fields, 7) || !bbw::directoryFilter(origin.c_str(), c["origin"] | "") ||
+          !bbw::directoryFilter(process.c_str(), c["process"] | "") ||
+          !bbw::directoryFilter(roast.c_str(), c["roast_level"] | "")) {
+        continue;
+      }
+      if (matched++ < skip || items.size() >= bbw::DIRECTORY_RESULTS) continue;
+      JsonObject o = items.add<JsonObject>();
+      o.set(c);
+      bool have = false;
+      for (uint8_t i = 0; i < shelfCount && !have; ++i) have = strcmp(shelf[i], c["id"] | "") == 0;
+      o["on_shelf"] = have;
+    }
+  }
+  doc["matched"] = matched;
+  doc["page"] = page;
+  doc["page_size"] = bbw::DIRECTORY_RESULTS;
+  doc["kept_pages"] = pages;
+  JsonDocument facets;
+  if (app::store().readText("/dirf.json", text, 65536) && !deserializeJson(facets, text)) {
+    doc["facets"] = facets["facets"];
+    doc["count"] = facets["count"];
+  }
+  sendJson(doc);
+}
+
 void handleDeleteRating() {
   const uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 10);
   struct Find { uint32_t id; bool shared; } find{id, false};
@@ -2933,6 +3063,11 @@ void begin() {
   server.on("/api/coffee/ratings", HTTP_GET, handleGetRatings);
   server.on("/api/coffee/rate", HTTP_POST, handlePostRating);
   server.on("/api/coffee/rate/delete", HTTP_POST, handleDeleteRating);
+  server.on("/api/links", HTTP_GET, handleGetLinks);
+  server.on("/api/links/suggest", HTTP_POST, handleSuggestLink);
+  server.on("/api/links/delete", HTTP_POST, handleDeleteLink);
+  server.on("/api/trending", HTTP_GET, []() { server.send(200, "application/json", app::communityTrending()); });
+  server.on("/api/directory", HTTP_GET, handleDirectory);
   server.on("/api/drinkers", HTTP_POST, handlePostDrinkers);
   server.on("/api/taste/profile", HTTP_GET, handleGetTasteProfile);
   server.on("/api/taste/recommend", HTTP_GET, handleGetRecommend);

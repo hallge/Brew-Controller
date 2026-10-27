@@ -23,6 +23,7 @@
 #include "core/ScaleLink.h"
 #include "core/SettingFormat.h"
 #include "core/SettingsUtil.h"
+#include "core/Directory.h"
 #include "core/Share.h"
 #include "core/SimilarCoffee.h"
 #include "core/Subscriptions.h"
@@ -5228,6 +5229,41 @@ static void testShare() {
 }
 
 // What the shared library says, turned into a setting for this grinder.
+static void testCommunityHub() {
+  printf("community hub: a suggested link as a record; the directory's search\n");
+  char url[LINK_URL_LEN];
+  CHECK(cleanLinkUrl("https://www.youtube.com/watch?v=aTFsBqhpLes", url, sizeof(url)) &&
+        strcmp(url, "https://www.youtube.com/watch?v=aTFsBqhpLes") == 0);
+  CHECK(cleanLinkUrl("http://example.com/guide", url, sizeof(url)) && strcmp(url, "https://example.com/guide") == 0);
+  CHECK(!cleanLinkUrl("https://x.example/p?Token=abc", url, sizeof(url)));   // a login in it
+  CHECK(!cleanLinkUrl("https://x.example/a b", url, sizeof(url)));
+  CHECK(!cleanLinkUrl("javascript:alert(1)", url, sizeof(url)));
+  CHECK(linkKindIndex("playlist") == 1 && linkKindIndex("meme") < 0 && linkTopicIndex("dialing_in") == 1);
+  LinkSuggestion l;
+  l.id = 2;
+  strcpy(l.url, "https://www.youtube.com/playlist?list=PLxz0FjZMVOl3MuAzK5l3gjakoOGrmK8fP");
+  strcpy(l.title, "Understanding Espresso");
+  l.kind = 1;
+  l.topics = (1u << 1) | (1u << 2);
+  strcpy(l.why, "Six short episodes");
+  static char body[SHARE_BODY_MAX];
+  CHECK(buildLinkRecord(l, 50, 1793000000u, body, sizeof(body)) != 0);
+  CHECK(strstr(body, "\"t\":\"link\"") && strstr(body, "\"record\":50,\"local_id\":2"));
+  CHECK(strstr(body, "\"kind\":\"playlist\",\"topics\":[\"dialing_in\",\"brewing\"],\"why\":\"Six short episodes\""));
+  l.topics = 0x0f;  // four topics: not sent
+  CHECK(buildLinkRecord(l, 51, 1793000000u, body, sizeof(body)) == 0);
+  l.topics = 1;
+  l.kind = 99;
+  CHECK(buildLinkRecord(l, 52, 1793000000u, body, sizeof(body)) == 0);
+
+  const char *fields[] = {"Idjwi Island", "Portrait Coffee", "DR Congo", "", "Washed", "", "Plum, black tea"};
+  CHECK(directoryMatch("", fields, 7) && directoryMatch("idjwi", fields, 7));
+  CHECK(directoryMatch("portrait  washed", fields, 7) && directoryMatch("BLACK tea", fields, 7));
+  CHECK(!directoryMatch("natural", fields, 7) && !directoryMatch("idjwi natural", fields, 7));
+  CHECK(directoryFilter("", "Kenya") && directoryFilter("kenya", "Kenya") && !directoryFilter("Kenya", "Kenya AA"));
+  CHECK(!directoryFilter("Kenya", ""));
+}
+
 static void testWebPanels() {
   printf("web page: optional panels hidden until chosen, except what is in use\n");
   Settings s;
@@ -7591,6 +7627,7 @@ int main() {
   testGrindRange();
   testBugReport();
   testWebPanels();
+  testCommunityHub();
   testPowerBeliefDrift();
   testCupNotTrustedAfterScaleSleep();
   testBuiltinGrinders();
