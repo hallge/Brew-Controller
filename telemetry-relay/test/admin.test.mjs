@@ -647,6 +647,32 @@ describe('admin endpoints', () => {
     assert.deepEqual(d.items, ['hidden/catalog/a/b.json']);
   });
 
+  test('published lists every entry on main, named from the index', async () => {
+    const github = mockGitHub();
+    github.on('GET', new RegExp(`^/repos/${LIBRARY}/git/trees/main$`), () => Response.json({ tree: [
+      { path: 'catalog/portrait/idjwi-island.json', type: 'blob' },
+      { path: 'grinders/niche-zero.json', type: 'blob' },
+      { path: 'links/understanding-espresso.json', type: 'blob' },
+      { path: 'links/broken.json', type: 'blob' },
+      { path: 'hidden/catalog/a/b.json', type: 'blob' },
+      { path: 'index/coffees.json', type: 'blob' },
+    ] }));
+    const index = {
+      'coffees.json': { coffees: [{ id: 'portrait/idjwi-island', name: 'Idjwi Island', roaster: 'Portrait', origin: 'DR Congo' }] },
+      'grinders.json': { grinders: [{ id: 'niche-zero', model: 'Niche Zero', unit: 'dial', min: 1, max: 50 }] },
+      'links.json': { links: [{ id: 'understanding-espresso', title: 'Understanding Espresso', kind: 'playlist', site: 'youtube.com', topics: ['dialing_in'] }] },
+    };
+    for (const [name, doc] of Object.entries(index)) github.file(LIBRARY, 'default', `index/${name}`, doc);
+    const d = await (await admin(makeEnv(), '/admin/api/published')).json();
+    assert.deepEqual(d.counts, { coffee: 1, grinder: 1, link: 2 });
+    const byId = Object.fromEntries(d.items.map((it) => [it.id, it]));
+    assert.equal(byId['portrait/idjwi-island'].name, 'Idjwi Island');
+    assert.equal(byId['portrait/idjwi-island'].detail, 'Portrait · DR Congo');
+    assert.equal(byId['niche-zero'].detail, 'dial · 1–50');
+    assert.ok(byId['understanding-espresso'].in_index && !byId.broken.in_index);
+    assert.ok(!d.items.some((it) => it.path.startsWith('hidden/') || it.path.startsWith('index/')));
+  });
+
   test('audit lists newest first, with filters and paging', async () => {
     mockGitHub();
     const env = makeEnv();

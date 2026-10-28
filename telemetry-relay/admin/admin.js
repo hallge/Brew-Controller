@@ -279,7 +279,7 @@ async function viewDevices() {
 async function viewManage() {
   const [hidden, blocked] = await Promise.all([api('hidden'), api('blocked')]);
 
-  const kind = h('select', {}, [['catalog', 'Coffee'], ['grinders', 'Grinder'], ['machines', 'Machine'], ['services', 'Service']].map(([v, t]) => h('option', { value: v }, t)));
+  const kind = h('select', {}, [['catalog', 'Coffee'], ['grinders', 'Grinder'], ['machines', 'Machine'], ['services', 'Service'], ['links', 'Link']].map(([v, t]) => h('option', { value: v }, t)));
   const id = h('input', { type: 'text', placeholder: 'id, e.g. portrait-coffee/idjwi-island' });
   const reason = h('input', { type: 'text', maxlength: '200', placeholder: 'Reason (kept in the audit log only)' });
   const hide = h('button', { class: 'danger' }, 'Hide');
@@ -330,6 +330,49 @@ async function viewManage() {
   );
 }
 
+// ---------------------------------------------------------------------------- published --
+
+async function viewPublished() {
+  const d = await api('published');
+  const KIND_NAMES = { coffee: 'Coffees', grinder: 'Grinders', machine: 'Machines', service: 'Services', link: 'Links' };
+  const kind = h('select', {}, [h('option', { value: '' }, `Everything (${d.items.length})`),
+    ...Object.entries(KIND_NAMES).map(([k, t]) => h('option', { value: k }, `${t} (${d.counts[k] ?? 0})`))]);
+  const q = h('input', { type: 'search', placeholder: 'search name, id, details' });
+  const body = h('tbody', {});
+  const count = h('span', { class: 'muted' });
+  function draw() {
+    const words = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const rows = d.items.filter((it) => (!kind.value || it.kind === kind.value) &&
+      words.every((w) => `${it.name} ${it.id} ${it.detail}`.toLowerCase().includes(w)));
+    body.replaceChildren(...rows.map((it) => {
+      const hide = h('button', {}, 'Hide');
+      hide.addEventListener('click', busy(hide, async () => {
+        const reason = prompt(`Hide ${it.path}? It moves to hidden/ and the index is rebuilt without it.\n\nReason (kept in the audit log only):`, '');
+        if (reason === null) return;
+        await act('hide', { path: it.path, reason }, () => route());
+      }));
+      return h('tr', {},
+        h('td', {}, h('span', { class: 'tag' }, it.kind)),
+        h('td', {}, h('a', { href: `https://github.com/${d.repo}/blob/main/${it.path}`, target: '_blank', rel: 'noopener' }, it.name)),
+        h('td', { class: 'mono' }, it.id),
+        h('td', {}, it.detail),
+        h('td', { class: it.in_index ? 'ok' : 'bad' }, it.in_index ? 'listed' : 'not in the index'),
+        h('td', {}, hide));
+    }));
+    count.textContent = `${rows.length} shown`;
+  }
+  kind.addEventListener('change', draw);
+  q.addEventListener('input', draw);
+  show(
+    h('h2', {}, 'Published'),
+    h('p', { class: 'muted' }, 'Every published entry on main. "Not in the index" means the index build left it out: its file does not pass the library\'s checks.'),
+    ...(d.truncated ? [h('p', { class: 'warn' }, 'GitHub cut the file list short: not everything is shown.')] : []),
+    h('div', { class: 'row' }, kind, q, count),
+    h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Kind', 'Name', 'Id', 'Details', 'Index', ''].map((t) => h('th', {}, t)))), body)),
+  );
+  draw();
+}
+
 // -------------------------------------------------------------------------------- audit --
 
 async function viewAudit() {
@@ -378,6 +421,7 @@ async function route() {
   try {
     if (name === 'review') await viewReview(Number(arg));
     else if (name === 'health') await viewHealth();
+    else if (name === 'published') await viewPublished();
     else if (name === 'devices') await viewDevices();
     else if (name === 'manage') await viewManage();
     else if (name === 'audit') await viewAudit();

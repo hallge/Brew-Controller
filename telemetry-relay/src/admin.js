@@ -914,6 +914,58 @@ async function apiHidden(env) {
   return { items, truncated: Boolean(tree.truncated) };
 }
 
+// Everything published in the library: each file of catalog/, grinders/, machines/, services/ and
+// links/ on main, named from the index (an entry the index left out is said to be so).
+const PUBLISHED_KINDS = [
+  ['catalog/', 'coffee', 'coffees.json', 'coffees'],
+  ['grinders/', 'grinder', 'grinders.json', 'grinders'],
+  ['machines/', 'machine', 'machines.json', 'machines'],
+  ['services/', 'service', 'services.json', 'services'],
+  ['links/', 'link', 'links.json', 'links'],
+];
+
+function publishedName(kind, e) {
+  if (!e) return '';
+  if (kind === 'coffee') return e.name ?? '';
+  if (kind === 'grinder') return e.model ?? '';
+  if (kind === 'machine') return [e.maker, e.model].filter(Boolean).join(' ');
+  if (kind === 'service') return e.name ?? '';
+  return e.title ?? '';
+}
+
+function publishedDetail(kind, e) {
+  if (!e) return '';
+  if (kind === 'coffee') return [e.roaster, e.origin, e.process, e.roast_level].filter(Boolean).join(' · ');
+  if (kind === 'grinder') return [e.burrs, e.unit, e.max ? `${e.min ?? 1}–${e.max}` : ''].filter(Boolean).join(' · ');
+  if (kind === 'machine') return [e.style, e.control].filter(Boolean).join(' · ');
+  if (kind === 'service') return [e.kind, (e.ships_to ?? []).join(' '), e.reviews ? `★${e.reviews.stars} (${e.reviews.n})` : ''].filter(Boolean).join(' · ');
+  return [e.kind, e.site, (e.topics ?? []).join(', '), e.added].filter(Boolean).join(' · ');
+}
+
+async function apiPublished(env) {
+  const repo = env.LIBRARY_REPO;
+  const tree = await ghOk(env, 'GET', `/repos/${repo}/git/trees/main?recursive=1`, undefined, 'main tree');
+  const indexes = {};
+  for (const [, kind, file, list] of PUBLISHED_KINDS) {
+    const doc = parseJson(await ghRaw(env, repo, `index/${file}`));
+    indexes[kind] = new Map((Array.isArray(doc?.[list]) ? doc[list] : []).filter((e) => e && typeof e.id === 'string').map((e) => [e.id, e]));
+  }
+  const items = [];
+  for (const e of tree.tree ?? []) {
+    if (e.type !== 'blob' || !e.path.endsWith('.json')) continue;
+    const kinds = PUBLISHED_KINDS.find(([folder]) => e.path.startsWith(folder));
+    if (!kinds) continue;
+    const [folder, kind] = kinds;
+    const id = e.path.slice(folder.length, -'.json'.length);
+    const entry = indexes[kind].get(id);
+    items.push({ kind, id, path: e.path, name: publishedName(kind, entry) || id, detail: publishedDetail(kind, entry), in_index: Boolean(entry) });
+  }
+  items.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+  const counts = {};
+  for (const it of items) counts[it.kind] = (counts[it.kind] ?? 0) + 1;
+  return { repo, items, counts, truncated: Boolean(tree.truncated) };
+}
+
 async function listAll(namespace, prefix, max = 5000) {
   const keys = [];
   let cursor;
@@ -1114,6 +1166,7 @@ const VIEWS = {
   devices: apiDevices,
   audit: apiAudit,
   hidden: apiHidden,
+  published: apiPublished,
   blocked: apiBlocked,
 };
 
