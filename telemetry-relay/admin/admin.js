@@ -229,7 +229,12 @@ async function viewHealth() {
   }
   const kv = d.kv;
   const pct = (a, b) => `${Math.round((100 * a) / b)}%`;
+  const perm = d.permissions || {};
+  const need = [['pull_requests', 'write', 'approve and decline'], ['contents', 'write', 'records, hide'], ['actions', 'write', 'workflow runs, index rebuild']];
   show(
+    h('h2', {}, 'GitHub App permissions'),
+    h('div', { class: 'panel' }, ...need.map(([k, lvl, what]) => h('div', { class: perm[k] === lvl ? 'ok' : 'bad' },
+      `${k}: ${perm[k] || 'none'}`, perm[k] === lvl ? '' : ` (needs ${lvl}, for ${what})`))),
     h('h2', {}, 'Workflows'),
     runs,
     h('h2', {}, 'Relay, last 7 days'),

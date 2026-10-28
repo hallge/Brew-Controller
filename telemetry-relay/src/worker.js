@@ -239,7 +239,8 @@ export async function appJwt(env, nowMs = Date.now()) {
   return `${unsigned}.${base64url(signature)}`;
 }
 
-let cachedToken = null; // { token, expiresAt (ms) }, kept for the isolate's life
+let cachedToken = null; // { token, expiresAt (ms), permissions }, kept for the isolate's life
+let grantedPermissions = null; // what GitHub granted the App with the last token, for the admin console
 
 export function forgetToken() {
   cachedToken = null;
@@ -265,18 +266,28 @@ async function installationToken(env) {
   const data = await response.json();
   const expiresAt = Date.parse(data.expires_at);
   cachedToken = { token: data.token, expiresAt: Number.isFinite(expiresAt) ? expiresAt : Date.now() + 50 * 60 * 1000 };
+  grantedPermissions = data.permissions && typeof data.permissions === 'object' ? data.permissions : null;
   return cachedToken.token;
 }
 
-// One GitHub API call as the App, with one retry on a fresh token if GitHub says 401.
+// The App's permissions as granted with the current token ({} before the first token).
+export async function appPermissions(env) {
+  await installationToken(env);
+  return grantedPermissions ?? {};
+}
+
+// One GitHub API call as the App, with one retry on a fresh token if GitHub says 401, or 403 to a
+// change (a token from before the owner granted the App more permissions keeps the old ones).
 export async function githubCall(env, url, init = {}, accept) {
+  const writes = (init.method ?? 'GET') !== 'GET';
   for (let attempt = 0; attempt < 2; attempt++) {
+    const fresh = !cachedToken;
     const token = await installationToken(env);
     const headers = { ...githubHeaders(`Bearer ${token}`), ...(init.headers ?? {}) };
     if (accept) headers.accept = accept;
     const response = await fetch(url, { ...init, headers });
-    if (response.status === 401 && attempt === 0) {
-      forgetToken(); // revoked or expired early: get a fresh one once
+    if (attempt === 0 && (response.status === 401 || (response.status === 403 && writes && !fresh))) {
+      forgetToken(); // revoked, expired early, or older than a permission change: a fresh one, once
       continue;
     }
     return response;

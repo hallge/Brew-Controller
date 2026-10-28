@@ -12,7 +12,7 @@
 // Every admin action and every relay refusal is written to AUDIT.audit. The relay's outcomes per day
 // go to AUDIT.counters. Neither write ever stops the relay answering: a failed write is only logged.
 
-import { base64ToBytes, es256Valid, githubCall, GITHUB_API, kidOf, sha256Hex } from './worker.js';
+import { appPermissions, base64ToBytes, es256Valid, githubCall, GITHUB_API, kidOf, sha256Hex } from './worker.js';
 import { ADMIN_PAGES } from './admin-pages.js';
 
 const encoder = new TextEncoder();
@@ -946,6 +946,13 @@ const KV_FREE = { reads: 100000, writes: 1000, lists: 1000 };
 
 async function apiHealth(env) {
   const repo = env.LIBRARY_REPO;
+  // What the App may do, as GitHub granted it: approve and decline need pull_requests: write.
+  let permissions = {};
+  try {
+    permissions = await appPermissions(env);
+  } catch {
+    permissions = {};
+  }
   const workflows = [];
   for (const [file, name] of WORKFLOWS) {
     const r = await gh(env, 'GET', `/repos/${repo}/actions/workflows/${file}/runs?per_page=10`);
@@ -990,6 +997,7 @@ async function apiHealth(env) {
   const blocked = await listAll(env.LIMITS, 'blocked:');
   return {
     workflows,
+    permissions,
     counters,
     kv: {
       today,
