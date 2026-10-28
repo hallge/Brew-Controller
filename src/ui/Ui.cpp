@@ -388,9 +388,12 @@ void editStep(int direction, bool held) {
       break;
     case 1: r.doseG += direction * (held ? 0.5f : 0.1f); break;
     case 2: {
-      // Somewhere to start from on first use: the middle of the grinder's range, else 250 (microns).
-      const bbw::StepRange range = bbw::stepRange(app::grinder().modelId);
-      int um = r.grindUm ? r.grindUm : (range.known ? (range.lo + range.hi) / 2 : 250);
+      // Somewhere to start from on first use: the guess from the grinder's range, else the middle
+      // of it, else 250 (microns).
+      const bbw::Grinder gNow = app::grinder();
+      const bbw::StepRange range = bbw::grinderRange(gNow);
+      const uint16_t guess = bbw::grinderFirstGuess(gNow).setting;
+      int um = r.grindUm ? r.grindUm : guess ? guess : (range.known ? (range.lo + range.hi) / 2 : 250);
       um += direction * (held ? 10 : 1);
       r.grindUm = bbw::clampToRange(um, range);
       break;
@@ -1373,6 +1376,11 @@ void refreshHome(const bbw::LiveStatus &st) {
     const char *start = gs(app::similarStart(r.coffeeId, r.recipeId).setting);
     snprintf(text, sizeof(text), "similar: try %s %s", start, unit);
     snprintf(shorter, sizeof(shorter), "similar: %s %s", start, unit);
+  } else if (!r.grindUm && bbw::grinderFirstGuess(app::grinder()).setting != 0) {
+    // Nothing else to go on: a first guess from the grinder's range.
+    const char *start = gs(bbw::grinderFirstGuess(app::grinder()).setting);
+    snprintf(text, sizeof(text), "first guess: try %s %s", start, unit);
+    snprintf(shorter, sizeof(shorter), "guess: %s %s", start, unit);
   } else {
     text[0] = shorter[0] = '\0';
   }

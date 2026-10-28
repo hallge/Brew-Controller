@@ -555,7 +555,12 @@ inline void sanitizeGrinder(Grinder &g) {
   tidyGrinderUnit(g.unit);
   if (g.unit[0] == '\0') copyText(g.unit, "um", GRINDER_UNIT_LEN);
   g.umPerUnit = clampTo(finiteOr(g.umPerUnit, 0.0f), 0.0f, 1000.0f);
+  // A grinder that shows microns: one step is one micron, whatever was typed.
+  if (strcmp(g.unit, "um") == 0) g.umPerUnit = 1.0f;
   sanitizeSettingFormat(g);
+  if (g.maxStep > 2000) g.maxStep = 2000;
+  if (g.maxStep == 0 || g.minStep >= g.maxStep) g.minStep = g.maxStep = 0;
+  if (g.covers > COVERS_ESPRESSO_TO_FILTER) g.covers = COVERS_NOT_GIVEN;
   if (!validRoastDate(g.zeroDate)) g.zeroDate = 0;
   g.reviewNote[NOTES_LEN - 1] = g.libraryId[LIBRARY_ID_LEN - 1] = '\0';
   if (g.shareState > 6) g.shareState = 0;  // ShareState::REFUSED
@@ -577,6 +582,10 @@ inline void normalizeGrinder(Grinder &g) {
       g.subSteps = 0;
     }
     if (g.burrs[0] == '\0') copyText(g.burrs, m->burrs, GRINDER_BURRS_LEN);
+    if (g.maxStep == 0 && m->maxStep > m->minStep) {
+      g.minStep = m->minStep ? m->minStep : 1;
+      g.maxStep = m->maxStep;
+    }
   } else {
     g.modelId = 0;
   }
@@ -590,13 +599,42 @@ inline void clearGrinderSharing(Grinder &g) {
   g.reviewNote[0] = g.libraryId[0] = '\0';
 }
 
+// The settings a grinder can be at (its own range, else its model's).
+inline StepRange grinderRange(const Grinder &g) { return stepRange(g.modelId, g.minStep, g.maxStep); }
+
+// A first setting from the grinder's range alone, for when nothing else is known (no shots, nothing
+// from the library, no similar coffee of the owner's): on a grinder made for espresso to filter,
+// espresso sits near the fine end (a fifth of the way up); on one made for espresso, the middle.
+// The range is wide on purpose: a sixth of the span. {0, 0} without a range or what it covers.
+struct RangeGuess {
+  uint16_t setting = 0;
+  uint16_t range = 0;
+};
+inline RangeGuess grinderFirstGuess(const Grinder &g) {
+  RangeGuess out;
+  const StepRange r = stepRange(g.modelId, g.minStep, g.maxStep);
+  if (!r.known || g.covers == COVERS_NOT_GIVEN) return out;
+  const float span = static_cast<float>(r.hi - r.lo);
+  const float at = g.covers == COVERS_ESPRESSO_TO_FILTER ? 0.2f : 0.5f;
+  out.setting = clampToRange(static_cast<int>(r.lo + at * span + 0.5f), r);
+  const float wide = span / 6.0f;
+  out.range = static_cast<uint16_t>(wide < 1.0f ? 1.0f : wide + 0.5f);
+  return out;
+}
+
 // Changes the grinder in use. Anything that changes what a setting means
 // starts a new calibration: another model, other burrs, another unit, or
-// `rezeroed`. Naming it for the first time does not: it is the grinder the
+// `rezeroed`. A range is not what a number means: no new calibration for one. Naming it for the first time does not: it is the grinder the
 // shots so far were made on.
 inline void setGrinder(Library &lib, Grinder in, bool rezeroed) {
-  normalizeGrinder(in);
   const Grinder &was = lib.grinder;
+  // Burrs are not typed on the page: the same grinder keeps the ones it had (before a model's own
+  // are filled in, so other burrs in a known model stay as they were).
+  if (in.burrs[0] == '\0' && ((in.modelId && in.modelId == was.modelId) ||
+                              (in.model[0] && strcmp(in.model, was.model) == 0))) {
+    copyText(in.burrs, was.burrs, GRINDER_BURRS_LEN);
+  }
+  normalizeGrinder(in);
   const bool firstNaming = was.model[0] == '\0' && was.modelId == 0;
   // A different divisor or ring count changes what every stored number means, as another unit does.
   const bool unitChanged = strcmp(in.unit, was.unit) != 0 || in.divisor != was.divisor ||

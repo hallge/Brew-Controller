@@ -34,7 +34,7 @@ described; the rest are as the page uses them.
 | `/api/coffee` | POST | save a coffee (edits correct the bag in use) |
 | `/api/bag` | POST | new bag, or correct one; see below |
 | `/api/library/do?what=&a=&b=` | POST | small changes by id; adds `bag_use` (a = coffee, b = bag), `bag_delete` (a = bag), `bag_open` (a = an unopened bag: in use from today) and `coffee_finish` (a = coffee) |
-| `/api/grinder` | POST | save the grinder; takes `divisor` and `subSteps` (how a setting is read) |
+| `/api/grinder` | POST | save the grinder; takes `divisor` and `subSteps` (how a setting is read), `min` / `max` (its range in stored steps, 0 = not given) and `covers` (0 not said, 1 espresso only, 2 espresso to filter). `burrs` left empty keeps the ones it had; unit `um` is always 1 µm per step |
 | `/api/shot/rate?id=&rating=&taste=` | POST | rating 0 to 5, taste 0 to 3 |
 | `/api/shot/tds?id=&tds=` | POST | percent TDS from a refractometer, 0.5 to 25, or 0 to clear |
 | `/api/maintenance` | GET, POST | upkeep counters, see below |
@@ -84,6 +84,10 @@ Every setting in this API is a whole number of the grinder's smallest step (`gri
 `/api/grind/set?um=`). What it looks like on the dial depends on the grinder: `grinder.divisor` (stored steps per displayed
 unit: 1, 2, 4, 5, 10, 20, 25, 50, 100) or `grinder.subSteps` (two rings: inner steps per outer step). `35` with `divisor` 10 is
 shown as `3.5`; with `subSteps` 9 it is `4:8`. `umPerUnit` is microns per stored step.
+
+`GET /api/community` adds `range_guess` {`setting`, `range`} when the grinder has a range and says what it covers: a first
+guess for espresso (a fifth of the way up an espresso-to-filter range, the middle of an espresso-only one, ± a sixth of
+the span), for when no shots, community figure or similar coffee give one.
 
 ## `GET /api/grind`
 

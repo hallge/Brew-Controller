@@ -397,6 +397,10 @@ describe('admin endpoints', () => {
     assert.match(refused({ ...dialin, grinder: { ...dialin.grinder, divisor: 3 } }), /divisor/);
     assert.match(refused({ ...dialin, grinder: { ...dialin.grinder, sub_steps: 9, divisor: 10 } }), /no divisor/);
     assert.match(refused({ t: 'grinder', v: 1, record: 3, local_id: 2, model: 'Home Built 64' }), /unit is missing/);
+    const ranged = { t: 'grinder', v: 1, record: 3, local_id: 2, model: 'Home Built 64', unit: 'step', min: 1, max: 60 };
+    assert.equal(checkBody(ranged), 'grinder');
+    assert.match(refused({ ...ranged, max: undefined }), /max/);
+    assert.match(refused({ ...ranged, min: 60 }), /not below/);
     assert.match(refused({ t: 'machine', v: 1, record: 1, local_id: 1, maker: 'A', model: 'B', control: 'C', style: 'start_button', hold_preinfusion: 1, tap_preinfusion: 0, power_toggle: 0 }), /hold pre-infusion/);
     assert.match(refused({ t: 'coffee', v: 1, local_id: 4, record: 7, name: '<script>alert(1)</script>xxxxxxxx' }), /text of 1 to 23/);
     assert.match(refused({ t: 'other', v: 1 }), /unknown record type/);

@@ -281,7 +281,16 @@ struct Grinder {
   // always stored as whole steps; these say what a step looks like on the dial.
   uint8_t divisor = 1;                     // steps per displayed unit: 1, 2, 4, 5, 10, 20, 25, 50 or 100
   uint8_t subSteps = 0;                    // 0: one scale; 2 to 99: a second, inner ring with this many steps
+  // Its range in stored steps (0 = not given: its model's, if the firmware knows it), and what the
+  // range covers (GrinderCovers), for a first guess when nothing else is known. Appended: older
+  // records read 0.
+  uint16_t minStep = 0;
+  uint16_t maxStep = 0;
+  uint8_t covers = 0;
 };
+
+// What a grinder's range is made for: a first setting for espresso sits in a different part of it.
+enum GrinderCovers : uint8_t { COVERS_NOT_GIVEN = 0, COVERS_ESPRESSO = 1, COVERS_ESPRESSO_TO_FILTER = 2 };
 
 // One bag of a coffee: what was bought, when it was roasted, whether it spent time in the freezer.
 // A coffee keeps every bag it has had so that a new bag starts a fresh run of shots for grind advice

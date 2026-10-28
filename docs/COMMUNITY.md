@@ -959,6 +959,29 @@ a stated limit. Now a grinder says how its dial is read (`core/SettingFormat.h`)
   apart (`unit_key`: `dial/d10`, `sette/r9`) so one owner's 35 is never averaged with another's 3.5.
 - **Letters** (a dial marked A to K) are not supported: a ring is numbered.
 
+## 8m. A simpler grinder form (28 Oct 2026)
+
+The "My grinder" form asked for burrs, microns of burr gap per step and "a dial that reads in parts of a step". Only what
+the advice, the community start or the library fit read is asked for now:
+
+| asked | what it drives |
+| --- | --- |
+| how it adjusts: steps or clicks / stepless dial (read to the nearest 1, 0.5 ... 0.01) / microns on a display | how a stored step is written (`divisor`), and `um` = 1 µm per step |
+| what a setting is called (optional; step, click, setting, number, dial, or typed) | the unit word, part of the library's `unit_key` |
+| finest and coarsest setting | `minStep` / `maxStep`: advice and community starts never go past them (only the built-in models had a range before) |
+| what the range covers: espresso only / espresso to filter | a first guess when nothing else is known (`grinderFirstGuess`) |
+| an optional micro adjustment (steps, or a stepless one read to N marks), per macro step | `subSteps`, written `12:3` |
+| last zeroed, recalibrated or burrs changed | a new calibration |
+
+- **Burrs** are not read by any of the math; they stay in the record (a model's own, or what an owner had) and in shared
+  grinder records, but are no longer typed. Saving without burrs keeps the ones the grinder had; explicitly other burrs
+  still start a new calibration. Other burrs are said with "Zeroed today".
+- **Microns per step** is set, not typed: 1 for a display in microns, the model's published figure (J-Max, K-Ultra, C40),
+  else 0 and learned from the owner's shots as before.
+- A range change is not a new calibration. Shared grinder records carry `min` / `max` (both or neither, min below max),
+  checked by `verify_record.py`, the relay's admin console and copied into the listed entry by `intake.py`.
+- An inner burr set once (the Smart Grinder Pro's top burr) is a calibration, not a micro adjustment.
+
 ## 8j. Working with other apps, TDS and upkeep (13 Oct 2026)
 
 - **Beanconqueror hand-off.** "Send to Beanconqueror" on a shot builds Beanconqueror's own import link

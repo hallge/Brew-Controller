@@ -364,18 +364,25 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <section class="card"><div class="head"><h2>Grinder upkeep</h2><span class="sm dim" id="gu_total"></span></div><div id="gu_rows"></div><details class="note"><summary>Cleaning is counted in shots, like the machine's upkeep. Zeroing starts a fresh comparison of settings.</summary><ul><li>After zeroing the grinder again (or changing burrs), settings from before are no longer compared with new ones: grind advice starts fresh for every coffee.</li><li>The date can be corrected under My grinder.</li></ul></details></section>
 <section class="card"><h2>My grinder</h2><div class="grid">
 <label>Model<select id="gm_model" onchange="grinderForm()"></select></label>
-<label>Name<input id="gm_name" maxlength="31"></label>
-<label>Burrs<input id="gm_burrs" maxlength="23" placeholder="e.g. 64 mm flat"></label>
-<label>A setting is read in<input id="gm_unit" maxlength="7" placeholder="um, steps, dial"></label>
-<label>Microns of burr gap per step (blank: not known)<input id="gm_umPerUnit" type="number" min="0" step="0.05"></label>
-<label>A dial that reads in parts of a step<select id="gm_divisor"><option value="1">No: whole numbers (246, 12)</option><option value="2">Halves (3.5)</option><option value="4">Quarters (3.25)</option><option value="5">Fifths (3.2)</option><option value="10">Tenths (3.5)</option><option value="20">Twentieths (3.05)</option><option value="25">Twenty-fifths (3.04)</option><option value="50">Fiftieths (3.02)</option><option value="100">Hundredths (3.01)</option></select></label>
-<label>Two rings (inner steps per outer step; 0: one scale)<input id="gm_subSteps" type="number" min="0" max="99" step="1" placeholder="0" oninput="$('gm_divisor').disabled=+this.value>=2"></label>
-<label>Last zeroed, or burrs changed<input id="gm_zeroDate" type="date"></label></div>
+<label id="gm_namel">Name<input id="gm_name" maxlength="31" placeholder="e.g. My hand grinder" oninput="gmSummary()"></label>
+<label><span id="gm_kindl">How it adjusts</span><select id="gm_kind" onchange="gmSummary()"><option value="steps">Steps or clicks</option><option value="dial">Stepless dial</option><option value="um">Microns (display)</option></select></label>
+<label id="gm_divl">Read it to the nearest<select id="gm_divisor" onchange="gmSummary()"><option value="1">Whole number (12)</option><option value="2">0.5 (12.5)</option><option value="4">0.25 (12.25)</option><option value="5">0.2 (12.2)</option><option value="10">0.1 (12.1)</option><option value="20">0.05 (12.05)</option><option value="25">0.04 (12.04)</option><option value="50">0.02 (12.02)</option><option value="100">0.01 (12.01)</option></select></label>
+<label id="gm_unitl">A setting is called (optional)<input id="gm_unit" maxlength="7" list="gm_units" placeholder="step" oninput="gmSummary()"><datalist id="gm_units"><option value="step"><option value="click"><option value="setting"><option value="number"><option value="dial"></datalist></label>
+<label><span id="gm_minl">Finest setting</span><input id="gm_min" inputmode="decimal" placeholder="1" oninput="gmSummary()"></label>
+<label><span id="gm_maxl">Coarsest setting</span><input id="gm_max" inputmode="decimal" placeholder="e.g. 60" oninput="gmSummary()"></label>
+<label>The range covers<select id="gm_covers" onchange="gmSummary()"><option value="0">Not said</option><option value="2">Espresso to filter</option><option value="1">Espresso only</option></select></label>
+<label>Last zeroed, recalibrated or burrs changed<input id="gm_zeroDate" type="date"></label></div>
+<div id="gm_micro" class="grid" style="display:none;border-top:1px solid var(--line);padding-top:12px">
+<label>Micro adjustment: how it adjusts<select id="gm_mkind" onchange="gmSummary()"><option value="steps">Steps or clicks</option><option value="dial">Stepless</option></select></label>
+<label><span id="gm_mlab">Steps per macro step</span><input id="gm_subSteps" type="number" min="2" max="99" step="1" placeholder="e.g. 9" oninput="gmSummary()"></label>
+<div class="row" style="align-self:end"><button class="del" onclick="gmMicro(false)">Remove the micro adjustment</button></div></div>
+<div class="row"><button id="gm_addmicro" onclick="gmMicro(true)">+ Add a micro adjustment</button><span class="sm dim" id="gm_microhint">For a second ring or lever (macro and micro, like a Sette or Vario). An inner burr you set once, like the Smart Grinder Pro's top burr, is not one: when you move it, press "Zeroed today" under Grinder upkeep.</span></div>
+<div class="sm mid" id="gm_sum" style="margin:6px 0"></div>
 <div class="row"><button class="pri" data-save onclick="saveGrinder(false)">Save</button><button id="gm_addother" onclick="saveGrinder(false,true)">Add what is typed above as my second grinder</button></div>
 <div class="sm dim" id="gm_info"></div>
 <div class="row" id="gm_shrow" style="border-top:1px solid var(--line);padding-top:12px"><span class="pill" id="gm_shpill" style="background:var(--combg);color:#8cc4ff;border:1px solid var(--comline)"></span><span class="sm mid" id="gm_share" style="flex:1 1 260px"></span><button id="gm_send" onclick="sendGrinder(L.grinder.id)">Send to the shared library</button></div>
 <div class="row" id="gm_other" style="border-top:1px solid var(--line);padding-top:12px"></div>
-<details class="note"><summary>Zeroing again, other burrs or another model start grind advice afresh.</summary><ul><li>They change what a setting means, so shots from before are no longer compared with new ones.</li><li>Naming the grinder for the first time changes nothing.</li><li>A second grinder keeps its own setting for every coffee, and its own shots; switching between the two loses neither.</li></ul></details></section>
+<details class="note"><summary>Only what grind advice needs is asked for.</summary><ul><li>How far one step moves the shot is learned from your own shots, so burrs and microns per step are not needed.</li><li>The range keeps advice inside the dial's ends; what it covers gives a first guess when nothing else is known.</li><li>Zeroing again, other burrs or another model start grind advice afresh: they change what a setting means, so shots from before are no longer compared with new ones.</li><li>Naming the grinder for the first time changes nothing.</li><li>A second grinder keeps its own setting for every coffee, and its own shots; switching between the two loses neither.</li></ul></details></section>
 <section class="card com"><h2>Shared grinder list</h2><details class="note"><summary>The model list holds only grinders with a known profile: the firmware's own, and those the shared library has published.</summary><ul><li>A listed model can be changed and saved: it is then kept as your own version.</li><li>A grinder on neither list can be typed in and kept here, or sent to the library for a reviewer to add.</li><li>The next owner of one then picks it from the list, and settings can be compared among everyone who has it.</li><li>Settings are translated between grinders through what each is read in and the coffees their owners have in common.</li></ul></details></section>
 </div>
 
@@ -1285,9 +1292,35 @@ const today=()=>{const t=new Date();return t.getFullYear()*10000+(t.getMonth()+1
 let GM=[];
 async function loadCommunityGrinders(){try{GM=(await get('/api/community/grinders')).grinders||[]}catch(e){}if(L)drawGrinder()}
 const gmPick=()=>{const v=$('gm_model').value;return v[0]=='L'?{lib:GM.find(x=>x.id==v.slice(2))}:{own:L.grinderModels.find(x=>x.id==+v)}};
-function grinderForm(){const p=gmPick(),m=p.own||(p.lib&&{model:p.lib.model,unit:p.lib.unit,umPerUnit:p.lib.um_per_unit,burrs:p.lib.burrs||'',divisor:p.lib.divisor||1,subSteps:p.lib.sub_steps||0});
-if(m){$('gm_name').value=m.model;$('gm_unit').value=m.unit;$('gm_umPerUnit').value=m.umPerUnit||'';$('gm_divisor').value=m.divisor||1;$('gm_subSteps').value=m.subSteps||m.sub_steps||'';const known=L.grinderModels.map(x=>x.burrs).concat(GM.map(x=>x.burrs||''));if(!$('gm_burrs').value||known.includes($('gm_burrs').value))$('gm_burrs').value=m.burrs}
-$('gm_divisor').disabled=+$('gm_subSteps').value>=2}
+// The grinder form. A setting is stored in whole steps; fmt {divisor, subSteps} says how it is written.
+const gmWith=(fmt,f)=>{const o=GRD;GRD=fmt;try{return f()}finally{GRD=o}};
+const gmFmt=()=>{const k=$('gm_kind').value,r=$('gm_micro').style.display!='none'?Math.max(0,+$('gm_subSteps').value||0):0;return {divisor:k=='dial'&&r<2?(+$('gm_divisor').value||1):1,subSteps:r>=2?r:0}};
+const gmKindOf=g=>g.unit=='um'?'um':((g.divisor||1)>1||g.unit=='dial')?'dial':'steps';
+// Fills the form from a grinder or a model: {model, unit, divisor, subSteps, min, max}.
+function gmFill(m,keepRange){$('gm_name').value=m.model||'';const k=gmKindOf(m);$('gm_kind').value=k;$('gm_unit').value=k=='um'||m.unit==({steps:'step',dial:'dial'})[k]?'':m.unit||'';
+$('gm_divisor').value=m.divisor||1;const r=m.subSteps||0;$('gm_micro').style.display=r>=2?'':'none';$('gm_subSteps').value=r>=2?r:'';
+if(!keepRange){const fmt={divisor:r>=2?1:(m.divisor||1),subSteps:r>=2?r:0};gmWith(fmt,()=>{$('gm_min').value=m.max?(r>=2?Math.floor(((m.min||1)-1)/r)+1:fsn(m.min||1)):'';$('gm_max').value=m.max?(r>=2?Math.ceil(m.max/r):fsn(m.max)):''})}
+gmSummary()}
+function gmMicro(on){$('gm_micro').style.display=on?'':'none';if(on&&!$('gm_subSteps').value)$('gm_subSteps').focus();gmSummary()}
+// The range typed, in stored steps: [min, max], or [0, 0] when not given or not sensible.
+function gmRange(){const fmt=gmFmt(),r=fmt.subSteps,a=$('gm_min').value.trim(),b=$('gm_max').value.trim();if(!b)return [0,0];
+let lo,hi;if(r>=2){lo=a?((parseInt(a)||1)-1)*r+1:1;hi=(parseInt(b)||0)*r}else gmWith(fmt,()=>{lo=a?ps(a):1;hi=ps(b)});
+if(!lo&&a&&/^0+([.,]0*)?$/.test(a))lo=1;return lo&&hi&&hi>lo&&hi<=2000?[lo,hi]:[0,0]}
+// One line saying what the form means, as the controller will read it.
+function gmSummary(){const k=$('gm_kind').value,micro=$('gm_micro').style.display!='none',fmt=gmFmt(),p=gmPick(),src=p.own||(p.lib&&{umPerUnit:p.lib.um_per_unit,burrs:p.lib.burrs});
+$('gm_namel').style.display=p.own||p.lib?'none':'';$('gm_divl').style.display=k=='dial'&&!micro?'':'none';$('gm_unitl').style.display=k=='um'?'none':'';
+$('gm_unit').placeholder=k=='dial'?'dial':'step';$('gm_addmicro').style.display=micro||k=='um'?'none':'';$('gm_microhint').style.display=micro||k=='um'?'none':'';
+$('gm_kindl').textContent=micro?'Macro adjustment: how it adjusts':'How it adjusts';$('gm_mlab').textContent=$('gm_mkind').value=='dial'?'Marks you read it to, per macro step':'Steps per macro step';
+$('gm_minl').textContent=micro?'Finest macro setting':'Finest setting';$('gm_maxl').textContent=micro?'Coarsest macro setting':'Coarsest setting';
+const word=k=='um'?'µm':($('gm_unit').value.trim()||(k=='dial'?'dial':'step')),[lo,hi]=gmRange(),bits=[];
+if(micro&&fmt.subSteps<2)bits.push('Enter how many steps the micro adjustment has per macro step (2 to 99).');
+else{const ex=k=='um'?246:fmt.subSteps>=2?(12-1)*fmt.subSteps+3:fmt.divisor>1?Math.round(12.5*fmt.divisor):12;bits.push('Settings look like '+gmWith(fmt,()=>fsn(ex))+(k=='um'?' µm of burr gap':' ('+word+')'));
+if(hi)bits.push('range '+gmWith(fmt,()=>fmt.subSteps>=2?Math.floor((lo-1)/fmt.subSteps+1)+'–'+Math.ceil(hi/fmt.subSteps)+' on the macro':fsn(lo)+'–'+fsn(hi)));else if($('gm_max').value.trim())bits.push('the range is not readable: finest must be below coarsest');
+bits.push(k=='um'?'one step is one micron':src&&src.umPerUnit>0?'the maker says one step is '+src.umPerUnit+' µm':'how far one step moves the shot is learned from your shots');
+const cv=+$('gm_covers').value;if(hi&&cv)bits.push('first guess for espresso: '+gmWith(fmt,()=>fsn(Math.round(lo+(cv==2?0.2:0.5)*(hi-lo)))))}
+const burrs=src&&src.burrs?' Burrs: '+src.burrs+'.':'';$('gm_sum').textContent=bits.join(' · ')+'.'+burrs}
+function grinderForm(){const p=gmPick(),m=p.own?{model:p.own.model,unit:p.own.unit,divisor:p.own.divisor,subSteps:p.own.subSteps,min:p.own.min,max:p.own.max}:p.lib?{model:p.lib.model,unit:p.lib.unit,divisor:p.lib.divisor||1,subSteps:p.lib.sub_steps||0,min:p.lib.min,max:p.lib.max}:null;
+if(m)gmFill(m);else{if(L.grinder.modelId||L.grinder.libraryId)$('gm_name').value='';gmSummary()}}
 // The maker a model belongs to, for the picker's groups.
 function grinderMaker(n){const m=[['Barista Express','Breville'],['Breville','Breville'],['Baratza','Baratza'],['Eureka','Eureka'],['Niche','Niche'],['DF','Turin (DF)'],['1Zpresso','1Zpresso'],['Comandante','Comandante'],['Timemore','Timemore'],['Fellow','Fellow'],['Mahlk','Mahlkönig']].find(x=>n.startsWith(x[0]));return m?m[1]:(n.split(' ')[0]||'Other')}
 function drawGrinder(){const g=L.grinder,o=L.otherGrinder,libSel=g.libraryId&&GM.some(x=>x.id==g.libraryId);
@@ -1296,23 +1329,26 @@ const pick=[...L.grinderModels.map(m=>({v:m.id,name:m.model,sel:m.id==g.modelId,
 ...GM.filter(m=>!L.grinderModels.some(x=>x.model==m.model||x.libraryId==m.id)).map(m=>({v:'L:'+m.id,name:m.model,sel:!g.modelId&&g.libraryId==m.id,note:' (shared library)'}))];
 const groups={};pick.forEach(m=>{(groups[grinderMaker(m.name)]=groups[grinderMaker(m.name)]||[]).push(m)});
 $('gm_model').innerHTML=Object.keys(groups).sort((a,b)=>a.localeCompare(b)).map(k=>`<optgroup label="${esc(k)}">`+groups[k].sort((a,b)=>a.name.localeCompare(b.name)).map(m=>`<option value="${esc(String(m.v))}" ${m.sel?'selected':''}>${esc(m.name)}${m.note}</option>`).join('')+'</optgroup>').join('')+`<option value="0" ${g.modelId||libSel?'':'selected'}>${g.model&&!g.modelId&&!libSel?esc(g.model)+' (yours)':g.model||g.modelId?'Another grinder: type it below':'Not set yet: pick one, or type it below'}</option>`;
-$('gm_name').value=g.model;$('gm_burrs').value=g.burrs;$('gm_unit').value=g.unit;$('gm_umPerUnit').value=g.umPerUnit||'';$('gm_divisor').value=g.divisor||1;$('gm_subSteps').value=g.subSteps||'';$('gm_zeroDate').value=i2d(g.zeroDate);grinderForm();
-if(!gmPick().own&&!gmPick().lib){$('gm_name').value=g.model;$('gm_unit').value=g.unit;$('gm_umPerUnit').value=g.umPerUnit||''}
-$('gm_info').textContent=(g.model?'In use: '+g.model+(g.burrs?', '+g.burrs:'')+'. ':'No grinder named yet. ')+'Settings are read in the unit shown: whole steps, a dial read in fractions, or two rings ("12:3").'+(()=>{const m=L.grinderModels.find(x=>x.id==g.modelId);const f=v=>{const r=m.subSteps||0,d=m.divisor||1;return r>=2?(Math.floor((v-1)/r)+1)+':'+((v-1)%r+1):d>1?String(v/d):String(v)};return m&&m.max?' Its range: '+f(m.min)+' to '+f(m.max)+'.':''})()+' Change anything to make it your own version, which you can send to the shared list for review.';
+$('gm_zeroDate').value=i2d(g.zeroDate);$('gm_covers').value=g.covers||0;gmFill(g);
+$('gm_info').textContent=(g.model?'In use: '+g.model+'. ':'No grinder named yet. ')+'Changing how a listed model adjusts makes it your own version, which you can send to the shared list for review.';
 const st=g.share||'local',on=S&&S.shareEnabled,known=g.modelId>0;$('gm_shrow').style.display=g.model?'':'none';$('gm_shpill').textContent=known?'a known model':SHN[st];
 $('gm_share').textContent=known?'This model is in the firmware\'s own list: there is nothing to send.':({local:on?'Kept on this controller only. Sending it lets a reviewer add the model to the shared list.':'Kept on this controller only. Sharing is switched off (Setup).',queued:'Signed and waiting in the outbox.',sent:'Sent. The library has not answered yet.',review:'The library has it. A reviewer has not decided yet.',published:'In the shared list'+(g.libraryId?' as '+g.libraryId:'')+'.',declined:'A reviewer did not accept it'+(g.reviewNote?': "'+g.reviewNote+'"':'')+'. What you typed is unchanged.',refused:'The library\'s checks turned this record away'+(g.reviewNote?': "'+g.reviewNote+'"':'')+'. Correct it if needed, then send it again.'})[st]+(g.shareChanged?' You have changed it since that version was sent.':'');
 $('gm_send').style.display=on&&g.canShare?'':'none';$('gm_send').textContent=st=='local'?'Send to the shared library':st=='refused'?'Send again':'Send the new version';
 $('gm_addother').style.display=o?'none':'';
-$('gm_other').innerHTML=o?`<span class="sm mid" style="flex:1 1 260px">Your other grinder: <b>${esc(o.model)}</b>${o.burrs?', '+esc(o.burrs):''} (read in ${esc(o.unit=='um'?'µm':o.unit)}).</span><button onclick="switchGrinder()">Use it instead</button>`+(S&&S.shareEnabled&&o.canShare?`<button onclick="sendGrinder(${o.id})">Send it to the shared library</button>`:'')+`<button class="del" onclick="removeOther()">Remove it</button>`:'<span class="sm dim">One grinder. A second can be kept beside it: choose or type it above, then "Add ... as my second grinder".</span>'}
-function grinderBody(rezeroed){const p=gmPick(),src=p.own||(p.lib&&{model:p.lib.model,unit:p.lib.unit,umPerUnit:p.lib.um_per_unit}),
-// changed from the listed model: it is saved as the owner's own version
-same=src&&$('gm_name').value.trim()==src.model&&($('gm_unit').value.trim()||'um')==src.unit&&Math.abs((+$('gm_umPerUnit').value||0)-(src.umPerUnit||0))<1e-6&&
-(!p.own||((+$('gm_subSteps').value>=2?+$('gm_subSteps').value:0)==(p.own.subSteps||0)&&(+$('gm_subSteps').value>=2||(+$('gm_divisor').value||1)==(p.own.divisor||1))));
-return {modelId:p.own&&same?p.own.id:0,libraryId:p.lib&&same?p.lib.id:'',model:$('gm_name').value.trim(),burrs:$('gm_burrs').value.trim(),unit:$('gm_unit').value.trim()||'um',umPerUnit:+$('gm_umPerUnit').value||0,divisor:(+$('gm_subSteps').value>=2?1:+$('gm_divisor').value)||1,subSteps:+$('gm_subSteps').value>=2?+$('gm_subSteps').value:0,zeroDate:rezeroed?today():d2i($('gm_zeroDate').value),rezeroed:!!rezeroed}}
+$('gm_other').innerHTML=o?`<span class="sm mid" style="flex:1 1 260px">Your other grinder: <b>${esc(o.model)}</b> (read in ${esc(o.unit=='um'?'µm':o.unit)}).</span><button onclick="switchGrinder()">Use it instead</button>`+(S&&S.shareEnabled&&o.canShare?`<button onclick="sendGrinder(${o.id})">Send it to the shared library</button>`:'')+`<button class="del" onclick="removeOther()">Remove it</button>`:'<span class="sm dim">One grinder. A second can be kept beside it: choose or type it above, then "Add ... as my second grinder".</span>'}
+function grinderBody(rezeroed){const p=gmPick(),g=L.grinder,k=$('gm_kind').value,fmt=gmFmt(),[lo,hi]=gmRange(),
+src=p.own?{model:p.own.model,unit:p.own.unit,umPerUnit:p.own.umPerUnit,divisor:p.own.divisor||1,subSteps:p.own.subSteps||0}:p.lib?{model:p.lib.model,unit:p.lib.unit,umPerUnit:p.lib.um_per_unit,divisor:p.lib.divisor||1,subSteps:p.lib.sub_steps||0}:null,
+model=src?src.model:$('gm_name').value.trim(),unit=k=='um'?'um':($('gm_unit').value.trim()||(k=='dial'?'dial':'step')),
+// changed from the listed model in how it adjusts: it is saved as the owner's own version
+same=src&&unit==src.unit&&fmt.subSteps==src.subSteps&&fmt.divisor==src.divisor,
+umPerUnit=k=='um'?1:same?(src.umPerUnit||0):(!src&&model==g.model&&unit==g.unit?(g.umPerUnit||0):0);
+return {modelId:p.own&&same?p.own.id:0,libraryId:p.lib&&same?p.lib.id:'',model,unit,umPerUnit,divisor:fmt.divisor,subSteps:fmt.subSteps,min:lo,max:hi,covers:+$('gm_covers').value||0,zeroDate:rezeroed?today():d2i($('gm_zeroDate').value),rezeroed:!!rezeroed}}
 async function saveGrinder(rezeroed,asOther){const g=L.grinder,b=grinderBody(rezeroed);if(!b.modelId&&!b.model)return say('Pick a model, or type its name',false);
-if(asOther){b.asOther=true;b.rezeroed=false;if(b.model==g.model&&b.burrs==g.burrs)return say('That is the grinder already in use: choose or type the other one first',false);
+if(asOther){b.asOther=true;b.rezeroed=false;if(b.model==g.model)return say('That is the grinder already in use: choose or type the other one first',false);
 post('/api/grinder',b).then(r=>{done(r,'Second grinder added');loadLibrary()});return}
-const named=g.model||g.modelId,changes=named&&(b.model!=g.model||b.burrs!=g.burrs||b.unit!=g.unit);
+if($('gm_micro').style.display!='none'&&b.subSteps<2)return say('Enter how many steps the micro adjustment has per macro step, or remove it',false);
+if($('gm_max').value.trim()&&!b.max)return say('The range is not readable: the finest setting must be below the coarsest',false);
+const named=g.model||g.modelId,changes=named&&(b.model!=g.model||b.unit!=g.unit||b.divisor!=(g.divisor||1)||b.subSteps!=(g.subSteps||0));
 if((rezeroed||changes)&&!await ask('Grind settings from before will no longer be compared with new ones: grind advice starts fresh for every coffee, and if the unit changes the settings entered so far are cleared. To keep both grinders, use "Add ... as my second grinder" instead. Continue?'))return;
 post('/api/grinder',b).then(r=>{done(r,'Grinder saved');loadLibrary()})}
 function switchGrinder(){act('grinder_switch').then(()=>say('Now using '+L.grinder.model))}

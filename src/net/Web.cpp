@@ -674,6 +674,9 @@ void handleLibrary() {
       g["umPerUnit"] = grinder.umPerUnit;        // microns per STORED step
       g["divisor"] = grinder.divisor;            // stored steps per displayed unit (core/SettingFormat.h)
       g["subSteps"] = grinder.subSteps;          // 0, or the inner ring's steps per outer step
+      g["min"] = grinder.minStep;                // its range in stored steps, 0 = not given
+      g["max"] = grinder.maxStep;
+      g["covers"] = grinder.covers;              // 0 not given, 1 espresso, 2 espresso to filter
       g["zeroDate"] = grinder.zeroDate;
       g["calibration"] = grinder.calibration;
       g["share"] = bbw::shareStateName(bbw::grinderShareState(grinder, outboxSent));
@@ -972,6 +975,14 @@ void handleCommunity() {
   start["range"] = view.start.range;
   start["age_shift"] = view.start.ageShift;
   start["flow_shift"] = view.start.flowShift;
+  // A first guess from the grinder's range alone (Library.h grinderFirstGuess), for when nothing
+  // else is known.
+  const bbw::RangeGuess guess = bbw::grinderFirstGuess(app::grinder());
+  if (guess.setting) {
+    JsonObject rg = doc["range_guess"].to<JsonObject>();
+    rg["setting"] = guess.setting;
+    rg["range"] = guess.range;
+  }
   // The owner's own most similar coffee (core/SimilarCoffee.h): a guess to start from, offered
   // whether or not the shared library knows this coffee.
   const bbw::SimilarStart similar =
@@ -1104,6 +1115,9 @@ void handleSaveGrinder() {
   grinder.umPerUnit = doc["umPerUnit"] | 0.0f;
   grinder.divisor = doc["divisor"] | 1;
   grinder.subSteps = doc["subSteps"] | 0;
+  grinder.minStep = doc["min"] | 0;
+  grinder.maxStep = doc["max"] | 0;
+  grinder.covers = doc["covers"] | 0;
   grinder.zeroDate = doc["zeroDate"] | 0;
   rezeroed = doc["rezeroed"] | false;
   // asOther: keep it as the owner's second grinder, beside the one in use.

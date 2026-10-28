@@ -405,6 +405,14 @@ function checkReading(g) {
   if (subSteps && divisor !== 1) bad('a ringed dial has no divisor');
 }
 
+// A grinder's range in stored steps: both ends or neither, finest below coarsest.
+function checkRange(g) {
+  if (!has(g, 'min') && !has(g, 'max')) return;
+  number(g, 'min', 1, 2000);
+  number(g, 'max', 1, 2000);
+  if (g.min >= g.max) bad('grinder.min is not below grinder.max');
+}
+
 function checkGrinder(g) {
   checkReading(g);
   text(g, 'unit', 7);
@@ -535,6 +543,7 @@ export function checkBody(body) {
     text(body, 'burrs', 23, false);
     text(body, 'unit', 7);
     checkReading(body);
+    checkRange(body);
     number(body, 'um_per_unit', 0.01, 1000, false);
     number(body, 'local_id', 1, 65535);
     number(body, 'record', 0, 4294967295);
@@ -611,6 +620,7 @@ export function checkListed(kind, entry) {
     text(entry, 'burrs', 23, false);
     text(entry, 'unit', 7);
     checkReading(entry);
+    checkRange(entry);
     number(entry, 'um_per_unit', 0.01, 1000, false);
   } else if (kind === 'machine') checkMachine(entry, true);
   else if (kind === 'service') checkService(entry, false);

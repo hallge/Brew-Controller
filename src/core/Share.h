@@ -614,6 +614,11 @@ inline uint32_t grinderShareHash(const Grinder &g) {
   hash.update(g.unit, strlen(g.unit) + 1);
   const uint32_t hundredths = static_cast<uint32_t>(g.umPerUnit * 100.0f + 0.5f);
   hash.update(&hundredths, sizeof(hundredths));
+  // Only when given, so a grinder shared before ranges were kept is not "changed".
+  if (g.maxStep) {
+    const uint16_t range[2] = {g.minStep, g.maxStep};
+    hash.update(range, sizeof(range));
+  }
   uint8_t out[32];
   hash.finish(out);
   const uint32_t value = static_cast<uint32_t>(out[0]) << 24 | static_cast<uint32_t>(out[1]) << 16 |
@@ -680,6 +685,10 @@ inline size_t buildGrinderRecord(const Grinder &g, uint32_t record, uint32_t epo
   if (g.umPerUnit > 0.0f) j.number("um_per_unit", g.umPerUnit, 2);
   if (g.divisor > 1) j.integer("divisor", g.divisor);
   if (g.subSteps >= 2) j.integer("sub_steps", g.subSteps);
+  if (g.maxStep > g.minStep) {
+    j.integer("min", g.minStep ? g.minStep : 1);
+    j.integer("max", g.maxStep);
+  }
   j.close();
   return j.ok() ? j.length() : 0;
 }

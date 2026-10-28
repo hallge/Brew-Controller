@@ -4677,6 +4677,96 @@ static void testLibrary() {
         strcmp(back.grinder.model, "Other dial") == 0);
 }
 
+// The grinder's own range and what it covers: clamping, the first guess, kept burrs, records.
+static void testGrinderSetup() {
+  printf("grinder setup: own range, first guess, burrs kept, shared record\n");
+  // A built-in model brings its range; one typed in has its own.
+  Library lib = defaultLibrary();
+  Grinder sgp;
+  sgp.modelId = 6;  // Breville Smart Grinder Pro: 1 to 60
+  setGrinder(lib, sgp, false);
+  CHECK(lib.grinder.minStep == 1 && lib.grinder.maxStep == 60);
+  CHECK(strcmp(lib.grinder.burrs, "40 mm conical") == 0);
+  const uint16_t cal = lib.grinder.calibration;
+  // Saved from the page: no burrs sent, a range covering espresso to filter. Same grinder.
+  Grinder again;
+  again.modelId = 6;
+  again.minStep = 1;
+  again.maxStep = 60;
+  again.covers = COVERS_ESPRESSO_TO_FILTER;
+  setGrinder(lib, again, false);
+  CHECK(lib.grinder.calibration == cal && lib.grinder.covers == COVERS_ESPRESSO_TO_FILTER);
+  CHECK(strcmp(lib.grinder.burrs, "40 mm conical") == 0);
+  // First guess: a fifth of the way up the range, a sixth of the span either side.
+  RangeGuess guess = grinderFirstGuess(lib.grinder);
+  CHECK(guess.setting == 13 && guess.range == 10);
+  Grinder espressoOnly = lib.grinder;
+  espressoOnly.covers = COVERS_ESPRESSO;
+  CHECK(grinderFirstGuess(espressoOnly).setting == 31);
+  Grinder unsaid = lib.grinder;
+  unsaid.covers = COVERS_NOT_GIVEN;
+  CHECK(grinderFirstGuess(unsaid).setting == 0);  // nothing said: no guess
+  // Other burrs typed into a known model stay when the page saves it without burrs.
+  Library el = defaultLibrary();
+  Grinder e64;
+  e64.modelId = 1;
+  copyText(e64.burrs, "64 mm SSP", GRINDER_BURRS_LEN);
+  setGrinder(el, e64, false);
+  Grinder e64page;
+  e64page.modelId = 1;
+  setGrinder(el, e64page, false);
+  CHECK(strcmp(el.grinder.burrs, "64 mm SSP") == 0 && el.grinder.calibration == 0);
+  // A grinder shown in microns is 1 um per step whatever was typed; no range on it: no guess.
+  CHECK_NEAR(el.grinder.umPerUnit, 1.0, 0.0001);
+  CHECK(grinderFirstGuess(el.grinder).setting == 0);
+  // A typed-in grinder: its own range clamps advice; a range change is not a new calibration.
+  Library tl = defaultLibrary();
+  Grinder mine;
+  copyText(mine.model, "Home stepped", GRINDER_NAME_LEN);
+  copyText(mine.unit, "step", GRINDER_UNIT_LEN);
+  mine.minStep = 1;
+  mine.maxStep = 40;
+  setGrinder(tl, mine, false);
+  const StepRange own = grinderRange(tl.grinder);
+  CHECK(own.known && own.lo == 1 && own.hi == 40);
+  GrindAdvice a;
+  a.action = GrindAction::COARSER;
+  a.currentUm = 38;
+  a.suggestedUm = 45;
+  a.deltaUm = 7;
+  keepAdviceInRange(a, own);
+  CHECK(a.suggestedUm == 40 && a.deltaUm == 2);
+  const uint16_t tcal = tl.grinder.calibration;
+  mine.maxStep = 45;
+  setGrinder(tl, mine, false);
+  CHECK(tl.grinder.calibration == tcal && tl.grinder.maxStep == 45);
+  // A range that makes no sense is dropped; what it covers out of range is "not given".
+  Grinder bad = mine;
+  bad.minStep = 30;
+  bad.maxStep = 20;
+  bad.covers = 9;
+  setGrinder(tl, bad, false);
+  CHECK(tl.grinder.minStep == 0 && tl.grinder.maxStep == 0 && tl.grinder.covers == 0);
+  CHECK(!grinderRange(tl.grinder).known);
+  // Kept through the library file.
+  setGrinder(tl, mine, false);
+  static uint8_t buf[LIBRARY_MAX_BYTES];
+  static Library back;
+  const size_t n = encodeLibrary(tl, buf, sizeof(buf));
+  CHECK(n != 0 && decodeLibrary(buf, n, back) && back.grinder.maxStep == 45 && back.grinder.minStep == 1);
+  // The shared record says the range; a grinder shared before ranges were kept is not "changed".
+  char record[512];
+  CHECK(buildGrinderRecord(tl.grinder, 3, 0, record, sizeof(record)) != 0);
+  CHECK(strstr(record, "\"min\":1") && strstr(record, "\"max\":45"));
+  Grinder old = tl.grinder;
+  old.minStep = old.maxStep = 0;
+  markGrinderQueued(old, 1);
+  CHECK(!grinderChangedSinceShared(old));
+  old.maxStep = 45;
+  old.minStep = 1;
+  CHECK(grinderChangedSinceShared(old));
+}
+
 // What an earlier build stored, brought forward: its settings (recipes with
 // the coffee written into each) and its shot history.
 static void testMigration() {
@@ -7625,6 +7715,7 @@ int main() {
   testCommunityModel();
   testShareWithdrawAndLinks();
   testGrindRange();
+  testGrinderSetup();
   testBugReport();
   testWebPanels();
   testCommunityHub();

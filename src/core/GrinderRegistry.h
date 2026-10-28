@@ -68,14 +68,20 @@ inline const GrinderModel *findGrinderModel(uint16_t id) {
   return nullptr;
 }
 
-// The settings a grinder can be at, in stored steps: its model's range, else anything the
-// controller stores (1 to 2000).
+// The settings a grinder can be at, in stored steps: its owner's range, else its model's, else
+// anything the controller stores (1 to 2000).
 struct StepRange {
   uint16_t lo = 1, hi = 2000;
   bool known = false;
 };
-inline StepRange stepRange(uint16_t modelId) {
+inline StepRange stepRange(uint16_t modelId, uint16_t ownMin = 0, uint16_t ownMax = 0) {
   StepRange r;
+  if (ownMax > ownMin && ownMax > 0) {
+    r.lo = ownMin ? ownMin : 1;
+    r.hi = ownMax;
+    r.known = true;
+    return r;
+  }
   const GrinderModel *m = findGrinderModel(modelId);
   if (m && m->maxStep > m->minStep) {
     r.lo = m->minStep ? m->minStep : 1;
