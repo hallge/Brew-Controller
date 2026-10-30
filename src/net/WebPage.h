@@ -236,7 +236,8 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <label>What the controller will brew<select id="psel" onchange="act('preset_select',+this.value)"></select></label>
 <div class="row" id="pchips"></div><div class="sm dim" id="pinfo"></div></section>
 <div class="hstk"><section class="card tight"><div class="head"><div class="row"><h2>Grinder</h2><span><span class="num" id="hg">--</span> <span class="dim un">&micro;m</span></span><span class="pill" id="hgadv"></span></div><a class="sm" href="#grinder">Details</a></div>
-<div class="sm mid"><span id="hgwhy"></span> <span class="dim" id="hgage"></span></div></section>
+<div class="sm mid"><span id="hgwhy"></span> <span class="dim" id="hgage"></span></div>
+<div id="hgrec" class="row" style="display:none;border-top:1px solid var(--line);padding-top:10px;margin-top:8px"><span class="sm" id="hgrect" style="flex:1 1 220px"></span><button class="pri" id="hgrecu" onclick="answerRec(1)">Use</button><button id="hgreck" onclick="answerRec(0)">Keep</button></div></section>
 <section class="card tight"><div class="head"><h2>Previous grinder recommendation</h2><a class="sm" href="#shots">All shots</a></div>
 <div id="hprev" class="sm mid"><span class="dim">No shot yet.</span></div></section></div>
 </div>
@@ -334,7 +335,7 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <fieldset><legend>If the target is never reached</legend><div class="grid">
 <label>Who ends the shot<select id="r_timeLimit" onchange="recipeForm()"><option value="0">The machine's own time-out</option><option value="1">The Bot, after a set time</option></select></label>
 <label>Stop after (s)<input id="r_maxShotTimeS" type="number" min="5" max="90"></label>
-<label>Starting stop offset (g)<input id="r_baselineOffsetG" type="number" step="0.1" min="0" max="5"></label></div></fieldset>
+<label title="A new coffee on this recipe starts from what the recipe has learned on its other coffees; this is used until it has learned one">Starting stop offset, until learned (g)<input id="r_baselineOffsetG" type="number" step="0.1" min="0" max="10"></label></div></fieldset>
 <div class="row"><button class="pri" data-save onclick="saveRecipe()">Save</button><span class="sm dim" id="rinfo"></span></div></section>
 <section class="card" id="rused"><div class="head"><h2>Used with</h2><a class="sm" href="#coffees">Add to a coffee</a></div>
 <div class="scroll"><table id="rtable"></table></div>
@@ -980,7 +981,7 @@ $('cfin').style.display=C&&!c.finished&&c.bagId?'':'none';$('cbag').textContent=
 const wb=C?waitingBag(c):null;$('cinfo').textContent=wb&&(c.finished||!c.bagId)?'Waiting unopened: open it below when you start it.':c.finished?'Bag finished '+fd(c.finished)+'. Off the controller until a new bag is started.':'';
 if(!C)return;
 $('cplist').innerHTML=L.recipes.map(r=>{const i=L.presets.findIndex(p=>p.coffeeId==C&&p.recipeId==r.id),on=i>=0,p=on?L.presets[i]:null;
-return `<div class="pair ${on?'on':''}"><input type="checkbox" aria-label="Brew ${esc(c.name)} with ${esc(r.name)}" ${on?'checked':''} ${c.finished?'disabled title="Bag finished: start a new bag first"':''} onchange="${on?`act('preset_delete',${i})`:`act('preset_add',${r.id},${C})`}"><span class="what"><b>${esc(r.name)}</b> <span class="dim">${r.doseG} g in, ${r.targetWeightG} g out, ${r.targetTimeS} s${r.bloomPauseS?', bloom '+r.bloomPauseS+' s':''}</span></span>`+(on?`<input type="number" aria-label="Grind setting in microns" min="0" max="2000" value="${p.grindUm||''}" placeholder="${U}" onchange="act('preset_grind',${i},+this.value||0)"><span class="dim sm">${U}</span>`:'')+'</div>'}).join('');
+return `<div class="pair ${on?'on':''}"><input type="checkbox" aria-label="Brew ${esc(c.name)} with ${esc(r.name)}" ${on?'checked':''} ${c.finished?'disabled title="Bag finished: start a new bag first"':''} onchange="${on?`act('preset_delete',${i})`:`act('preset_add',${r.id},${C})`}"><span class="what"><b>${esc(r.name)}</b> <span class="dim">${r.doseG} g in, ${r.targetWeightG} g out, ${r.targetTimeS} s${r.bloomPauseS?', bloom '+r.bloomPauseS+' s':''}</span></span>`+(on?`<span class="dim sm" title="Set on the controller's recipe screen or the Grinder page; a recommendation is offered when the coffee is put in use">grinder ${p.grindUm?esc(fs(p.grindUm)):'not set yet'}</span>`:'')+'</div>'}).join('');
 $('cpinfo').textContent='Each ticked line is one entry on the controller ('+L.presets.length+' of '+L.maxPresets+' used). The grind setting and the learned stop offset belong to the pair.'}
 const SHN={local:'on this controller only',queued:'waiting to send',sent:'sent',review:'in review',published:'published',declined:'declined',refused:'refused by the library'};
 function drawCoffeeShare(c){$('cshrow').style.display=C?'':'none';if(!C)return;const st=c.share||'local',on=S&&S.shareEnabled;
@@ -1253,6 +1254,12 @@ function saveRecipe(){const b=readRecipe();if(!b.name)return say('A recipe needs
 function dupRecipe(){const b=readRecipe();b.id=0;b.name=(b.name+' 2').slice(0,23);post('/api/recipe',b).then(r=>{if(done(r,'Copy made: not on the controller yet')){R=r.id;loadLibrary()}})}
 async function delRecipe(){const r=recipe(R);if(!r||!await ask('Delete the recipe "'+r.name+'"?'))return;act('recipe_delete',R).then(()=>{R=-1;loadLibrary()})}
 
+// A coffee or bag just put in use: a grind recommendation to use or not (asked once, here and on the controller).
+function drawRec(){const r=G&&G.recommendation,box=$('hgrec');if(!box)return;if(!r){box.style.display='none';return}
+const why=r.source=='community'?'from the community ('+r.people+' '+(r.people==1?'person':'people')+')':r.source=='similar'?'from your similar coffee '+r.from:'a first guess from your grinder\'s range';
+$('hgrect').innerHTML='<b>New grind recommendation for '+esc(G.coffee||'this bag')+':</b> change the grinder to '+esc(fs(r.setting))+' (\u00b1 '+fdn(r.range)+'), '+esc(why)+'. '+(r.current?'It is at '+esc(fs(r.current))+' now.':'No setting yet.')+' Grind advice takes over from the first shot.';
+$('hgrecu').textContent='Use '+fs(r.setting);$('hgreck').textContent=r.current?'Keep '+fs(r.current):'Not now';box.style.display=''}
+async function answerRec(use){await post('/api/grind/recommendation?use='+use);await loadGrind();if(use)loadLibrary()}
 async function loadGrind(){try{G=await get('/api/grind')}catch(e){return}
 const cur=fsn(G.current_um)||'--';$('gcur').textContent=cur;$('hg').textContent=cur;$('gfor').textContent='Advice for '+G.recipe+(G.coffee?', '+G.coffee:'');
 const b=$('gapply');b.style.display='none';let title,cls='',why,short;
@@ -1277,7 +1284,7 @@ if(ag<5)at+=' Very fresh coffee is still giving off gas: expect shots to vary fo
 if(ds>=3){at+=' It is '+ds+' days since a shot of it last counted here. Coffee runs faster as it ages, so the grind usually has to go finer.';
 if(sh){at+=' From what contributors to the shared library have measured, expect about '+fdn(sh)+' '+fdu()+' '+(sh<0?'finer':'coarser')+' than last time'+(G.current_um?' (around '+fs(G.current_um+sh)+')':'')+'. A guide only: the advice above follows from your next shot.';as+=', '+ds+' days since last brewed: about '+fdn(sh)+' '+fdu()+' '+(sh<0?'finer':'coarser')+' expected'}
 else{at+=G.age_rate_known?' Not enough is known about this grinder to put a number on it.':' The shared library has not measured how fast yet, so no number is offered: the advice above follows from your next shot.';as+=', '+ds+' days since last brewed'}}}
-$('gage').textContent=at;$('hgage').textContent=as?as+'.':'';
+$('gage').textContent=at;$('hgage').textContent=as?as+'.':'';drawRec();
 let rt='';if(G.coffee&&G.rated_target_on){const n=G.rated_shots,rs=G.rated_state,T=f1(G.rated_time_s),tol=G.tolerance_s;
 if(rs=='on_liked')rt='Your '+n+' best-rated shots (4 or 5 stars) took about '+T+' s, and the average is on that time (within \u00b1 '+f1(G.rated_band_s)+' s).';
 else if(rs=='refining')rt='The time advice says keep, but your '+n+' best-rated shots took about '+T+' s and the average is '+f1(G.average_time_s)+' s, so a small move towards the time you liked is suggested. It stays inside the \u00b1 '+tol+' s the time advice allows.';

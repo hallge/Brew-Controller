@@ -192,6 +192,23 @@ bbw::CommunityStart communityStartForActive();
 // A place to start a coffee that has no setting yet, from the owner's most similar coffee
 // (core/SimilarCoffee.h). Loop task only.
 bbw::SimilarStart similarStart(uint16_t coffeeId, uint16_t recipeId);
+// A grind to start a coffee or bag from, offered once when it is put in use and has no shots yet:
+// the community start, else the owner's most similar coffee, else (no setting at all) a first guess
+// from the grinder's range. Only when it differs from the setting by more than its own range.
+enum class GrindRecSource : uint8_t { NONE = 0, COMMUNITY, SIMILAR, RANGE };
+struct GrindRecommendation {
+  GrindRecSource source = GrindRecSource::NONE;
+  uint16_t setting = 0;      // recommended, grinder's unit; 0 = nothing to offer
+  uint16_t range = 0;        // plus or minus
+  uint16_t current = 0;      // the pair's setting now (0: none)
+  uint16_t people = 0;       // community: contributors
+  char from[24] = {};        // similar: the coffee it comes from
+};
+GrindRecommendation grindRecommendation();  // loop task only
+// The owner's answer: use it (the pair's setting becomes the recommendation) or keep the setting.
+// Either way it is not offered again for this coffee, recipe and bag.
+void answerGrindRecommendation(bool use);
+const char *grindRecSourceName(GrindRecSource source);
 // The library's list of coffees as last read (JSON text); "" if never read.
 const char *communityCoffees();
 // The library's list of grinder models as last read; "" if never read.

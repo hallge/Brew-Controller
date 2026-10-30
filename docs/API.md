@@ -85,6 +85,16 @@ Every setting in this API is a whole number of the grinder's smallest step (`gri
 unit: 1, 2, 4, 5, 10, 20, 25, 50, 100) or `grinder.subSteps` (two rings: inner steps per outer step). `35` with `divisor` 10 is
 shown as `3.5`; with `subSteps` 9 it is `4:8`. `umPerUnit` is microns per stored step.
 
+`GET /api/grind` adds `recommendation` {`source` (community, similar, range), `setting`, `range`, `current`, `people`,
+`from`} when the coffee, bag and recipe in use have no shot yet and a starting grind differs from the setting by more
+than its range. `POST /api/grind/recommendation?use=1` sets it, `use=0` keeps the setting; either way it is not offered
+again for that coffee, recipe and bag. The controller shows the same as a "New grind advice" screen (SET / KEEP).
+A coffee newly put on a recipe takes the setting of the pair in use (the grinder as it is now); the web page no longer
+takes a grind per coffee. Its stop offset starts from what the recipe learned on its other coffees.
+
+An automatic power-off (the scale switched off, the schedule) waits up to 30 minutes for the power bot and is called off
+when the machine is used again (power event outcome "not switched off: the machine was in use again").
+
 `GET /api/community` adds `range_guess` {`setting`, `range`} when the grinder has a range and says what it covers: a first
 guess for espresso (a fifth of the way up an espresso-to-filter range, the middle of an espresso-only one, ± a sixth of
 the span), for when no shots, community figure or similar coffee give one.

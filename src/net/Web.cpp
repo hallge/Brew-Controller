@@ -1366,6 +1366,17 @@ void handleGrind() {
   doc["days_since_brewed"] = age.daysSinceBrewed;
   doc["age_rate_known"] = age.rateKnown;
   doc["age_shift"] = age.shift;
+  // A grind to start this coffee or bag from, offered once (app::grindRecommendation).
+  const app::GrindRecommendation rec = app::grindRecommendation();
+  if (rec.setting) {
+    JsonObject r = doc["recommendation"].to<JsonObject>();
+    r["source"] = app::grindRecSourceName(rec.source);
+    r["setting"] = rec.setting;
+    r["range"] = rec.range;
+    r["current"] = rec.current;
+    r["people"] = rec.people;
+    r["from"] = rec.from;
+  }
   sendJson(doc);
 }
 
@@ -3020,6 +3031,12 @@ void begin() {
     const long um = server.arg("um").toInt();
     if (um < 0 || um > 2000) return sendError(400, "grind setting must be 0-2000 microns");
     app::setGrind(static_cast<uint16_t>(um));
+    sendOk();
+  });
+  // The owner's answer to the grind recommendation: use=1 sets it, use=0 keeps the setting.
+  server.on("/api/grind/recommendation", HTTP_POST, []() {
+    if (busyBrewing()) return sendError(409, "not while a shot is running");
+    app::answerGrindRecommendation(server.arg("use") == "1");
     sendOk();
   });
   server.on("/api/shot/vote", HTTP_POST, []() {

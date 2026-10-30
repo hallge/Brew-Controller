@@ -1082,6 +1082,12 @@ inline int addPreset(Library &lib, uint16_t recipeId, uint16_t coffeeId) {
       break;
     }
   }
+  // Nothing for this coffee yet: the setting the grinder is at now, the pair in use (same grinder).
+  // A setting is not typed per coffee on the web page; a recommendation, if any, is offered when the
+  // coffee is put in use (grindRecommendation, main.cpp).
+  if (preset.grindUm == 0 && lib.activePreset < lib.presetCount) {
+    preset.grindUm = lib.presets[lib.activePreset].grindUm;
+  }
   lib.presets[lib.presetCount] = preset;
   return lib.presetCount++;
 }

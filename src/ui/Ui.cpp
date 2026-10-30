@@ -102,9 +102,9 @@ constexpr int KEY_X = -12;
 constexpr int KEY_W = 180;
 constexpr int WIFI_W = 536 - 28;  // the Wi-Fi lines under the settings keys
 
-enum class Panel : uint8_t { HOME, BREW, RESULT, FAULT, SETTINGS, RECIPES, EDIT, COFFEE };
+enum class Panel : uint8_t { HOME, BREW, RESULT, FAULT, SETTINGS, RECIPES, EDIT, COFFEE, GRINDREC };
 
-lv_obj_t *panels[8];
+lv_obj_t *panels[9];
 constexpr int EDIT_FIELDS = 5;
 Panel shown = Panel::HOME;
 bool settingsOpen = false;
@@ -862,6 +862,30 @@ void buildResult() {
   lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
 }
 
+// A new coffee or bag: a grind recommendation to use or not (app::grindRecommendation).
+lv_obj_t *recTitle, *recSetting, *recWhy, *recUseBtn, *recUseLabel, *recKeepLabel;
+void onRecUse(lv_event_t *) { app::answerGrindRecommendation(true); }
+void onRecKeep(lv_event_t *) { app::answerGrindRecommendation(false); }
+void buildGrindRec() {
+  lv_obj_t *p = panels[static_cast<int>(Panel::GRINDREC)] = makePanel();
+  recTitle = makeLabel(p, &lv_font_montserrat_22, COLOR_ACCENT, LV_ALIGN_TOP_LEFT, 16, 10,
+                       "NEW GRIND ADVICE");
+  lv_label_set_long_mode(recTitle, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(recTitle, LEFT_W - 16);
+  recSetting = makeLabel(p, &lv_font_montserrat_32, COLOR_TEXT, LV_ALIGN_TOP_LEFT, 16, 44, "");
+  lv_label_set_long_mode(recSetting, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(recSetting, LEFT_W - 16);
+  recWhy = makeLabel(p, &lv_font_montserrat_20, COLOR_DIM, LV_ALIGN_TOP_LEFT, 16, 88, "");
+  lv_label_set_long_mode(recWhy, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(recWhy, LEFT_W - 16);
+  recUseBtn = makeButton(p, "", &lv_font_montserrat_22, COLOR_ACCENT, KEY_W, 104, LV_ALIGN_TOP_RIGHT,
+                         KEY_X, 12, onRecUse, &recUseLabel);
+  lv_obj_set_style_text_align(recUseLabel, LV_TEXT_ALIGN_CENTER, 0);
+  makeButton(p, "", &lv_font_montserrat_22, COLOR_PANEL, KEY_W, 104, LV_ALIGN_BOTTOM_RIGHT, KEY_X, -12,
+             onRecKeep, &recKeepLabel);
+  lv_obj_set_style_text_align(recKeepLabel, LV_TEXT_ALIGN_CENTER, 0);
+}
+
 void buildFault() {
   lv_obj_t *p = panels[static_cast<int>(Panel::FAULT)] = makePanel();
   faultTitle = makeLabel(p, &lv_font_montserrat_24, COLOR_BAD, LV_ALIGN_TOP_LEFT, 16, 12, "");
@@ -1281,6 +1305,42 @@ void refreshCoffee() {
     }
   }
   show(Panel::COFFEE);
+}
+
+// The grind recommendation for a coffee or bag just put in use; false when there is none to ask about.
+bool refreshGrindRec() {
+  const app::GrindRecommendation r = app::grindRecommendation();
+  if (!r.setting) return false;
+  const char *unit = grindUnit();
+  char text[96], now[16];
+  snprintf(text, sizeof(text), "%s %s", gs(r.setting), unit);
+  setText(recSetting, text);
+  strlcpy(now, r.current ? gs(r.current) : "", sizeof(now));
+  const bbw::Recipe active = app::activeRecipe();
+  char why[200];
+  if (r.source == app::GrindRecSource::COMMUNITY) {
+    snprintf(why, sizeof(why), "%s: from the community (%u %s), +/- %u.", active.coffee,
+             static_cast<unsigned>(r.people), r.people == 1 ? "person" : "people", static_cast<unsigned>(r.range));
+  } else if (r.source == app::GrindRecSource::SIMILAR) {
+    snprintf(why, sizeof(why), "%s: from your similar coffee %s, +/- %u.", active.coffee, r.from,
+             static_cast<unsigned>(r.range));
+  } else {
+    snprintf(why, sizeof(why), "%s: a first guess from the grinder's range, +/- %u.", active.coffee,
+             static_cast<unsigned>(r.range));
+  }
+  char more[80];
+  if (r.current) snprintf(more, sizeof(more), " Grinder now at %s %s.", now, unit);
+  else snprintf(more, sizeof(more), " No setting yet.");
+  const size_t used = strlen(why);
+  snprintf(why + used, sizeof(why) - used, "%s", more);
+  setText(recWhy, why);
+  snprintf(text, sizeof(text), "SET\n%s", gs(r.setting));
+  setText(recUseLabel, text);
+  if (r.current) snprintf(text, sizeof(text), "KEEP\n%s", now);
+  else snprintf(text, sizeof(text), "NOT NOW");
+  setText(recKeepLabel, text);
+  show(Panel::GRINDREC);
+  return true;
 }
 
 void refreshHome(const bbw::LiveStatus &st) {
@@ -1821,6 +1881,9 @@ void refresh() {
     return;
   }
   coffeeOpen = false;
+  // A coffee or bag just put in use, with a grind to recommend: asked before anything else on the
+  // home screen, once (use it, or keep the setting).
+  if (st.state == State::READY && refreshGrindRec()) return;
 
   switch (st.state) {
     case State::BOOT:
@@ -1905,6 +1968,7 @@ bool begin() {
   buildRecipes();
   buildEdit();
   buildCoffee();
+  buildGrindRec();
   recordLayout();
   placeLayout(flippedShown);
   // The CST816T reports the key on the glass as a touch at a fixed point off

@@ -2338,6 +2338,11 @@ bbw::GrinderElasticity grinderElasticity() {
   return g_grinderElasticity;
 }
 
+// Set by grindAdvice()'s scan: the active coffee, bag and recipe have no shot yet on this grinder.
+bool g_grindFresh = false;
+// The coffee, recipe, bag and calibration whose recommendation was answered (not offered again).
+uint32_t g_grindRecAnswered = 0;
+
 bbw::GrindAdvice grindAdvice() {
   if (!g_grindAdviceStale) return g_grindAdvice;
   constexpr uint32_t SCAN_SHOTS = 150;  // how far back to look
@@ -2360,6 +2365,7 @@ bbw::GrindAdvice grindAdvice() {
   static Scan scan;
   const bbw::Settings s = settings();
   scan.recipe = activeRecipe();
+  g_grindFresh = false;
   scan.basis = s.grindTimeBasis;
   scan.calibration = grinder().calibration;
   scan.count = 0;
@@ -2405,6 +2411,8 @@ bbw::GrindAdvice grindAdvice() {
     }
     return true;   // SCAN_SHOTS bounds the pass
   }, &scan);
+  // No shot of this coffee, bag and recipe on the grinder as calibrated: a fresh start.
+  g_grindFresh = !scan.newestSeen;
   const bbw::Recipe &recipe = scan.recipe;
   const bbw::GrindShot *shots = scan.shots;
   const size_t count = scan.count;
@@ -2685,6 +2693,86 @@ bbw::CommunityStart communityStartForActive() {
   memoCalibration = calibration;
   memoAtMs = millis();
   return memo;
+}
+
+static uint32_t grindRecKey(const bbw::Recipe &r) {
+  const uint32_t bag = r.bagId ? r.bagId : r.roastDate;
+  return (static_cast<uint32_t>(r.coffeeId) * 2654435761u) ^ (static_cast<uint32_t>(r.recipeId) << 20) ^
+         (bag * 40503u) ^ (static_cast<uint32_t>(grinder().calibration) << 8) ^ 1u;
+}
+
+const char *grindRecSourceName(GrindRecSource source) {
+  switch (source) {
+    case GrindRecSource::COMMUNITY: return "community";
+    case GrindRecSource::SIMILAR: return "similar";
+    case GrindRecSource::RANGE: return "range";
+    default: return "none";
+  }
+}
+
+GrindRecommendation grindRecommendation() {
+  static GrindRecommendation memo;
+  static uint32_t memoKey = 0, memoStamp = 0, memoAtMs = 0;
+  static uint16_t memoGrind = 0;
+  const bbw::Recipe active = activeRecipe();
+  grindAdvice();  // brings g_grindFresh up to date
+  const uint32_t key = grindRecKey(active);
+  if (!g_grindFresh || active.coffeeId == 0 || key == g_grindRecAnswered) return GrindRecommendation{};
+  if (memoKey == key && memoStamp == g_communityStamp && memoGrind == active.grindUm &&
+      millis() - memoAtMs < 10000) {
+    return memo;
+  }
+  GrindRecommendation r;
+  const bbw::CommunityStart cs = communityStartForActive();
+  if (cs.setting) {
+    r.source = GrindRecSource::COMMUNITY;
+    r.setting = cs.setting;
+    r.range = cs.range;
+  } else {
+    const bbw::SimilarStart sim = similarStart(active.coffeeId, active.recipeId);
+    if (sim.found && sim.setting) {
+      r.source = GrindRecSource::SIMILAR;
+      r.setting = sim.setting;
+      r.range = sim.range;
+      strlcpy(r.from, sim.fromName, sizeof(r.from));
+    } else if (active.grindUm == 0) {
+      const bbw::RangeGuess guess = bbw::grinderFirstGuess(grinder());
+      if (guess.setting) {
+        r.source = GrindRecSource::RANGE;
+        r.setting = guess.setting;
+        r.range = guess.range;
+      }
+    }
+  }
+  if (r.source == GrindRecSource::COMMUNITY) {
+    const CommunityView view = community(active.coffeeId, active.recipeId);
+    r.people = view.dialin.contributors;
+  }
+  r.current = active.grindUm;
+  // Close enough to the setting already: nothing to ask.
+  const int diff = static_cast<int>(r.setting) - static_cast<int>(r.current);
+  const int within = r.range > 1 ? r.range : 1;
+  if (r.setting == 0 || (r.current != 0 && (diff < 0 ? -diff : diff) <= within)) r = GrindRecommendation{};
+  memo = r;
+  memoKey = key;
+  memoStamp = g_communityStamp;
+  memoGrind = active.grindUm;
+  memoAtMs = millis();
+  return memo;
+}
+
+void answerGrindRecommendation(bool use) {
+  const GrindRecommendation r = grindRecommendation();
+  const bbw::Recipe active = activeRecipe();
+  if (use && r.setting) {
+    setGrind(r.setting);
+    LOGI("grind: recommendation used (%s): %u, was %u", grindRecSourceName(r.source),
+         static_cast<unsigned>(r.setting), static_cast<unsigned>(r.current));
+  } else if (r.setting) {
+    LOGI("grind: recommendation of %u (%s) not used; kept %u", static_cast<unsigned>(r.setting),
+         grindRecSourceName(r.source), static_cast<unsigned>(r.current));
+  }
+  g_grindRecAnswered = grindRecKey(active);
 }
 
 // Where to start a coffee with no setting of its own, from the owner's most similar coffee

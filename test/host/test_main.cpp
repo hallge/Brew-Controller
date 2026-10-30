@@ -4780,6 +4780,18 @@ static void testOffsetRecipePrior() {
   CHECK(saveRecipeDef(lib, edited) == rid);
   CHECK(lib.presets[pa].learnedShots == 0 && fabsf(lib.presets[pa].stopOffsetG - 6.0f) < 1e-4f);
   CHECK(lib.presets[pd].learnedShots == 0);  // untouched recipe: was 0 already
+  // Grind: a new coffee carries the setting the grinder is at (the pair in use), not 0 or a typed guess.
+  lib.activePreset = static_cast<uint8_t>(pa);
+  lib.presets[pa].grindUm = 77;
+  Coffee e;
+  copyText(e.name, "Peru", COFFEE_NAME_LEN);
+  const uint16_t ie = saveCoffee(lib, e);
+  const int pe = addPreset(lib, rid, ie);
+  CHECK(pe >= 0 && lib.presets[pe].grindUm == 77);
+  // Another recipe of a coffee that has a setting: that coffee's own setting comes first.
+  lib.presets[pe].grindUm = 90;
+  const int pe2 = addPreset(lib, did, ie);
+  CHECK(pe2 >= 0 && lib.presets[pe2].grindUm == 90);
   // The learning itself still steps from wherever it starts.
   float next = 0.0f;
   CHECK(learnStopOffset(want, 48.0f + 1.0f, 48.0f, 0.70f, next) && fabsf(next - (want + 0.7f)) < 1e-4f);
