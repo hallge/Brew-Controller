@@ -44,6 +44,28 @@ inline RecipeDef *findRecipe(Library &lib, uint16_t id) {
   return const_cast<RecipeDef *>(findRecipe(static_cast<const Library &>(lib), id));
 }
 
+// Where a new coffee on this recipe starts its stop offset. The offset is mostly the machine and the
+// recipe (the time the stop takes, times the flow, plus the drip), little the coffee: the board's first
+// shot of each new coffee ran 5 to 6 g over from the 1.5 g starting value while the recipe had learned
+// about 6 g (30 Oct 2026). So: what the recipe's other coffees have learned, each weighted by how many
+// shots it learned from (at most 10), counting those with 2 or more; else the recipe's starting offset.
+// `except`: a preset to leave out (its own reset). Read live: every pair that learns moves it.
+constexpr uint8_t OFFSET_PRIOR_MIN_SHOTS = 2;
+constexpr uint8_t OFFSET_PRIOR_MAX_WEIGHT = 10;
+inline float recipeOffsetPrior(const Library &lib, uint16_t recipeId, int except = -1) {
+  float sum = 0.0f, weight = 0.0f;
+  for (uint8_t i = 0; i < lib.presetCount; ++i) {
+    const Preset &p = lib.presets[i];
+    if (static_cast<int>(i) == except || p.recipeId != recipeId || p.learnedShots < OFFSET_PRIOR_MIN_SHOTS) continue;
+    const float w = static_cast<float>(p.learnedShots < OFFSET_PRIOR_MAX_WEIGHT ? p.learnedShots : OFFSET_PRIOR_MAX_WEIGHT);
+    sum += w * p.stopOffsetG;
+    weight += w;
+  }
+  if (weight > 0.0f) return clampTo(sum / weight, 0.0f, MAX_OFFSET_G);
+  const RecipeDef *def = findRecipe(lib, recipeId);
+  return def ? def->baselineOffsetG : Preset{}.stopOffsetG;
+}
+
 // Copies and always terminates; the rest of the field is zeroed so that equal
 // text gives equal bytes on flash.
 // ------------------------------------------------------------------ bags --
@@ -363,7 +385,7 @@ inline bool finishCoffee(Library &lib, uint16_t coffeeId, uint32_t today) {
       Preset made = Preset{};
       made.recipeId = p.recipeId;
       made.coffeeId = next->coffeeId;
-      made.stopOffsetG = d ? d->baselineOffsetG : p.stopOffsetG;
+      made.stopOffsetG = d ? recipeOffsetPrior(lib, p.recipeId) : p.stopOffsetG;
       lib.presets[lib.presetCount] = made;
       lib.activePreset = lib.presetCount++;
     }
@@ -1005,6 +1027,13 @@ inline uint16_t saveRecipeDef(Library &lib, RecipeDef def) {
   if (def.id != 0) {
     RecipeDef *existing = findRecipe(lib, def.id);
     if (!existing) return 0;
+    // Another target: the offset learned so far is kept (grams before the end, whatever the end), but
+    // learns quickly again (warm-up) in case the flow at the new end differs.
+    if (fabsf(existing->targetWeightG - def.targetWeightG) > 0.05f) {
+      for (uint8_t i = 0; i < lib.presetCount; ++i) {
+        if (lib.presets[i].recipeId == def.id) lib.presets[i].learnedShots = 0;
+      }
+    }
     *existing = def;
     return def.id;
   }
@@ -1045,7 +1074,8 @@ inline int addPreset(Library &lib, uint16_t recipeId, uint16_t coffeeId) {
   Preset preset;
   preset.recipeId = recipeId;
   preset.coffeeId = coffeeId;
-  preset.stopOffsetG = def->baselineOffsetG;
+  // What the recipe has learned on other coffees; this coffee then learns its own (warm-up from 0 shots).
+  preset.stopOffsetG = recipeOffsetPrior(lib, recipeId);
   for (uint8_t i = 0; coffeeId != 0 && i < lib.presetCount; ++i) {
     if (lib.presets[i].coffeeId == coffeeId && lib.presets[i].grindUm != 0) {
       preset.grindUm = lib.presets[i].grindUm;
@@ -1096,9 +1126,9 @@ inline bool applyPresetList(Library &lib, const Library &before, const Recipe *f
     if (slot < 1 || slot > before.presetCount || claimed[slot - 1]) slot = 0;
     if (slot) claimed[slot - 1] = true;
     Recipe item = flat[i];
-    if (slot == 0) {  // nothing learned yet
+    if (slot == 0) {  // nothing learned yet: what the recipe has learned on other coffees, if any
       sanitizeRecipe(item);
-      item.stopOffsetG = item.baselineOffsetG;
+      item.stopOffsetG = item.recipeId ? recipeOffsetPrior(before, item.recipeId) : item.baselineOffsetG;
       item.learnedAlpha = 0;
     }
     ok = placePreset(lib, before, slot, item, next[made]);

@@ -2074,6 +2074,58 @@ static void testCoffeeTaste() {
   CHECK(buildProfile(three, 3, now).shown());
 }
 
+// An automatic "off" (the scale switched off, the schedule) waits for a power bot that is out of
+// reach for a while, and is called off when the machine is used again (board, 30 Oct 2026).
+static void testPowerAutoOffWaits() {
+  printf("power bot: an automatic off waits for the bot, and is called off by use\n");
+  PusherConfig config;
+  strcpy(config.powerAddress, "aa:bb:cc:dd:ee:ff");
+  PowerControl power;
+  power.begin(&config);
+  FakeBot bot;
+  uint32_t now = 1000;
+  power.believe(PowerBelief::ON, now);
+  // The scale switched off; the bot is out of reach for 12 minutes, then comes back: pressed.
+  CHECK(power.request(false, now, PowerBy::SCALE_OFF) && power.waitingAutoOff());
+  for (int i = 0; i < 72; ++i) power.tick(now += 10000, 0, true, bot);  // 12 minutes
+  CHECK(power.wantsLink() && bot.presses == 0);
+  bot.up = true;
+  power.tick(now += 10, 0, true, bot);
+  CHECK(bot.presses == 1);
+  bot.done();
+  power.tick(now += 10, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::OFF && power.lastOutcome() == PowerControl::Outcome::DONE);
+  // Never back: given up after the long wait, not after 180 s.
+  power.believe(PowerBelief::ON, now);
+  bot.up = false;
+  CHECK(power.request(false, now, PowerBy::SCHEDULE));
+  power.tick(now += PowerControl::CONNECT_TIMEOUT_MS + 1000, 0, true, bot);
+  CHECK(power.wantsLink());
+  power.tick(now += PowerControl::OFF_CONNECT_TIMEOUT_MS, 0, true, bot);
+  CHECK(!power.wantsLink() && power.lastOutcome() == PowerControl::Outcome::BOT_UNREACHABLE);
+  // A shot while it waits: not switched off.
+  CHECK(power.request(false, now, PowerBy::SCALE_OFF));
+  power.tick(now += 60000, 0, true, bot);
+  power.noteUse(now);
+  CHECK(!power.wantsLink() && power.lastOutcome() == PowerControl::Outcome::CANCELLED);
+  CHECK(power.belief() == PowerBelief::ON && bot.presses == 1);
+  PowerEvent ev;
+  CHECK(power.takeEvent(ev) && ev.outcome == static_cast<uint8_t>(PowerControl::Outcome::CANCELLED));
+  // The scale is back while it waits: called off.
+  CHECK(power.request(false, now, PowerBy::SCALE_OFF));
+  CHECK(power.cancelAutoOff() && !power.wantsLink() && !power.cancelAutoOff());
+  // The owner's word replaces a waiting automatic off; the owner's own request keeps 180 s.
+  CHECK(power.request(false, now, PowerBy::SCALE_OFF));
+  CHECK(power.request(false, now) && !power.waitingAutoOff() && power.wantsLink());
+  power.tick(now += PowerControl::CONNECT_TIMEOUT_MS + 10, 0, true, bot);
+  CHECK(!power.wantsLink() && power.lastOutcome() == PowerControl::Outcome::BOT_UNREACHABLE);
+  // An automatic "on" keeps the short wait: switching on late is not wanted.
+  power.believe(PowerBelief::OFF);
+  CHECK(power.request(true, now, PowerBy::SCHEDULE));
+  power.tick(now += PowerControl::CONNECT_TIMEOUT_MS + 10, 0, true, bot);
+  CHECK(!power.wantsLink() && power.lastOutcome() == PowerControl::Outcome::BOT_UNREACHABLE);
+}
+
 static void testPowerControl() {
   printf("power bot: on, off, belief, schedule\n");
   PusherConfig config;
@@ -4675,6 +4727,62 @@ static void testLibrary() {
   const size_t gn = encodeLibrary(gl, gb, sizeof(gb));
   CHECK(gn != 0 && decodeLibrary(gb, gn, back) && back.grinder.calibration == 5 &&
         strcmp(back.grinder.model, "Other dial") == 0);
+}
+
+// A new coffee on a recipe starts its stop offset from what the recipe learned on its other coffees
+// (board, 30 Oct 2026: +6.1 g on the first shot of a new coffee from a 1.5 g start).
+static void testOffsetRecipePrior() {
+  printf("stop offset: a new coffee starts from what its recipe learned\n");
+  Library lib = defaultLibrary();
+  RecipeDef triple;
+  copyText(triple.name, "Triple", RECIPE_NAME_LEN);
+  triple.targetWeightG = 48.0f;
+  triple.baselineOffsetG = 1.5f;
+  const uint16_t rid = saveRecipeDef(lib, triple);
+  Coffee a, b, c, d;
+  copyText(a.name, "Rwanda", COFFEE_NAME_LEN);
+  copyText(b.name, "Costa Rica", COFFEE_NAME_LEN);
+  copyText(c.name, "Honduras", COFFEE_NAME_LEN);
+  copyText(d.name, "Burundi", COFFEE_NAME_LEN);
+  const uint16_t ia = saveCoffee(lib, a), ib = saveCoffee(lib, b), ic = saveCoffee(lib, c), id = saveCoffee(lib, d);
+  CHECK(ia && ib && ic && id);
+  // Nothing learned yet: the recipe's starting offset.
+  const int pa = addPreset(lib, rid, ia);
+  CHECK(pa >= 0 && fabsf(lib.presets[pa].stopOffsetG - 1.5f) < 1e-4f);
+  CHECK(fabsf(recipeOffsetPrior(lib, rid) - 1.5f) < 1e-4f);
+  // Rwanda learned 6.0 g over 12 shots; Costa Rica 4.0 g over 2 (weighted 10 : 2).
+  lib.presets[pa].stopOffsetG = 6.0f;
+  lib.presets[pa].learnedShots = 12;
+  const int pb = addPreset(lib, rid, ib);
+  CHECK(pb >= 0 && fabsf(lib.presets[pb].stopOffsetG - 6.0f) < 1e-4f);  // only Rwanda counts yet
+  lib.presets[pb].stopOffsetG = 4.0f;
+  lib.presets[pb].learnedShots = 2;
+  const float want = (10.0f * 6.0f + 2.0f * 4.0f) / 12.0f;
+  CHECK(fabsf(recipeOffsetPrior(lib, rid) - want) < 1e-4f);
+  // A new coffee starts there and still warms up (it learns its own from shot one).
+  const int pc = addPreset(lib, rid, ic);
+  CHECK(pc >= 0 && fabsf(lib.presets[pc].stopOffsetG - want) < 1e-4f && lib.presets[pc].learnedShots == 0);
+  // One shot is not enough to count; leaving itself out (its own reset) gives the others' prior.
+  lib.presets[pc].learnedShots = 1;
+  lib.presets[pc].stopOffsetG = 9.0f;
+  CHECK(fabsf(recipeOffsetPrior(lib, rid) - want) < 1e-4f);
+  CHECK(fabsf(recipeOffsetPrior(lib, rid, pa) - 4.0f) < 1e-4f);
+  // Another recipe learns nothing from this one.
+  RecipeDef dbl;
+  copyText(dbl.name, "Double", RECIPE_NAME_LEN);
+  dbl.baselineOffsetG = 2.0f;
+  const uint16_t did = saveRecipeDef(lib, dbl);
+  const int pd = addPreset(lib, did, id);
+  CHECK(pd >= 0 && fabsf(lib.presets[pd].stopOffsetG - 2.0f) < 1e-4f);
+  // Another target on the recipe: offsets kept, the warm-up starts again.
+  RecipeDef edited = *findRecipe(lib, rid);
+  edited.targetWeightG = 45.0f;
+  CHECK(saveRecipeDef(lib, edited) == rid);
+  CHECK(lib.presets[pa].learnedShots == 0 && fabsf(lib.presets[pa].stopOffsetG - 6.0f) < 1e-4f);
+  CHECK(lib.presets[pd].learnedShots == 0);  // untouched recipe: was 0 already
+  // The learning itself still steps from wherever it starts.
+  float next = 0.0f;
+  CHECK(learnStopOffset(want, 48.0f + 1.0f, 48.0f, 0.70f, next) && fabsf(next - (want + 0.7f)) < 1e-4f);
 }
 
 // The grinder's own range and what it covers: clamping, the first guess, kept burrs, records.
@@ -7705,6 +7813,7 @@ int main() {
   testPusherDrivers();
   testPusherHold();
   testPowerControl();
+  testPowerAutoOffWaits();
   testPowerEvents();
   testPowerOffWithScale();
   testCoffeeTaste();
@@ -7716,6 +7825,7 @@ int main() {
   testShareWithdrawAndLinks();
   testGrindRange();
   testGrinderSetup();
+  testOffsetRecipePrior();
   testBugReport();
   testWebPanels();
   testCommunityHub();

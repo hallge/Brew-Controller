@@ -990,6 +990,10 @@ void controlTask(void *) {
                                     : "taken back");
         }
         g_ble.setScaleResting(resting);
+        // The scale is back: someone is at the machine, an automatic "off" still waiting is not wanted.
+        if (scaleConnected && g_powerControl.cancelAutoOff()) {
+          LOGI("power: the scale is back; the machine is not switched off");
+        }
         // The scale switched off: the machine too, if the owner asked for that.
         static bbw::ScaleOffWatch scaleOff;
         if (scaleOff.update(now, scaleConnected, resting, quietMs, bbw::ScaleRest::QUIET_MS) &&
@@ -2310,7 +2314,8 @@ void resetLearnedOffset(uint8_t presetIndex) {
   Lock lock;
   if (presetIndex >= g_library.presetCount || g_controller.machineMayBeRunning()) return;
   bbw::Preset &preset = g_library.presets[presetIndex];
-  preset.stopOffsetG = bbw::resolvePreset(g_library, presetIndex).baselineOffsetG;
+  // Back to what the recipe has learned on its other coffees (its starting offset if none).
+  preset.stopOffsetG = bbw::recipeOffsetPrior(g_library, preset.recipeId, presetIndex);
   preset.learnedAlpha = 0;  // back to the baseline learning factor
   preset.learnedShots = 0;  // and a fresh warm-up
   markLibraryDirty();

@@ -99,12 +99,17 @@ class PowerControl {
  public:
   enum class Job : uint8_t { IDLE, WAITING, PRESSING };
   enum class Outcome : uint8_t {
-    NONE, DONE, ALREADY, NO_BOT, NOT_KNOWN, BUSY, BOT_UNREACHABLE, MACHINE_BUSY, PRESS_FAILED
+    NONE, DONE, ALREADY, NO_BOT, NOT_KNOWN, BUSY, BOT_UNREACHABLE, MACHINE_BUSY, PRESS_FAILED,
+    CANCELLED  // an automatic "off" still waiting for the bot, given up because the machine is in use again
   };
 
   // A sleeping SwitchBot advertises rarely (measured on the board: the power
   // bot about once in two minutes) and can only be connected to then.
   static constexpr uint32_t CONNECT_TIMEOUT_MS = 180000;
+  // An automatic "off" (the scale switched off, or the schedule) waits longer: nobody is there to
+  // press it again, and the power bot has been seen out of reach for 12 minutes (board, 30 Oct 2026).
+  // It is called off when the machine is used again (cancelAutoOff, noteUse).
+  static constexpr uint32_t OFF_CONNECT_TIMEOUT_MS = 30UL * 60UL * 1000UL;
   static constexpr uint32_t PRESS_RETRIES = 3;
   static constexpr uint32_t MAX_CATCH_UP_MIN = 3;        // a schedule time missed by more is skipped
 
@@ -117,6 +122,7 @@ class PowerControl {
   void setAutoOffMin(uint16_t minutes) { autoOffMin_ = minutes; }
   // Something was done on the machine (a shot ran): it is on, and its own off-timer starts again.
   void noteUse(uint32_t nowMs) {
+    cancelAutoOff();
     lastUseMs_ = nowMs ? nowMs : 1;
     if (belief() != PowerBelief::ON) {
       config_->belief = static_cast<uint8_t>(PowerBelief::ON);
@@ -185,8 +191,19 @@ class PowerControl {
     dirty_ = true;
   }
 
+  // An automatic "off" waiting for the power bot: the machine is in use again (the scale is back, a
+  // shot was made), so it is not switched off. True if one was waiting.
+  bool cancelAutoOff() {
+    if (!waitingAutoOff()) return false;
+    end(Outcome::CANCELLED);
+    return true;
+  }
+  bool waitingAutoOff() const { return job_ == Job::WAITING && autoOff(); }
+
   // Switch the machine on or off. False: refused, lastOutcome() says why.
   bool request(bool on, uint32_t nowMs, PowerBy by = PowerBy::OWNER) {
+    // The owner's word replaces an automatic "off" that is still waiting for the bot.
+    if (by == PowerBy::OWNER && waitingAutoOff()) cancelAutoOff();
     by_ = by;
     if (config_->powerAddress[0] == '\0') return refuse(Outcome::NO_BOT);
     if (job_ != Job::IDLE) return refuse(Outcome::BUSY);
@@ -199,6 +216,7 @@ class PowerControl {
   // Press the power button whatever is believed (the owner sees the machine).
   // The belief flips if it was known.
   bool pressAnyway(uint32_t nowMs) {
+    if (waitingAutoOff()) cancelAutoOff();
     by_ = PowerBy::OWNER;
     if (config_->powerAddress[0] == '\0') return refuse(Outcome::NO_BOT);
     if (job_ != Job::IDLE) return refuse(Outcome::BUSY);
@@ -223,7 +241,7 @@ class PowerControl {
       case Job::IDLE:
         break;
       case Job::WAITING:
-        if (static_cast<uint32_t>(nowMs - sinceMs_) >= CONNECT_TIMEOUT_MS) {
+        if (static_cast<uint32_t>(nowMs - sinceMs_) >= (autoOff() ? OFF_CONNECT_TIMEOUT_MS : CONNECT_TIMEOUT_MS)) {
           end(idle ? Outcome::BOT_UNREACHABLE : Outcome::MACHINE_BUSY);
         } else if (idle && bot.connected()) {
           bot.clearResult();
@@ -268,6 +286,7 @@ class PowerControl {
       case Outcome::BOT_UNREACHABLE: return "the power bot did not connect";
       case Outcome::MACHINE_BUSY: return "a shot was running";
       case Outcome::PRESS_FAILED: return "the power bot refused the press";
+      case Outcome::CANCELLED: return "not switched off: the machine was in use again";
     }
     return "";
   }
@@ -281,6 +300,8 @@ class PowerControl {
   }
 
  private:
+  // The job is an "off" nobody is standing by: asked for by the scale switching off or the schedule.
+  bool autoOff() const { return !target_ && !toggle_ && (by_ == PowerBy::SCALE_OFF || by_ == PowerBy::SCHEDULE); }
   bool refuse(Outcome why) {
     outcome_ = why;
     return false;

@@ -633,9 +633,12 @@ void BleManager::run() {
     // it was heard is old, and the power bot would be tried as a third link.
     if (scale_.linkUp()) scaleLinkUpAtMs_ = now ? now : 1;
     const uint32_t scaleHeardAt = scaleHeardAtMs_.load();
+    // A scale let go to rest counts as off at once: it will not be taken back unasked, so the power bot
+    // is linked while the scale goes to sleep and is ready when the machine is to be switched off.
     const bool scaleOff = !scale_.linkUp() &&
-                          (scaleHeardAt == 0 || static_cast<int32_t>(now - scaleHeardAt) > 30000) &&
-                          (scaleLinkUpAtMs_ == 0 || static_cast<int32_t>(now - scaleLinkUpAtMs_) > 30000);
+                          (resting ||
+                           ((scaleHeardAt == 0 || static_cast<int32_t>(now - scaleHeardAt) > 30000) &&
+                            (scaleLinkUpAtMs_ == 0 || static_cast<int32_t>(now - scaleLinkUpAtMs_) > 30000)));
     const bool powerWanted = powerWanted_.load() || (powerKept_.load() && scaleOff);
     servePusher(power_, "power", powerAddress, powerType, powerWanted, stop_.linkUp(),
                 powerFailures_, powerRetryAtMs_, scan, powerStats_);
