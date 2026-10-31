@@ -463,6 +463,9 @@ struct Settings {
   // already in use (webPanelsInUse).
   uint8_t webPanelsChosen = 0;  // WEB_PANELS_CHOSEN once chosen: a marker, so an older record's padding is not a choice
   uint16_t webPanels = 0;
+  // Grind advice sized by its confidence (core/GrindAdvisor.h applyAdviceConfidence) unless this is
+  // set. Stored the other way round so that a record saved before it existed reads 0: on.
+  bool grindConfidenceOff = false;
 };
 constexpr uint8_t WEB_PANELS_CHOSEN = 0x5A;
 
@@ -474,8 +477,9 @@ enum WebPanel : uint16_t {
   PANEL_COMMUNITY = 1u << 3,      // what other owners dialled in, on Home and on each coffee
   PANEL_LOGS = 1u << 4,           // the live log
   PANEL_HUB = 1u << 5,            // the Community Hub (to come)
+  PANEL_START_HIDDEN = 1u << 6,   // the Getting started guide, hidden (it is shown by default)
 };
-constexpr uint16_t WEB_PANELS_ALL = 0x3f;
+constexpr uint16_t WEB_PANELS_ALL = 0x7f;
 
 // The panels shown: the owner's choice once made; before that, those already in use, so that an
 // update hides nothing the owner was using.

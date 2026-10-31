@@ -1796,8 +1796,7 @@ void diagFillInput(bbw::DiagInput &in, uint32_t nowS) {
     links[k]->connects = s.connects >= b.connects ? s.connects - b.connects : s.connects;
     links[k]->longestWaitMs = s.longestWaitMs;
   }
-  // Each one's signal as last heard advertising (a weak one, under about -70 dBm, is a bot mounted
-  // flat on metal: its connections time out).
+  // Each one's signal as last heard advertising.
   static bbw::SeenDevice seen[bbw::BleManager::MAX_SEEN];
   const size_t heard = g_ble.seen(seen, bbw::BleManager::MAX_SEEN);
   const char *addresses[4] = {pairing.scaleAddress, pairing.botAddress, power, stop};
@@ -2343,6 +2342,91 @@ bool g_grindFresh = false;
 // The coffee, recipe, bag and calibration whose recommendation was answered (not offered again).
 uint32_t g_grindRecAnswered = 0;
 
+// Past advice to move, and what the next shot of that coffee, bag and recipe did (newest first). The
+// advice a shot was followed by is in its context (core/ShotContext.h), so the shots are paired in
+// one pass of the history, newest first, and the contexts read afterwards.
+size_t adviceOutcomes(bbw::AdviceOutcome *out, size_t max) {
+  constexpr uint32_t SCAN_SHOTS = 150;
+  constexpr size_t GROUPS = 16;
+  constexpr size_t PAIRS = 48;
+  struct Newer {
+    uint32_t group = 0;
+    bool used = false;
+    bool valid = false;
+    uint16_t setting = 0;
+    float timeS = 0.0f;
+    float targetS = 0.0f;
+    uint32_t epochS = 0;
+  };
+  struct Pair {
+    uint32_t olderId = 0;
+    uint16_t olderSetting = 0;
+    uint16_t coffeeId = 0;
+    Newer newer;
+  };
+  struct Scan {
+    uint16_t calibration = 0;
+    bbw::GrindTimeBasis basis = bbw::GrindTimeBasis::TOTAL;
+    Newer newer[GROUPS];
+    size_t next = 0;  // the slot reused next, oldest group first
+    Pair pairs[PAIRS];
+    size_t count = 0;
+  };
+  static Scan scan;
+  scan = Scan();
+  scan.calibration = grinder().calibration;
+  scan.basis = settings().grindTimeBasis;
+  g_store.scanShots(SCAN_SHOTS, [](const bbw::ShotRecord &r, void *context) {
+    Scan &sc = *static_cast<Scan *>(context);
+    if (r.grinderId != sc.calibration || !r.grindUm) return true;
+    const uint32_t bag = r.bagId ? r.bagId : r.roastDate;
+    const uint32_t group = r.recipeId * 977u + r.coffeeId * 131u + bag * 7u;
+    Newer *slot = nullptr;
+    for (Newer &n : sc.newer) {
+      if (n.used && n.group == group) slot = &n;
+    }
+    if (slot && slot->valid && sc.count < PAIRS) {
+      Pair &p = sc.pairs[sc.count++];
+      p.olderId = r.id;
+      p.olderSetting = r.grindUm;
+      p.coffeeId = r.coffeeId;
+      p.newer = *slot;
+    }
+    if (!slot) {
+      slot = &sc.newer[sc.next];
+      sc.next = (sc.next + 1) % GROUPS;
+    }
+    slot->used = true;
+    slot->group = group;
+    slot->valid = bbw::grindShotValid(r, sc.basis) && r.targetTimeS > 0.0f;
+    slot->setting = r.grindUm;
+    slot->timeS = bbw::grindShotTime(r, sc.basis);
+    slot->targetS = r.targetTimeS;
+    slot->epochS = r.epochS;
+    return sc.count < PAIRS;
+  }, &scan);
+  size_t n = 0;
+  for (size_t i = 0; i < scan.count && n < max; ++i) {
+    const Pair &p = scan.pairs[i];
+    bbw::ShotContext ctx;
+    if (!g_store.loadContext(p.olderId, ctx)) continue;
+    const auto action = static_cast<bbw::GrindAction>(ctx.adviceAction);
+    if (action != bbw::GrindAction::FINER && action != bbw::GrindAction::COARSER) continue;
+    if (!ctx.adviceUm || ctx.adviceUm == p.olderSetting) continue;
+    bbw::AdviceOutcome &o = out[n++];
+    o.epochS = p.newer.epochS;
+    o.coffeeId = p.coffeeId;
+    o.fromSetting = p.olderSetting;
+    o.advised = ctx.adviceUm;
+    o.nextSetting = p.newer.setting;
+    o.nextTimeS = p.newer.timeS;
+    o.targetS = p.newer.targetS;
+    o.followed = p.newer.setting == ctx.adviceUm;
+    o.confidencePct = ctx.adviceConfidence;
+  }
+  return n;
+}
+
 bbw::GrindAdvice grindAdvice() {
   if (!g_grindAdviceStale) return g_grindAdvice;
   constexpr uint32_t SCAN_SHOTS = 150;  // how far back to look
@@ -2430,6 +2514,14 @@ bbw::GrindAdvice grindAdvice() {
                                         s.grindRatedTarget);
   if (scan.newestSeen && scan.newestSetting == recipe.grindUm) {
     bbw::adviseOutOfRange(g_grindAdvice, scan.newestUse, recipe.grindUm, config);
+  }
+  // How close past advice landed: sizes this step (unless turned off) and its window.
+  {
+    static bbw::AdviceOutcome outcomes[bbw::ADVICE_CONFIDENCE_SHOTS];
+    const size_t n = adviceOutcomes(outcomes, bbw::ADVICE_CONFIDENCE_SHOTS);
+    const bbw::AdviceConfidence conf = bbw::adviceConfidence(outcomes, n, config.toleranceS);
+    bbw::applyAdviceConfidence(g_grindAdvice, conf, config.toleranceS, config.maxStepUm,
+                               !s.grindConfidenceOff);
   }
   bbw::keepAdviceInRange(g_grindAdvice, bbw::grinderRange(grinderNow));
   g_lastCountedEpochS = scan.newestEpochS;

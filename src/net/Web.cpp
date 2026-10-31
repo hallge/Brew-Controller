@@ -192,6 +192,7 @@ void handleGetSettings() {
   doc["shareShots"] = s.shareShots;
   doc["shareRatings"] = s.shareRatings;
   doc["grindRatedTarget"] = s.grindRatedTarget;
+  doc["grindConfidence"] = !s.grindConfidenceOff;
   doc["activeRecipe"] = activePreset;
   doc["maxRecipes"] = bbw::MAX_PRESETS;
   // The controller's list, one flat entry per preset: the form this page's
@@ -296,6 +297,7 @@ void handlePostSettings() {
   s.shareShots = doc["shareShots"] | s.shareShots;
   s.shareRatings = doc["shareRatings"] | s.shareRatings;
   s.grindRatedTarget = doc["grindRatedTarget"] | s.grindRatedTarget;
+  if (!doc["grindConfidence"].isNull()) s.grindConfidenceOff = !(doc["grindConfidence"] | true);
 
   JsonArrayConst recipes = doc["recipes"];
   if (!recipes.isNull() && recipes.size() >= 1) {
@@ -1366,6 +1368,16 @@ void handleGrind() {
   doc["days_since_brewed"] = age.daysSinceBrewed;
   doc["age_rate_known"] = age.rateKnown;
   doc["age_shift"] = age.shift;
+  // How far to trust it: how close past advice on this grinder landed (applyAdviceConfidence).
+  if (a.confidence >= 0.0f) {
+    JsonObject c = doc["confidence"].to<JsonObject>();
+    c["score"] = roundf(a.confidence * 100.0f) / 100.0f;
+    c["followed"] = a.confidenceFollowed;
+    c["rms_s"] = roundf(a.confidenceRmsS * 10.0f) / 10.0f;
+    c["window"] = roundf(a.windowUm * 10.0f) / 10.0f;
+    c["scaled"] = a.confidenceScaled;
+    c["on"] = !s.grindConfidenceOff;
+  }
   // A grind to start this coffee or bag from, offered once (app::grindRecommendation).
   const app::GrindRecommendation rec = app::grindRecommendation();
   if (rec.setting) {
@@ -1376,6 +1388,78 @@ void handleGrind() {
     r["current"] = rec.current;
     r["people"] = rec.people;
     r["from"] = rec.from;
+  }
+  sendJson(doc);
+}
+
+// Getting started: where each part of a new controller's setup stands, for the web page's guide.
+struct StartCounts {
+  uint8_t recipes = 0;
+  uint8_t coffeesOnRecipe = 0;
+};
+void countForStart(const bbw::Library &lib, void *context) {
+  StartCounts &c = *static_cast<StartCounts *>(context);
+  c.recipes = lib.recipeCount;
+  for (uint8_t i = 0; i < lib.presetCount; ++i) {
+    if (lib.presets[i].coffeeId) ++c.coffeesOnRecipe;
+  }
+}
+void handleStart() {
+  JsonDocument doc;
+  const bbw::NetConfig net = app::netConfig();
+  JsonObject wifi = doc["wifi"].to<JsonObject>();
+  wifi["joined"] = net.staSsid[0] != 0;
+  wifi["connected"] = net.staSsid[0] != 0 && WiFi.status() == WL_CONNECTED;
+  const app::Devices dev = app::devices();
+  JsonObject scale = doc["scale"].to<JsonObject>();
+  scale["paired"] = dev.pairing.scaleAddress[0] != 0 || dev.scaleConnected;
+  scale["connected"] = dev.scaleConnected;
+  JsonObject bot = doc["brew_bot"].to<JsonObject>();
+  bot["paired"] = dev.pairing.botAddress[0] != 0;
+  bot["connected"] = dev.botConnected;
+  doc["power_bot"]["paired"] = dev.powerAddress[0] != 0;
+  const bbw::MachineProfile m = app::machineProfile();
+  JsonObject machine = doc["machine"].to<JsonObject>();
+  machine["maker"] = m.maker;
+  machine["model"] = m.model;
+  const bbw::Grinder g = app::grinder();
+  JsonObject grinder = doc["grinder"].to<JsonObject>();
+  grinder["model"] = g.model;
+  grinder["set"] = g.modelId != 0 || g.model[0] != 0;
+  grinder["range"] = g.maxStep > 0;
+  StartCounts counts;
+  app::readLibrary(countForStart, &counts);
+  doc["recipes"] = counts.recipes;
+  doc["coffees_on_recipe"] = counts.coffeesOnRecipe;
+  bbw::ShotRecord last;
+  doc["shots"] = app::lastShot(last);
+  sendJson(doc);
+}
+
+// Past advice to move and where the next shot landed, oldest first, for the Insights chart.
+void handleGrindAccuracy() {
+  static bbw::AdviceOutcome outcomes[60];
+  const size_t n = app::adviceOutcomes(outcomes, 60);
+  const bbw::Settings s = app::settings();
+  const bbw::AdviceConfidence now = bbw::adviceConfidence(outcomes, n, s.grindToleranceS);
+  JsonDocument doc;
+  doc["tolerance_s"] = s.grindToleranceS;
+  doc["score"] = roundf(now.score * 100.0f) / 100.0f;
+  doc["followed"] = now.followed;
+  doc["rms_s"] = roundf(now.rmsS * 10.0f) / 10.0f;
+  JsonArray events = doc["events"].to<JsonArray>();
+  for (size_t i = n; i-- > 0;) {
+    const bbw::AdviceOutcome &o = outcomes[i];
+    JsonObject e = events.add<JsonObject>();
+    e["at"] = o.epochS;
+    e["coffee_id"] = o.coffeeId;
+    e["from"] = o.fromSetting;
+    e["advised"] = o.advised;
+    e["next"] = o.nextSetting;
+    e["followed"] = o.followed;
+    e["target_s"] = roundf(o.targetS * 10.0f) / 10.0f;
+    e["time_s"] = roundf(o.nextTimeS * 10.0f) / 10.0f;
+    if (o.confidencePct) e["confidence"] = o.confidencePct - 1;
   }
   sendJson(doc);
 }
@@ -3025,6 +3109,8 @@ void begin() {
   server.on("/api/last", HTTP_GET, handleLast);
   server.on("/api/cmd", HTTP_POST, handleCmd);
   server.on("/api/devices", HTTP_GET, handleDevices);
+  server.on("/api/start", HTTP_GET, handleStart);
+  server.on("/api/grind/accuracy", HTTP_GET, handleGrindAccuracy);
   server.on("/api/grind", HTTP_GET, handleGrind);
   server.on("/api/grind/set", HTTP_POST, []() {
     if (busyBrewing()) return sendError(409, "not while a shot is running");

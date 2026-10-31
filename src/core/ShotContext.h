@@ -81,7 +81,7 @@ struct ShotContext {
   uint8_t adviceShots = 0;       // shots behind the average
   uint8_t adviceLearnShots = 0;  // shots behind a measured sensitivity (0: the starting guess)
   uint8_t adviceFlags = 0;       // bit0 learned, bit1 step limited, bit2 refined by ratings
-  uint8_t pad1 = 0;
+  uint8_t adviceConfidence = 0;  // percent + 1 (applyAdviceConfidence); 0: not worked out
   // The curve's quality.
   uint16_t sampleIntervalMs = 0; // median time between readings; 0 unknown
   uint16_t curvePoints = 0;
@@ -202,6 +202,7 @@ inline ShotContext buildShotContext(const ShotContextInputs &in) {
   c.adviceShots = a.shotsUsed;
   c.adviceLearnShots = a.learned ? a.learnShots : 0;
   c.adviceFlags = static_cast<uint8_t>((a.learned ? 1 : 0) | (a.stepLimited ? 2 : 0) | (a.refined ? 4 : 0));
+  c.adviceConfidence = a.confidence < 0.0f ? 0 : static_cast<uint8_t>(a.confidence * 100.0f + 1.5f);
   curveQuality(in.curve, in.curvePoints, c.sampleIntervalMs, c.weightStepCg);
   c.curvePoints = static_cast<uint16_t>(in.curvePoints > 0xFFFF ? 0xFFFF : in.curvePoints);
   float tol = in.toleranceS * 10.0f + 0.5f;

@@ -248,6 +248,13 @@ struct GrindAdvice {
   bool bracketed = false;      // the step was kept short of a setting seen on the other side
   bool betweenSteps = false;   // no setting between the two: the closer one is kept
   bool outOfRange = false;     // from a shot too long or too short to count (adviseOutOfRange)
+  // Confidence in the advice (applyAdviceConfidence): how close past advice on this grinder landed.
+  // confidence -1: not worked out. windowUm: plus or minus around the suggestion, grinder units.
+  float confidence = -1.0f;
+  uint8_t confidenceFollowed = 0;  // past advice behind it that was followed
+  float confidenceRmsS = 0.0f;     // how far the next shot landed from its target, typically
+  float windowUm = 0.0f;
+  bool confidenceScaled = false;   // the step was made smaller or allowed larger by it
 };
 
 // The grinder cannot go past the ends of its range: a suggestion beyond one is the end itself, and
@@ -810,6 +817,97 @@ inline GrindAdvice adviseGrindRated(const GrindShot *shots, size_t count, uint16
   advice.rated = RatedState::REFINING;
   advice.refined = true;
   return advice;
+}
+
+// ---- Confidence in the advice ---------------------------------------------------------------------
+// Advice is a prediction: "move to X and the next shot lands on the target". How close past
+// predictions landed on this grinder says how far to trust the next one. Low confidence: a smaller
+// step and a wider window around it, so a noisy run is not chased. High confidence: the full
+// correction, past the usual largest step if need be, and a tighter window.
+
+// One past advice to move, and the next shot of the same coffee, bag and recipe.
+struct AdviceOutcome {
+  uint32_t epochS = 0;        // of the next shot
+  uint16_t coffeeId = 0;
+  uint16_t fromSetting = 0;   // where the advised shot was pulled
+  uint16_t advised = 0;       // the setting advised after it
+  uint16_t nextSetting = 0;   // where the next shot was pulled
+  float nextTimeS = 0.0f;
+  float targetS = 0.0f;
+  bool followed = false;      // the next shot was pulled at the advised setting
+  uint8_t confidencePct = 0;  // what the advice was given with, percent + 1; 0: not recorded
+};
+
+constexpr float ADVICE_CONFIDENCE_START = 0.3f;  // until two followed advices have landed
+constexpr size_t ADVICE_CONFIDENCE_SHOTS = 30;   // the newest followed advices looked at
+
+struct AdviceConfidence {
+  float score = ADVICE_CONFIDENCE_START;  // 0..1
+  uint8_t followed = 0;
+  float rmsS = 0.0f;
+};
+
+// outcomes newest first. A miss of three tolerances or more scores 0; a handful of followed advices
+// cannot score high however well they landed (n / (n + 3)).
+inline AdviceConfidence adviceConfidence(const AdviceOutcome *outcomes, size_t n, float toleranceS) {
+  AdviceConfidence c;
+  float sum = 0.0f;
+  uint8_t k = 0;
+  for (size_t i = 0; i < n && k < ADVICE_CONFIDENCE_SHOTS; ++i) {
+    if (!outcomes[i].followed || outcomes[i].targetS <= 0.0f) continue;
+    const float e = outcomes[i].nextTimeS - outcomes[i].targetS;
+    sum += e * e;
+    ++k;
+  }
+  c.followed = k;
+  if (k) c.rmsS = sqrtf(sum / k);
+  if (k < 2) return c;
+  const float tol = toleranceS > 0.1f ? toleranceS : 0.1f;
+  float raw = 1.0f - c.rmsS / (3.0f * tol);
+  if (raw < 0.0f) raw = 0.0f;
+  if (raw > 1.0f) raw = 1.0f;
+  c.score = raw * static_cast<float>(k) / (static_cast<float>(k) + 3.0f);
+  return c;
+}
+
+// Records the confidence and the window on the advice; with scaleStep, also resizes a move:
+// the step is the correction times min(m, 1) and the largest step is maxStepUm times m, where
+// m = 0.5 + score. A step kept short of a setting seen on the other side (bracketed) only shrinks.
+// Called before keepAdviceInRange.
+inline void applyAdviceConfidence(GrindAdvice &a, const AdviceConfidence &c, float toleranceS,
+                                  uint8_t maxStepUm, bool scaleStep) {
+  a.confidence = c.score;
+  a.confidenceFollowed = c.followed;
+  a.confidenceRmsS = c.rmsS;
+  const float spreadS = c.followed >= 2 ? (c.rmsS > 0.5f * toleranceS ? c.rmsS : 0.5f * toleranceS)
+                                        : 1.5f * toleranceS;
+  a.windowUm = spreadS * a.umPerS;
+  if (!scaleStep) return;
+  if (a.action != GrindAction::FINER && a.action != GrindAction::COARSER) return;
+  if (a.outOfRange || a.betweenSteps || !a.currentUm || a.umPerS <= 0.0f) return;
+  const float m = 0.5f + c.score;
+  const float err = (a.refined && a.aimTimeS > 0.0f) ? a.averageTimeS - a.aimTimeS : a.errorS;
+  float delta = err * a.umPerS * (m < 1.0f ? m : 1.0f);
+  const float limit = (maxStepUm < 1 ? 1.0f : static_cast<float>(maxStepUm)) * m;
+  bool limited = false;
+  if (fabsf(delta) > limit) {
+    delta = delta > 0 ? limit : -limit;
+    limited = true;
+  }
+  if (a.bracketed && fabsf(delta) > fabsf(static_cast<float>(a.deltaUm))) {
+    delta = static_cast<float>(a.deltaUm);
+    limited = a.stepLimited;
+  }
+  int rounded = static_cast<int>(delta > 0 ? delta + 0.5f : delta - 0.5f);
+  const int dir = a.action == GrindAction::COARSER ? 1 : -1;
+  if (rounded * dir <= 0) rounded = dir;  // outside tolerance: at least one step, the same way
+  int suggested = static_cast<int>(a.currentUm) + rounded;
+  if (suggested < 1) suggested = 1;
+  if (suggested > 65535) suggested = 65535;
+  a.confidenceScaled = rounded != a.deltaUm;
+  a.deltaUm = static_cast<int16_t>(suggested - static_cast<int>(a.currentUm));
+  a.suggestedUm = static_cast<uint16_t>(suggested);
+  a.stepLimited = limited;
 }
 
 }  // namespace bbw

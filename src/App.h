@@ -126,6 +126,8 @@ bbw::Grinder grinder();
 bbw::GrindAdvice grindAdvice();
 // What the grinder's other coffees showed (computed with grindAdvice; empty until they show something).
 bbw::GrinderElasticity grinderElasticity();
+// Past advice to move on this grinder (as now calibrated) and what the next shot did, newest first.
+size_t adviceOutcomes(bbw::AdviceOutcome *out, size_t max);
 void setGrind(uint16_t grindUm);                     // grinder setting of the active preset
 bool setShotRating(uint32_t shotId, uint8_t rating, uint8_t taste);
 bool setShotTds(uint32_t shotId, uint16_t tdsX100);

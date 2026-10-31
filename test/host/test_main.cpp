@@ -4731,6 +4731,87 @@ static void testLibrary() {
 
 // A new coffee on a recipe starts its stop offset from what the recipe learned on its other coffees
 // (board, 30 Oct 2026: +6.1 g on the first shot of a new coffee from a 1.5 g start).
+// Confidence in grind advice: scored from how close followed advice landed; it sizes the step and
+// the window, and with it off the advice is what it was.
+static void testAdviceConfidence() {
+  // No history: the starting score, low.
+  AdviceConfidence none = adviceConfidence(nullptr, 0, 2.0f);
+  CHECK(none.followed == 0 && fabsf(none.score - ADVICE_CONFIDENCE_START) < 1e-6f);
+  // Ten followed advices that landed on target: high, but not 1 (n / (n + 3)).
+  AdviceOutcome good[12];
+  for (int i = 0; i < 12; ++i) {
+    good[i].followed = i < 10;
+    good[i].targetS = 29.0f;
+    good[i].nextTimeS = i < 10 ? 29.0f + (i % 2 ? 0.5f : -0.5f) : 45.0f;  // the unfollowed ones do not count
+  }
+  AdviceConfidence high = adviceConfidence(good, 12, 2.0f);
+  CHECK(high.followed == 10 && fabsf(high.rmsS - 0.5f) < 1e-4f);
+  CHECK(high.score > 0.65f && high.score < 0.77f);
+  // Misses of 6 s (three tolerances): nothing to trust.
+  AdviceOutcome bad[6];
+  for (int i = 0; i < 6; ++i) {
+    bad[i].followed = true;
+    bad[i].targetS = 29.0f;
+    bad[i].nextTimeS = i % 2 ? 35.0f : 23.0f;
+  }
+  AdviceConfidence low = adviceConfidence(bad, 6, 2.0f);
+  CHECK(low.followed == 6 && low.score < 0.01f);
+
+  // A run 6 s slow at 4.67 um/s wants about 28 um; the usual largest step is 20.
+  GrindAdvice base;
+  base.action = GrindAction::COARSER;
+  base.currentUm = 60;
+  base.errorS = 6.0f;
+  base.averageTimeS = 35.0f;
+  base.targetTimeS = 29.0f;
+  base.umPerS = 4.67f;
+  base.deltaUm = 20;
+  base.suggestedUm = 80;
+  base.stepLimited = true;
+  // Off: recorded, unchanged.
+  GrindAdvice off = base;
+  applyAdviceConfidence(off, high, 2.0f, 20, false);
+  CHECK(off.deltaUm == 20 && off.suggestedUm == 80 && off.stepLimited && fabsf(off.confidence - high.score) < 1e-6f);
+  CHECK(off.windowUm > 0.0f);
+  // High confidence: the full correction, past the usual largest step.
+  GrindAdvice hi = base;
+  applyAdviceConfidence(hi, high, 2.0f, 20, true);
+  CHECK(hi.deltaUm == 24 && hi.suggestedUm == 84 && hi.stepLimited && hi.confidenceScaled);  // cap 20 x 1.2
+  GrindAdvice hi2 = base;
+  hi2.errorS = 4.6f;  // wants 21.5: past the usual 20, inside the raised cap
+  applyAdviceConfidence(hi2, high, 2.0f, 20, true);
+  CHECK(hi2.deltaUm == 21 && !hi2.stepLimited);
+  // Low confidence: a smaller step, and a wider window than with high confidence.
+  GrindAdvice lo = base;
+  applyAdviceConfidence(lo, low, 2.0f, 20, true);
+  CHECK(lo.deltaUm > 0 && lo.deltaUm <= 10 && lo.suggestedUm == 60 + lo.deltaUm);
+  CHECK(lo.windowUm > hi.windowUm);
+  // Still at least one step, the same way, finer too.
+  GrindAdvice fine = base;
+  fine.action = GrindAction::FINER;
+  fine.errorS = -2.2f;
+  fine.deltaUm = -10;
+  fine.suggestedUm = 50;
+  fine.stepLimited = false;
+  applyAdviceConfidence(fine, low, 2.0f, 20, true);
+  CHECK(fine.deltaUm < 0 && fine.deltaUm >= -6 && fine.suggestedUm == 60 + fine.deltaUm);
+  // A step kept short of a setting on the other side only shrinks.
+  GrindAdvice br = base;
+  br.bracketed = true;
+  br.deltaUm = 12;
+  br.suggestedUm = 72;
+  br.stepLimited = false;
+  applyAdviceConfidence(br, high, 2.0f, 20, true);
+  CHECK(br.deltaUm == 12);
+  // Holds and out-of-range advice are never resized.
+  GrindAdvice hold = base;
+  hold.action = GrindAction::HOLD;
+  applyAdviceConfidence(hold, high, 2.0f, 20, true);
+  CHECK(hold.deltaUm == 20 && hold.suggestedUm == 80);
+  // The setting is on unless turned off, and an older record reads on.
+  CHECK(!Settings{}.grindConfidenceOff);
+}
+
 static void testOffsetRecipePrior() {
   printf("stop offset: a new coffee starts from what its recipe learned\n");
   Library lib = defaultLibrary();
@@ -7838,6 +7919,7 @@ int main() {
   testGrindRange();
   testGrinderSetup();
   testOffsetRecipePrior();
+  testAdviceConfidence();
   testBugReport();
   testWebPanels();
   testCommunityHub();

@@ -729,11 +729,6 @@ bot** is only for a machine with separate start and stop buttons (section
 | Tuya Fingerbot, Fingerbot Plus, CubeTouch | `tuya_fingerbot` | yes | no | yes | yes (not CubeTouch) | uuid, device id and local key from Tuya's cloud |
 | MicroBot Push | `microbot_push` | yes | no | no | no | the token from its first pairing |
 
-**Mount the bots off metal.** A bot stuck straight onto the machine's steel body is heard far more
-faintly (about -80 dBm against -50 for the scale a few inches away): the metal soaks up its radio. A few
-millimetres of foam tape under it, or turning it so its back is not against the steel, is usually
-enough. Setup › Devices shows each bot's signal and says so when it is weak.
-
 The SwitchBot Bot is the reference: it does everything it did. The least a
 pusher must do is press once on command. What follows from a pusher doing
 less:
