@@ -388,6 +388,9 @@ const LIBRARY_PATHS = [
   [new RegExp(`^services/${KID}/s${NUM}-${NUM}\\.json$`), 'service'],
   [new RegExp(`^machines/${KID}/m1-${NUM}\\.json$`), 'machine'],
   [new RegExp(`^links/${KID}/l${NUM}-${NUM}\\.json$`), 'link'],
+  // The recipe book, and an owner's review of an item waiting for review (library-template/tools/intake.py).
+  [new RegExp(`^recipes/${KID}/r${NUM}-${NUM}\\.json$`), 'recipe'],
+  [new RegExp(`^reviews/${KID}/o${NUM}\\.json$`), 'review'],
   // -<record>: each version of a rating under its own name (an edit is not "already there").
   [new RegExp(`^tastes/${KID}-r${NUM}(?:-${NUM})?\\.json$`), 'taste'],
   [new RegExp(`^svcreviews/${KID}-v${NUM}(?:-${NUM})?\\.json$`), 'service_review'],

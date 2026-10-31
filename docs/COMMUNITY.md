@@ -982,6 +982,18 @@ the advice, the community start or the library fit read is asked for now:
   checked by `verify_record.py`, the relay's admin console and copied into the listed entry by `intake.py`.
 - An inner burr set once (the Smart Grinder Pro's top burr) is a calibration, not a micro adjustment.
 
+## 8n. Owners review, the recipe book, advice confidence (30 Oct 2026)
+
+- Owners review what other owners send: coffees and recipes waiting for review are listed in `index/pending.json` and
+  on the controller's Discover page. A review is a signed `review` record; intake counts one per reviewer key, only
+  from a key with something published, never the sender's. Two approvals and no decline publish (intake merges the
+  review pull request and writes the status, as `reviews.py close` does); a decline holds it for the maintainer.
+- Recipes are a record type (`recipe`), reviewed like coffees, listed in `index/recipes.json` (the recipe book).
+- Grind advice confidence: followed changes on a grinder and where the next shot landed give a score
+  (`adviceConfidence`, core/GrindAdvisor.h); it scales the step (x 0.5 to x 1 of the correction) and the largest step
+  (x 0.5 to x 1.5), and sets a ± window. Stored per shot in `ShotContext::adviceConfidence`. Not yet validated on the
+  real board: its data copy has one advised change with a context.
+
 ## 8j. Working with other apps, TDS and upkeep (13 Oct 2026)
 
 - **Beanconqueror hand-off.** "Send to Beanconqueror" on a shot builds Beanconqueror's own import link

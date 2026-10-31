@@ -26,6 +26,7 @@
 #include "platform/DeviceKey.h"
 #include "platform/FirmwareUpdate.h"
 #include "platform/FsUtil.h"
+#include "platform/LibraryLink.h"
 #include "ui/Ui.h"
 
 using bbw::State;
@@ -1438,8 +1439,8 @@ void handleStart() {
 
 // Past advice to move and where the next shot landed, oldest first, for the Insights chart.
 void handleGrindAccuracy() {
-  static bbw::AdviceOutcome outcomes[60];
-  const size_t n = app::adviceOutcomes(outcomes, 60);
+  static bbw::AdviceOutcome *outcomes = bbw::bigArray<bbw::AdviceOutcome>(60);  // PSRAM
+  const size_t n = outcomes ? app::adviceOutcomes(outcomes, 60) : 0;
   const bbw::Settings s = app::settings();
   const bbw::AdviceConfidence now = bbw::adviceConfidence(outcomes, n, s.grindToleranceS);
   JsonDocument doc;
@@ -1462,6 +1463,58 @@ void handleGrindAccuracy() {
     if (o.confidencePct) e["confidence"] = o.confidencePct - 1;
   }
   sendJson(doc);
+}
+
+// The library's items waiting for review, with what this controller may do about them: its reviews so
+// far, whether they count, its own key id (its own items are not for it to review), and the state of
+// the recipes it sent to the recipe book.
+void handleLibraryPending() {
+  JsonDocument doc;
+  if (bbw::deviceSigner().ready()) {
+    char kid[bbw::KEY_ID_LEN];
+    bbw::keyId(bbw::deviceSigner().publicKey(), kid);
+    doc["kid"] = kid;
+  }
+  doc["linked"] = bbw::libraryLinkReady();
+  doc["sharing"] = app::settings().shareEnabled;
+  app::readReviewState([](const bbw::RecipeShare *recipes, size_t recipeCount,
+                          const char (*targets)[bbw::REVIEW_TARGET_LEN], const bool *approve, size_t reviewCount,
+                          bool canReview, void *c) {
+    JsonDocument &d = *static_cast<JsonDocument *>(c);
+    d["can_review"] = canReview;
+    JsonArray mine = d["mine"].to<JsonArray>();
+    for (size_t i = 0; i < reviewCount; ++i) {
+      JsonObject o = mine.add<JsonObject>();
+      o["target"] = targets[i];  // copied: the strings live in a static buffer
+      o["approve"] = approve[i];
+    }
+    JsonArray rs = d["recipes"].to<JsonArray>();
+    for (size_t i = 0; i < recipeCount; ++i) {
+      JsonObject o = rs.add<JsonObject>();
+      o["id"] = recipes[i].recipeId;
+      o["state"] = bbw::shareStateName(static_cast<bbw::ShareState>(recipes[i].shareState));
+      if (recipes[i].reviewNote[0]) o["note"] = String(recipes[i].reviewNote);
+      if (recipes[i].libraryId[0]) o["library_id"] = String(recipes[i].libraryId);
+    }
+  }, &doc);
+  doc["index"] = serialized(String(app::libraryPending()));
+  sendJson(doc);
+}
+
+// An owner's review of an item waiting in the library: {target, verdict: approve|decline, note}.
+void handleLibraryReview() {
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  const char *verdict = doc["verdict"] | "";
+  const bool approve = !strcmp(verdict, "approve");
+  if (!approve && strcmp(verdict, "decline")) return sendError(400, "verdict is approve or decline");
+  switch (app::reviewPending(doc["target"] | "", approve, doc["note"] | "")) {
+    case 0: return sendOk();
+    case 1: return sendError(400, approve ? "not an item waiting for review" : "say why it is declined");
+    case 2: return sendError(409, "this controller sent it: other owners review it");
+    case 3: return sendError(409, "reviewing opens once something you shared has been published");
+    default: return sendError(409, "link the shared library first (Setup)");
+  }
 }
 
 void handleDevices() {
@@ -3110,6 +3163,15 @@ void begin() {
   server.on("/api/cmd", HTTP_POST, handleCmd);
   server.on("/api/devices", HTTP_GET, handleDevices);
   server.on("/api/start", HTTP_GET, handleStart);
+  server.on("/api/community/recipes", HTTP_GET, []() { server.send(200, "application/json", app::communityRecipes()); });
+  server.on("/api/library/pending", HTTP_GET, handleLibraryPending);
+  server.on("/api/library/review", HTTP_POST, handleLibraryReview);
+  server.on("/api/recipes/share", HTTP_POST, []() {
+    if (!app::shareRecipe(static_cast<uint16_t>(server.arg("id").toInt()))) {
+      return sendError(409, "link the shared library first (Setup)");
+    }
+    sendOk();
+  });
   server.on("/api/grind/accuracy", HTTP_GET, handleGrindAccuracy);
   server.on("/api/grind", HTTP_GET, handleGrind);
   server.on("/api/grind/set", HTTP_POST, []() {

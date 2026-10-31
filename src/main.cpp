@@ -357,6 +357,192 @@ bool queueGrinder(uint16_t id) {
   return true;
 }
 
+// ---- Shared recipes and owner review ----------------------------------------------------------
+// The share state of each recipe sent to the library's recipe book, and this controller's own
+// reviews of items waiting there, kept in one small file. canReview: the library has published
+// something this controller sent, so its reviews count (intake checks it again).
+constexpr const char *REVIEW_FILE = "/libreview.json";
+constexpr size_t MAX_MY_REVIEWS = 40;
+struct MyReview {
+  char target[bbw::REVIEW_TARGET_LEN] = {};
+  bool approve = false;
+};
+struct ReviewState {
+  bbw::RecipeShare recipes[bbw::MAX_RECIPES];
+  size_t recipeCount = 0;
+  MyReview reviews[MAX_MY_REVIEWS];
+  size_t reviewCount = 0;
+  bool canReview = false;
+  bool loaded = false;
+};
+ReviewState &reviewState() {
+  static ReviewState *state = bbw::bigNew<ReviewState>();  // PSRAM
+  return *state;
+}
+#define g_review reviewState()
+std::atomic<uint16_t> g_recipeToSend{0};
+struct PendingReview {
+  bool waiting = false;
+  char target[bbw::REVIEW_TARGET_LEN] = {};
+  bool approve = false;
+  char note[bbw::REVIEW_NOTE_LEN] = {};
+};
+PendingReview g_pendingReview;  // under Lock; sent from the loop task
+std::atomic<bool> g_reviewDirty{false};  // saved by the loop task, outside the lock
+constexpr size_t REVIEW_TEXT_SIZE = 6144;
+char *g_reviewText = nullptr;  // the file's text, PSRAM (loop task)
+
+// Loop task only: the document is built under the lock, the file written after it.
+void saveReviewState() {
+  static JsonDocument doc;
+  doc.clear();
+  {
+  Lock lock;
+  doc["v"] = 1;
+  doc["can_review"] = g_review.canReview;
+  JsonArray rs = doc["recipes"].to<JsonArray>();
+  for (size_t i = 0; i < g_review.recipeCount; ++i) {
+    const bbw::RecipeShare &r = g_review.recipes[i];
+    JsonObject o = rs.add<JsonObject>();
+    o["id"] = r.recipeId;
+    o["state"] = r.shareState;
+    o["seq"] = r.shareSeq;
+    if (r.reviewNote[0]) o["note"] = r.reviewNote;
+    if (r.libraryId[0]) o["library_id"] = r.libraryId;
+  }
+  JsonArray mine = doc["reviews"].to<JsonArray>();
+  for (size_t i = 0; i < g_review.reviewCount; ++i) {
+    JsonObject o = mine.add<JsonObject>();
+    o["target"] = g_review.reviews[i].target;
+    o["approve"] = g_review.reviews[i].approve;
+  }
+  }
+  if (!g_reviewText) g_reviewText = bbw::bigArray<char>(REVIEW_TEXT_SIZE);
+  const size_t n = g_reviewText ? serializeJson(doc, g_reviewText, REVIEW_TEXT_SIZE) : 0;
+  if (n == 0 || n >= REVIEW_TEXT_SIZE - 1 || !g_store.saveText(REVIEW_FILE, g_reviewText)) LOGW("review: not saved");
+  doc.clear();
+}
+
+// Read once at start-up (setup), before the tasks that use it; later calls do nothing.
+void loadReviewState() {
+  if (g_review.loaded) return;
+  g_review.loaded = true;
+  if (!g_reviewText) g_reviewText = bbw::bigArray<char>(REVIEW_TEXT_SIZE);
+  static JsonDocument doc;
+  if (!g_reviewText || !g_store.readText(REVIEW_FILE, g_reviewText, REVIEW_TEXT_SIZE) ||
+      deserializeJson(doc, g_reviewText) || doc["v"] != 1) {
+    return;
+  }
+  g_review.canReview = doc["can_review"] | false;
+  for (JsonObjectConst o : doc["recipes"].as<JsonArrayConst>()) {
+    if (g_review.recipeCount >= bbw::MAX_RECIPES) break;
+    bbw::RecipeShare &r = g_review.recipes[g_review.recipeCount++];
+    r.recipeId = o["id"] | 0;
+    r.shareState = o["state"] | 0;
+    r.shareSeq = o["seq"] | 0u;
+    strlcpy(r.reviewNote, o["note"] | "", sizeof(r.reviewNote));
+    strlcpy(r.libraryId, o["library_id"] | "", sizeof(r.libraryId));
+  }
+  for (JsonObjectConst o : doc["reviews"].as<JsonArrayConst>()) {
+    if (g_review.reviewCount >= MAX_MY_REVIEWS) break;
+    MyReview &m = g_review.reviews[g_review.reviewCount++];
+    strlcpy(m.target, o["target"] | "", sizeof(m.target));
+    m.approve = o["approve"] | false;
+  }
+  doc.clear();
+}
+
+bbw::RecipeShare *recipeShareFor(uint16_t recipeId, bool add) {
+  for (size_t i = 0; i < g_review.recipeCount; ++i) {
+    if (g_review.recipes[i].recipeId == recipeId) return &g_review.recipes[i];
+  }
+  if (!add || g_review.recipeCount >= bbw::MAX_RECIPES) return nullptr;
+  bbw::RecipeShare &r = g_review.recipes[g_review.recipeCount++];
+  r = bbw::RecipeShare();
+  r.recipeId = recipeId;
+  return &r;
+}
+
+// A recipe to the library's recipe book, for review. Loop task.
+void queueRecipe(uint16_t id) {
+  struct Find {
+    uint16_t id;
+    bbw::RecipeDef r;
+    bool have;
+  } find = {id, bbw::RecipeDef(), false};
+  app::readLibrary([](const bbw::Library &lib, void *c) {
+    Find &f = *static_cast<Find *>(c);
+    for (uint8_t i = 0; i < lib.recipeCount; ++i) {
+      if (lib.recipes[i].id == f.id) {
+        f.r = lib.recipes[i];
+        f.have = true;
+      }
+    }
+  }, &find);
+  if (!find.have || !bbw::deviceSigner().ready() || !ensureKeyQueued()) return;
+  char kid[bbw::KEY_ID_LEN];
+  bbw::keyId(bbw::deviceSigner().publicKey(), kid);
+  const uint32_t seq = g_store.outboxNext();
+  if (bbw::buildRecipeRecord(find.r, seq, wallClock(), g_shareBody, bbw::SHARE_BODY_MAX) == 0) {
+    LOGW("share: recipe %u could not be built", static_cast<unsigned>(id));
+    return;
+  }
+  snprintf(g_sharePath, sizeof(g_sharePath), "recipes/%s/r%u-%u.json", kid, static_cast<unsigned>(id),
+           static_cast<unsigned>(seq));
+  if (!shareQueue(g_sharePath)) return;
+  {
+    Lock lock;
+    loadReviewState();
+    bbw::RecipeShare *r = recipeShareFor(id, true);
+    if (!r) return;
+    r->shareState = static_cast<uint8_t>(bbw::ShareState::QUEUED);
+    r->shareSeq = seq;
+    r->reviewNote[0] = '\0';
+    g_reviewDirty = true;
+  }
+  LOGI("share: recipe %u queued for review", static_cast<unsigned>(id));
+}
+
+// An owner review of an item waiting in the library. Loop task.
+void queueReview() {
+  PendingReview p;
+  {
+    Lock lock;
+    if (!g_pendingReview.waiting) return;
+    p = g_pendingReview;
+    g_pendingReview.waiting = false;
+  }
+  if (!bbw::deviceSigner().ready() || !ensureKeyQueued()) return;
+  char kid[bbw::KEY_ID_LEN];
+  bbw::keyId(bbw::deviceSigner().publicKey(), kid);
+  const uint32_t seq = g_store.outboxNext();
+  if (bbw::buildReviewRecord(p.target, p.approve, p.note, seq, wallClock(), g_shareBody,
+                             bbw::SHARE_BODY_MAX) == 0) {
+    LOGW("share: review could not be built");
+    return;
+  }
+  snprintf(g_sharePath, sizeof(g_sharePath), "reviews/%s/o%u.json", kid, static_cast<unsigned>(seq));
+  if (!shareQueue(g_sharePath)) return;
+  Lock lock;
+  loadReviewState();
+  size_t at = g_review.reviewCount;
+  for (size_t i = 0; i < g_review.reviewCount; ++i) {
+    if (!strcmp(g_review.reviews[i].target, p.target)) at = i;
+  }
+  if (at == g_review.reviewCount) {
+    if (g_review.reviewCount == MAX_MY_REVIEWS) {  // the oldest goes
+      memmove(&g_review.reviews[0], &g_review.reviews[1], (MAX_MY_REVIEWS - 1) * sizeof(MyReview));
+      at = MAX_MY_REVIEWS - 1;
+    } else {
+      ++g_review.reviewCount;
+    }
+  }
+  strlcpy(g_review.reviews[at].target, p.target, sizeof(g_review.reviews[at].target));
+  g_review.reviews[at].approve = p.approve;
+  g_reviewDirty = true;
+  LOGI("share: review queued (%s)", p.approve ? "approve" : "decline");
+}
+
 // What the library says about this controller's coffees: in review,
 // published, declined. Asked for now and then while idle.
 bool fetchStatus(const char *kid, char *out, size_t size) {
@@ -384,6 +570,16 @@ void shareReadStatus(bool idle) {
     Lock lock;
     for (size_t i = 0; i < g_linkCount; ++i) {
       const uint8_t st = g_links[i].shareState;
+      linkWaiting |= st == static_cast<uint8_t>(bbw::ShareState::QUEUED) ||
+                     st == static_cast<uint8_t>(bbw::ShareState::SENT) ||
+                     st == static_cast<uint8_t>(bbw::ShareState::IN_REVIEW);
+    }
+  }
+  {
+    Lock lock;
+    loadReviewState();
+    for (size_t i = 0; i < g_review.recipeCount; ++i) {
+      const uint8_t st = g_review.recipes[i].shareState;
       linkWaiting |= st == static_cast<uint8_t>(bbw::ShareState::QUEUED) ||
                      st == static_cast<uint8_t>(bbw::ShareState::SENT) ||
                      st == static_cast<uint8_t>(bbw::ShareState::IN_REVIEW);
@@ -478,6 +674,34 @@ void shareReadStatus(bool idle) {
         LOGI("share: the library on the service %s: %s", g_subs[i].name, name);
       }
     }
+  }
+  // Recipes sent to the recipe book; and whether anything this controller sent is published, which
+  // makes its reviews of other owners' items count.
+  {
+    Lock lock;
+    loadReviewState();
+    bool dirty = false, published = false;
+    for (JsonPairConst section : doc.as<JsonObjectConst>()) {
+      if (!section.value().is<JsonArrayConst>()) continue;
+      for (JsonObjectConst entry : section.value().as<JsonArrayConst>()) {
+        published |= !strcmp(entry["state"] | "", "published");
+      }
+    }
+    if (published != g_review.canReview) {
+      g_review.canReview = published;
+      dirty = true;
+    }
+    for (JsonObjectConst entry : doc["recipes"].as<JsonArrayConst>()) {
+      const char *name = entry["state"] | "";
+      const bbw::ShareState state = !strcmp(name, "review") ? bbw::ShareState::IN_REVIEW
+                                    : !strcmp(name, "published") ? bbw::ShareState::PUBLISHED
+                                    : !strcmp(name, "declined") ? bbw::ShareState::DECLINED
+                                    : !strcmp(name, "refused") ? bbw::ShareState::REFUSED
+                                    : bbw::ShareState::LOCAL;
+      dirty |= bbw::applyReviewTo(recipeShareFor(entry["local_id"] | 0, false), entry["record"] | 0u, state,
+                                  entry["note"] | "", entry["library_id"] | "");
+    }
+    if (dirty) g_reviewDirty = true;
   }
   doc.clear();
   if (changed) {
@@ -683,11 +907,13 @@ constexpr const char *TASTE_CACHE = "/ltaste.json";   // index/taste.json: coffe
 constexpr const char *MODELS_CACHE = "/lmodels.json"; // index/models.json: what each grinder model's owners show
 constexpr const char *LINKS_CACHE = "/llinks.json";    // index/links.json: the Community Hub's listed links
 constexpr const char *TRENDING_CACHE = "/ltrend.json"; // index/trending.json: recipes people settled on lately
+constexpr const char *RECIPES_CACHE = "/lrecipes.json"; // index/recipes.json: the recipe book
+constexpr const char *PENDING_CACHE = "/lpending.json"; // index/pending.json: coffees and recipes waiting for review
 constexpr const char *DIR_MANIFEST = "/dirm.json";     // index/directory/manifest.json, once its pages are here
 constexpr uint8_t DIR_MAX_PAGES = 60;                  // 6000 coffees
-// fit, coffees, grinders, ageing rate, machines, taste, services, models, links, trending, directory;
-// then a dial-in per coffee
-constexpr uint8_t LIBRARY_FIXED_STEPS = 11;
+// fit, coffees, grinders, ageing rate, machines, taste, services, models, links, trending, directory,
+// recipes, pending; then a dial-in per coffee
+constexpr uint8_t LIBRARY_FIXED_STEPS = 13;
 uint32_t g_communityStamp = 1;  // goes up when anything cached changes
 
 void dialinCache(uint16_t coffeeId, char *out, size_t size) {
@@ -842,6 +1068,14 @@ void libraryRefresh(bool idle) {
     // The coffee directory: the manifest, then each page whose hash changed, one per step; the
     // manifest is kept only once every page it names is here.
     if (!directoryStep()) return;  // a page fetched: the next one next time, at this step
+  } else if (step == 11) {
+    if (fetchLibraryFile("index/recipes.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
+      g_store.writeTextIfChanged(RECIPES_CACHE, g_libraryText);
+    }
+  } else if (step == 12) {
+    if (fetchLibraryFile("index/pending.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
+      g_store.writeTextIfChanged(PENDING_CACHE, g_libraryText);
+    }
   } else if (step - LIBRARY_FIXED_STEPS < count) {
     char file[bbw::LIBRARY_ID_LEN * 2], cache[20];
     if (bbw::libraryIdToFile(libraryIds[step - LIBRARY_FIXED_STEPS], file, sizeof(file))) {
@@ -2372,7 +2606,8 @@ size_t adviceOutcomes(bbw::AdviceOutcome *out, size_t max) {
     Pair pairs[PAIRS];
     size_t count = 0;
   };
-  static Scan scan;
+  static Scan *buffer = bbw::bigNew<Scan>();  // PSRAM
+  Scan &scan = *buffer;
   scan = Scan();
   scan.calibration = grinder().calibration;
   scan.basis = settings().grindTimeBasis;
@@ -2909,6 +3144,53 @@ const char *communityCoffees() {
 const char *communityLinks() {
   if (!g_store.readText(LINKS_CACHE, g_libraryText, LIBRARY_TEXT_SIZE)) strcpy(g_libraryText, "{}");
   return g_libraryText;
+}
+
+const char *communityRecipes() {
+  if (!g_store.readText(RECIPES_CACHE, g_libraryText, LIBRARY_TEXT_SIZE)) strcpy(g_libraryText, "{}");
+  return g_libraryText;
+}
+
+const char *libraryPending() {
+  if (!g_store.readText(PENDING_CACHE, g_libraryText, LIBRARY_TEXT_SIZE)) strcpy(g_libraryText, "{}");
+  return g_libraryText;
+}
+
+void readReviewState(void (*visit)(const bbw::RecipeShare *recipes, size_t recipeCount, const char (*targets)[bbw::REVIEW_TARGET_LEN],
+                                   const bool *approve, size_t reviewCount, bool canReview, void *),
+                     void *context) {
+  Lock lock;
+  loadReviewState();
+  static char targets[MAX_MY_REVIEWS][bbw::REVIEW_TARGET_LEN];
+  static bool approve[MAX_MY_REVIEWS];
+  for (size_t i = 0; i < g_review.reviewCount; ++i) {
+    memcpy(targets[i], g_review.reviews[i].target, bbw::REVIEW_TARGET_LEN);
+    approve[i] = g_review.reviews[i].approve;
+  }
+  visit(g_review.recipes, g_review.recipeCount, targets, approve, g_review.reviewCount, g_review.canReview, context);
+}
+
+bool shareRecipe(uint16_t recipeId) {
+  if (!recipeId || !bbw::libraryLinkReady()) return false;
+  g_recipeToSend = recipeId;
+  return true;
+}
+
+// 0 queued; 1 not a valid target or note; 2 this controller's own; 3 cannot review yet; 4 no library.
+int reviewPending(const char *target, bool approve, const char *note) {
+  if (!bbw::reviewTargetValid(target) || (!approve && (!note || !note[0]))) return 1;
+  if (!bbw::libraryLinkReady() || !bbw::deviceSigner().ready()) return 4;
+  char kid[bbw::KEY_ID_LEN];
+  bbw::keyId(bbw::deviceSigner().publicKey(), kid);
+  if (bbw::reviewTargetFrom(target, kid)) return 2;
+  Lock lock;
+  loadReviewState();
+  if (!g_review.canReview) return 3;
+  g_pendingReview.waiting = true;
+  strlcpy(g_pendingReview.target, target, sizeof(g_pendingReview.target));
+  g_pendingReview.approve = approve;
+  strlcpy(g_pendingReview.note, note ? note : "", sizeof(g_pendingReview.note));
+  return 0;
 }
 
 const char *communityTrending() {
@@ -3886,6 +4168,7 @@ void setup() {
   loadSubscriptions();
   loadServiceReviews();
   loadLinks();
+  loadReviewState();
   if (bbw::beginDeviceKey()) {
     char kid[bbw::KEY_ID_LEN], last[bbw::KEY_ID_LEN + 2];
     bbw::keyId(bbw::deviceSigner().publicKey(), kid);
@@ -4169,6 +4452,9 @@ void loop() {
   if (const uint32_t ratingId = g_ratingToShare.exchange(0)) shareRating(ratingId);
   if (const uint32_t ratingId = g_ratingToWithdraw.exchange(0)) withdrawRating(ratingId);
   if (const uint16_t linkId = g_linkToSend.exchange(0)) queueLink(linkId);
+  if (const uint16_t recipeId = g_recipeToSend.exchange(0)) queueRecipe(recipeId);
+  queueReview();
+  if (g_reviewDirty.exchange(false)) saveReviewState();
   if (g_pushersDirty.exchange(false)) {
     bbw::PusherConfig copy;
     {

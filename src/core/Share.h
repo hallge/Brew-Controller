@@ -1008,4 +1008,105 @@ inline size_t sealRecord(ISigner &signer, const char *body, char *out, size_t si
   return j.ok() ? j.length() : 0;
 }
 
+// ---- Shared recipes and owner review ----------------------------------------------------------
+// A recipe shared to the library's recipe book: how the shot is pulled, nothing about the coffee or
+// the owner. Waits for review like a coffee. Its share state is kept beside the recipe (RecipeShare),
+// not in it, so the stored library keeps its layout.
+struct RecipeShare {
+  uint16_t recipeId = 0;
+  uint8_t shareState = 0;   // ShareState
+  uint32_t shareSeq = 0;
+  char reviewNote[NOTES_LEN] = {};
+  char libraryId[LIBRARY_ID_LEN] = {};
+};
+
+// The ranges the library's check takes (library-template/tools/verify_record.py check_recipe).
+inline bool recipeShareable(const RecipeDef &r) {
+  const float yieldG = r.useRatio ? r.doseG * r.ratio : r.targetWeightG;
+  const bool held = r.preinfusion == Preinfusion::HOLD;
+  return r.name[0] && r.doseG >= 5.0f && r.doseG <= 30.0f && yieldG >= 5.0f && yieldG <= 200.0f &&
+         (r.targetTimeS == 0.0f || (r.targetTimeS >= 5.0f && r.targetTimeS <= 60.0f)) &&
+         (!held || r.preinfusionHoldMs <= 30000) && (!held || r.bloomPauseMs <= 45000);
+}
+
+inline size_t buildRecipeRecord(const RecipeDef &r, uint32_t record, uint32_t epochS, char *out, size_t size) {
+  if (!recipeShareable(r)) return 0;
+  char at[21], name[RECIPE_NAME_LEN];
+  asciiText(r.name, name, sizeof(name));
+  if (!name[0]) return 0;
+  timeText(epochS, at);
+  const float yieldG = r.useRatio ? r.doseG * r.ratio : r.targetWeightG;
+  const bool held = r.preinfusion == Preinfusion::HOLD;
+  JsonOut j(out, size);
+  j.open();
+  j.text("t", "recipe");
+  j.integer("v", 1);
+  j.textIf("at", at);
+  j.integer("record", static_cast<long>(record));
+  j.integer("local_id", r.id);
+  j.open("recipe");
+  j.text("name", name);
+  j.number("dose_g", r.doseG, 1);
+  j.number("yield_g", yieldG, 1);
+  if (r.targetTimeS > 0.0f) j.number("target_time_s", r.targetTimeS, 1);
+  if (held && r.preinfusionHoldMs >= 300) j.number("preinfusion_hold_s", r.preinfusionHoldMs / 1000.0, 1);
+  if (held && r.bloomPauseMs >= 1000) j.number("bloom_pause_s", r.bloomPauseMs / 1000.0, 1);
+  j.close();
+  j.close();
+  return j.ok() ? j.length() : 0;
+}
+
+// What an owner review points at: an item waiting in the library, by its place under pending/
+// without ".json": "coffees/<key id>/c<n>-<n>" or "recipes/<key id>/r<n>-<n>".
+constexpr size_t REVIEW_TARGET_LEN = 48;
+inline bool reviewTargetValid(const char *t) {
+  if (!t) return false;
+  char letter;
+  if (!strncmp(t, "coffees/", 8)) {
+    letter = 'c';
+    t += 8;
+  } else if (!strncmp(t, "recipes/", 8)) {
+    letter = 'r';
+    t += 8;
+  } else {
+    return false;
+  }
+  for (int i = 0; i < 20; ++i, ++t) {
+    if (!((*t >= '0' && *t <= '9') || (*t >= 'a' && *t <= 'f'))) return false;
+  }
+  if (*t++ != '/' || *t++ != letter) return false;
+  int digits = 0;
+  while (*t >= '0' && *t <= '9') ++t, ++digits;
+  if (!digits || digits > 10 || *t++ != '-') return false;
+  digits = 0;
+  while (*t >= '0' && *t <= '9') ++t, ++digits;
+  return digits && digits <= 10 && *t == '\0';
+}
+
+// The key id of the controller that sent a target ("coffees/<kid>/..."), for "not your own".
+inline bool reviewTargetFrom(const char *target, const char *kid) {
+  return reviewTargetValid(target) && !strncmp(target + 8, kid, 20);
+}
+
+constexpr size_t REVIEW_NOTE_LEN = 120;
+inline size_t buildReviewRecord(const char *target, bool approve, const char *note, uint32_t record,
+                                uint32_t epochS, char *out, size_t size) {
+  if (!reviewTargetValid(target)) return 0;
+  char at[21], text[REVIEW_NOTE_LEN];
+  asciiText(note ? note : "", text, sizeof(text));
+  if (!approve && !text[0]) return 0;  // a decline says why
+  timeText(epochS, at);
+  JsonOut j(out, size);
+  j.open();
+  j.text("t", "review");
+  j.integer("v", 1);
+  j.textIf("at", at);
+  j.integer("record", static_cast<long>(record));
+  j.text("target", target);
+  j.text("verdict", approve ? "approve" : "decline");
+  j.textIf("note", text);
+  j.close();
+  return j.ok() ? j.length() : 0;
+}
+
 }  // namespace bbw

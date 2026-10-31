@@ -4733,6 +4733,45 @@ static void testLibrary() {
 // (board, 30 Oct 2026: +6.1 g on the first shot of a new coffee from a 1.5 g start).
 // Confidence in grind advice: scored from how close followed advice landed; it sizes the step and
 // the window, and with it off the advice is what it was.
+// Shared recipes and owner reviews: what is sent, and what is refused before it is.
+static void testRecipeAndReviewRecords() {
+  char out[512];
+  RecipeDef r;
+  r.id = 7;
+  copyText(r.name, "Turbo", RECIPE_NAME_LEN);
+  r.doseG = 18.0f;
+  r.targetWeightG = 45.0f;
+  r.targetTimeS = 15.0f;
+  r.preinfusion = Preinfusion::HOLD;
+  r.preinfusionHoldMs = 4000;
+  r.bloomPauseMs = 0;
+  CHECK(buildRecipeRecord(r, 12, 0, out, sizeof(out)) > 0);
+  CHECK(strstr(out, "\"t\":\"recipe\"") && strstr(out, "\"local_id\":7") && strstr(out, "\"name\":\"Turbo\""));
+  CHECK(strstr(out, "\"yield_g\":45") && strstr(out, "\"preinfusion_hold_s\":4") && !strstr(out, "bloom"));
+  r.useRatio = true;
+  r.ratio = 2.5f;
+  CHECK(buildRecipeRecord(r, 12, 0, out, sizeof(out)) > 0 && strstr(out, "\"yield_g\":45"));
+  r.doseG = 40.0f;  // past the shareable range
+  CHECK(buildRecipeRecord(r, 12, 0, out, sizeof(out)) == 0);
+
+  const char *kid = "0123456789abcdef0123";
+  CHECK(reviewTargetValid("coffees/0123456789abcdef0123/c4-7"));
+  CHECK(reviewTargetValid("recipes/0123456789abcdef0123/r12-30"));
+  CHECK(!reviewTargetValid("recipes/0123456789abcdef0123/c12-30"));  // letter must match the kind
+  CHECK(!reviewTargetValid("grinders/0123456789abcdef0123/g1-2"));
+  CHECK(!reviewTargetValid("coffees/0123456789ABCDEF0123/c4-7"));
+  CHECK(!reviewTargetValid("coffees/0123456789abcdef0123/c4-7/../x"));
+  CHECK(!reviewTargetValid("coffees/0123456789abcdef0123/c4-"));
+  CHECK(reviewTargetFrom("coffees/0123456789abcdef0123/c4-7", kid));
+  CHECK(!reviewTargetFrom("coffees/fedcba98765432100123/c4-7", kid));
+  CHECK(buildReviewRecord("coffees/0123456789abcdef0123/c4-7", true, "", 9, 0, out, sizeof(out)) > 0);
+  CHECK(strstr(out, "\"t\":\"review\"") && strstr(out, "\"verdict\":\"approve\"") && !strstr(out, "note"));
+  CHECK(buildReviewRecord("coffees/0123456789abcdef0123/c4-7", false, "", 9, 0, out, sizeof(out)) == 0);
+  CHECK(buildReviewRecord("coffees/0123456789abcdef0123/c4-7", false, "Not a real roaster", 9, 0, out, sizeof(out)) > 0);
+  CHECK(strstr(out, "\"verdict\":\"decline\"") && strstr(out, "\"note\":\"Not a real roaster\""));
+  CHECK(buildReviewRecord("nonsense", true, "", 9, 0, out, sizeof(out)) == 0);
+}
+
 static void testAdviceConfidence() {
   // No history: the starting score, low.
   AdviceConfidence none = adviceConfidence(nullptr, 0, 2.0f);
@@ -7920,6 +7959,7 @@ int main() {
   testGrinderSetup();
   testOffsetRecipePrior();
   testAdviceConfidence();
+  testRecipeAndReviewRecords();
   testBugReport();
   testWebPanels();
   testCommunityHub();

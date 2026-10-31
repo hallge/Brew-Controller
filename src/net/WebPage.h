@@ -206,11 +206,13 @@ nav>a{display:none}nav{justify-content:space-between}nav b{display:block;font-si
 #sdetail .tile{background:var(--card)}#sdetail .tiles{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}#sdetail .tile b{font-size:18px}#sdetail .tile a{text-decoration:underline dotted}
 @media(max-width:760px){.srow{grid-template-columns:58px minmax(0,1fr) 56px 50px}.srow .g{display:none}#sdetail .tiles{grid-template-columns:1fr 1fr}}
 body:not(.pn-insights) [data-panel~="insights"],body:not(.pn-discover) [data-panel~="discover"],body:not(.pn-subscriptions) [data-panel~="subscriptions"],body:not(.pn-community) [data-panel~="community"],body:not(.pn-logs) [data-panel~="logs"],body:not(.pn-hub) [data-panel~="hub"],body:not(.pn-start) [data-panel~="start"]{display:none!important}
+.lbl{display:flex;flex-direction:column;gap:8px;margin-top:10px}.lbl .it{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 12px;border:1px solid var(--line);border-radius:10px}
+.lbl .it .what{flex:1 1 240px;min-width:0}.lbl .it .what b{display:block}.lbl .dn{flex:1 1 100%;display:flex;gap:8px}.lbl .dn input{flex:1 1 auto}
 .gsbar{height:6px;background:var(--up);border-radius:3px;overflow:hidden;margin-top:10px}.gsbar i{display:block;height:100%;background:var(--acc);border-radius:3px;transition:width .3s}
 .gs{display:flex;flex-direction:column;gap:10px;margin-top:14px}.gs .st{display:flex;gap:14px;align-items:center;padding:12px 14px;border:1px solid var(--line);border-radius:12px}
 .gs .st.done{opacity:.72}.gs .n{flex:0 0 32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;background:var(--up)}
 .gs .st.done .n{background:var(--okbg);color:var(--oktext)}.gs .st.next{border-color:var(--acc)}.gs .tx{flex:1 1 0;min-width:0}.gs .tx b{display:block}.gs .tx .sm{margin-top:2px}
-.gs .st button{flex:0 0 auto}@media(max-width:560px){.gs .st{flex-wrap:wrap;align-items:flex-start}.gs .st button{margin-left:46px}}
+.gs .st button{flex:0 0 auto}@media(max-width:560px){.gs .st{flex-wrap:wrap;align-items:flex-start}.gs .st .tx{flex:1 1 calc(100% - 50px)}.gs .st button{margin-left:46px}}
 .panels{display:grid;gap:10px;margin-top:8px}.panels label.chk{align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:10px;margin:0}.panels label.chk b{display:block}
 .empty{padding:14px 16px;border:1px dashed var(--line);border-radius:10px;color:var(--mid);font-size:13px;line-height:1.5}
 /* On a phone the scrolled-away "On this page" button floats above the bottom bar instead of over the cards' edge. */
@@ -350,7 +352,7 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <label>Who ends the shot<select id="r_timeLimit" onchange="recipeForm()"><option value="0">The machine's own time-out</option><option value="1">The Bot, after a set time</option></select></label>
 <label>Stop after (s)<input id="r_maxShotTimeS" type="number" min="5" max="90"></label>
 <label title="A new coffee on this recipe starts from what the recipe has learned on its other coffees; this is used until it has learned one">Starting stop offset, until learned (g)<input id="r_baselineOffsetG" type="number" step="0.1" min="0" max="10"></label></div></fieldset>
-<div class="row"><button class="pri" data-save onclick="saveRecipe()">Save</button><span class="sm dim" id="rinfo"></span></div></section>
+<div class="row"><button class="pri" data-save onclick="saveRecipe()">Save</button><button id="rshare" onclick="shareRecipe()">Share to the recipe book</button><span class="sm dim" id="rinfo"></span></div></section>
 <section class="card" id="rused"><div class="head"><h2>Used with</h2><a class="sm" href="#coffees">Add to a coffee</a></div>
 <div class="scroll"><table id="rtable"></table></div>
 <div class="row"><button id="ralone" onclick="act('preset_add',R,0)">List it on the controller by itself</button></div>
@@ -483,6 +485,13 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <section class="card" id="subreco"><div class="head"><h2>Subscriptions you might like</h2><span class="sm dim" id="srbasis"></span></div>
 <div class="row" style="align-items:flex-end"><label style="flex:0 0 130px">Your country<input id="sr_country" maxlength="2" placeholder="e.g. US" onchange="subPrefs()"></label><div style="flex:1 1 300px"><div class="sm dim" style="margin-bottom:6px">What matters to you</div><div class="chips" id="srmatters"></div></div></div>
 <div class="subs" id="srlist"></div></section>
+<section class="card com" id="lbcoffee"><div class="head"><h2>Coffee library</h2><div class="row" role="group" aria-label="Which coffees" style="margin:0"><button id="lbc_t0" class="on" onclick="lbTab('c',0)">Published <span class="dim" id="cmcount"></span></button><button id="lbc_t1" onclick="lbTab('c',1)">Waiting for review <span class="dim" id="lbc_n"></span></button></div></div>
+<div id="lbc_0"><label>Search<input type="search" id="cmq" oninput="drawCommunityCoffees()" placeholder="name, roaster, origin, process"></label><div id="cmlist" style="margin-top:10px"></div></div>
+<div id="lbc_1" style="display:none"><div class="sm mid" id="lbc_why"></div><div id="lbc_list" class="lbl"></div></div></section>
+<section class="card com" id="lbrecipe"><div class="head"><h2>Recipe book</h2><div class="row" role="group" aria-label="Which recipes" style="margin:0"><button id="lbr_t0" class="on" onclick="lbTab('r',0)">Published <span class="dim" id="lbr_c"></span></button><button id="lbr_t1" onclick="lbTab('r',1)">Waiting for review <span class="dim" id="lbr_n"></span></button></div></div>
+<div id="lbr_0"><label>Search<input type="search" id="lbrq" oninput="drawRecipeBook()" placeholder="name, dose, yield"></label><div id="lbr_list" class="lbl" style="margin-top:10px"></div></div>
+<div id="lbr_1" style="display:none"><div class="sm mid" id="lbr_why"></div><div id="lbr_pend" class="lbl"></div></div>
+<details class="note"><summary>Owners review what other owners send.</summary><ul><li>An item is published once two owners approve it; one decline holds it for the library's maintainer.</li><li>Your reviews count once something you shared has been published. You never review your own.</li><li>Share one of your recipes from the Recipes page.</li></ul></details></section>
 </div>
 <div class="page" id="p-community" data-panel="community">
 <div class="head"><h1>Community</h1><a class="sm" href="#setup" onclick="setTimeout(()=>{const e=$('sh_state');if(e)e.closest('.card').scrollIntoView({behavior:'smooth'})},300)" style="color:var(--com)">Sharing settings</a></div>
@@ -514,9 +523,7 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <canvas id="rdcurve" width="560" height="235" style="display:none"></canvas></section>
 <section class="card com"><div class="head"><h2>Trending recipes</h2><span class="sm dim" id="cmtrendnote"></span></div><div id="cmtrend" class="sm mid"></div></section>
 <section class="card com"><div class="head"><h2>For what you are brewing</h2><span class="sm dim" id="cmcoffee"></span></div><div id="cmnow" class="sm mid"></div></section>
-<section class="card com"><div class="head"><h2>Coffees in the shared library</h2><span class="sm" id="cmcount"></span></div>
-<label>Search<input type="search" id="cmq" oninput="drawCommunityCoffees()" placeholder="name, roaster, origin, process"></label>
-<div id="cmlist" style="margin-top:10px"></div></section>
+<section class="card com"><div class="head"><h2>Coffees and recipes in the shared library</h2></div><div class="sm mid">Browse them, add them, and review what other owners sent on <a href="#discover" style="color:var(--com)">Discover</a>.</div></section>
 <section class="card com"><div class="head"><h2>Grinders in the shared library</h2><a class="sm" href="#grinder" style="color:var(--com)">Your grinder</a></div><div id="cmgrinders" class="sm mid"></div></section>
 <section class="card com"><div class="head"><h2>What you share</h2><span class="pill" id="cmstate"></span></div><div id="cmshare" class="sm mid"></div></section>
 </div>
@@ -709,8 +716,8 @@ $('bmore').classList.toggle('on',['start','recipes','insights','machine','subscr
 // The optional panels (bbw::WebPanel bits): key, name, what it is, bit.
 const PANELS=[['insights','Insights','Your taste profile from your ratings, and charts: roast level against grind, coffee age against brew time, a brewing calendar, dial-in shots per bag.',1],
 ['subscriptions','Subscriptions','Coffee subscriptions: when the next delivery comes, skipping one, what is on its way.',4],
-['discover','Discover','A page of recommendations: coffees and subscriptions that match your taste, coffees to buy again, and the For you card on Home.',2],
-['community','Community','A page of what other owners share: where to start your grinder for what you are brewing, the shared library\'s coffees and grinders, and what you share. Also the Community cards on Home and on each coffee.',8],
+['discover','Discover','Coffees and subscriptions that match your taste, the shared coffee library and recipe book (browse, add, review), and the For you card on Home.',2],
+['community','Community','What other owners share: where to start your grinder for what you are brewing, links, trending recipes, grinders, and what you share. Also the Community cards on Home and on each coffee.',8],
 ['logs','Logs','The controller\'s log, live, for when something needs looking into. It is also always at /log.txt.',16],
 ['start','Getting started','A step-by-step guide for a new controller: Wi-Fi, scale, bots, machine, grinder, recipe, coffee and the first shot.',64,1]];
 let PN=0;try{PN=+(localStorage.getItem('bbwPanels')||0)}catch(e){}
@@ -903,7 +910,7 @@ if(sr&&sr.items&&sr.items.length)chips.push(`<a href="#discover" onclick="setTim
 if(G&&G.has_number&&(G.action=='finer'||G.action=='coarser')&&G.suggested_um)chips.push(`<a href="#grinder">Next shot: ${G.action} ${fdn(G.delta_um)} ${fdu()}, to ${fs(G.suggested_um)}</a>`);
 $('fychips').innerHTML=chips.join('');box.style.display=chips.length?'':'none'}
 // Discover: who it is for (named drinkers), the coffees and the subscriptions.
-async function loadDiscover(){if(!RT&&typeof loadRatings=='function')await loadRatings();
+async function loadDiscover(){loadLibraryPanels();if(!RT&&typeof loadRatings=='function')await loadRatings();
 const named=RT&&RT.named,people=named?RT.drinkers.map((n,i)=>[i+1,n]).filter(x=>x[1]):[];
 $('dwho').innerHTML=people.length?[[0,'Household'],...people].map(([id,n])=>`<button class="${id==TPD?'on':''}" onclick="TPD=${id};loadDiscover()">${esc(n)}</button>`).join(''):'';
 drawReco();if(!SUBS)await loadSubs();loadSubReco()}
@@ -1000,10 +1007,40 @@ const pages=Math.ceil(d.matched/d.page_size);$('dirpager').innerHTML=pages>1?`<b
 DIRC=d.coffees}
 let DIRC=[];
 function dirAdopt(id){const c=DIRC.find(x=>x.id==id);if(!c)return;if(!CC.find(x=>x.id==id))CC.push(c);adopt(id);setTimeout(loadDirectory,1500)}
+// ---- The shared library on Discover: published coffees and recipes, and the ones waiting for review.
+let LP=null,LR=[];const lbTab=(k,i)=>{[0,1].forEach(j=>{$('lb'+k+'_'+j).style.display=j==i?'':'none';$('lb'+k+'_t'+j).classList.toggle('on',j==i)})};
+async function loadLibraryPanels(){try{LP=await get('/api/library/pending')}catch(e){LP=null}try{LR=((await get('/api/community/recipes')).items)||[]}catch(e){LR=[]}
+loadCommunityCoffees().then(drawCommunityCoffees);drawPending();drawRecipeBook()}
+const lbNum=v=>v==null?'':String(Math.round(v*10)/10);
+const recipeLine=r=>`${lbNum(r.dose_g)} g in, ${lbNum(r.yield_g)} g out`+(r.target_time_s?`, ${lbNum(r.target_time_s)} s`:'')+(r.preinfusion_hold_s?`, hold ${lbNum(r.preinfusion_hold_s)} s`:'')+(r.bloom_pause_s?`, bloom ${lbNum(r.bloom_pause_s)} s`:'');
+function drawRecipeBook(){const el=$('lbr_list');if(!el)return;const q=($('lbrq').value||'').toLowerCase(),hit=LR.filter(x=>!q||[(x.recipe||{}).name,recipeLine(x.recipe||{})].join(' ').toLowerCase().includes(q));
+$('lbr_c').textContent=LR.length?LR.length:'';
+el.innerHTML=!LR.length?'<div class="empty">No recipes published yet. Share one of yours from the Recipes page.</div>':!hit.length?'<div class="empty">No recipe matches that.</div>':hit.map(x=>{const r=x.recipe||{},i=LR.indexOf(x);
+return `<div class="it"><div class="what"><b>${esc(r.name||'Recipe')}</b><span class="sm mid">${esc(recipeLine(r))}</span>${x.contributors>1?`<span class="sm dim"> \u00b7 ${x.contributors} owners</span>`:''}</div><button onclick="bookRecipe(${i})">Make it a recipe</button></div>`}).join('')}
+function bookRecipe(i){const r=(LR[i]||{}).recipe;if(!r)return;location.hash='#recipes';setTimeout(()=>{R=0;drawRecipes();const set=(k,v)=>{const e=$('r_'+k);if(e){e.value=v;e.dispatchEvent(new Event('input'))}};
+set('name',(r.name||'').slice(0,23));set('doseG',r.dose_g);set('useRatio',0);set('targetWeightG',r.yield_g);if(r.target_time_s)set('targetTimeS',r.target_time_s);
+if(r.preinfusion_hold_s){set('preinfusion',1);set('preinfusionHoldS',r.preinfusion_hold_s)}if(r.bloom_pause_s)set('bloomPauseS',r.bloom_pause_s);recipeForm();say('Filled in: check it and save')},400)}
+function drawPending(){if(!$('lbc_list'))return;const idx=(LP&&LP.index&&LP.index.items)||[],mine=new Map(((LP&&LP.mine)||[]).map(m=>[m.target,m.approve]));
+const why=!LP?'The controller cannot be reached.':!LP.linked?'Link the shared library in Setup to see what is waiting.':LP.can_review?(k=>k=='c'?'Check the details against the bag, then approve or decline.':'Pull it once if you can, then approve or decline.'):'You can review once something you shared has been published.';
+['c','r'].forEach(k=>{const list=idx.filter(x=>x.type==(k=='c'?'coffee':'recipe')),el=$(k=='c'?'lbc_list':'lbr_pend');$('lb'+k+'_why').textContent=typeof why=='function'?why(k):why;$('lb'+k+'_n').textContent=list.length?list.length:'';
+el.innerHTML=!list.length?'<div class="empty">Nothing waiting for review.</div>':list.map(x=>{const own=LP.kid&&x.from==LP.kid,done=mine.has(x.id),c=x.coffee||{},r=x.recipe||{};
+const title=k=='c'?esc(c.name||'Coffee'):esc(r.name||'Recipe'),line=k=='c'?esc([c.roaster,c.origin,c.region,c.process,c.roast_level].filter(Boolean).join(' \u00b7 ')):esc(recipeLine(r));
+const notes=k=='c'&&c.notes?`<span class="sm dim" style="display:block">${esc(c.notes)}</span>`:'',count=`<span class="sm dim">${x.approvals||0} of 2 approvals${x.declines?', '+x.declines+' declined':''}</span>`;
+const act=own?'<span class="pill">yours, waiting</span>':done?`<span class="pill ${mine.get(x.id)?'ok':''}">you ${mine.get(x.id)?'approved':'declined'}</span>`:LP.can_review?`<button class="pri" onclick="reviewItem('${esc(x.id)}',1)">Approve</button><button onclick="declineOpen(this)">Decline\u2026</button>`:'';
+return `<div class="it"><div class="what"><b>${title}</b><span class="sm mid" style="display:block">${line}</span>${notes}${count}</div>${act}<div class="dn" style="display:none"><input maxlength="119" placeholder="Why? The sender sees this." aria-label="Why it is declined"><button onclick="reviewItem('${esc(x.id)}',0,this)">Send</button></div></div>`}).join('')})}
+function declineOpen(b){const d=b.parentElement.querySelector('.dn');d.style.display=d.style.display?'':'none';if(!d.style.display)d.querySelector('input').focus()}
+async function reviewItem(id,approve,b){const note=b?b.parentElement.querySelector('input').value.trim():'';if(!approve&&!note){say('Say why it is declined');return}
+const r=await post('/api/library/review',{target:id,verdict:approve?'approve':'decline',note});if(done(r,approve?'Approved: sent with your key':'Declined: sent with your note')){if(LP){LP.mine=(LP.mine||[]).concat([{target:id,approve:!!approve}])}drawPending()}}
+// Recipes page: where this recipe stands with the recipe book.
+const SHARE_WORDS={queued:'waiting to be sent',sent:'sent',review:'in review',published:'published in the recipe book',declined:'declined',refused:'refused'};
+async function drawRecipeShare(){const b=$('rshare');if(!b||!R)return;if(!LP){try{LP=await get('/api/library/pending')}catch(e){return}}
+const st=((LP.recipes||[]).find(x=>x.id==R)||{});b.textContent=st.state&&st.state!='local'?'Share again':'Share to the recipe book';b.disabled=!LP.linked;b.title=LP.linked?'':'Link the shared library in Setup first';
+if(st.state&&st.state!='local')$('rinfo').textContent='Recipe book: '+(SHARE_WORDS[st.state]||st.state)+(st.note?': '+st.note:'')}
+async function shareRecipe(){if(!R)return;const r=await post('/api/recipes/share?id='+R);if(done(r,'Queued for the recipe book')){LP=null;setTimeout(drawRecipeShare,1500)}}
 function drawCommunityCoffees(){const el=$('cmlist');if(!el)return;const q=($('cmq').value||'').toLowerCase(),have=new Set((L?L.coffees:[]).map(c=>c.libraryId).filter(x=>x));
 const hit=CC.filter(c=>!q||[c.name,c.roaster,c.origin,c.region,c.process,c.varietal].join(' ').toLowerCase().includes(q));
 $('cmcount').textContent=CC.length?CC.length+' coffee'+(CC.length==1?'':'s'):'';
-el.innerHTML=!CC.length?'<div class="empty">No coffees published in the shared library yet. When owners share coffees and a reviewer publishes them, they appear here, ready to add to your shelf.</div>':!hit.length?'<div class="empty">No shared coffee matches that.</div>':
+el.innerHTML=!CC.length?'<div class="empty">No coffees published yet. Published coffees appear here, ready to add to your shelf.</div>':!hit.length?'<div class="empty">No shared coffee matches that.</div>':
 hit.slice(0,40).map(c=>`<div class="pair" style="background:var(--combg);border-color:var(--comline)"><span class="what"><b>${esc(c.name)}</b> <span class="dim">${esc([c.roaster,c.origin,c.process].filter(x=>x).join(', '))}</span></span>${have.has(c.id)?'<span class="sm dim">on your shelf</span>':`<button onclick="adopt('${esc(c.id)}')">Add to my coffees</button>`}</div>`).join('')+(hit.length>40?'<div class="sm dim">and '+(hit.length-40)+' more: search to narrow it down.</div>':'')}
 async function drawReco(){const el=$('ireco');if(!el)return;let r;try{r=await get('/api/taste/recommend?drinker='+TPD)}catch(e){el.style.display='none';return}el.style.display='';
 $('irwho').textContent=TPD&&RT?drinkerName(TPD):'';
@@ -1285,7 +1322,7 @@ $('rbloom').textContent=bloom?'Bloom: the button is held for the hold time, then
 function drawRecipes(){$('rlist').innerHTML=L.recipes.map(r=>{const n=L.presets.filter(p=>p.recipeId==r.id).length;return `<button class="item ${r.id==R?'on':''}" onclick="R=${r.id};drawRecipes()"><b>${esc(r.name)}</b><span>${r.doseG} g in, ${r.targetWeightG} g out · ${n?n+(n==1?' entry':' entries')+' on the controller':'not on the controller'}</span></button>`}).join('');
 const r=recipe(R)||{name:'',doseG:18,useRatio:false,targetWeightG:36,ratio:2,targetTimeS:28,preinfusion:0,preinfusionHoldS:3,bloomPauseS:0,timeLimit:0,maxShotTimeS:50,baselineOffsetG:1.5};
 RF.forEach(k=>{$('r_'+k).value=k=='useRatio'?(r[k]?1:0):r[k]});recipeForm();
-$('rdup').style.display=$('rdel').style.display=R?'':'none';$('rused').style.display=R?'':'none';$('rinfo').textContent=R?'':'New recipe: not saved yet.';
+$('rdup').style.display=$('rdel').style.display=$('rshare').style.display=R?'':'none';drawRecipeShare();$('rused').style.display=R?'':'none';$('rinfo').textContent=R?'':'New recipe: not saved yet.';
 if(!R)return;const use=L.presets.map((p,i)=>({p,i})).filter(x=>x.p.recipeId==R);
 $('rtable').innerHTML='<tr><th class="l">Coffee</th><th>Grind '+U+'</th><th>Learned stop offset g</th><th class="l"></th></tr>'+(use.map(x=>{const c=coffee(x.p.coffeeId);
 return `<tr><td class="l"><b>${c?esc(c.name):'No coffee attached'}</b>${x.i==L.activePreset?' <span class="dim">in use now</span>':''}${x.p.hidden?' <span class="dim">bag finished</span>':''}</td><td>${fsn(x.p.grindUm)||'not set'}</td><td>${f2(x.p.stopOffsetG)}</td><td class="l"><a href="#" onclick="post('/api/offset/reset?recipe=${x.i}').then(loadLibrary);return false">reset offset</a> &nbsp; <a href="#" onclick="act('preset_delete',${x.i});return false">take off the controller</a></td></tr>`}).join('')||'<tr><td class="l dim" colspan="4">Not on the controller yet.</td></tr>');

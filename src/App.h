@@ -256,6 +256,17 @@ const char *communityTaste();   // index/taste.json as cached; good until the ne
 // The Community Hub (core/Links.h): index/links.json and index/trending.json as cached ("{}" if not yet).
 const char *communityLinks();
 const char *communityTrending();
+// The library's recipe book and the coffees and recipes waiting for review (cached index files).
+const char *communityRecipes();
+const char *libraryPending();
+// Recipes sent to the recipe book, this controller's reviews, and whether its reviews count.
+void readReviewState(void (*visit)(const bbw::RecipeShare *recipes, size_t recipeCount,
+                                   const char (*targets)[bbw::REVIEW_TARGET_LEN], const bool *approve,
+                                   size_t reviewCount, bool canReview, void *),
+                     void *context);
+bool shareRecipe(uint16_t recipeId);  // false: no library link
+// 0 queued; 1 not a valid target or note; 2 this controller's own; 3 cannot review yet; 4 no library.
+int reviewPending(const char *target, bool approve, const char *note);
 // The links this controller's owner suggested, with where each stands with the library.
 void readLinks(void (*visit)(const bbw::LinkSuggestion *links, size_t count, void *), void *context);
 // A new suggestion, sent for review at once. Its id; below 0: no room.

@@ -95,6 +95,27 @@ takes a grind per coffee. Its stop offset starts from what the recipe learned on
 An automatic power-off (the scale switched off, the schedule) waits up to 30 minutes for the power bot and is called off
 when the machine is used again (power event outcome "not switched off: the machine was in use again").
 
+`GET /api/start` says where a new controller's setup stands, for the web page's Getting started guide: `wifi`
+{`joined`, `connected`}, `scale` and `brew_bot` {`paired`, `connected`}, `power_bot` {`paired`}, `machine` {`maker`,
+`model`}, `grinder` {`model`, `set`, `range`}, `recipes`, `coffees_on_recipe`, and `shots` (any shot yet).
+
+Grind advice is sized by its confidence (setting `grindConfidence`, on unless turned off): how close the next shot
+landed after each followed change on this grinder. `GET /api/grind` adds `confidence` {`score` 0..1, `followed`,
+`rms_s`, `window` (± around the suggestion, grinder units), `scaled`, `on`}. Low confidence makes a change smaller with
+a wider window; high confidence allows the full correction past the usual largest step (up to 1.5 times it) with a
+tighter window. `GET /api/grind/accuracy` lists the changes advised, oldest first: `at`, `coffee_id`, `from`, `advised`,
+`next`, `followed`, `target_s`, `time_s`, `confidence` (percent, when recorded), with `score`, `followed`, `rms_s` and
+`tolerance_s` for now.
+
+The shared library's recipe book and owner review: `GET /api/community/recipes` is `index/recipes.json` as cached;
+`GET /api/library/pending` gives `index` (`index/pending.json`, the coffees and recipes waiting for review), `kid`
+(this controller's key id: its own items are not for it to review), `can_review` (the library has published something
+it sent), `mine` [{`target`, `approve`}], `linked`, `sharing`, and `recipes` [{`id`, `state`, `note`, `library_id`}]
+(where each recipe it shared stands). `POST /api/library/review` {`target`, `verdict`: approve|decline, `note`
+(needed to decline)} sends a signed review; 409 for its own item or before it may review.
+`POST /api/recipes/share?id=N` sends a recipe to the recipe book. Two approvals from owners whose controllers have
+something published, and no decline, publish an item; a decline holds it for a person.
+
 `GET /api/community` adds `range_guess` {`setting`, `range`} when the grinder has a range and says what it covers: a first
 guess for espresso (a fifth of the way up an espresso-to-filter range, the middle of an espresso-only one, ± a sixth of
 the span), for when no shots, community figure or similar coffee give one.
