@@ -210,6 +210,9 @@ GrindRecommendation grindRecommendation();  // loop task only
 // The owner's answer: use it (the pair's setting becomes the recommendation) or keep the setting.
 // Either way it is not offered again for this coffee, recipe and bag.
 void answerGrindRecommendation(bool use);
+// The setting the newest shot of the active coffee and recipe was pulled at, on the grinder as it is
+// calibrated now; 0 if none. For a pair whose setting is missing (loop task only).
+uint16_t lastGrindSetting();
 const char *grindRecSourceName(GrindRecSource source);
 // The library's list of coffees as last read (JSON text); "" if never read.
 const char *communityCoffees();

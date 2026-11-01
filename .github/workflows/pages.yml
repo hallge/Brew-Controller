@@ -1,7 +1,9 @@
 name: Web flasher
 
 # Publishes flasher/ to GitHub Pages (https://hallge.github.io/Brew-Controller/) with a release's
-# factory.bin beside it, so the browser loads the image from the same origin.
+# factory.bin beside it, so the browser loads the image from the same origin. The installer writes it
+# as two parts, boot.bin (0x0: bootloader, partition table) and app.bin (0xe000: boot record, app),
+# so the settings partition between them (nvs, 0x9000-0xdfff) is kept unless Erase is ticked.
 #
 # release.yml starts this after it publishes a release. It cannot rely on the `release:
 # published` event: a release made with the workflow's own token starts no other workflow. It
@@ -52,6 +54,13 @@ jobs:
           mkdir _site
           cp flasher/index.html _site/
           cp dl/factory.bin _site/
+          python3 - <<'EOF'
+          d = open("dl/factory.bin", "rb").read()
+          NVS, NVS_END = 0x9000, 0xE000  # partitions.csv: nvs, then otadata at 0xe000
+          assert len(d) > NVS_END and d[NVS:NVS_END] == b"\xff" * (NVS_END - NVS), "factory.bin layout changed"
+          open("_site/boot.bin", "wb").write(d[:NVS])
+          open("_site/app.bin", "wb").write(d[NVS_END:])
+          EOF
           python3 - <<'EOF'
           import json, os
           m = json.load(open("flasher/manifest.json"))

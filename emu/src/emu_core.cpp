@@ -371,6 +371,15 @@ bool LittleFSClass::rename(const char *from, const char *to) {
   return !error;
 }
 
+void LittleFSClass::list(void (*visit)(const char *path, size_t size, void *context), void *context) {
+  std::error_code error;
+  for (const auto &entry : fs::directory_iterator(emu::g_options.dataDir + "/fs", error)) {
+    if (!entry.is_regular_file(error)) continue;
+    const std::string path = "/" + entry.path().filename().string();
+    visit(path.c_str(), static_cast<size_t>(entry.file_size(error)), context);
+  }
+}
+
 size_t LittleFSClass::usedBytes() {
   std::error_code error;
   size_t used = 0;

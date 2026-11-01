@@ -112,6 +112,20 @@ class FlashTests(unittest.TestCase):
         self.assertEqual(a[a.index("--chip") + 1], "esp32s3")
         self.assertNotIn("--erase-all", flash.esptool_args("COM7", "f.bin", 921600, False))
 
+    def test_parts_skip_the_settings_partition(self):
+        image = b"\xe9" + b"b" * (0x9000 - 1) + b"\xff" * 0x5000 + b"\xe9app" * 100
+        parts = flash.split_image(image)
+        self.assertEqual([o for o, _ in parts], [0x0, 0xE000])
+        self.assertEqual(parts[0][1], image[:0x9000])
+        self.assertEqual(parts[1][1], image[0xE000:])
+        a = flash.esptool_args("COM7", [(0x0, "a.bin"), (0xE000, "b.bin")], 921600, False)
+        self.assertEqual(a[-4:], ["0x0", "a.bin", "0xe000", "b.bin"])
+
+    def test_image_with_data_in_the_settings_gap_is_refused(self):
+        image = b"\xe9" + b"x" * 0x10000
+        with self.assertRaises(flash.FlashError):
+            flash.split_image(image)
+
     def test_falls_back_to_115200(self):
         calls = []
 

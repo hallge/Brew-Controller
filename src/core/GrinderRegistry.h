@@ -19,6 +19,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 namespace bbw {
 
@@ -64,6 +65,15 @@ constexpr size_t GRINDER_MODEL_COUNT = sizeof(GRINDER_MODELS) / sizeof(GRINDER_M
 inline const GrinderModel *findGrinderModel(uint16_t id) {
   for (size_t i = 0; i < GRINDER_MODEL_COUNT; ++i) {
     if (GRINDER_MODELS[i].id == id) return &GRINDER_MODELS[i];
+  }
+  return nullptr;
+}
+
+// The built-in model a shared library entry is, if any (its libraryId).
+inline const GrinderModel *findGrinderModelByLibraryId(const char *libraryId) {
+  if (!libraryId || !libraryId[0]) return nullptr;
+  for (size_t i = 0; i < GRINDER_MODEL_COUNT; ++i) {
+    if (strcmp(GRINDER_MODELS[i].libraryId, libraryId) == 0) return &GRINDER_MODELS[i];
   }
   return nullptr;
 }

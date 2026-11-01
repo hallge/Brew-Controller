@@ -82,7 +82,7 @@ void serveConnection(SOCKET s, std::function<void(const HttpRequest &, HttpRespo
       const size_t at = lower.find("content-length:");
       if (at != std::string::npos) contentLength = strtoul(lower.c_str() + at + 15, nullptr, 10);
     }
-    if (contentLength > (4u << 20)) { closesocket(s); return; }
+    if (contentLength > (24u << 20)) { closesocket(s); return; }  // a backup with its history
     while (buffer.size() < headerEnd + 4 + contentLength) {
       const int n = recv(s, chunk, sizeof(chunk), 0);
       if (n <= 0) { closesocket(s); return; }

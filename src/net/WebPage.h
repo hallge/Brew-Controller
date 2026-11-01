@@ -253,7 +253,8 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <div class="row" id="pchips"></div><div class="sm dim" id="pinfo"></div></section>
 <div class="hstk"><section class="card tight"><div class="head"><div class="row"><h2>Grinder</h2><span><span class="num" id="hg">--</span> <span class="dim un">&micro;m</span></span><span class="pill" id="hgadv"></span></div><a class="sm" href="#grinder">Details</a></div>
 <div class="sm mid"><span id="hgwhy"></span> <span class="dim" id="hgage"></span></div>
-<div id="hgrec" class="row" style="display:none;border-top:1px solid var(--line);padding-top:10px;margin-top:8px"><span class="sm" id="hgrect" style="flex:1 1 220px"></span><button class="pri" id="hgrecu" onclick="answerRec(1)">Use</button><button id="hgreck" onclick="answerRec(0)">Keep</button></div></section>
+<div id="hgrec" class="row" style="display:none;border-top:1px solid var(--line);padding-top:10px;margin-top:8px"><span class="sm" id="hgrect" style="flex:1 1 220px"></span><button class="pri" id="hgrecu" onclick="answerRec(1)">Use</button><button id="hgreck" onclick="answerRec(0)">Keep</button></div>
+<div id="hgset" class="row" style="display:none;border-top:1px solid var(--line);padding-top:10px;margin-top:8px"><span class="sm" id="hgsett" style="flex:1 1 220px"></span><button class="pri" id="hgsetu">Set</button><a class="sm" href="#grinder">Grinder page</a></div></section>
 <section class="card tight"><div class="head"><h2>Previous grinder recommendation</h2><a class="sm" href="#shots">All shots</a></div>
 <div id="hprev" class="sm mid"><span class="dim">No shot yet.</span></div></section></div>
 </div>
@@ -568,6 +569,15 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <label>SwitchBot password (only if set in its app)<input id="botPassword" type="password"></label></div>
 <label class="chk"><input type="checkbox" id="webStartEnabled">Allow Start from this page</label>
 <div class="row"><button class="pri" data-save onclick="saveNet()">Save and restart</button></div></section>
+<section class="card" id="bkcard"><h2>Backup and restore</h2>
+<div class="sm mid">One file with this controller's settings, coffees, recipes, pairing and shots. Download one before you reflash it.</div>
+<label class="chk"><input type="checkbox" id="bk_hist" checked>Include the shot history</label>
+<label class="chk"><input type="checkbox" id="bk_sec">Include the Wi-Fi and bot passwords, the library token and the signing key <span class="dim">(keep that file private)</span></label>
+<div class="row"><button class="pri" onclick="bkDownload()">Download backup</button></div>
+<h2 style="margin-top:10px">Restore</h2>
+<div class="row"><input type="file" id="bk_file" accept=".bbwbak" aria-label="Backup file" style="flex:1 1 220px"><button onclick="bkRestore()">Restore this file</button></div>
+<div id="bk_msg" class="sm mid"></div>
+<details class="note"><summary>What a restore replaces</summary><ul><li>The settings, coffees, recipes, grinder and pairing, then the controller restarts.</li><li>The shot history too, when the backup has it. Without it, the shots here stay.</li><li>A backup without passwords keeps the ones this controller has now.</li><li>A backup without the signing key keeps this controller's key. If the keys differ, sharing starts over under this one.</li></ul></details></section>
 <section class="card"><h2>Firmware</h2><div id="fw" class="mid"></div>
 <div class="scroll"><table id="fwslots"></table></div>
 <h2 style="margin-top:10px">From GitHub</h2><div id="fwgh" class="mid"></div>
@@ -787,6 +797,17 @@ function fwCheck(){post('/api/update/check').then(r=>{done(r,'Asking GitHub');se
 async function fwInstall(){if(!FW||!FW.latest)return;if(!await ask('Download and install '+FW.latest.tag+'?\n\nThe controller restarts into it when it is done. If it does not run properly in its first 45 seconds, the controller goes back to '+FW.version+' by itself.'))return;post('/api/update/install').then(r=>{done(r,'Downloading '+FW.latest.tag);setTimeout(loadFirmware,800)})}
 function fwSaveCfg(){post('/api/update/config',{repo:$('fwrepo').value.trim(),token:$('fwtok').value.trim(),auto_check:$('fwauto').checked}).then(r=>{done(r,'Saved');$('fwtok').value='';loadFirmware()})}
 async function fwBoot(slot){const t=slot=='factory'?'Restart into the safe (factory) version?\n\nThat is the firmware flashed over USB. Updates can be installed again from there.':'Restart into the version before this one?';if(!await ask(t))return;post('/api/update/boot?slot='+slot).then(r=>{done(r,r.message||'Restarting');if(r.ok)setTimeout(()=>location.reload(),20000)})}
+// Backup and restore (storage/Backup.h): the file is checked before anything is replaced.
+function bkDownload(){location.href='/api/backup?history='+($('bk_hist').checked?1:0)+'&secrets='+($('bk_sec').checked?1:0)}
+async function bkRestore(){const f=$('bk_file').files[0],m=$('bk_msg');if(!f)return say('Choose a backup file first',false);
+m.textContent='Sending '+Math.max(1,Math.round(f.size/1024))+' kB\u2026';const fd=new FormData();fd.append('file',f,f.name);let r=null;
+try{r=await(await fetch('/api/restore',{method:'POST',body:fd})).json()}catch(e){}
+if(!r||r.ok===false){m.textContent='';return say(r&&r.error?'Not restored: '+r.error:'The upload did not finish',false)}
+const when=r.created?new Date(r.created*1000).toLocaleString():'an unknown date';
+m.textContent='Backup from '+when+' ('+(r.firmware||'?')+'): '+r.records+' settings records and '+r.files+' files'+(r.history?', with the shot history':'')+(r.secrets?', with passwords and the key':'')+'.';
+if(!await ask('Replace everything on this controller with the backup from '+when+'? It restarts afterwards.'))return;
+let a=null;try{a=await(await fetch('/api/restore/apply',{method:'POST'})).json()}catch(e){}  // no answer: it is already restarting
+if(a&&a.ok===false){m.textContent='';return say('Not restored: '+a.error,false)}m.textContent='Restored. The controller is restarting: this page reloads in 20 s.';setTimeout(()=>location.reload(),20000)}
 async function uploadFirmware(){const f=$('fwfile').files[0];if(!f)return say('Choose firmware.bin first',false);if(!/\.bin$/i.test(f.name)||f.size<200000||f.size>6291456)return say('That does not look like a firmware.bin',false);if(!await ask('Install '+f.name+' ('+Math.round(f.size/1024)+' kB) and restart the controller?'))return;
 const x=new XMLHttpRequest(),d=new FormData();d.append('firmware',f,f.name);x.upload.onprogress=e=>{if(e.lengthComputable)$('fwprog').textContent='Sending: '+Math.round(e.loaded/e.total*100)+' %'};
 x.onload=()=>{let r={};try{r=JSON.parse(x.responseText)}catch(e){}if(r.ok){$('fwprog').textContent='Installed. The controller is restarting; this page reloads in 20 seconds.';setTimeout(()=>location.reload(),20000)}else $('fwprog').textContent='Not installed: '+(r.error||'the controller refused the file')};
@@ -1333,7 +1354,11 @@ function dupRecipe(){const b=readRecipe();b.id=0;b.name=(b.name+' 2').slice(0,23
 async function delRecipe(){const r=recipe(R);if(!r||!await ask('Delete the recipe "'+r.name+'"?'))return;act('recipe_delete',R).then(()=>{R=-1;loadLibrary()})}
 
 // A coffee or bag just put in use: a grind recommendation to use or not (asked once, here and on the controller).
-function drawRec(){const r=G&&G.recommendation,box=$('hgrec');if(!box)return;if(!r){box.style.display='none';return}
+// The pair in use has no grind setting at all: asked for before the shot, here and on the controller.
+function drawNoGrind(){const box=$('hgset');if(!box)return;if(!G||G.current_um||G.recommendation){box.style.display='none';return}
+const last=G.last_um||0;$('hgsett').innerHTML='<b>No grind setting for '+esc(G.coffee||'this recipe')+'.</b> Set it before you brew, so the shot counts for grind advice.'+(last?' The last shot was at '+esc(fs(last))+'.':'');
+const u=$('hgsetu');if(last){u.textContent='Set '+fs(last);u.onclick=()=>setGrind(last)}else{u.textContent='Set it';u.onclick=()=>{location.hash='#grinder';setTimeout(()=>$('gset')&&$('gset').focus(),300)}}box.style.display=''}
+function drawRec(){drawNoGrind();const r=G&&G.recommendation,box=$('hgrec');if(!box)return;if(!r){box.style.display='none';return}
 const why=r.source=='community'?'from the community ('+r.people+' '+(r.people==1?'person':'people')+')':r.source=='similar'?'from your similar coffee '+r.from:'a first guess from your grinder\'s range';
 $('hgrect').innerHTML='<b>New grind recommendation for '+esc(G.coffee||'this bag')+':</b> change the grinder to '+esc(fs(r.setting))+' (\u00b1 '+fdn(r.range)+'), '+esc(why)+'. '+(r.current?'It is at '+esc(fs(r.current))+' now.':'No setting yet.')+' Grind advice takes over from the first shot.';
 $('hgrecu').textContent='Use '+fs(r.setting);$('hgreck').textContent=r.current?'Keep '+fs(r.current):'Not now';box.style.display=''}
@@ -1442,7 +1467,7 @@ post('/api/grinder',b).then(r=>{done(r,'Grinder saved');loadLibrary()})}
 function switchGrinder(){act('grinder_switch').then(()=>say('Now using '+L.grinder.model))}
 async function removeOther(){if(await ask('Remove '+L.otherGrinder.model+'? Its settings for each coffee go with it; its shots stay in the history.'))act('grinder_remove_other')}
 function sendGrinder(id){post('/api/share/grinder?id='+id).then(r=>{done(r,'Queued for the shared library');loadLibrary();loadShare()})}
-function setGrind(um){if(um==null||!(um>=1&&um<=2000))return say('That is not a setting this grinder can have'+((GRD.subSteps||0)>=2?' (outer ring : inner ring, for example 12:3)':(GRD.divisor||1)>1?' (a number such as 3.5)':' (a whole number)'));post('/api/grind/set?um='+Math.round(um)).then(r=>{done(r,'Grind setting saved');$('gset').value='';loadLibrary()})}
+function setGrind(um){if(um==null||!(um>=1&&um<=2000))return say('That is not a setting this grinder can have'+((GRD.subSteps||0)>=2?' (outer ring : inner ring, for example 12:3)':(GRD.divisor||1)>1?' (a number such as 3.5)':' (a whole number)'));post('/api/grind/set?um='+Math.round(um)).then(r=>{done(r,'Grind setting saved');$('gset').value='';loadLibrary();loadGrind()})}
 // Both grinder charts show every coffee and recipe brewed on this grinder, each coffee in its own colour;
 // the one being brewed now is orange and drawn on top. The legend under each chart names them. The
 // green band is the target of the recipe being brewed now.

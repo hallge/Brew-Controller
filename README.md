@@ -104,8 +104,9 @@ A new board needs the firmware put on it once over USB. After that it updates it
 (Setup, Firmware; see [Firmware updates](#firmware-updates)). Pick one of three ways.
 
 **1. In the browser (easiest).** Open **<https://hallge.github.io/Brew-Controller/>** in Chrome or
-Edge on a computer, plug the board in by USB-C, click Install and pick the board. Erase it when
-asked. If the board is not in the list, unplug it, hold BOOT while plugging it back in, and try
+Edge on a computer, plug the board in by USB-C, click Install and pick the board. Erase a new board
+when asked; on a controller already in use leave Erase unticked (see
+[Backup, restore and reflashing](#backup-restore-and-reflashing)). If the board is not in the list, unplug it, hold BOOT while plugging it back in, and try
 again.
 
 **2. Windows program.** Download `BrewController-Flasher.exe` from the
@@ -120,6 +121,25 @@ continue with [First run](#4-first-run).
 
 Both use `factory.bin` from the release: bootloader, partition table and app in one image,
 written at 0x0, with the app in the factory slot (0x10000), the version kept as the safe one.
+Without an erase they write it as two parts, around the settings partition (0x9000 to 0xDFFF),
+so nothing stored is touched.
+
+#### Backup, restore and reflashing
+
+What a controller keeps lives in two places: NVS (settings, Wi-Fi, bot pairing, machine,
+maintenance, the signing key) and the file system (coffees, recipes, grinder, shots, ratings).
+
+- **Reflashing without an erase** (the web installer or the Windows program, Erase unticked) keeps
+  both. A whole `factory.bin` written with esptool clears NVS. The controller keeps a copy of its
+  NVS records on the file system (`/nvs.bin`) and puts them back at start-up when NVS comes up
+  empty, so even then the settings, Wi-Fi, pairing and key return.
+- **Erasing** clears both: restore from a backup afterwards.
+- **Backup:** Setup, Backup and restore, Download backup. The shot history is included unless
+  unticked. Passwords, the library token and the signing key are included only when ticked; keep
+  that file private. Without the key, a controller restored from the file keeps its own key, and
+  if that differs from the backup's, sharing starts over under it.
+- **Restore:** choose the file on the same card. It is checked first and then replaces what is on
+  the controller, which restarts. A backup restores onto the same firmware or a newer one.
 
 **3. Build it yourself with PlatformIO.** Arduino-ESP32 2.0.x, NimBLE-Arduino 1.4.3, LVGL 8.4.
 

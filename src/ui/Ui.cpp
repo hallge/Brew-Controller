@@ -864,8 +864,32 @@ void buildResult() {
 
 // A new coffee or bag: a grind recommendation to use or not (app::grindRecommendation).
 lv_obj_t *recTitle, *recSetting, *recWhy, *recUseBtn, *recUseLabel, *recKeepLabel;
-void onRecUse(lv_event_t *) { app::answerGrindRecommendation(true); }
-void onRecKeep(lv_event_t *) { app::answerGrindRecommendation(false); }
+// The same panel also asks for a setting when the pair in use has none (refreshNoGrind): SET opens
+// the grind on the edit screen, NOT NOW leaves it until the screen next wakes or the pair changes.
+bool recNoGrind = false;
+uint16_t noGrindStart = 0;       // where SET starts the edit screen; 0 = nothing known
+uint32_t noGrindDismissed = 0;   // the pair NOT NOW was pressed for; cleared on wake
+uint32_t noGrindKey() {
+  const bbw::Recipe r = app::activeRecipe();
+  return (static_cast<uint32_t>(r.coffeeId) << 16) ^ r.recipeId ^ (static_cast<uint32_t>(app::activePreset()) << 8) ^ 1u;
+}
+void onRecUse(lv_event_t *) {
+  if (!recNoGrind) {
+    app::answerGrindRecommendation(true);
+    return;
+  }
+  editRecipe = app::activeRecipe();
+  if (!editRecipe.grindUm && noGrindStart) editRecipe.grindUm = noGrindStart;
+  editField = EDIT_FIELD_GRIND;
+  editOpen = true;
+}
+void onRecKeep(lv_event_t *) {
+  if (!recNoGrind) {
+    app::answerGrindRecommendation(false);
+    return;
+  }
+  noGrindDismissed = noGrindKey();
+}
 void buildGrindRec() {
   lv_obj_t *p = panels[static_cast<int>(Panel::GRINDREC)] = makePanel();
   recTitle = makeLabel(p, &lv_font_montserrat_22, COLOR_ACCENT, LV_ALIGN_TOP_LEFT, 16, 10,
@@ -1307,10 +1331,46 @@ void refreshCoffee() {
   show(Panel::COFFEE);
 }
 
+// The pair in use has no grind setting: ask for one before the shot, so that it counts for grind
+// advice. false when it has one, or NOT NOW was pressed since the screen last woke.
+bool refreshNoGrind() {
+  const bbw::Recipe active = app::activeRecipe();
+  if (active.grindUm != 0 || noGrindDismissed == noGrindKey()) return false;
+  recNoGrind = true;
+  const uint16_t last = app::lastGrindSetting();
+  const uint16_t guess = last ? 0 : bbw::grinderFirstGuess(app::grinder()).setting;
+  noGrindStart = last ? last : guess;
+  const char *unit = grindUnit();
+  setText(recTitle, "SET THE GRIND");
+  char text[96], why[200];
+  if (noGrindStart) snprintf(text, sizeof(text), "%s %s", gs(noGrindStart), unit);
+  else snprintf(text, sizeof(text), "Not set");
+  setText(recSetting, text);
+  const char *coffee = active.coffee[0] ? active.coffee : "This recipe";
+  if (last) {
+    snprintf(why, sizeof(why), "%s: no grind setting. The last shot was at %s %s. Set it before you brew.",
+             coffee, gs(last), unit);
+  } else if (guess) {
+    snprintf(why, sizeof(why), "%s: no grind setting. A first guess from the grinder's range. Set it before you brew.",
+             coffee);
+  } else {
+    snprintf(why, sizeof(why), "%s: no grind setting. Set it before you brew.", coffee);
+  }
+  setText(recWhy, why);
+  if (noGrindStart) snprintf(text, sizeof(text), "SET\n%s", gs(noGrindStart));
+  else snprintf(text, sizeof(text), "SET");
+  setText(recUseLabel, text);
+  setText(recKeepLabel, "NOT NOW");
+  show(Panel::GRINDREC);
+  return true;
+}
+
 // The grind recommendation for a coffee or bag just put in use; false when there is none to ask about.
 bool refreshGrindRec() {
   const app::GrindRecommendation r = app::grindRecommendation();
   if (!r.setting) return false;
+  recNoGrind = false;
+  setText(recTitle, "NEW GRIND ADVICE");
   const char *unit = grindUnit();
   char text[96], now[16];
   snprintf(text, sizeof(text), "%s %s", gs(r.setting), unit);
@@ -1805,6 +1865,7 @@ void setStandby(bool on) {
   } else {
     setCpuFrequencyMhz(CPU_ACTIVE_MHZ);
     amoled.setBrightness(BRIGHT_ACTIVE);
+    noGrindDismissed = 0;  // a missing grind setting is asked for again at each wake
     LOGI("ui: awake");
   }
 }
@@ -1884,6 +1945,8 @@ void refresh() {
   // A coffee or bag just put in use, with a grind to recommend: asked before anything else on the
   // home screen, once (use it, or keep the setting).
   if (st.state == State::READY && refreshGrindRec()) return;
+  // No setting at all for the pair in use: asked for before the shot (it shows on the result too).
+  if (st.state == State::READY && refreshNoGrind()) return;
 
   switch (st.state) {
     case State::BOOT:

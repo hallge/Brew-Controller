@@ -27,6 +27,7 @@
 #include "platform/FirmwareUpdate.h"
 #include "platform/FsUtil.h"
 #include "platform/LibraryLink.h"
+#include "storage/Backup.h"
 #include "ui/Ui.h"
 
 using bbw::State;
@@ -1131,6 +1132,12 @@ void handleSaveGrinder() {
   char file[bbw::LIBRARY_ID_LEN * 2];
   strlcpy(libraryId, doc["libraryId"] | "", sizeof(libraryId));
   if (libraryId[0] && !bbw::libraryIdToFile(libraryId, file, sizeof(file))) libraryId[0] = '\0';
+  // A library entry that is one of the built-in models is that model (its range, burrs and unit).
+  if (grinder.modelId == 0) {
+    if (const bbw::GrinderModel *m = bbw::findGrinderModelByLibraryId(libraryId)) {
+      if (strcmp(grinder.unit, m->unit) == 0) grinder.modelId = m->id;
+    }
+  }
   if (!bbw::findGrinderModel(grinder.modelId) && !grinder.model[0]) {
     return sendError(400, "pick a model, or type its name");
   }
@@ -1379,6 +1386,8 @@ void handleGrind() {
     c["scaled"] = a.confidenceScaled;
     c["on"] = !s.grindConfidenceOff;
   }
+  // No setting for the pair in use: where its newest shot was pulled (a start for the owner).
+  if (a.currentUm == 0) doc["last_um"] = app::lastGrindSetting();
   // A grind to start this coffee or bag from, offered once (app::grindRecommendation).
   const app::GrindRecommendation rec = app::grindRecommendation();
   if (rec.setting) {
@@ -2998,6 +3007,129 @@ void handleUpdateDone() {
 #endif
 }
 
+// ---- Backup and restore (storage/Backup.h) ----
+
+// GET /api/backup?history=0|1&secrets=0|1: the whole controller in one file, streamed.
+uint8_t *g_backupChunk;  // PSRAM, BACKUP_CHUNK
+constexpr size_t BACKUP_CHUNK = 2048;
+size_t g_backupChunkUsed = 0;
+void backupFlush() {
+  if (g_backupChunkUsed) server.sendContent(reinterpret_cast<const char *>(g_backupChunk), g_backupChunkUsed);
+  g_backupChunkUsed = 0;
+}
+void handleBackup() {
+  if (busyBrewing()) return sendError(409, "not while a shot is running");
+  if (!g_backupChunk) g_backupChunk = bbw::bigArray<uint8_t>(BACKUP_CHUNK);
+  bbw::BackupOptions options;
+  options.history = server.arg("history") != "0";
+  options.secrets = server.arg("secrets") == "1";
+  options.epochS = app::epochNow();
+  char line[96];
+  snprintf(line, sizeof(line), "attachment; filename=\"brewcontroller-%08u%s.bbwbak\"",
+           static_cast<unsigned>(bbw::dateFromEpoch(options.epochS)), options.secrets ? "-private" : "");
+  server.sendHeader("Content-Disposition", line);
+  server.sendHeader("Cache-Control", "no-store");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "application/octet-stream", "");
+  g_backupChunkUsed = 0;
+  const size_t bytes = bbw::writeBackup(options, [](const uint8_t *data, size_t length, void *) {
+    while (length > 0) {
+      const size_t room = BACKUP_CHUNK - g_backupChunkUsed;
+      const size_t take = length < room ? length : room;
+      memcpy(g_backupChunk + g_backupChunkUsed, data, take);
+      g_backupChunkUsed += take;
+      data += take;
+      length -= take;
+      if (g_backupChunkUsed == BACKUP_CHUNK) backupFlush();
+    }
+  }, nullptr);
+  backupFlush();
+  server.sendContent("");
+  LOGI("backup: %u bytes sent (history %s, secrets %s)", static_cast<unsigned>(bytes),
+       options.history ? "in" : "out", options.secrets ? "in" : "out");
+}
+
+// POST /api/restore (the file as a multipart upload): kept as RESTORE_PATH and checked; nothing on
+// the controller changes until POST /api/restore/apply.
+char g_restoreError[96];
+File g_restoreFile;
+void restoreFail(const char *why) {
+  if (!g_restoreError[0]) strlcpy(g_restoreError, why, sizeof(g_restoreError));
+}
+#ifndef BBW_EMULATOR
+void handleRestoreUpload() {
+  HTTPUpload &upload = server.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    g_restoreError[0] = '\0';
+    if (busyBrewing()) return restoreFail("not while a shot is running");
+    g_restoreFile = LittleFS.open(bbw::RESTORE_PATH, "w");
+    if (!g_restoreFile) restoreFail("the file system cannot take the file");
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (g_restoreError[0] || !g_restoreFile) return;
+    if (g_restoreFile.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      restoreFail("not enough room on the controller for the backup: try one without the shot history");
+    }
+  } else if (upload.status == UPLOAD_FILE_END || upload.status == UPLOAD_FILE_ABORTED) {
+    if (g_restoreFile) g_restoreFile.close();
+    if (upload.status == UPLOAD_FILE_ABORTED) restoreFail("the upload was interrupted");
+  }
+}
+#else
+// The emulator's server has no uploads: the multipart body arrives whole; its one file is taken out.
+void emuRestoreBody() {
+  g_restoreError[0] = '\0';
+  const String plain = server.arg("plain");  // kept: body refers into it
+  const std::string &body = plain.std();
+  const size_t start = body.find("\r\n\r\n");
+  const size_t lineEnd = body.find("\r\n");
+  if (start == std::string::npos || lineEnd == std::string::npos) return restoreFail("no backup file was received");
+  const std::string boundary = "\r\n" + body.substr(0, lineEnd);
+  const size_t end = body.find(boundary, start + 4);
+  if (end == std::string::npos) return restoreFail("no backup file was received");
+  File f = LittleFS.open(bbw::RESTORE_PATH, "w");
+  if (!f) return restoreFail("the file system cannot take the file");
+  f.write(reinterpret_cast<const uint8_t *>(body.data() + start + 4), end - start - 4);
+  f.close();
+}
+#endif
+
+void handleRestoreDone() {
+#ifdef BBW_EMULATOR
+  emuRestoreBody();
+#endif
+  if (g_restoreError[0]) {
+    bbw::discardRestore();
+    return sendError(400, g_restoreError);
+  }
+  const bbw::RestoreSummary s = bbw::checkRestore();
+  if (!s.ok) {
+    bbw::discardRestore();
+    return sendError(400, s.problem);
+  }
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["created"] = s.createdEpochS;
+  doc["firmware"] = s.firmware;
+  doc["key_id"] = s.keyId;
+  doc["history"] = s.history;
+  doc["secrets"] = s.secrets;
+  doc["records"] = s.records;
+  doc["files"] = s.files;
+  doc["bytes"] = s.bytes;
+  sendJson(doc);
+}
+
+// POST /api/restore/apply: everything in the checked file is written back, then a restart.
+void handleRestoreApply() {
+  if (busyBrewing()) return sendError(409, "not while a shot is running");
+  const char *problem = bbw::applyRestore();
+  if (problem && strncmp(problem, "restored", 8) != 0) return sendError(409, problem);
+  sendOk();
+  // At once, from here: the loop must not save what is in memory over what was just restored.
+  delay(300);
+  app::restartSoon();
+}
+
 // POST /api/update/check | /api/update/install | /api/update/boot?slot=factory|previous
 void handleUpdateCheck() {
   if (!bbw::updateCheck()) return sendError(409, "an update check or install is already running");
@@ -3362,9 +3494,13 @@ void begin() {
   server.on("/api/update/config", HTTP_POST, handleUpdateConfig);
 #ifdef BBW_EMULATOR
   server.on("/api/update", HTTP_POST, handleUpdateDone);
+  server.on("/api/restore", HTTP_POST, handleRestoreDone);
 #else
   server.on("/api/update", HTTP_POST, handleUpdateDone, handleUpdateUpload);
+  server.on("/api/restore", HTTP_POST, handleRestoreDone, handleRestoreUpload);
 #endif
+  server.on("/api/backup", HTTP_GET, handleBackup);
+  server.on("/api/restore/apply", HTTP_POST, handleRestoreApply);
   server.onNotFound([]() { sendError(404, "not found"); });
   server.begin();
   LOGI("web: access point %s, http://192.168.4.1", apSsid);

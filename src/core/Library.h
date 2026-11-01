@@ -675,9 +675,13 @@ inline void setGrinder(Library &lib, Grinder in, bool rezeroed) {
     return builtin ? builtin->libraryId : "";
   };
   const char *inEntry = entryOf(in), *wasEntry = entryOf(was);
-  const bool otherModel = inEntry[0] || wasEntry[0] ? strcmp(inEntry, wasEntry) != 0
-                                                    : in.modelId != was.modelId ||
-                                                          (in.modelId == 0 && strcmp(in.model, was.model) != 0);
+  // The same name, read the same way, is the same grinder whichever list it was picked from (the
+  // built-in models or the shared library's): picking it again must not clear the settings.
+  const bool sameGrinder = in.model[0] && strcmp(in.model, was.model) == 0 && !unitChanged;
+  const bool otherModel = !sameGrinder &&
+                          (inEntry[0] || wasEntry[0] ? strcmp(inEntry, wasEntry) != 0
+                                                     : in.modelId != was.modelId ||
+                                                           (in.modelId == 0 && strcmp(in.model, was.model) != 0));
   if (!firstNaming && (unitChanged || otherModel)) {
     for (uint8_t i = 0; i < lib.presetCount; ++i) lib.presets[i].grindUm = 0;
   }

@@ -58,6 +58,9 @@ described; the rest are as the page uses them.
 | `/api/update/boot` | POST | `?slot=factory` (the safe version flashed over USB) or `?slot=previous` (the other update slot): start from it at the restart that follows |
 | `/api/update/config` | POST | `{"repo":"owner/name","token":"...","auto_check":true}`; the token (a private repository only) is write-only: blank keeps it, `-` forgets it |
 | `/api/update` | POST | install a `firmware.bin` uploaded as a form file (no internet needed) |
+| `/api/backup` | GET | the whole controller as one `.bbwbak` file (`src/core/BackupFormat.h`): every NVS record (settings, network, pairing, machine, maintenance...) and every file (library, ratings, links, shots...). `?history=0` leaves out the shot history; `?secrets=1` adds the Wi-Fi and bot passwords, the library token and the signing key (otherwise blanked or left out). Not while a shot runs |
+| `/api/restore` | POST | upload a `.bbwbak` as a form file; it is checked (format, CRC) and kept, nothing changes yet. Answers `{created, firmware, key_id, history, secrets, records, files, bytes}` or a 400 with the reason |
+| `/api/restore/apply` | POST | write the checked backup back and restart at once. Records a backup without secrets lacks (passwords, token, key) keep this controller's own; a backup with the history replaces the history |
 | `/api/power/events?days=` | GET | the power presses the controller made (schedule, web page or screen) in the last `days` days (default 30, at most 400), oldest first: `t` (epoch seconds), `on` (switching on or off), `by` (`schedule`, `owner`, or `scale`: the scale switched off with the setting `powerOffWithScale` on), `ok` (the press went out), `sure` (false: "press anyway" while on/off was not known), `outcome` (text). Presses made by hand on the machine are not seen. Kept for the last 500 presses. Capability `power_events_v1` |
 | `/api/coffee/ratings` | GET | coffee ratings, newest first: `id`, `coffee`, `bag`, `drinker` (0 household), `t` (epoch), `stars`, `attr` (acidity, sweetness, body, bitterness, finish: 0 not given, 1 to 5), `flavours` (a bit per family, in the order of `families`), `share`; with `named` and the 8 `drinkers` names. Capability `coffee_taste_v1` (docs/COFFEE-TASTE.md) |
 | `/api/coffee/rate` | POST | `{id?, coffee, bag, drinker, stars, attr:[5], flavours}`: a new rating, or a change to one; one per drinker per bag, a later one replaces it. Answers `{ok, id}` |
@@ -128,6 +131,7 @@ The base verdict is the Grind-by-Sync-style advice against the recipe's target t
 | --- | --- |
 | `action` | `no_grind_set`, `no_data`, `hold`, `finer`, `coarser`, `inconsistent`. A refinement shows as `finer` / `coarser` with `refined: true` |
 | `base_action` | what `action` would be without ratings; a dial-in counts as settled when this is `hold` |
+| `last_um` | only when the pair in use has no setting (`current_um` 0): the setting its newest shot on this grinder calibration was pulled at, 0 if none. The controller asks for a setting before the shot ("SET THE GRIND") and the Home page shows a banner |
 | `refined` | `action` is a refinement towards the shots the owner liked |
 | `rated_state` | `off`, `too_few`, `outside_band`, `base_moving`, `refining`, `on_liked` |
 | `rated_shots`, `rated_time_s`, `rated_band_s`, `aim_time_s` | liked shots (rated 4 or 5) found, their median time, the tighter range (+-), the time being aimed for (0 unless refining) |

@@ -32,6 +32,8 @@
 #include "core/SwitchBotProtocol.h"
 #include "core/TasteProfile.h"
 #include "core/Telemetry.h"
+#include "core/BackupFormat.h"
+#include <vector>
 
 using namespace bbw;
 
@@ -4918,8 +4920,114 @@ static void testOffsetRecipePrior() {
 }
 
 // The grinder's own range and what it covers: clamping, the first guess, kept burrs, records.
+static void testBackupFormat() {
+  printf("backup format: round trip, damage refused, names checked\n");
+  std::vector<uint8_t> file;
+  auto out = [&](const uint8_t *d, size_t n) { file.insert(file.end(), d, d + n); };
+  BackupWriter<decltype(out)> w(out);
+  BackupHeader h;
+  h.flags = BACKUP_HISTORY;
+  h.createdEpochS = 1793500000u;
+  strncpy(h.firmware, "v0.1.26", sizeof(h.firmware) - 1);
+  w.header(h);
+  const uint8_t cfg[5] = {8, 0, 1, 2, 3};
+  CHECK(w.entry(BACKUP_ENTRY_NVS, "cfg", cfg, sizeof(cfg)));
+  const char lib[] = "library bytes";
+  CHECK(w.entry(BACKUP_ENTRY_FILE, "/library.bin", lib, sizeof(lib)));
+  CHECK(w.entry(BACKUP_ENTRY_FILE, "/c17.bin", lib, 0));  // an empty file is kept
+  // Names it may not carry are refused, and nothing is written for them.
+  const size_t before = w.written;
+  CHECK(!w.entry(BACKUP_ENTRY_FILE, "/../x", lib, 1));
+  CHECK(!w.entry(BACKUP_ENTRY_FILE, "library.bin", lib, 1));
+  CHECK(!w.entry(BACKUP_ENTRY_FILE, "/sub/dir.bin", lib, 1));
+  CHECK(!w.entry(BACKUP_ENTRY_NVS, "Settings", lib, 1));
+  CHECK(!w.entry(BACKUP_ENTRY_NVS, "a_key_too_long_x", lib, 1));
+  CHECK(w.written == before);
+  w.finish();
+  CHECK(file.size() == w.written);
+
+  BackupMemory src(file.data(), file.size());
+  BackupHeader got;
+  CHECK(backupCheck(src, file.size(), got) == nullptr);
+  CHECK(got.flags == BACKUP_HISTORY && got.createdEpochS == 1793500000u && strcmp(got.firmware, "v0.1.26") == 0);
+  int seen = 0;
+  bool contentOk = true;
+  CHECK(backupEntries(src, file.size(), [&](uint8_t type, const char *name, uint32_t length, BackupMemory &in) {
+    uint8_t buffer[32] = {};
+    if (in.read(buffer, length) != length) contentOk = false;
+    if (seen == 0) contentOk &= type == BACKUP_ENTRY_NVS && strcmp(name, "cfg") == 0 && length == 5 && buffer[4] == 3;
+    if (seen == 1) contentOk &= type == BACKUP_ENTRY_FILE && strcmp(name, "/library.bin") == 0 && memcmp(buffer, lib, sizeof(lib)) == 0;
+    if (seen == 2) contentOk &= strcmp(name, "/c17.bin") == 0 && length == 0;
+    ++seen;
+    return true;
+  }));
+  CHECK(seen == 3 && contentOk);
+  // An entry the visitor does not read is skipped all the same.
+  int skipped = 0;
+  CHECK(backupEntries(src, file.size(), [&](uint8_t, const char *, uint32_t, BackupMemory &) { return ++skipped, true; }));
+  CHECK(skipped == 3);
+
+  // One byte changed anywhere: refused before anything is written.
+  for (size_t at : {size_t(10), sizeof(BackupHeader) + 3, file.size() - 12}) {
+    std::vector<uint8_t> bad = file;
+    bad[at] ^= 0x40;
+    BackupMemory b(bad.data(), bad.size());
+    BackupHeader x;
+    CHECK(backupCheck(b, bad.size(), x) != nullptr);
+  }
+  // Cut short, or not a backup at all.
+  {
+    BackupMemory b(file.data(), file.size() - 5);
+    BackupHeader x;
+    CHECK(backupCheck(b, file.size() - 5, x) != nullptr);
+    const uint8_t junk[80] = {1, 2, 3};
+    BackupMemory j(junk, sizeof(junk));
+    CHECK(backupCheck(j, sizeof(junk), x) != nullptr);
+  }
+  // A newer format is refused with its own reason (update first).
+  {
+    std::vector<uint8_t> newer;
+    auto o2 = [&](const uint8_t *d, size_t n) { newer.insert(newer.end(), d, d + n); };
+    BackupWriter<decltype(o2)> w2(o2);
+    BackupHeader n2;
+    n2.format = BACKUP_FORMAT + 1;
+    w2.header(n2);
+    w2.finish();
+    BackupMemory b(newer.data(), newer.size());
+    BackupHeader x;
+    const char *why = backupCheck(b, newer.size(), x);
+    CHECK(why && strstr(why, "newer"));
+  }
+}
+
 static void testGrinderSetup() {
   printf("grinder setup: own range, first guess, burrs kept, shared record\n");
+  // The board, 31 Oct 2026: the E64 WS picked again from the shared library's list (no model id,
+  // the same name and unit) with a range added cleared every coffee's grind. It is the same grinder.
+  {
+    Library lib = defaultLibrary();
+    Grinder e64;
+    e64.modelId = 1;
+    setGrinder(lib, e64, false);
+    lib.presets[0].grindUm = 96;
+    const uint16_t calBefore = lib.grinder.calibration;
+    Grinder picked;
+    copyText(picked.model, "Mahlkonig E64 WS", GRINDER_NAME_LEN);
+    copyText(picked.unit, "um", GRINDER_UNIT_LEN);
+    picked.umPerUnit = 1.0f;
+    picked.minStep = 1;
+    picked.maxStep = 1200;
+    picked.covers = COVERS_ESPRESSO_TO_FILTER;
+    setGrinder(lib, picked, false);
+    CHECK(lib.presets[0].grindUm == 96 && lib.grinder.calibration == calBefore);
+    // Another model, or another unit, still means the numbers so far mean nothing here.
+    Grinder other;
+    other.modelId = 5;  // Niche Zero
+    setGrinder(lib, other, false);
+    CHECK(lib.presets[0].grindUm == 0);
+    CHECK(findGrinderModelByLibraryId("mahlkonig-e64-ws") && findGrinderModelByLibraryId("mahlkonig-e64-ws")->id == 1);
+    CHECK(!findGrinderModelByLibraryId("") && !findGrinderModelByLibraryId("no-such-grinder"));
+  }
   // A built-in model brings its range; one typed in has its own.
   Library lib = defaultLibrary();
   Grinder sgp;
@@ -7957,6 +8065,7 @@ int main() {
   testShareWithdrawAndLinks();
   testGrindRange();
   testGrinderSetup();
+  testBackupFormat();
   testOffsetRecipePrior();
   testAdviceConfidence();
   testRecipeAndReviewRecords();

@@ -28,6 +28,7 @@ class WebServer {
   // Binary content (the extension zip): the real server's send_P with a length.
   void send_P(int code, const char *type, const char *body, size_t length);
   void sendContent(const char *chunk) { body_ += chunk; }
+  void sendContent(const char *chunk, size_t length) { body_.append(chunk, length); }
   void sendContent(const String &chunk) { body_ += chunk.std(); }
   String arg(const char *name);
   bool hasArg(const char *name);

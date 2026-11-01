@@ -5,7 +5,10 @@
   "builds": [
     {
       "chipFamily": "ESP32-S3",
-      "parts": [{ "path": "factory.bin", "offset": 0 }]
+      "parts": [
+        { "path": "boot.bin", "offset": 0 },
+        { "path": "app.bin", "offset": 57344 }
+      ]
     }
   ]
 }

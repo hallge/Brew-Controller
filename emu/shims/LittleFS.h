@@ -39,5 +39,7 @@ class LittleFSClass {
   bool rename(const char *from, const char *to);  // replaces `to`, as LittleFS does
   size_t totalBytes() { return 3900u * 1024u; }  // the board's partition
   size_t usedBytes();
+  // The emulator's directory listing (the board uses opendir on its mount point).
+  void list(void (*visit)(const char *path, size_t size, void *context), void *context);
 };
 extern LittleFSClass LittleFS;

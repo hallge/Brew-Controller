@@ -271,6 +271,11 @@ The key GitHub hands out (`BEGIN RSA PRIVATE KEY`, PKCS#1) works as it is; a PKC
 npx wrangler deploy
 ```
 
+Your own ids and repository names: rather than editing `wrangler.toml` (it is committed, with
+placeholders), copy it to `wrangler.local.toml` (git ignores that name), fill that copy in and
+deploy with `npx wrangler deploy -c wrangler.local.toml`. The other `wrangler` commands take the
+same `-c wrangler.local.toml`.
+
 It prints the Worker's address, e.g. `https://bbw-telemetry-relay.<you>.workers.dev`. Check it is
 up: a report with a made-up key must be refused.
 

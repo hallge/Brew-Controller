@@ -8,3 +8,9 @@ __pycache__/
 # Emulator state: shot history, settings, pairing and device keys of a local run
 emu/data/
 emu/data.backup-*/
+
+# Personal Claude Code instructions for this machine
+CLAUDE.local.md
+
+# A relay deployer's own Cloudflare ids and repository names (telemetry-relay/README.md, Deploy)
+telemetry-relay/wrangler.local.toml

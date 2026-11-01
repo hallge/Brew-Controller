@@ -41,6 +41,7 @@
 #include "platform/TelemetryLink.h"
 #include "core/Telemetry.h"
 #include "storage/Store.h"
+#include "storage/Backup.h"
 #include "ui/Ui.h"
 
 using bbw::State;
@@ -3102,6 +3103,33 @@ void answerGrindRecommendation(bool use) {
   g_grindRecAnswered = grindRecKey(active);
 }
 
+uint16_t lastGrindSetting() {
+  struct Want {
+    uint16_t coffeeId, recipeId, calibration, found;
+  };
+  static Want want;
+  static uint32_t memoKey = 0, memoAtMs = 0;
+  static uint16_t memo = 0;
+  const bbw::Recipe active = activeRecipe();
+  const uint32_t key = (static_cast<uint32_t>(active.coffeeId) << 16) ^ active.recipeId ^
+                       (static_cast<uint32_t>(grinder().calibration) << 8) ^ g_store.shotCount();
+  if (key == memoKey && millis() - memoAtMs < 30000) return memo;
+  want = {active.coffeeId, active.recipeId, grinder().calibration, 0};
+  g_store.scanShots(60, [](const bbw::ShotRecord &record, void *context) {
+    Want &w = *static_cast<Want *>(context);
+    if (record.coffeeId == w.coffeeId && record.recipeId == w.recipeId && record.grinderId == w.calibration &&
+        record.grindUm != 0) {
+      w.found = record.grindUm;
+      return false;  // newest first: this is it
+    }
+    return true;
+  }, &want);
+  memo = want.found;
+  memoKey = key;
+  memoAtMs = millis();
+  return memo;
+}
+
 // Where to start a coffee with no setting of its own, from the owner's most similar coffee
 // (bbw::similarStart). Reads only the shelf, so it needs neither the shared library nor a clock.
 bbw::SimilarStart similarStart(uint16_t coffeeId, uint16_t recipeId) {
@@ -4200,6 +4228,7 @@ void setup() {
     }
   }
   LOGI("start-up: device key ready");
+  bbw::mirrorNvs();  // the settings and the key, copied to the file system (storage/Backup.h)
   g_net = g_store.loadNet();
   g_maintenance = g_store.loadMaintenance();
   configureLibraryLink();

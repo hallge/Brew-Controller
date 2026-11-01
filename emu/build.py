@@ -34,6 +34,7 @@ FIRMWARE = [
     "src/core/BrewController.cpp",
     "src/net/Web.cpp",
     "src/storage/Store.cpp",
+    "src/storage/Backup.cpp",
     "src/ui/Ui.cpp",
     "lib/EspressoScaleProtocol/src/Acaia.cpp",
     "lib/EspressoScaleProtocol/src/Felicita.cpp",

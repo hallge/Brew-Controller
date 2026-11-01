@@ -1,7 +1,9 @@
 """Brew Controller first-flash tool for Windows (built into BrewController-Flasher.exe).
 
 Finds the board on USB, downloads the latest release's factory.bin from GitHub, checks its
-SHA256 against the release's SHA256SUMS.txt, and writes it at 0x0 with esptool.
+SHA256 against the release's SHA256SUMS.txt, and writes it with esptool. Without an erase it is
+written as two parts that leave the settings partition (nvs, 0x9000-0xdfff) as it is, so a
+controller in use keeps its settings, Wi-Fi, pairing and signing key.
 
     BrewController-Flasher.exe                  latest release, board found by USB ID
     BrewController-Flasher.exe --port COM5      a given port
@@ -21,6 +23,9 @@ LATEST_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 IMAGE_NAME = "factory.bin"
 SUMS_NAME = "SHA256SUMS.txt"
 ESPRESSIF_VID = 0x303A
+# partitions.csv: nvs (the settings) at 0x9000, then otadata at 0xe000.
+NVS_START = 0x9000
+NVS_END = 0xE000
 FAST_BAUD = 921600
 SAFE_BAUD = 115200
 
@@ -129,12 +134,38 @@ def download_latest(out=print):
 
 # --- Flashing ------------------------------------------------------------------------------
 
-def esptool_args(port, path, baud, erase):
+def split_image(data):
+    """The factory image without the settings partition: [(offset, bytes), ...]. The image has
+    nothing there (0xFF padding); writing it would wipe the settings."""
+    if len(data) <= NVS_END or data[NVS_START:NVS_END] != b"\xff" * (NVS_END - NVS_START):
+        raise FlashError("This is not a Brew Controller factory image (no gap for the settings).")
+    return [(0x0, data[:NVS_START]), (NVS_END, data[NVS_END:])]
+
+
+def write_parts(path):
+    """Writes the two parts beside `path`; returns [(offset, part path), ...]."""
+    with open(path, "rb") as f:
+        parts = split_image(f.read())
+    out = []
+    for offset, chunk in parts:
+        part = f"{path}.{offset:x}.bin"
+        with open(part, "wb") as f:
+            f.write(chunk)
+        out.append((offset, part))
+    return out
+
+
+def esptool_args(port, parts, baud, erase):
+    """`parts`: [(offset, path), ...] or one path written at 0x0."""
+    if isinstance(parts, str):
+        parts = [(0x0, parts)]
     args = ["--chip", "esp32s3", "--port", port, "--baud", str(baud),
             "--before", "default-reset", "--after", "hard-reset", "write-flash"]
     if erase:
         args.append("--erase-all")
-    return args + ["0x0", path]
+    for offset, path in parts:
+        args += [hex(offset), path]
+    return args
 
 
 def run_esptool(args):
@@ -203,11 +234,13 @@ def main(argv=None, ask=input, out=print):
     erase_first = args.erase
     if erase_first is None:
         erase_first = ask_yes(
-            "Erase the board first? Yes for a new board; this also removes settings and shot "
-            "history.", True, ask)
+            "Erase the board first? Yes for a new board. No keeps a controller's settings, Wi-Fi, "
+            "pairing, coffees and shots.", True, ask)
 
+    # Erasing: the whole image. Keeping: everything but the settings partition.
+    parts = path if erase_first else write_parts(path)
     out(f"\nFlashing {port}. Do not unplug the board until this finishes.\n")
-    flash(port, path, erase_first, args.baud, out=out)
+    flash(port, parts, erase_first, args.baud, out=out)
     out(NEXT_STEPS)
     return 0
 

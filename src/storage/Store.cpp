@@ -7,6 +7,7 @@
 #include "platform/FsUtil.h"
 #include "core/SettingsUtil.h"
 #include "platform/BigMem.h"
+#include "storage/Backup.h"
 
 namespace bbw {
 
@@ -151,6 +152,7 @@ void saveBlob(const char *key, uint16_t version, const T &value) {
     LOGW("store: write of %s failed", key);
   }
   prefs.end();
+  mirrorNvs();  // the copy on the file system follows (storage/Backup.h)
 }
 
 }  // namespace
@@ -345,10 +347,15 @@ bool Store::begin() {
   // By label: partitions.csv calls it "littlefs", and LittleFS.begin() would
   // otherwise look for one called "spiffs" and find nothing.
   fsOk_ = LittleFS.begin(true, "/littlefs", 10, "littlefs");
+  backupFsReady(fsOk_);
   if (!fsOk_) {
     LOGW("store: LittleFS mount failed, shot history disabled");
     return false;
   }
+  // NVS wiped (a whole-image flash) while the file system kept its copy: the settings come back
+  // before anything reads them. A restore file left by an unfinished restore is not used.
+  restoreNvsFromMirror();
+  discardRestore();
   prepareLibrary();
   {
     File state = fileExists(OUTBOX_PATH) ? LittleFS.open(OUTBOX_PATH, "r") : File();
