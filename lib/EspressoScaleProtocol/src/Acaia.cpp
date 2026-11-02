@@ -33,7 +33,7 @@ static const ScalePayload kAcaiaInitWrites[] = {
 
 static const ScaleFeatureSet kAcaiaFeatures = {
     SCALE_CORE_FEATURES | ScaleFeatureHeartbeat |
-        ScaleFeatureCommandAudibleFeedback,
+        ScaleFeatureCommandAudibleFeedback | ScaleFeatureReinitWhileSilent,
     0,
     0,
     2750,

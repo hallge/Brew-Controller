@@ -978,17 +978,69 @@ static void testScaleLinkService() {
   uint8_t frame[SCALE_MAX_FRAME];
   const uint8_t acaiaHeartbeat[7] = {0xef, 0xdd, 0x00, 0x02, 0x00, 0x02, 0x00};
 
+  auto countOf = [&writes](const uint8_t *bytes, size_t length) {
+    size_t count = 0;
+    for (const auto &w : writes) {
+      if (w.size() == length && memcmp(w.data(), bytes, length) == 0) ++count;
+    }
+    return count;
+  };
+  const ScaleProtocol &acaiaProtocol = driverById(link, "acaia")->protocol();
+  CHECK(acaiaProtocol.initWriteCount == 2);
+  const ScalePayload &identify = acaiaProtocol.initWrites[0];
+  const ScalePayload &notifyRequest = acaiaProtocol.initWrites[1];
+  auto reasked = [&]() {
+    const size_t a = countOf(identify.data, static_cast<size_t>(identify.length));
+    const size_t b = countOf(notifyRequest.data, static_cast<size_t>(notifyRequest.length));
+    return a == b ? a : static_cast<size_t>(999);
+  };
+
   // Lunar: a heartbeat right away, then every 2750 ms.
   link.select(driverById(link, "acaia"));
   link.start(10000);
   CHECK(link.service(10000, false, write));
   CHECK(writes.size() == 1 && writes[0].size() == 7 && memcmp(writes[0].data(), acaiaHeartbeat, 7) == 0);
-  CHECK(link.service(12749, false, write) && writes.size() == 1);
-  CHECK(link.service(12750, false, write) && writes.size() == 2);
-  // Nothing from the scale: five seconds for the first packet, then it is dead.
-  CHECK(link.service(15000, false, write));
+  // Nothing from the scale: the init writes go out again at 1.5 s and 3 s.
+  CHECK(link.service(11499, false, write) && reasked() == 0 && link.reasks() == 0);
+  CHECK(link.service(11500, false, write) && reasked() == 1 && link.reasks() == 1);
+  CHECK(link.service(11501, false, write) && reasked() == 1);
+  CHECK(link.service(12749, false, write) && countOf(acaiaHeartbeat, 7) == 1);
+  CHECK(link.service(12750, false, write) && countOf(acaiaHeartbeat, 7) == 2);
+  CHECK(link.service(12999, false, write) && reasked() == 1);
+  CHECK(link.service(13000, false, write) && reasked() == 2 && link.reasks() == 2);
+  CHECK(link.service(14900, false, write) && reasked() == 2);
+  // Five seconds for the first packet, then it is dead.
+  CHECK(link.service(15000, false, write) && reasked() == 2);
   CHECK(!link.service(15001, false, write));
   CHECK(link.silenceLimitMs() == 5000);
+  CHECK(writes.size() == 2 + 2 * 2);  // two heartbeats, two re-asks of two writes
+  // What came in, for the log line: a settings frame only, no reading.
+  {
+    ScaleLink quiet;
+    quiet.select(driverById(quiet, "acaia"));
+    quiet.start(0);
+    const std::vector<uint8_t> onlySettings = hexBytes("efdd0809ca020101000101010ecc");
+    quiet.onNotify(onlySettings.data(), onlySettings.size(), 200);
+    CHECK(quiet.notificationsSinceStart() == 1 && quiet.droppedSinceStart() == 0);
+    quiet.start(1000);
+    CHECK(quiet.notificationsSinceStart() == 0 && quiet.reasks() == 0);
+  }
+
+  // A reading before 1.5 s: nothing is asked again.
+  writes.clear();
+  link.start(16000);
+  {
+    uint8_t first[SCALE_MAX_FRAME];
+    const size_t len = wireFrame("acaia", 1.0, 0, first);
+    link.onNotify(first, len, 17200);
+    for (uint32_t t = 16000; t <= 19000; t += 50) link.service(t, false, write);
+    CHECK(reasked() == 0 && link.reasks() == 0);
+  }
+  // Nor during a shot.
+  writes.clear();
+  link.start(30000);
+  for (uint32_t t = 30000; t <= 34000; t += 50) link.service(t, true, write);
+  CHECK(reasked() == 0 && link.reasks() == 0);
 
   // Readings flowing: the settings (battery) are asked for 1.5 s after the
   // link came up, never during a shot, then every five minutes.
@@ -1047,6 +1099,16 @@ static void testScaleLinkService() {
   link.onNotify(frame, n, 500100);
   CHECK(link.service(505100, false, write) && !link.service(505101, false, write));
   CHECK(writes.empty());
+  // Silent from the start: it is never asked again (only the Acaia drivers are).
+  link.start(600000);
+  for (uint32_t t = 600000; t <= 605000; t += 50) CHECK(link.service(t, false, write));
+  CHECK(!link.service(605001, false, write));
+  CHECK(writes.empty() && link.reasks() == 0);
+  for (size_t i = 0; i < link.driverCount(); ++i) {
+    const ScaleDriver *d = link.driverAt(i);
+    const bool acaia = strcmp(d->id(), "acaia") == 0 || strcmp(d->id(), "acaia_legacy") == 0;
+    if (!acaia) CHECK(!d->protocol().features.has(ScaleFeatureReinitWhileSilent));
+  }
 }
 
 // The same shot, with the readings travelling as each scale sends them and

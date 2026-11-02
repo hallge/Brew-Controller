@@ -182,12 +182,20 @@ bool BleScale::nextSample(WeightSample &out) {
 
 void BleScale::service(uint32_t nowMs) {
   if (!ready_) return;
+  const uint32_t reasksBefore = link_.reasks();
   const bool alive = link_.service(nowMs, shotRunning_, [this](const uint8_t *data, size_t length) {
     write(data, length);
   });
+  if (link_.reasks() != reasksBefore) {
+    LOGI("scale: no readings yet, asking again (%u notifications so far)",
+         static_cast<unsigned>(link_.notificationsSinceStart()));
+  }
   if (!alive) {
-    LOGW("scale: no packets for %u ms, dropping link",
-         static_cast<unsigned>(link_.silenceLimitMs()));
+    LOGW("scale: no packets for %u ms (%u notifications, %u not understood, asked again %u times), dropping link",
+         static_cast<unsigned>(link_.silenceLimitMs()),
+         static_cast<unsigned>(link_.notificationsSinceStart()),
+         static_cast<unsigned>(link_.droppedSinceStart()),
+         static_cast<unsigned>(link_.reasks()));
     disconnect();
   }
 }

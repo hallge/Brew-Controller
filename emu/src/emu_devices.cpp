@@ -182,6 +182,8 @@ class Lunar : public Peripheral {
   bool heartbeatWatchdog = true;
   bool silent = false;   // fault: link stays up, no packets
   int ignoreTares = 0;   // fault: this many tare commands are dropped
+  int missRequests = 0;  // fault: on each new link, this many stream requests are missed
+  int missedThisLink = 0;
   int rssi = -58;
   // State
   double filteredG = 0.0;  // load cell after its settling time
@@ -260,7 +262,7 @@ class Lunar : public Peripheral {
     variaSecondSent = -1;
     sinceHeartbeatS = 0.0;
   }
-  void onDisconnect() override { identified = streaming = false; }
+  void onDisconnect() override { identified = streaming = false; missedThisLink = 0; }
 
   void pressTare(const char *who) {
     tareG = filteredG;
@@ -389,7 +391,10 @@ class Lunar : public Peripheral {
         log("scale", "identify received");
         break;
       case 0x0c:  // notification request
-        if (identified) {
+        if (identified && missedThisLink < missRequests) {
+          ++missedThisLink;
+          log("scale", "notification request missed (fault injection)");
+        } else if (identified) {
           streaming = true;
           log("scale", "notification request received, weight stream on");
         } else {
@@ -888,6 +893,7 @@ void fillState(JsonDocument &doc) {
   l["splitFrames"] = g_lunar.splitFrames;
   l["battery"] = g_lunar.battery;
   l["ignoreTares"] = g_lunar.ignoreTares;
+  l["missRequests"] = g_lunar.missRequests;
   l["rssi"] = g_lunar.rssi;
   l["filteredG"] = g_lunar.filteredG;
   l["tareG"] = g_lunar.tareG;
@@ -968,6 +974,7 @@ bool worldSet(const std::string &device, const std::string &key, const std::stri
     else if (key == "splitFrames") l.splitFrames = truthy(value);
     else if (key == "battery") l.battery = static_cast<int>(clampD(number, 0, 100));
     else if (key == "ignoreTares") l.ignoreTares = static_cast<int>(clampD(number, 0, 99));
+    else if (key == "missRequests") l.missRequests = static_cast<int>(clampD(number, 0, 9));
     else if (key == "rssi") l.rssi = static_cast<int>(clampD(number, -100, -20));
     else if (key == "tare") { if (l.powered) l.pressTare("button"); }
     else if (key == "dropLink") l.dropLink("fault injection");
