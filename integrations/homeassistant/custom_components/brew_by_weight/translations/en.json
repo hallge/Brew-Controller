@@ -1,0 +1,40 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Brew by Weight",
+        "description": "Address of the controller, for example http://brewbyweight.local",
+        "data": {"host": "Controller address"}
+      },
+      "confirm": {
+        "title": "Brew by Weight",
+        "description": "Add the controller found at {host}?"
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the controller at that address.",
+      "invalid_host": "Enter the controller's address."
+    },
+    "abort": {
+      "already_configured": "This controller is already added.",
+      "cannot_connect": "Could not reach the controller."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "state": {"name": "Machine state"},
+      "last_shot_time": {"name": "Last shot time"},
+      "last_shot_weight": {"name": "Last shot weight"},
+      "last_shot_grind": {"name": "Last shot grind setting"},
+      "advised_grind": {"name": "Advised grind setting"},
+      "advised_action": {"name": "Grind advice"},
+      "shot_noise": {"name": "Shot noise"},
+      "drift": {"name": "Grind drift"},
+      "ambient_humidity": {"name": "Last shot humidity"},
+      "ambient_temperature": {"name": "Last shot ambient temperature"}
+    },
+    "button": {
+      "start_shot": {"name": "Start shot"}
+    }
+  }
+}
