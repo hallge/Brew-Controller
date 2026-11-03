@@ -1361,6 +1361,18 @@ void handleGrind() {
       doc["grinder_elasticity_se"] = bbw::round2(el.se);
       doc["grinder_shots"] = el.shots;
       doc["grinder_coffees"] = el.groups;
+      doc["coffee_spread_cv"] = bbw::round2(el.spreadCv);
+    }
+    // From the real shots of 2 Nov 2026 (research/grind-logic-review.md, "Real shots").
+    const app::GrindLearned learned = app::grindLearned();
+    doc["shot_noise_s"] = bbw::round2(learned.shotNoiseS);
+    doc["shot_noise_repeats"] = learned.repeats;
+    if (learned.firstDropS > 0.0f) doc["usual_first_drop_s"] = bbw::round2(learned.firstDropS);
+    if (a.sensitivityCv > 0.0f) doc["sensitivity_cv"] = bbw::round2(a.sensitivityCv);
+    doc["step_factor"] = bbw::round2(a.stepFactor);
+    if (a.firstDropOneOffS != 0.0f) {
+      doc["first_drop_one_off_s"] = bbw::round2(a.firstDropOneOffS);
+      doc["newest_time_s"] = bbw::round2(a.newestTimeS);
     }
   }
   doc["step_limited"] = a.stepLimited;

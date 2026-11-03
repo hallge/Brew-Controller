@@ -118,6 +118,9 @@ bbw::Maintenance g_maintenance;     // guarded by Lock
 bool g_maintenanceDirty = false;
 bool g_grindAdviceStale = true;  // loop task only
 bbw::GrinderElasticity g_grinderElasticity;  // with grindAdvice(): what the grinder's other coffees showed
+float g_shotNoiseS = 0.0f;       // with grindAdvice(): the owner's shot-to-shot noise (bbw::grindShotNoise)
+size_t g_shotNoiseRepeats = 0;   // ...from this many repeats
+float g_firstDropRefS = 0.0f;    // ...and the usual first drop on the recipe, 0 = not known
 bbw::GrindAdvice g_grindAdvice;
 uint32_t g_lastCountedEpochS = 0;  // newest shot behind g_grindAdvice; loop task only
 std::atomic<uint32_t> g_botHoldUntilMs{0};  // keep the Bot link up until then
@@ -2572,6 +2575,11 @@ bbw::GrinderElasticity grinderElasticity() {
   return g_grinderElasticity;
 }
 
+GrindLearned grindLearned() {
+  grindAdvice();
+  return {g_shotNoiseS, static_cast<uint16_t>(g_shotNoiseRepeats), g_firstDropRefS};
+}
+
 // Set by grindAdvice()'s scan: the active coffee, bag and recipe have no shot yet on this grinder.
 bool g_grindFresh = false;
 // The coffee, recipe, bag and calibration whose recommendation was answered (not offered again).
@@ -2681,6 +2689,18 @@ bbw::GrindAdvice grindAdvice() {
     bool newestSeen = false;
     bbw::GrindUse newestUse = bbw::GrindUse::COUNTED;
     uint16_t newestSetting = 0;
+    // The usual first drop on this recipe (any coffee), and the owner's repeats on this grinder
+    // (two shots of one coffee in a row at one setting), for the shot noise.
+    float drops[bbw::GRIND_FIRST_DROP_SHOTS];
+    size_t dropCount = 0;
+    bbw::GrindRepeat repeats[40];
+    size_t repeatCount = 0;
+    struct Last {
+      uint16_t group, setting;
+      uint32_t epochS;
+      float timeS, firstDropS;
+    } last[32];
+    size_t lastCount = 0;
   };
   static Scan scan;
   const bbw::Settings s = settings();
@@ -2692,6 +2712,9 @@ bbw::GrindAdvice grindAdvice() {
   scan.otherCount = 0;
   scan.newestSeen = false;
   scan.newestEpochS = 0;
+  scan.dropCount = 0;
+  scan.repeatCount = 0;
+  scan.lastCount = 0;
   g_store.scanShots(SCAN_SHOTS, [](const bbw::ShotRecord &record, void *context) {
     Scan &sc = *static_cast<Scan *>(context);
     // Same recipe, same coffee (and bag: roast date), same yield and dose:
@@ -2709,15 +2732,43 @@ bbw::GrindAdvice grindAdvice() {
       sc.newestUse = bbw::grindShotUse(record, sc.basis);
       sc.newestSetting = record.grindUm;
     }
+    // A group per coffee, bag and recipe; a collision only merges two groups, which weakens the
+    // pooled figure a little and never biases it.
+    const uint32_t bag = record.bagId ? record.bagId : record.roastDate;
+    const uint16_t group =
+        static_cast<uint16_t>((record.recipeId * 977u + record.coffeeId * 131u + bag * 7u) & 0xFFFF);
     if (valid && !same && sc.otherCount < sizeof(sc.others) / sizeof(sc.others[0])) {
-      // A group per coffee, bag and recipe; a collision only merges two groups, which weakens the
-      // pooled figure a little and never biases it.
-      const uint32_t bag = record.bagId ? record.bagId : record.roastDate;
       sc.others[sc.otherCount].timeS = bbw::grindShotTime(record, sc.basis);
       sc.others[sc.otherCount].setting = record.grindUm;
-      sc.others[sc.otherCount].group =
-          static_cast<uint16_t>((record.recipeId * 977u + record.coffeeId * 131u + bag * 7u) & 0xFFFF);
+      sc.others[sc.otherCount].group = group;
       ++sc.otherCount;
+    }
+    if (valid) {
+      if (sc.dropCount < bbw::GRIND_FIRST_DROP_SHOTS && record.firstDropS > 0.0f &&
+          fabsf(record.targetWeightG - sc.recipe.targetWeightG) <= 0.05f &&
+          fabsf(record.doseG - sc.recipe.doseG) <= 0.05f) {
+        sc.drops[sc.dropCount++] = record.firstDropS;
+      }
+      const float t = bbw::grindShotTime(record, sc.basis);
+      size_t g = 0;
+      while (g < sc.lastCount && sc.last[g].group != group) ++g;
+      if (g < sc.lastCount) {   // the next newer shot of this coffee: a repeat?
+        const Scan::Last &newer = sc.last[g];
+        if (sc.repeatCount < sizeof(sc.repeats) / sizeof(sc.repeats[0]) &&
+            bbw::grindIsRepeat(newer.setting, newer.epochS, record.grindUm, record.epochS)) {
+          sc.repeats[sc.repeatCount].diffS = newer.timeS - t;
+          sc.repeats[sc.repeatCount].firstDropA = newer.firstDropS;
+          sc.repeats[sc.repeatCount].firstDropB = record.firstDropS;
+          ++sc.repeatCount;
+        }
+      } else if (sc.lastCount < sizeof(sc.last) / sizeof(sc.last[0])) {
+        g = sc.lastCount++;
+      } else {
+        g = sizeof(sc.last) / sizeof(sc.last[0]);   // full: this coffee is not tracked
+      }
+      if (g < sizeof(sc.last) / sizeof(sc.last[0])) {
+        sc.last[g] = {group, record.grindUm, record.epochS, t, record.firstDropS};
+      }
     }
     if (valid && same && sc.count < sizeof(sc.shots) / sizeof(sc.shots[0])) {
       if (sc.count == 0) sc.newestEpochS = record.epochS;  // newest first
@@ -2727,6 +2778,8 @@ bbw::GrindAdvice grindAdvice() {
           record.grindVote == static_cast<uint8_t>(bbw::GrindVote::COUNT);
       sc.shots[sc.count].rating = record.rating;
       sc.shots[sc.count].taste = record.taste;
+      sc.shots[sc.count].firstDropS = record.firstDropS;
+      sc.shots[sc.count].epochS = record.epochS;
       ++sc.count;
     }
     return true;   // SCAN_SHOTS bounds the pass
@@ -2744,8 +2797,10 @@ bbw::GrindAdvice grindAdvice() {
   // Limits in this grinder's own unit, and the sensitivity it has shown on its other coffees.
   const bbw::Grinder grinderNow = grinder();
   g_grinderElasticity = bbw::pooledGrindElasticity(scan.others, scan.otherCount);
+  g_firstDropRefS = bbw::grindFirstDropReference(scan.drops, scan.dropCount);
+  g_shotNoiseS = bbw::grindShotNoise(scan.repeats, scan.repeatCount, g_firstDropRefS, &g_shotNoiseRepeats);
   config = bbw::grindConfigForGrinder(config, grinderNow.umPerUnit, recipe.grindUm, recipe.targetTimeS,
-                                      g_grinderElasticity);
+                                      g_grinderElasticity, g_shotNoiseS, g_firstDropRefS);
   g_grindAdvice = bbw::adviseGrindRated(shots, count, recipe.grindUm, recipe.targetTimeS, config,
                                         s.grindRatedTarget);
   if (scan.newestSeen && scan.newestSetting == recipe.grindUm) {

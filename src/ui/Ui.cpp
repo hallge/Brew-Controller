@@ -1788,8 +1788,14 @@ void refreshResult(State state) {
     resShotId = shot.id;
     // A shot that ran out of time was slow by definition.
     const bool fast = !timedOut && thisTime < shot.targetTimeS;
-    setTextF(resReview, "Shot %s than expected.\nReview preparation routine.\nGrind %s if necessary.",
-             fast ? "faster" : "slower", fast ? "finer" : "coarser");
+    if (g.firstDropOneOffS != 0.0f) {
+      // The first drops came far from their usual time: the puck, not the grind.
+      setTextF(resReview, "First drops %.0f s %s.\nReview preparation routine.\nGrind kept for now.",
+               fabsf(g.firstDropOneOffS), g.firstDropOneOffS < 0.0f ? "early" : "late");
+    } else {
+      setTextF(resReview, "Shot %s than expected.\nReview preparation routine.\nGrind %s if necessary.",
+               fast ? "faster" : "slower", fast ? "finer" : "coarser");
+    }
     show(Panel::RESULT);
     return;
   }

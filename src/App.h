@@ -126,6 +126,14 @@ bbw::Grinder grinder();
 bbw::GrindAdvice grindAdvice();
 // What the grinder's other coffees showed (computed with grindAdvice; empty until they show something).
 bbw::GrinderElasticity grinderElasticity();
+// What all the shots on this grinder showed, with grindAdvice: the owner's shot-to-shot noise (and
+// the repeats behind it) and the usual first drop on the recipe (0: not known).
+struct GrindLearned {
+  float shotNoiseS;
+  uint16_t repeats;
+  float firstDropS;
+};
+GrindLearned grindLearned();
 // Past advice to move on this grinder (as now calibrated) and what the next shot did, newest first.
 size_t adviceOutcomes(bbw::AdviceOutcome *out, size_t max);
 void setGrind(uint16_t grindUm);                     // grinder setting of the active preset

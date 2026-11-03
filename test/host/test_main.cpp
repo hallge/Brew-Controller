@@ -7203,6 +7203,216 @@ static void testShotContext() {
   printf("  ShotContext is %u bytes\n", static_cast<unsigned>(sizeof(ShotContext)));
 }
 
+// The board's real shots of 19 Oct to 2 Nov 2026 (ids 10-30; three coffees, Triple, 24 g, 29 s),
+// replayed through the advice as the controller builds it (main.cpp grindAdvice), before and after
+// the fixes of research/grind-logic-review.md "Real shots". Settings, times, first drops and dates
+// only. Shot 28's setting was wiped by the old grinder-save bug; it was pulled at 76.
+// `board` is the setting the controller advised after the shot (0: none), so the owner's real
+// follow-or-not history gives both versions the same advice confidence.
+struct RealShot {
+  int id;
+  uint16_t coffee;
+  uint16_t setting;
+  float timeS;
+  float firstDropS;
+  uint32_t epochS;
+  uint16_t board;
+};
+static const RealShot kRealShots[] = {
+    {10, 1, 59, 42.26f, 9.64f, 1792414133u, 79},  {11, 1, 70, 40.62f, 10.05f, 1792422471u, 90},
+    {12, 1, 85, 34.42f, 12.99f, 1792501321u, 102}, {13, 2, 100, 28.22f, 13.09f, 1792513401u, 100},
+    {14, 2, 98, 25.28f, 12.83f, 1792595078u, 78},  {15, 2, 78, 26.94f, 12.39f, 1792679231u, 63},
+    {16, 2, 63, 30.32f, 13.21f, 1792688126u, 63},  {17, 2, 64, 27.56f, 12.97f, 1792770202u, 64},
+    {18, 2, 64, 30.12f, 9.73f, 1792775738u, 64},   {19, 2, 64, 35.74f, 13.73f, 1792842409u, 64},
+    {20, 2, 64, 34.08f, 13.63f, 1792940036u, 73},  {21, 2, 73, 32.53f, 13.47f, 1792945831u, 76},
+    {22, 2, 76, 30.67f, 12.99f, 1793021034u, 76},  {23, 2, 76, 33.08f, 13.05f, 1793029598u, 77},
+    {24, 2, 77, 32.48f, 12.94f, 1793118871u, 97},  {25, 2, 77, 33.04f, 13.20f, 1793198137u, 97},
+    {26, 3, 95, 27.56f, 13.09f, 1793285801u, 95},  {27, 3, 96, 20.76f, 8.49f, 1793369087u, 76},
+    {28, 3, 76, 25.64f, 12.80f, 1793443332u, 0},   {29, 3, 76, 25.64f, 13.10f, 1793543877u, 59},
+    {30, 3, 59, 32.78f, 13.94f, 1793633652u, 68},
+};
+static constexpr size_t kRealCount = sizeof(kRealShots) / sizeof(kRealShots[0]);
+
+struct RealReplay {
+  GrindAdvice before, after;
+  float noiseS = 0.0f, firstDropRefS = 0.0f;
+  GrinderElasticity pool;
+};
+
+// The advice after shot `upto` (index), as the controller would give it.
+static RealReplay replayRealShot(size_t upto) {
+  RealReplay r;
+  const RealShot &now = kRealShots[upto];
+  GrindShot same[40];
+  size_t sameCount = 0;
+  GrinderShot others[40];
+  size_t otherCount = 0;
+  float drops[GRIND_FIRST_DROP_SHOTS];
+  size_t dropCount = 0;
+  GrindRepeat repeats[40];
+  size_t repeatCount = 0;
+  for (size_t k = upto + 1; k-- > 0;) {   // newest first
+    const RealShot &x = kRealShots[k];
+    if (dropCount < GRIND_FIRST_DROP_SHOTS) drops[dropCount++] = x.firstDropS;
+    if (x.coffee == now.coffee) {
+      GrindShot &g = same[sameCount++];
+      g.timeS = x.timeS;
+      g.grindUm = x.setting;
+      g.firstDropS = x.firstDropS;
+      g.epochS = x.epochS;
+    } else {
+      GrinderShot &o = others[otherCount++];
+      o.timeS = x.timeS;
+      o.setting = x.setting;
+      o.group = x.coffee;
+    }
+    // The next older shot of the same coffee: a repeat?
+    for (size_t j = k; j-- > 0;) {
+      if (kRealShots[j].coffee != x.coffee) continue;
+      const RealShot &older = kRealShots[j];
+      if (grindIsRepeat(x.setting, x.epochS, older.setting, older.epochS)) {
+        repeats[repeatCount].diffS = x.timeS - older.timeS;
+        repeats[repeatCount].firstDropA = x.firstDropS;
+        repeats[repeatCount].firstDropB = older.firstDropS;
+        ++repeatCount;
+      }
+      break;
+    }
+  }
+  r.pool = pooledGrindElasticity(others, otherCount);
+  r.firstDropRefS = grindFirstDropReference(drops, dropCount);
+  r.noiseS = grindShotNoise(repeats, repeatCount, r.firstDropRefS);
+  GrindConfig base;
+  base.toleranceS = 2.0f;
+  base.defaultUmPerS = 3.0f;
+  base.window = 3;
+  base.maxStepUm = 20;
+  // Before: the firmware of v0.1.26, which had none of the new fields and took the prior's width
+  // from the pooled figure's standard error alone.
+  GrindConfig old = grindConfigForGrinder(base, 1.0f, now.setting, 29.0f, r.pool);
+  old.sizeByUncertainty = false;
+  old.bracketMaxAgeS = 0;
+  old.firstDropRefS = 0.0f;
+  if (r.pool.known) {
+    const float cv = r.pool.se / r.pool.eps;
+    old.priorCv = cv > GRIND_PRIOR_CV_MIN ? (cv < 1.0f ? cv : 1.0f) : GRIND_PRIOR_CV_MIN;
+  }
+  const GrindConfig fixed =
+      grindConfigForGrinder(base, 1.0f, now.setting, 29.0f, r.pool, r.noiseS, r.firstDropRefS);
+  // The owner's real responses to the board's advice, newest first: the advice confidence.
+  AdviceOutcome outcomes[ADVICE_CONFIDENCE_SHOTS];
+  size_t n = 0;
+  for (size_t k = upto; k-- > 0 && n < ADVICE_CONFIDENCE_SHOTS;) {
+    const RealShot &a = kRealShots[k];
+    if (!a.board || a.board == a.setting) continue;
+    for (size_t j = k + 1; j <= upto; ++j) {
+      if (kRealShots[j].coffee != a.coffee) continue;
+      outcomes[n].followed = kRealShots[j].setting == a.board;
+      outcomes[n].nextTimeS = kRealShots[j].timeS;
+      outcomes[n].targetS = 29.0f;
+      ++n;
+      break;
+    }
+  }
+  const AdviceConfidence conf = adviceConfidence(outcomes, n, 2.0f);
+  r.before = adviseGrindRated(same, sameCount, now.setting, 29.0f, old, true);
+  applyAdviceConfidence(r.before, conf, 2.0f, old.maxStepUm, true);
+  r.after = adviseGrindRated(same, sameCount, now.setting, 29.0f, fixed, true);
+  applyAdviceConfidence(r.after, conf, 2.0f, fixed.maxStepUm, true);
+  return r;
+}
+
+static void testGrindRealHistory() {
+  printf("grind advice: the board's real shots, before and after the fixes\n");
+  RealReplay r[kRealCount];
+  for (size_t i = 0; i < kRealCount; ++i) {
+    r[i] = replayRealShot(i);
+    const RealShot &x = kRealShots[i];
+    printf("  shot %d  %3u um %5.1f s fd %4.1f | board %3u | before %-8s %3u (%5.2f um/s) | after %-8s %3u"
+           " (%5.2f um/s, cv %.2f, k %.2f%s) noise %.2f ref %.1f\n",
+           x.id, x.setting, x.timeS, x.firstDropS, x.board, grindActionName(r[i].before.action),
+           r[i].before.suggestedUm, r[i].before.umPerS, grindActionName(r[i].after.action),
+           r[i].after.suggestedUm, r[i].after.umPerS, r[i].after.sensitivityCv, r[i].after.stepFactor,
+           r[i].after.firstDropOneOffS != 0.0f ? ", first-drop one-off" : "",
+           r[i].noiseS, r[i].firstDropRefS);
+  }
+  auto at = [&](int id) -> const RealReplay & { return r[id - 10]; };
+  auto dir = [](const GrindAdvice &a) { return a.suggestedUm > a.currentUm ? 1 : a.suggestedUm < a.currentUm ? -1 : 0; };
+  // The replay is the controller: before the fixes it gives what the board gave (shots 16-23 and
+  // the v0.1.25 shots 29-30; the earlier shots ran older firmware).
+  for (int id : {16, 17, 18, 19, 20, 21, 22, 23, 29, 30}) CHECK(at(id).before.suggestedUm == kRealShots[id - 10].board);
+  // 1. Shot 27's first drop came 4.6 s early and it ran 8 s fast: the puck, the grind is kept.
+  CHECK(at(27).after.newestIgnored && at(27).after.firstDropOneOffS < -3.0f);
+  CHECK(at(27).after.suggestedUm == 96 && at(27).before.suggestedUm < 96);
+  // An early first drop on a slow shot (10, 11), or on one inside the tolerance (18), is not one.
+  for (int id : {10, 11, 18}) CHECK(at(id).after.firstDropOneOffS == 0.0f);
+  CHECK(fabsf(at(30).firstDropRefS - 13.1f) < 0.3f);
+  // 3. The owner's noise, learned from the repeats (the first-drop one-offs left out).
+  CHECK(at(30).noiseS > 1.2f && at(30).noiseS < 1.7f);
+  // Shot 29 (no slope of its own: the Honduras ran faster finer): the step shrinks, same way.
+  CHECK(at(29).after.stepFactor < 0.85f && at(29).after.suggestedUm > 59 && at(29).after.suggestedUm < 76);
+  CHECK(at(29).after.source != SensitivitySource::MEASURED);
+  // A large error keeps the full step (the Costa Rica at 42 s).
+  CHECK(at(10).after.stepFactor == 1.0f && at(10).after.suggestedUm == at(10).before.suggestedUm);
+  // A measured slope barely shrinks it.
+  CHECK(at(24).after.stepFactor > 0.9f);
+  // 4. Shots 20, 21 and 23 were held back by a shot of 22 Oct at 78 um; not any more.
+  for (int id : {20, 21, 23}) {
+    CHECK(at(id).before.bracketed && !at(id).after.bracketed);
+    CHECK(at(id).after.suggestedUm > at(id).before.suggestedUm);
+  }
+  // Only shot 27 changes direction.
+  for (size_t i = 0; i < kRealCount; ++i) {
+    if (kRealShots[i].id != 27) CHECK(dir(r[i].after) == dir(r[i].before));
+  }
+
+  // The helpers on their own.
+  {
+    CHECK(fabsf(grindShotNoise(nullptr, 0, 0.0f) - GRIND_NOISE_PRIOR_S) < 1e-4f);
+    GrindRepeat rep[4] = {{3.0f, 13, 13}, {-3.0f, 13, 13}, {3.0f, 13, 13}, {-3.0f, 13, 13}};
+    size_t used = 0;
+    // four repeats of +-3 s: variance 4.5 each, blended 50:50 with 1.5^2
+    CHECK(fabsf(grindShotNoise(rep, 4, 13.0f, &used) - sqrtf((4 * 2.25f + 4 * 4.5f) / 8)) < 1e-3f && used == 4);
+    rep[1].firstDropA = 9.0f;   // a bad puck in that pair
+    CHECK(grindShotNoise(rep, 4, 13.0f, &used) > 0.0f && used == 3);
+    CHECK(grindIsRepeat(64, 200000, 63, 100000) && !grindIsRepeat(64, 400000, 64, 100000) &&
+          !grindIsRepeat(66, 200000, 64, 100000) && !grindIsRepeat(64, 0, 64, 100000));
+    const float drops[6] = {13.0f, 12.8f, 0.0f, 13.2f, 8.5f, 13.1f};
+    CHECK(grindFirstDropReference(drops, 5) == 0.0f);    // four known: too few
+    CHECK(fabsf(grindFirstDropReference(drops, 6) - 13.0f) < 1e-4f);
+    GrindConfig c;
+    c.toleranceS = 2.0f;
+    c.firstDropRefS = 13.0f;
+    GrindShot g;
+    g.firstDropS = 9.0f;
+    g.timeS = 24.0f;
+    CHECK(grindFirstDropOneOff(g, 29.0f, c));            // early and fast
+    g.timeS = 34.0f;
+    CHECK(!grindFirstDropOneOff(g, 29.0f, c));           // early and slow
+    g.timeS = 24.0f;
+    g.forced = true;
+    CHECK(!grindFirstDropOneOff(g, 29.0f, c));           // the owner said count it
+    g.forced = false;
+    g.firstDropS = 11.0f;
+    CHECK(!grindFirstDropOneOff(g, 29.0f, c));           // 2 s early is not far enough
+    c.firstDropRefS = 0.0f;
+    g.firstDropS = 5.0f;
+    CHECK(!grindFirstDropOneOff(g, 29.0f, c));           // no reference: off
+    // The coffee spread: the prior until two coffees have slopes of their own.
+    CHECK(at(14).pool.known && at(14).pool.spreadCoffees < 2 &&
+          fabsf(at(14).pool.spreadCv - GRIND_COFFEE_SPREAD_CV) < 1e-4f);
+    CHECK(at(30).pool.spreadCoffees == 2 && at(30).pool.spreadCv > 0.0f && at(30).pool.spreadCv < 1.0f);
+  }
+  // A plain config is the original rule: none of this happens.
+  {
+    GrindShot shots[2];
+    shots[0].timeS = 21.0f; shots[0].grindUm = 96; shots[0].firstDropS = 8.5f; shots[0].epochS = 1000000;
+    shots[1].timeS = 34.0f; shots[1].grindUm = 80; shots[1].firstDropS = 13.0f; shots[1].epochS = 100;
+    const GrindAdvice a = adviseGrind(shots, 2, 96, 29.0f, GrindConfig());
+    CHECK(a.action == GrindAction::FINER && a.firstDropOneOffS == 0.0f && a.stepFactor == 1.0f);
+  }
+}
+
 static void testLearnGrinder() {
   printf("grind advice: learn the grinder\n");
   const GrindConfig base;
@@ -8131,6 +8341,7 @@ int main() {
   testBagFinished();
   testShotContext();
   testLearnGrinder();
+  testGrindRealHistory();
   testSettingFormat();
   testGrinderUnitTidy();
   printf("\n%d checks, %d failed\n", g_checks, g_failures);

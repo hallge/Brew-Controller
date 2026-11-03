@@ -89,10 +89,39 @@ The fixes are never materially worse: the worst case is +0.03 shots, within simu
 * **First coffee on a new grinder:** a direction always. A number only once the coffee's own shots carry weight, or after a shot far outside the range (one largest step).
 * **Second and later coffees on the same grinder:** a number from the first correction, from what the grinder has shown. The page says where it came from: "measured from your shots", "from what this grinder has shown on N coffees", or "starting guess".
 * **As shots accrue:** each coffee's own measurement takes over in proportion to how much it is worth. A noisy early fit can no longer swing the advice.
-* **Never:** a step past a setting already seen on the other side; bouncing between two steps; silence after a choked or gushing shot.
+* **Never:** a step past a setting seen on the other side in the last three days; bouncing between two steps; silence after a choked or gushing shot; a full step from a shot whose first drops came far from the usual (section 7).
 
 ## 6. Next steps, in order
 
 1. **Done:** learning the grinder is built into the advice (no setting).
 2. **Done:** the after-shot input on the shot's page: dose weighed, purged first, flow looked uneven ("made badly on purpose" dropped at the owner's request; detector tests can use "uneven").
 3. Calibrate the start ranges, then F1 and F5, from the first real dial-ins.
+4. **Done (2 Nov 2026):** the fixes of section 7, from the board's real shots.
+
+## 7. Real shots, 2 Nov 2026
+
+The board's first real history: shots 10 to 30, 19 Oct to 2 Nov 2026. Three coffees (Costa Rica 3 shots, Rwanda 13, Honduras 5), all the Triple recipe (24 g, 29 s +-2 s), beans 155 to 202 days from roast, no ratings, doses or prep notes entered. Shot 28's setting was wiped by the grinder-save bug of v0.1.25; it was pulled at 76 (it matches shot 29 there to 0.0 s). The replay is `testGrindRealHistory` in `test/host/test_main.cpp`: it rebuilds the controller's input for every shot and gives the advice before and after the fixes. Before the fixes it reproduces what the board advised for shots 16 to 23, 29 and 30; earlier shots ran older firmware.
+
+**How the advice did.**
+
+* Direction: every move from outside the tolerance moved the time the right way (9 of 9).
+* Size: the time after a change was predicted to within 3.0 s rms. "The same as last time" misses by 4.1 s. Repeats scatter by about 1.4 s (learned, below), so the model is not far off the noise floor.
+* Landing: 2 of 7 followed changes landed inside +-2 s; 6 of 21 shots were inside it.
+* Noise sets a ceiling. At 1.4 s scatter a perfect setting lands inside +-2 s about 85% of the time; at 2 s, 68%. The 75-80% goal at cup two needs scatter under about 1.6 s, so the owner's preparation matters as much as the advice.
+* Drift. The Rwanda ran about 0.8 s a day slower at one setting (2.6% a day; 64 um: 27.6, 30.1, 35.7, 34.1 s over three days). Nothing in the data says why (bean age, humidity, the grinder).
+* First drop is steady (Rwanda median 13.0 s, robust spread 0.24 s) and says when a puck was bad: shot 27's came at 8.5 s and the shot ran 6.8 s fast, its pour only 2.2 s fast.
+
+**What was changed** (`src/core/GrindAdvisor.h`; each switched on by `grindConfigForGrinder`, so a plain `GrindConfig` is the original rule):
+
+| # | Change | On the real shots |
+| --- | --- | --- |
+| R1 | **First-drop screen.** A shot whose first drop is 3 s or more from the usual one on the recipe (median of the newest 10, at least 5), the same way as its error (early and fast, late and slow), and outside the tolerance is a one-off: left out of the average and of the sensitivity learning. The result screen asks whether to count it ("First drops 5 s early. Review preparation routine. Grind kept for now.") | Shot 27: grind kept at 96 instead of 20 um finer. Shots 10 and 11 (early but slow) and 18 (inside the tolerance) are not touched |
+| R2 | **Learned noise.** The shot-to-shot scatter assumed in the sensitivity blend (1.5 s) is learned from the owner's repeats, blended with 1.5 s as if that were four repeats; pairs with a bad puck are left out | 1.32 s after shot 30, from 6 repeats (16-17, 19-20, 22-23, 23-24, 24-25, 28-29; the pairs with shot 18 or 27 are bad pucks) |
+| R3 | **How much coffees differ.** The prior's width was the standard error of the grinder's average (floor 0.25), as if every coffee responded alike. It now adds the spread of the coffees' own slopes beyond their noise (method of moments), blended with 0.5 as if that were three coffees | 2 coffees with own slopes so far: still near the 0.5 start |
+| R4 | **Step sized by the uncertainty.** The step (and its cap) is multiplied by 1/(1+cv^2), cv the sensitivity's remaining relative uncertainty after the blend: about 0.75 for a coffee with no slope of its own, near 1 once its shots pin it down. Errors over two tolerances keep the full step | Shot 29: 63 instead of 59 (the board's 59 ran 32.8 s; interpolating the Honduras's own shots, 63 would have run about 31 s). Shots 14 and 15: 4 to 6 um smaller, a likely extra shot on 14. Shot 10 (42 s): unchanged |
+| R5 | **Contradicting shots count for nothing.** When the coffee's own shots say finer runs faster, the blend pulled the slope towards zero and its inverse to the 20 um/s ceiling. Now the grinder's figure stands, with its uncertainty | Honduras at shot 29 (95 um 27.6 s, 76 um 25.6 s): 6.9 um/s instead of 20 |
+| R6 | **Brackets from recent shots only.** The other side of a bracket only from shots within 3 days of the newest | Shots 20, 21, 23 were held to +9, +3, +1 um by shot 15 (78 um, 22 Oct) while the coffee ran 32-35 s and slowing; now +16, +15, +16 |
+
+**Tried and dropped.** Treating settings closer than a quarter tolerance (95 and 96 um) as one setting: on the replay it pooled the shot from before a deliberate change into the new setting's average (shot 22 would have moved off a shot inside the tolerance), and the longer run let the one-off screen throw out a real slow shot of a drifting coffee (shot 20). R1 already covers the case that suggested it.
+
+**What the data cannot tell yet.** Whether R4 and R6 raise the two-shot rate: a replay compares each piece of advice, not the shots the owner would then have pulled. Three coffees and old beans; no ratings or prep notes; drift unexplained. Re-run `research/validation/analyze_dialin_shots.py` and the replay on the next ten coffees.
