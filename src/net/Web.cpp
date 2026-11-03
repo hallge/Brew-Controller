@@ -1374,6 +1374,15 @@ void handleGrind() {
       doc["first_drop_one_off_s"] = bbw::round2(a.firstDropOneOffS);
       doc["newest_time_s"] = bbw::round2(a.newestTimeS);
     }
+    // 3 Nov 2026 (research/grind-logic-review.md section 8). backlash_um and play_um are in stored
+    // steps, like delta_um.
+    doc["backlash_um"] = bbw::round2(learned.backlashSteps);
+    doc["backlash_reversals"] = learned.reversals;
+    doc["reversal_weight"] = bbw::round2(learned.reversalWeight);
+    if (a.notePlay) doc["play_um"] = bbw::round2(a.backlashAddedSteps);
+    if (a.newestAfterReversal) doc["newest_after_reversal"] = true;
+    doc["drift_s_per_day"] = bbw::round2(a.driftSPerDay);
+    doc["drift_pairs"] = a.driftPairs;
   }
   doc["step_limited"] = a.stepLimited;
   doc["outliers_ignored"] = a.outliersIgnored;

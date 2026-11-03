@@ -57,6 +57,13 @@ struct GrindConfig {
   float firstDropRefS = 0.0f;       // typical first drop on this recipe: a shot far from it is a one-off
   bool sizeByUncertainty = false;   // shrink a step by how uncertain the sensitivity still is
   uint32_t bracketMaxAgeS = 0;      // the other side of a bracket only from shots this recent
+  // Added 3 Nov 2026 (research/grind-logic-review.md section 8); all off when 0 / false.
+  float backlashSteps = 0.0f;       // the adjustment's dead zone (grindBacklash), stored steps
+  int8_t currentDir = 0;            // which way the dial last turned: +1 coarser, -1 finer, 0 not known
+  float reversalWeight = 1.0f;      // the first shot after the dial turned back counts this much
+  bool learnDrift = false;          // learn how fast this coffee drifts, and bring older shots forward
+  bool freshBag = false;            // the bag is under GRIND_DRIFT_FRESH_DAYS from roast
+  uint32_t cleanEpochS = 0;         // the grinder was last cleaned then; 0 = not known
 };
 
 // Where the sensitivity applied came from.
@@ -85,6 +92,10 @@ struct GrindShot {
   uint8_t taste = 0;    // Taste: 1 sour, 2 balanced, 3 bitter
   float firstDropS = 0.0f;  // when coffee first reached the cup; 0 = not known
   uint32_t epochS = 0;      // when it was pulled; 0 = not known
+  // Which way the dial last turned before it (any coffee on the grinder): +1 coarser, -1 finer, 0 not
+  // known; and whether it was the first shot after the dial turned back (grindApproachDirections).
+  int8_t dir = 0;
+  bool afterReversal = false;
 };
 
 enum class GrindAction : uint8_t {
@@ -265,6 +276,12 @@ struct GrindAdvice {
   float firstDropOneOffS = 0.0f;   // newest shot left out: its first drop this far from the usual (- early)
   float sensitivityCv = 0.0f;      // how uncertain umPerS still is, relative (0: not worked out)
   float stepFactor = 1.0f;         // the step was multiplied by this for that uncertainty
+  // Added 3 Nov 2026 (GrindConfig fields of the same names).
+  float backlashAddedSteps = 0.0f; // the move turns the dial back: this much added for the dead zone
+  bool notePlay = false;           // ...and enough to mention it with the advice
+  float driftSPerDay = 0.0f;       // this coffee's drift at one setting (+ slower), learned; 0: none
+  uint8_t driftPairs = 0;          // pairs of shots behind it
+  bool newestAfterReversal = false;  // the newest shot was the first after the dial turned back
 };
 
 // The grinder cannot go past the ends of its range: a suggestion beyond one is the end itself, and
@@ -441,6 +458,210 @@ constexpr uint32_t GRIND_BRACKET_MAX_AGE_S = 3u * 86400u;
 // Larger errors than this many tolerances keep the full step however uncertain the sensitivity.
 constexpr float GRIND_FULL_STEP_ERRORS = 2.0f;
 
+// ------------------------------------------------------- the adjustment's dead zone --
+// A threaded adjustment has a dead zone (backlash): when the dial turns back, the first part of the
+// turn moves nothing. With the dial last turned coarser the burrs sit half the dead zone short of
+// the reading, turned finer half past it. backlashSteps 0: the reading is where the burrs are.
+inline float grindEffectiveSetting(uint16_t setting, int8_t dir, const GrindConfig &config) {
+  return static_cast<float>(setting) - static_cast<float>(dir) * 0.5f * config.backlashSteps;
+}
+inline float grindEffectiveSetting(const GrindShot &s, const GrindConfig &config) {
+  return grindEffectiveSetting(s.grindUm, s.dir, config);
+}
+// The first shot after the dial turned back: the burr carrier may not have settled and grounds of the
+// old setting may still be in the chute, so it counts for less (reversalWeight; 1 with a plain config).
+inline float grindShotWeight(const GrindShot &s, const GrindConfig &config) {
+  return s.afterReversal ? config.reversalWeight : 1.0f;
+}
+
+// Which way the dial last turned before each shot, from the settings of all shots on the grinder as
+// now calibrated, newest first (any coffee, counted or not): the direction of the last change of
+// setting, carried while the setting stays. reversal[i]: the setting changed against the previous
+// direction. The oldest shot's direction is not known (0).
+inline void grindApproachDirections(const uint16_t *settings, size_t count, int8_t *dirs, bool *reversal) {
+  int8_t d = 0;
+  for (size_t k = count; k-- > 0;) {
+    bool rev = false;
+    if (k + 1 < count && settings[k] && settings[k + 1] && settings[k] != settings[k + 1]) {
+      const int8_t nd = settings[k] > settings[k + 1] ? 1 : -1;
+      rev = d != 0 && nd != d;
+      d = nd;
+    }
+    dirs[k] = d;
+    if (reversal) reversal[k] = rev;
+  }
+}
+
+// Two consecutive shots of one coffee (newer and older), for the dead zone and the reversal weight.
+struct GrindPair {
+  float dtS = 0.0f;          // time of the newer minus the older
+  float ds = 0.0f;           // setting of the newer minus the older, stored steps
+  int8_t ddir = 0;           // direction of the newer minus the older's: -2, 0 or +2
+  float meanTimeS = 0.0f;    // of the two
+  float meanSetting = 0.0f;
+  float weight = 1.0f;       // 0.5 before the last grinder cleaning
+  bool badPuck = false;      // either shot's first drop far from the usual
+};
+constexpr float GRIND_BACKLASH_PRIOR_UM = 4.0f;    // the dead zone, as far as is known: 0 +- this
+constexpr float GRIND_BACKLASH_MAX_UM = 20.0f;
+constexpr float GRIND_BACKLASH_NOTE_UM = 2.0f;  // from this, say the move includes the play
+constexpr float GRIND_REVERSAL_FIRST_WEIGHT = 0.5f;  // the first shot after turning back, until learned
+constexpr size_t GRIND_REVERSAL_MIN_PAIRS = 5;       // reversals before that weight is learned
+constexpr uint32_t GRIND_PAIR_MAX_GAP_S = 2u * 86400u;  // longer apart: drift, not the grind
+
+// A pair with either shot's first drop GRIND_FIRST_DROP_ONE_OFF_S or more from the usual: a bad puck.
+inline bool grindPairBadPuck(float firstDropA, float firstDropB, float firstDropRefS) {
+  if (!(firstDropRefS > 0.0f)) return false;
+  return (firstDropA > 0.0f && fabsf(firstDropA - firstDropRefS) >= 3.0f) ||
+         (firstDropB > 0.0f && fabsf(firstDropB - firstDropRefS) >= 3.0f);
+}
+
+// Seconds of time per stored step for a pair: the grinder's pooled elasticity (eps > 0) at the
+// pair's own time and setting, or the inverse of the starting sensitivity.
+inline double grindPairSlope(const GrindPair &p, float eps, float umPerS) {
+  if (eps > 0.0f && p.meanSetting > 0.0f) return static_cast<double>(eps) * p.meanTimeS / p.meanSetting;
+  return umPerS > 0.0f ? 1.0 / umPerS : 0.0;
+}
+
+// The dead zone, stored steps, from the pairs in which the dial turned back between the two shots.
+// A shot sits at setting - dir * b / 2, so a pair's time after the sensitivity, dt + beta * ds, is
+// beta * b / 2 * ddir plus the noise of two shots. Weighed against b ~ N(0, priorSteps), kept
+// within 0..maxSteps. used: reversal pairs behind it.
+inline float grindBacklash(const GrindPair *pairs, size_t count, float eps, float umPerS, float noiseS,
+                           float priorSteps, float maxSteps, size_t *used = nullptr) {
+  double sxy = 0, sxx = 0;
+  size_t n = 0;
+  for (size_t i = 0; pairs && i < count; ++i) {
+    const GrindPair &p = pairs[i];
+    if (p.ddir == 0 || p.badPuck) continue;
+    const double beta = grindPairSlope(p, eps, umPerS);
+    if (!(beta > 0.0)) continue;
+    const double x = beta * 0.5 * p.ddir;
+    const double y = p.dtS + beta * p.ds;
+    sxy += p.weight * x * y;
+    sxx += p.weight * x * x;
+    ++n;
+  }
+  if (used) *used = n;
+  if (n == 0 || !(priorSteps > 0.0f)) return 0.0f;
+  const double noiseVar = 2.0 * (noiseS > 0.1f ? noiseS : 0.1f) * (noiseS > 0.1f ? noiseS : 0.1f);
+  const double b = (sxy / noiseVar) / (sxx / noiseVar + 1.0 / (static_cast<double>(priorSteps) * priorSteps));
+  if (!(b > 0.0)) return 0.0f;
+  return static_cast<float>(b < maxSteps ? b : maxSteps);
+}
+
+// How much the first shot after turning back counts: the noise over the noise plus what such shots
+// scatter beyond it (each reversal pair's spread after the sensitivity and the dead zone, less two
+// shots' noise). GRIND_REVERSAL_FIRST_WEIGHT until GRIND_REVERSAL_MIN_PAIRS are known; 0.25..1.
+inline float grindReversalWeight(const GrindPair *pairs, size_t count, float eps, float umPerS, float noiseS,
+                                 float backlashSteps) {
+  double sum = 0, sumW = 0;
+  size_t n = 0;
+  for (size_t i = 0; pairs && i < count; ++i) {
+    const GrindPair &p = pairs[i];
+    if (p.ddir == 0 || p.badPuck) continue;
+    const double beta = grindPairSlope(p, eps, umPerS);
+    if (!(beta > 0.0)) continue;
+    const double r = p.dtS + beta * p.ds - beta * 0.5 * p.ddir * backlashSteps;
+    sum += p.weight * r * r;
+    sumW += p.weight;
+    ++n;
+  }
+  if (n < GRIND_REVERSAL_MIN_PAIRS || !(sumW > 0.0)) return GRIND_REVERSAL_FIRST_WEIGHT;
+  const double noiseVar = static_cast<double>(noiseS) * noiseS;
+  double extra = sum / sumW - 2.0 * noiseVar;
+  if (extra < 0.0) extra = 0.0;
+  double w = noiseVar / (noiseVar + extra);
+  if (w < 0.25) w = 0.25;
+  if (w > 1.0) w = 1.0;
+  return static_cast<float>(w);
+}
+
+// ------------------------------------------------------------------ drift --
+// A coffee drifts at one setting as it ages (degassing in the first weeks, staling and moisture
+// after). Learned from its own runs of shots at one setting (a step apart at most, each up to
+// GRIND_DRIFT_MAX_GAP_S after the one before): the slope of time over days within each run, pooled
+// over the runs, weighed against d ~ N(0, GRIND_DRIFT_PRIOR_SD), and with older shots forgotten
+// (half-life GRIND_DRIFT_HALF_LIFE_S), so the figure is the coffee's current rate on whatever curve
+// it is on. Only at one setting: across a change the drift and the sensitivity cannot be told apart,
+// since a dial-in turns one way while the coffee drifts (the real Rwanda of Oct 2026 went finer while
+// it slowed). Older shots are then brought forward to the newest one.
+constexpr float GRIND_DRIFT_PRIOR_SD = 0.5f;          // s per day
+constexpr float GRIND_DRIFT_MAX = 2.0f;               // s per day
+constexpr size_t GRIND_DRIFT_MIN_PAIRS = 3;           // shots beyond the first of each run
+constexpr uint32_t GRIND_DRIFT_MAX_GAP_S = 4u * 86400u;
+constexpr uint32_t GRIND_DRIFT_HALF_LIFE_S = 3u * 86400u;
+constexpr uint32_t GRIND_DRIFT_FRESH_DAYS = 21;       // degassing bends the curve most before this
+constexpr uint32_t GRIND_DRIFT_REACH_S = 7u * 86400u;          // how far back shots are brought forward
+constexpr uint32_t GRIND_DRIFT_REACH_FRESH_S = 3u * 86400u;    // ...for a fresh bag
+constexpr float GRIND_DRIFT_MAX_TOLERANCES = 2.0f;    // largest correction of one shot, in tolerances
+
+// shots: one coffee, newest first. secsPerStep: the sensitivity's inverse, for the step a run may
+// span. 0 when fewer than GRIND_DRIFT_MIN_PAIRS shots beyond the first of their runs.
+inline float grindDrift(const GrindShot *shots, size_t count, double secsPerStep, const GrindConfig &config,
+                        size_t *pairsUsed = nullptr) {
+  if (pairsUsed) *pairsUsed = 0;
+  if (!shots || count < 2 || !shots[0].epochS) return 0.0f;
+  const uint32_t newest = shots[0].epochS;
+  const double noise = config.noiseS > 0.1f ? config.noiseS : 0.1;
+  double sxy = 0, sxx = 0;
+  size_t n = 0;
+  size_t i = 0;
+  while (i < count) {
+    // The run starting at shot i (newest first): while each older shot is at the run's setting (+-1),
+    // known in time, not too long before the one after it, and on the same side of a cleaning.
+    size_t j = i + 1;
+    while (j < count) {
+      const GrindShot &a = shots[j - 1], &b = shots[j];
+      const int ds = static_cast<int>(b.grindUm) - static_cast<int>(shots[i].grindUm);
+      if (ds < -1 || ds > 1 || !a.epochS || !b.epochS || a.epochS < b.epochS ||
+          a.epochS - b.epochS > GRIND_DRIFT_MAX_GAP_S) {
+        break;
+      }
+      if (config.cleanEpochS && a.epochS >= config.cleanEpochS && b.epochS < config.cleanEpochS) break;
+      ++j;
+    }
+    if (j - i >= 2) {
+      double sw = 0, mx = 0, my = 0;
+      for (size_t k = i; k < j; ++k) {
+        const double age = newest >= shots[k].epochS ? static_cast<double>(newest - shots[k].epochS) : 0.0;
+        const double w = pow(0.5, age / GRIND_DRIFT_HALF_LIFE_S) * grindShotWeight(shots[k], config);
+        // Days before the newest shot, as a negative number; the time with the run's step taken out.
+        const double x = -age / 86400.0;
+        const double y = shots[k].timeS +
+                         (secsPerStep > 0.0 ? secsPerStep * (grindEffectiveSetting(shots[k], config) -
+                                                             grindEffectiveSetting(shots[i], config))
+                                            : 0.0);
+        sw += w;
+        mx += w * x;
+        my += w * y;
+      }
+      mx /= sw;
+      my /= sw;
+      for (size_t k = i; k < j; ++k) {
+        const double age = newest >= shots[k].epochS ? static_cast<double>(newest - shots[k].epochS) : 0.0;
+        const double w = pow(0.5, age / GRIND_DRIFT_HALF_LIFE_S) * grindShotWeight(shots[k], config);
+        const double x = -age / 86400.0 - mx;
+        const double y = shots[k].timeS +
+                         (secsPerStep > 0.0 ? secsPerStep * (grindEffectiveSetting(shots[k], config) -
+                                                             grindEffectiveSetting(shots[i], config))
+                                            : 0.0) - my;
+        sxy += w * x * y;
+        sxx += w * x * x;
+      }
+      n += j - i - 1;
+    }
+    i = j;
+  }
+  if (pairsUsed) *pairsUsed = n;
+  if (n < GRIND_DRIFT_MIN_PAIRS || !(sxx > 0.0)) return 0.0f;
+  const double var = noise * noise;
+  double d = (sxy / var) / (sxx / var + 1.0 / (GRIND_DRIFT_PRIOR_SD * GRIND_DRIFT_PRIOR_SD));
+  if (d > GRIND_DRIFT_MAX) d = GRIND_DRIFT_MAX;
+  if (d < -GRIND_DRIFT_MAX) d = -GRIND_DRIFT_MAX;
+  return static_cast<float>(d);
+}
+
 // The measured slope weighed against the starting guess. false: nothing could be measured (fewer
 // than two shots, or all at one setting); the guess stands. dataWeight 0..1.
 // postCv (optional): how uncertain the result still is, relative to it; the prior's when nothing
@@ -450,18 +671,23 @@ inline bool weighGrindSensitivity(const GrindShot *shots, size_t count, const Gr
   dataWeight = 0.0f;
   if (postCv) *postCv = config.priorCv;
   if (!shots || count < 2 || !(config.defaultUmPerS > 0.0f) || !(config.priorCv > 0.0f)) return false;
-  double meanX = 0, meanY = 0;
+  // Where the burrs were (grindEffectiveSetting), and how much each shot counts: all the same, and
+  // the plain settings, until a dead zone or a reversal weight is known.
+  double meanX = 0, meanY = 0, sumW = 0;
   for (size_t i = 0; i < count; ++i) {
-    meanX += shots[i].grindUm;
-    meanY += shots[i].timeS;
+    const double w = grindShotWeight(shots[i], config);
+    meanX += w * grindEffectiveSetting(shots[i], config);
+    meanY += w * shots[i].timeS;
+    sumW += w;
   }
-  meanX /= count;
-  meanY /= count;
+  meanX /= sumW;
+  meanY /= sumW;
   double sxy = 0, sxx = 0;
   for (size_t i = 0; i < count; ++i) {
-    const double dx = shots[i].grindUm - meanX;
-    sxy += dx * (shots[i].timeS - meanY);
-    sxx += dx * dx;
+    const double w = grindShotWeight(shots[i], config);
+    const double dx = grindEffectiveSetting(shots[i], config) - meanX;
+    sxy += w * dx * (shots[i].timeS - meanY);
+    sxx += w * dx * dx;
   }
   if (sxx <= 0.0) return false;
   // Finer ran faster (or coarser slower): with a learned prior (sizeByUncertainty) these shots say
@@ -512,6 +738,9 @@ struct GrinderElasticity {
 
 constexpr float GRIND_COFFEE_SPREAD_CV = 0.5f;
 constexpr float GRIND_COFFEE_SPREAD_PRIOR = 3.0f;
+// Coffees always differ somewhat (roast level alone moves the sensitivity): a few that happen to
+// agree never make the spread smaller than this (3 Nov 2026).
+constexpr float GRIND_COFFEE_SPREAD_MIN = 0.25f;
 
 constexpr size_t GRIND_POOL_MAX_GROUPS = 32;
 constexpr float GRIND_POOL_MIN_SPREAD = 0.03f;  // ln-setting spread (about 3 %) before a slope means anything
@@ -603,9 +832,12 @@ inline GrinderElasticity pooledGrindElasticity(const GrinderShot *shots, size_t 
     var /= static_cast<double>(own - 1);
     double measured = var - meanVar;
     if (measured < 0.0) measured = 0.0;
-    tau2 = (GRIND_COFFEE_SPREAD_PRIOR * tau2 + static_cast<double>(own) * measured) /
-           (GRIND_COFFEE_SPREAD_PRIOR + static_cast<double>(own));
+    // The variance of `own` slopes has own - 1 degrees of freedom: that is what it is worth.
+    const double dof = static_cast<double>(own) - 1.0;
+    tau2 = (GRIND_COFFEE_SPREAD_PRIOR * tau2 + dof * measured) / (GRIND_COFFEE_SPREAD_PRIOR + dof);
   }
+  const double floorTau = GRIND_COFFEE_SPREAD_MIN * eps;
+  if (tau2 < floorTau * floorTau) tau2 = floorTau * floorTau;
   out.spreadCv = static_cast<float>(sqrt(tau2) / eps);
   out.spreadCoffees = static_cast<uint8_t>(own > 255 ? 255 : own);
   return out;
@@ -619,7 +851,20 @@ struct GrindRepeat {
   float diffS = 0.0f;          // time of the newer minus the older
   float firstDropA = 0.0f;     // of each; 0 = not known
   float firstDropB = 0.0f;
+  // 0.5 for a repeat from before the grinder was last cleaned: the noise may have changed with it,
+  // so the figure moves to the new state within a few repeats (grindPairWeight).
+  float weight = 1.0f;
 };
+
+// What a pair of shots (newer, older) is worth after the grinder was cleaned at cleanEpochS: 1 with no
+// cleaning known or both after it, 0.5 both before it, 0 one on each side (no pair).
+constexpr float GRIND_BEFORE_CLEAN_WEIGHT = 0.5f;
+inline float grindPairWeight(uint32_t newerEpochS, uint32_t olderEpochS, uint32_t cleanEpochS) {
+  if (!cleanEpochS || !newerEpochS || !olderEpochS) return 1.0f;
+  if (olderEpochS >= cleanEpochS) return 1.0f;
+  if (newerEpochS < cleanEpochS) return GRIND_BEFORE_CLEAN_WEIGHT;
+  return 0.0f;
+}
 
 constexpr uint32_t GRIND_REPEAT_MAX_GAP_S = 2u * 86400u;
 constexpr float GRIND_NOISE_PRIOR_S = 1.5f;      // the figure assumed until repeats say otherwise
@@ -642,21 +887,23 @@ inline bool grindIsRepeat(uint16_t newerSetting, uint32_t newerEpochS, uint16_t 
 // One shot's scatter, in seconds: the repeats' rms difference over root two, blended with the prior.
 inline float grindShotNoise(const GrindRepeat *repeats, size_t count, float firstDropRefS,
                             size_t *used = nullptr) {
-  double sum = 0;
+  double sum = 0, weights = 0;
   size_t n = 0;
   for (size_t i = 0; repeats && i < count; ++i) {
     const GrindRepeat &r = repeats[i];
+    if (!(r.weight > 0.0f)) continue;
     if (firstDropRefS > 0.0f &&
         ((r.firstDropA > 0.0f && fabsf(r.firstDropA - firstDropRefS) >= GRIND_FIRST_DROP_ONE_OFF_S) ||
          (r.firstDropB > 0.0f && fabsf(r.firstDropB - firstDropRefS) >= GRIND_FIRST_DROP_ONE_OFF_S))) {
       continue;
     }
-    sum += 0.5 * static_cast<double>(r.diffS) * r.diffS;  // each pair: two shots' worth of variance
+    sum += r.weight * 0.5 * static_cast<double>(r.diffS) * r.diffS;  // each pair: two shots' worth of variance
+    weights += r.weight;
     ++n;
   }
   if (used) *used = n;
   const double prior = static_cast<double>(GRIND_NOISE_PRIOR_S) * GRIND_NOISE_PRIOR_S;
-  double var = (GRIND_NOISE_PRIOR_PAIRS * prior + sum) / (GRIND_NOISE_PRIOR_PAIRS + static_cast<double>(n));
+  double var = (GRIND_NOISE_PRIOR_PAIRS * prior + sum) / (GRIND_NOISE_PRIOR_PAIRS + weights);
   float s = static_cast<float>(sqrt(var));
   if (s < GRIND_NOISE_MIN_S) s = GRIND_NOISE_MIN_S;
   if (s > GRIND_NOISE_MAX_S) s = GRIND_NOISE_MAX_S;
@@ -742,6 +989,8 @@ inline GrindConfig grindConfigForGrinder(const GrindConfig &base, float umPerSte
   // From the real shots of 2 Nov 2026 (research/grind-logic-review.md, "Real shots").
   c.sizeByUncertainty = true;
   c.bracketMaxAgeS = GRIND_BRACKET_MAX_AGE_S;
+  // 3 Nov 2026 (research/grind-logic-review.md section 8).
+  c.learnDrift = true;
   return c;
 }
 
@@ -780,6 +1029,48 @@ inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t cu
     learnFrom = kept;
   }
   float learned = 0.0f;
+  // The coffee's drift (learnDrift): learned with the sensitivity from a first pass, then every
+  // older shot brought forward to the newest one's day, and the sensitivity learned again from those,
+  // so the drift no longer hides in the slope. The run, the bracket and the average use them too.
+  GrindShot forward[LEARN_MAX];
+  uint32_t bracketMaxAgeS = config.bracketMaxAgeS;
+  if (config.learnDrift && config.priorCv > 0.0f && count <= LEARN_MAX && count >= 3) {
+    float first = config.defaultUmPerS, w0 = 0.0f;
+    weighGrindSensitivity(learnFrom, learnCount, config, first, w0);
+    size_t pairs = 0;
+    const float d = first > 0.0f ? grindDrift(learnFrom, learnCount, 1.0 / first, config, &pairs) : 0.0f;
+    advice.driftPairs = pairs > 255 ? 255 : static_cast<uint8_t>(pairs);
+    if (d != 0.0f) {
+      advice.driftSPerDay = d;
+      const uint32_t reach = config.freshBag ? GRIND_DRIFT_REACH_FRESH_S : GRIND_DRIFT_REACH_S;
+      const float cap = GRIND_DRIFT_MAX_TOLERANCES * config.toleranceS;
+      const uint32_t newest = shots[0].epochS;
+      auto bring = [&](const GrindShot &s) {
+        GrindShot o = s;
+        if (newest && s.epochS && newest > s.epochS) {
+          uint32_t age = newest - s.epochS;
+          if (age > reach) age = reach;
+          float add = d * static_cast<float>(age) / 86400.0f;
+          if (add > cap) add = cap;
+          if (add < -cap) add = -cap;
+          o.timeS += add;
+        }
+        return o;
+      };
+      for (size_t i = 0; i < count; ++i) forward[i] = bring(shots[i]);
+      if (learnFrom == shots) {
+        learnFrom = forward;
+      } else {   // the same shots as before left out (decided on their own times)
+        learnCount = 0;
+        for (size_t i = 0; i < count; ++i) {
+          if (!grindFirstDropOneOff(shots[i], targetTimeS, config)) kept[learnCount++] = forward[i];
+        }
+      }
+      shots = forward;
+      // Older shots corrected for the drift stay useful for longer, except on a fresh bag.
+      if (!config.freshBag && bracketMaxAgeS) bracketMaxAgeS = GRIND_DRIFT_REACH_S;
+    }
+  }
   if (config.priorCv > 0.0f) {
     float weight = 0.0f;
     advice.sensitivityCv = config.priorCv;
@@ -805,9 +1096,12 @@ inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t cu
   bool forced[GRIND_OUTLIER_LOOKBACK];
   uint8_t tastes[GRIND_OUTLIER_LOOKBACK];
   float dropShift[GRIND_OUTLIER_LOOKBACK];  // nonzero: a first-drop one-off (grindFirstDropOneOff)
+  float runWeight[GRIND_OUTLIER_LOOKBACK];
   size_t runCount = 0;
+  if (count && shots[0].grindUm == currentUm) advice.newestAfterReversal = shots[0].afterReversal;
   for (size_t i = 0; i < count && runCount < GRIND_OUTLIER_LOOKBACK; ++i) {
     if (shots[i].grindUm != currentUm) break;
+    runWeight[runCount] = grindShotWeight(shots[i], config);
     forced[runCount] = shots[i].forced;
     tastes[runCount] = shots[i].taste;
     float shift = 0.0f;
@@ -847,7 +1141,7 @@ inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t cu
 
   // Moving average over what is left.
   const uint8_t window = config.window < 1 ? 1 : config.window;
-  float sum = 0.0f;
+  float sum = 0.0f, sumW = 0.0f;
   for (size_t i = 0; i < runCount && advice.shotsUsed < window; ++i) {
     if (dropShift[i] != 0.0f) {   // the puck, not the grind
       ++advice.outliersIgnored;
@@ -862,7 +1156,8 @@ inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t cu
       if (i == 0) advice.newestIgnored = true;
       continue;
     }
-    sum += run[i];
+    sum += runWeight[i] * run[i];
+    sumW += runWeight[i];
     if (advice.shotsUsed == 0 || run[i] < advice.minTimeS) advice.minTimeS = run[i];
     if (advice.shotsUsed == 0 || run[i] > advice.maxTimeS) advice.maxTimeS = run[i];
     ++advice.shotsUsed;
@@ -871,7 +1166,7 @@ inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t cu
     advice.action = GrindAction::NO_DATA;
     return advice;
   }
-  advice.averageTimeS = sum / advice.shotsUsed;
+  advice.averageTimeS = sum / sumW;
   advice.errorS = advice.averageTimeS - targetTimeS;
   // One shot outside the tolerance on the fast side and another on the slow
   // side, at the same setting: averaging them would report "on target" (or a
@@ -906,26 +1201,35 @@ inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t cu
     delta = delta > 0 ? limit : -limit;
     advice.stepLimited = true;
   }
-  int rounded = static_cast<int>(delta > 0 ? delta + 0.5f : delta - 0.5f);
+  // delta moves the burrs. Turning the dial back first crosses the dead zone, which moves nothing.
+  const int moveDir = delta > 0 ? 1 : -1;
+  float dialDelta = delta;
+  if (config.backlashSteps > 0.0f && config.currentDir != 0 && moveDir != config.currentDir) {
+    advice.backlashAddedSteps = config.backlashSteps;
+    dialDelta += static_cast<float>(moveDir) * config.backlashSteps;
+  }
+  int rounded = static_cast<int>(dialDelta > 0 ? dialDelta + 0.5f : dialDelta - 0.5f);
   if (rounded == 0) rounded = delta > 0 ? 1 : -1;  // outside tolerance: move at least 1 um
   int suggested = static_cast<int>(currentUm) + rounded;
   if (suggested < 1) suggested = 1;
   if (config.bracket) {
     // The earlier settings of this run, newest first: the nearest one in the direction of the move
     // that ran clearly on the other side of the target.
-    const int dir = delta > 0 ? 1 : -1;
+    const int dir = moveDir;
     size_t k = runEnd;
     size_t seen = 0;
     int otherX = 0;
+    int8_t otherDir = 0;
     float otherErr = 0.0f;
     const uint32_t newestEpoch = count ? shots[0].epochS : 0;
     while (k < count && seen < GRIND_BRACKET_LOOKBACK) {
       // A coffee drifts: what an old setting did then is not what it does now.
-      if (config.bracketMaxAgeS && newestEpoch && shots[k].epochS &&
-          newestEpoch > shots[k].epochS && newestEpoch - shots[k].epochS > config.bracketMaxAgeS) {
+      if (bracketMaxAgeS && newestEpoch && shots[k].epochS &&
+          newestEpoch > shots[k].epochS && newestEpoch - shots[k].epochS > bracketMaxAgeS) {
         break;
       }
       const uint16_t x = shots[k].grindUm;
+      const int8_t xDir = shots[k].dir;
       float sum = 0.0f;
       size_t n = 0;
       while (k < count && shots[k].grindUm == x && seen < GRIND_BRACKET_LOOKBACK) {
@@ -939,14 +1243,20 @@ inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t cu
       if (side * dir > 0 && e * advice.errorS < 0.0f && fabsf(e) > config.toleranceS &&
           (otherX == 0 || abs(side) < abs(otherX - static_cast<int>(currentUm)))) {
         otherX = x;
+        otherDir = xDir;
         otherErr = e;
       }
     }
-    if (otherX != 0 && (suggested - otherX) * dir >= 0) {
+    // Compared where the burrs were (the same as the readings with no dead zone known).
+    const float effCur = grindEffectiveSetting(currentUm, config.currentDir, config);
+    const float effOther = grindEffectiveSetting(static_cast<uint16_t>(otherX), otherDir, config);
+    const float effSuggested = static_cast<float>(suggested) - static_cast<float>(dir) * 0.5f * config.backlashSteps;
+    if (otherX != 0 && (effSuggested - effOther) * static_cast<float>(dir) >= 0.0f) {
       advice.bracketed = true;
       const float frac = advice.errorS / (advice.errorS - otherErr);  // 0..1: where the target lies
-      int between = static_cast<int>(currentUm) +
-                    static_cast<int>(lroundf(frac * static_cast<float>(otherX - static_cast<int>(currentUm))));
+      const float reach = frac * (effOther - effCur) + (effCur - static_cast<float>(currentUm)) +
+                          static_cast<float>(dir) * 0.5f * config.backlashSteps;
+      int between = static_cast<int>(currentUm) + static_cast<int>(lroundf(reach));
       if (between == static_cast<int>(currentUm) || between == otherX) {
         // Nothing between the two: the closer of them.
         advice.betweenSteps = true;
@@ -963,6 +1273,29 @@ inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t cu
   advice.suggestedUm = static_cast<uint16_t>(suggested);
   advice.action = advice.deltaUm < 0 ? GrindAction::FINER : GrindAction::COARSER;
   return advice;
+}
+
+// What the controller learned about the adjustment itself, put into a config built by
+// grindConfigForGrinder: the dead zone (grindBacklash, from the reversal pairs of all coffees on the
+// grinder), the weight of the first shot after turning back (grindReversalWeight) and which way the
+// dial last turned (currentDir). umPerStep 0: the prior and the cap in steps (1 and 5).
+// reversals (optional): the reversal pairs behind it.
+inline void grindLearnAdjustment(GrindConfig &c, const GrindPair *pairs, size_t count, const GrinderElasticity &pool,
+                                 float umPerStep, int8_t currentDir, size_t *reversals = nullptr) {
+  const float prior = umPerStep > 0.0f ? GRIND_BACKLASH_PRIOR_UM / umPerStep : 1.0f;
+  const float cap = umPerStep > 0.0f ? GRIND_BACKLASH_MAX_UM / umPerStep : 5.0f;
+  const float eps = pool.known ? pool.eps : 0.0f;
+  c.backlashSteps = grindBacklash(pairs, count, eps, c.defaultUmPerS, c.noiseS, prior, cap, reversals);
+  c.reversalWeight = grindReversalWeight(pairs, count, eps, c.defaultUmPerS, c.noiseS, c.backlashSteps);
+  c.currentDir = currentDir;
+}
+
+// Whether to say the move includes the play: it turns the dial back across a dead zone of
+// at least GRIND_BACKLASH_NOTE_UM. umPerStep 0: in steps, from 2.
+inline void markNotePlay(GrindAdvice &a, float umPerStep) {
+  const float steps = umPerStep > 0.0f ? GRIND_BACKLASH_NOTE_UM / umPerStep : 2.0f;
+  a.notePlay = (a.action == GrindAction::FINER || a.action == GrindAction::COARSER) &&
+             a.backlashAddedSteps > 0.0f && a.backlashAddedSteps >= steps;
 }
 
 // adviseGrind (the base) first; then, if asked and the base says "keep", a refinement by the
@@ -1106,6 +1439,7 @@ inline void applyAdviceConfidence(GrindAdvice &a, const AdviceConfidence &c, flo
     delta = delta > 0 ? limit : -limit;
     limited = true;
   }
+  if (a.backlashAddedSteps > 0.0f) delta += (delta > 0 ? 1.0f : -1.0f) * a.backlashAddedSteps;  // the dead zone
   if (a.bracketed && fabsf(delta) > fabsf(static_cast<float>(a.deltaUm))) {
     delta = static_cast<float>(a.deltaUm);
     limited = a.stepLimited;

@@ -125,3 +125,30 @@ The board's first real history: shots 10 to 30, 19 Oct to 2 Nov 2026. Three coff
 **Tried and dropped.** Treating settings closer than a quarter tolerance (95 and 96 um) as one setting: on the replay it pooled the shot from before a deliberate change into the new setting's average (shot 22 would have moved off a shot inside the tolerance), and the longer run let the one-off screen throw out a real slow shot of a drifting coffee (shot 20). R1 already covers the case that suggested it.
 
 **What the data cannot tell yet.** Whether R4 and R6 raise the two-shot rate: a replay compares each piece of advice, not the shots the owner would then have pulled. Three coffees and old beans; no ratings or prep notes; drift unexplained. Re-run `research/validation/analyze_dialin_shots.py` and the replay on the next ten coffees.
+
+## 8. The adjustment, drift and resets, 3 Nov 2026
+
+Four questions from the owner after section 7, and three more after the first plan. Each answer is switched on by `grindConfigForGrinder`, so a plain `GrindConfig` is still the original rule. The replay (`testGrindRealHistory`) now shows three versions: v0.1.26, round 1 (section 7) and this round.
+
+| # | Question | What the code does now | On the real shots |
+| --- | --- | --- | --- |
+| A | Can a few coffees that happen to agree collapse the coffee-to-coffee spread, and make the step factor erratic? | The measured spread counts by its degrees of freedom (n - 1 coffees against the prior's 3), and never falls below 0.25 of the pooled figure (`GRIND_COFFEE_SPREAD_MIN`). Thirty agreeing coffees give exactly the floor. The prior's own floor (`GRIND_PRIOR_CV_MIN`) already kept the step factor at 0.94 or more | No change: two coffees with own slopes |
+| B | Backlash: is 76 the same from 50 and from 100? | Each shot gets the direction the dial last turned before it (any coffee, `grindApproachDirections`). The burrs sit at `setting - dir * b / 2`. The dead zone b is learned from consecutive pairs of one coffee across which the dial turned back (`grindBacklash`, b ~ N(0, 4 um), 0 to 20 um), and the sensitivity, the bracket and the step all work where the burrs were. A move that turns the dial back adds b to the number, and the page and screen say so | Four reversals, two usable, all 1-2 um moves: b stays at 0, nothing changes |
+| C | Drift: correct old shots instead of dropping them | The coffee's drift rate is learned from its own runs at one setting (time over days within each run, pooled, d ~ N(0, 0.5 s/day), at most 2 s/day, older shots forgotten with a 3-day half-life). Older shots are brought forward by `d * age` (at most two tolerances each), the sensitivity is learned again from those, and brackets reach back 7 days instead of 3 | The Rwanda: 0.4 to 0.56 s/day. Its sensitivity, no longer hiding the drift, is learned as about 9 um/s instead of 6.5-7 |
+| C2 | Degassing is not linear | The forgetting makes d the coffee's current rate on whatever curve it is on, falling as the curve flattens. On a bag under 21 days from roast (where the curve bends most) shots are brought forward 3 days at most and brackets keep 3 days | Not tested: the beans were 155 to 202 days old, so their drift is not degassing |
+| D | A cleaning or a re-zero must not leave the advice anchored to the old grinder | Zeroing (and new burrs, a new grinder) already started everything again: shots carry `Grinder::calibration` and are only compared within it. A cleaning (`grinder_clean` upkeep) now counts the repeats and reversal pairs from before it at half weight and pairs across it not at all. Settings stay comparable across a cleaning, since it does not move the zero | A replayed cleaning on 28 Oct moves the noise figure; the advice keeps its direction |
+| E | The first shot after a reversal may still be off (carrier settling, old grounds in the chute) | It counts at half weight in the average and in the sensitivity (`GRIND_REVERSAL_FIRST_WEIGHT`). Once five reversals are known, the weight is learned from how far such shots scatter beyond the noise (`grindReversalWeight`, 0.25 to 1) | Fewer than five reversals: 0.5 |
+
+**Tried and changed.** Drift learned from every consecutive pair, after the sensitivity, came out at -0.1 s/day on the Rwanda: a dial-in turns one way while the coffee drifts, so across changes of setting the two cannot be told apart. It is now learned at one setting only. "Go past and come back" was planned for a reversal. It was dropped: it leaves the threads turned the old way, which the controller cannot see. The dead zone is put in the number instead.
+
+**Next-shot prediction** (11 changes of setting): rms 3.09 s for v0.1.26, 3.01 s for round 1, 3.02 s now. Drift and the steeper sensitivity do not improve the prediction yet on these shots. The check is that they make it no worse.
+
+**Sources.** Degassing is fast for about the first 20 days after roasting and then slows sharply (SCA, "Coffee Decoded: What is fresh coffee?"). Smrke et al. (J. Agric. Food Chem. 2018, ZHAW) fit it with a Weibull curve rather than a straight line, and the published constants vary with roast and storage, so none is fixed here. Retention of grounds from the old setting is the usual explanation for an odd first shot after a change (Five Senses, "Grinder purge quantity"; Clive Coffee, "How to fix a grinder that drifts off its setting"). Burr-carrier settling is reported in forums only. No controlled study of room humidity and shot time was found, and the advice that is published disagrees on its direction: humidity is recorded (section 9), not yet modelled.
+
+**What resets what.**
+
+| Owner action | What the advice starts again |
+| --- | --- |
+| Zeroed today, new burrs, another grinder | Everything: settings, runs, brackets, sensitivity, noise, dead zone, drift, the usual first drop |
+| Cleaned the grinder | Noise and dead zone: older repeats and reversals at half weight, none across the cleaning; drift runs end at it |
+| A new bag of the same coffee | That coffee's runs, brackets, own sensitivity and drift |

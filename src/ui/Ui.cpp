@@ -1835,7 +1835,12 @@ void refreshResult(State state) {
     fitLine(resGrind, finer ? "BREW FAST   GRIND FINER" : "BREW SLOW   GRIND COARSER");
     // The amount is only shown once it rests on a sensitivity measured from
     // this grinder's own history.
-    if (bbw::adviceHasNumber(g)) {
+    if (bbw::adviceHasNumber(g) && g.notePlay) {
+      // Turning the dial back: the number includes the adjustment's play (GrindAdvice::notePlay).
+      setTextF(resGrindSub, "%s %s %s  ->  set %s %s\nincl. %s %s play", gd(g.deltaUm), gdu(),
+               finer ? "finer" : "coarser", gs(g.suggestedUm), grindUnit(),
+               gd(static_cast<int>(lroundf(g.backlashAddedSteps))), gdu());
+    } else if (bbw::adviceHasNumber(g)) {
       setTextF(resGrindSub, "%s %s %s  ->  set %s %s", gd(g.deltaUm),
                gdu(), finer ? "finer" : "coarser", gs(g.suggestedUm), grindUnit());
     } else {

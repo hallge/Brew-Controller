@@ -121,6 +121,9 @@ bbw::GrinderElasticity g_grinderElasticity;  // with grindAdvice(): what the gri
 float g_shotNoiseS = 0.0f;       // with grindAdvice(): the owner's shot-to-shot noise (bbw::grindShotNoise)
 size_t g_shotNoiseRepeats = 0;   // ...from this many repeats
 float g_firstDropRefS = 0.0f;    // ...and the usual first drop on the recipe, 0 = not known
+float g_backlashSteps = 0.0f;    // ...the adjustment's dead zone (bbw::grindBacklash), stored steps
+size_t g_backlashReversals = 0;  // ...from this many reversals
+float g_reversalWeight = 1.0f;   // ...and what the first shot after turning back counts
 bbw::GrindAdvice g_grindAdvice;
 uint32_t g_lastCountedEpochS = 0;  // newest shot behind g_grindAdvice; loop task only
 std::atomic<uint32_t> g_botHoldUntilMs{0};  // keep the Bot link up until then
@@ -2577,7 +2580,8 @@ bbw::GrinderElasticity grinderElasticity() {
 
 GrindLearned grindLearned() {
   grindAdvice();
-  return {g_shotNoiseS, static_cast<uint16_t>(g_shotNoiseRepeats), g_firstDropRefS};
+  return {g_shotNoiseS, static_cast<uint16_t>(g_shotNoiseRepeats), g_firstDropRefS, g_backlashSteps,
+          static_cast<uint16_t>(g_backlashReversals), g_reversalWeight};
 }
 
 // Set by grindAdvice()'s scan: the active coffee, bag and recipe have no shot yet on this grinder.
@@ -2699,8 +2703,20 @@ bbw::GrindAdvice grindAdvice() {
       uint16_t group, setting;
       uint32_t epochS;
       float timeS, firstDropS;
+      uint8_t seq;   // its place in seq[]
     } last[32];
     size_t lastCount = 0;
+    // 3 Nov 2026: the settings of every shot on the grinder as calibrated, newest first, for which
+    // way the dial last turned (bbw::grindApproachDirections); where each shot of this coffee and each
+    // pair sits in it; consecutive pairs of one coffee for the dead zone; and the last cleaning.
+    uint16_t seq[SCAN_SHOTS];
+    size_t seqCount = 0;
+    uint8_t shotSeq[40];
+    bbw::GrindPair pairs[40];
+    uint8_t pairSeq[40][2];
+    float pairDrops[40][2];
+    size_t pairCount = 0;
+    uint32_t cleanEpochS = 0;
   };
   static Scan scan;
   const bbw::Settings s = settings();
@@ -2715,8 +2731,18 @@ bbw::GrindAdvice grindAdvice() {
   scan.dropCount = 0;
   scan.repeatCount = 0;
   scan.lastCount = 0;
+  scan.seqCount = 0;
+  scan.pairCount = 0;
+  {
+    Lock lock;
+    scan.cleanEpochS = g_maintenance.doneAtEpochS[static_cast<size_t>(bbw::Upkeep::GRINDER_CLEAN)];
+  }
   g_store.scanShots(SCAN_SHOTS, [](const bbw::ShotRecord &record, void *context) {
     Scan &sc = *static_cast<Scan *>(context);
+    // Every shot on the grinder as calibrated, counted or not: the dial turned for it either way.
+    const bool onGrinder = record.grinderId == sc.calibration && record.grindUm != 0 && sc.seqCount < SCAN_SHOTS;
+    const uint8_t seqIdx = static_cast<uint8_t>(onGrinder ? sc.seqCount : 255);  // 255: not in seq[]
+    if (onGrinder) sc.seq[sc.seqCount++] = record.grindUm;
     // Same recipe, same coffee (and bag: roast date), same yield and dose:
     // otherwise brew times do not compare. A new bag starts a clean history.
     // By id, so renaming either does not.
@@ -2752,14 +2778,32 @@ bbw::GrindAdvice grindAdvice() {
       const float t = bbw::grindShotTime(record, sc.basis);
       size_t g = 0;
       while (g < sc.lastCount && sc.last[g].group != group) ++g;
-      if (g < sc.lastCount) {   // the next newer shot of this coffee: a repeat?
+      if (g < sc.lastCount) {   // the next newer shot of this coffee: a repeat? a pair?
         const Scan::Last &newer = sc.last[g];
-        if (sc.repeatCount < sizeof(sc.repeats) / sizeof(sc.repeats[0]) &&
+        // Across the last grinder cleaning no pair; both before it, half (bbw::grindPairWeight).
+        const float w = bbw::grindPairWeight(newer.epochS, record.epochS, sc.cleanEpochS);
+        if (w > 0.0f && sc.repeatCount < sizeof(sc.repeats) / sizeof(sc.repeats[0]) &&
             bbw::grindIsRepeat(newer.setting, newer.epochS, record.grindUm, record.epochS)) {
           sc.repeats[sc.repeatCount].diffS = newer.timeS - t;
           sc.repeats[sc.repeatCount].firstDropA = newer.firstDropS;
           sc.repeats[sc.repeatCount].firstDropB = record.firstDropS;
+          sc.repeats[sc.repeatCount].weight = w;
           ++sc.repeatCount;
+        }
+        if (w > 0.0f && onGrinder && newer.seq != 255 && sc.pairCount < sizeof(sc.pairs) / sizeof(sc.pairs[0]) && newer.epochS &&
+            record.epochS && newer.epochS >= record.epochS &&
+            newer.epochS - record.epochS <= bbw::GRIND_PAIR_MAX_GAP_S) {
+          bbw::GrindPair &p = sc.pairs[sc.pairCount];
+          p.dtS = newer.timeS - t;
+          p.ds = static_cast<float>(newer.setting) - static_cast<float>(record.grindUm);
+          p.meanTimeS = 0.5f * (newer.timeS + t);
+          p.meanSetting = 0.5f * (static_cast<float>(newer.setting) + static_cast<float>(record.grindUm));
+          p.weight = w;
+          sc.pairSeq[sc.pairCount][0] = newer.seq;
+          sc.pairSeq[sc.pairCount][1] = seqIdx;
+          sc.pairDrops[sc.pairCount][0] = newer.firstDropS;
+          sc.pairDrops[sc.pairCount][1] = record.firstDropS;
+          ++sc.pairCount;
         }
       } else if (sc.lastCount < sizeof(sc.last) / sizeof(sc.last[0])) {
         g = sc.lastCount++;
@@ -2767,7 +2811,7 @@ bbw::GrindAdvice grindAdvice() {
         g = sizeof(sc.last) / sizeof(sc.last[0]);   // full: this coffee is not tracked
       }
       if (g < sizeof(sc.last) / sizeof(sc.last[0])) {
-        sc.last[g] = {group, record.grindUm, record.epochS, t, record.firstDropS};
+        sc.last[g] = {group, record.grindUm, record.epochS, t, record.firstDropS, seqIdx};
       }
     }
     if (valid && same && sc.count < sizeof(sc.shots) / sizeof(sc.shots[0])) {
@@ -2780,6 +2824,7 @@ bbw::GrindAdvice grindAdvice() {
       sc.shots[sc.count].taste = record.taste;
       sc.shots[sc.count].firstDropS = record.firstDropS;
       sc.shots[sc.count].epochS = record.epochS;
+      sc.shotSeq[sc.count] = seqIdx;
       ++sc.count;
     }
     return true;   // SCAN_SHOTS bounds the pass
@@ -2801,6 +2846,30 @@ bbw::GrindAdvice grindAdvice() {
   g_shotNoiseS = bbw::grindShotNoise(scan.repeats, scan.repeatCount, g_firstDropRefS, &g_shotNoiseRepeats);
   config = bbw::grindConfigForGrinder(config, grinderNow.umPerUnit, recipe.grindUm, recipe.targetTimeS,
                                       g_grinderElasticity, g_shotNoiseS, g_firstDropRefS);
+  // Which way the dial last turned before each shot, and now (3 Nov 2026).
+  {
+    static int8_t dirs[SCAN_SHOTS];
+    static bool reversal[SCAN_SHOTS];
+    bbw::grindApproachDirections(scan.seq, scan.seqCount, dirs, reversal);
+    for (size_t i = 0; i < count; ++i) {
+      if (scan.shotSeq[i] == 255) continue;
+      scan.shots[i].dir = dirs[scan.shotSeq[i]];
+      scan.shots[i].afterReversal = reversal[scan.shotSeq[i]];
+    }
+    for (size_t i = 0; i < scan.pairCount; ++i) {
+      scan.pairs[i].ddir = static_cast<int8_t>(dirs[scan.pairSeq[i][0]] - dirs[scan.pairSeq[i][1]]);
+      scan.pairs[i].badPuck = bbw::grindPairBadPuck(scan.pairDrops[i][0], scan.pairDrops[i][1], g_firstDropRefS);
+    }
+    int8_t now = scan.seqCount ? dirs[0] : 0;
+    if (scan.seqCount && recipe.grindUm && recipe.grindUm != scan.seq[0]) now = recipe.grindUm > scan.seq[0] ? 1 : -1;
+    config.cleanEpochS = scan.cleanEpochS;
+    const int age = bbw::beanAgeDays(recipe.roastDate, epochNow());
+    config.freshBag = age >= 0 && static_cast<uint32_t>(age) < bbw::GRIND_DRIFT_FRESH_DAYS;
+    bbw::grindLearnAdjustment(config, scan.pairs, scan.pairCount, g_grinderElasticity, grinderNow.umPerUnit, now,
+                              &g_backlashReversals);
+    g_backlashSteps = config.backlashSteps;
+    g_reversalWeight = config.reversalWeight;
+  }
   g_grindAdvice = bbw::adviseGrindRated(shots, count, recipe.grindUm, recipe.targetTimeS, config,
                                         s.grindRatedTarget);
   if (scan.newestSeen && scan.newestSetting == recipe.grindUm) {
@@ -2815,6 +2884,7 @@ bbw::GrindAdvice grindAdvice() {
                                !s.grindConfidenceOff);
   }
   bbw::keepAdviceInRange(g_grindAdvice, bbw::grinderRange(grinderNow));
+  bbw::markNotePlay(g_grindAdvice, grinderNow.umPerUnit);
   g_lastCountedEpochS = scan.newestEpochS;
   g_grindAdviceStale = false;
   return g_grindAdvice;
@@ -2914,6 +2984,8 @@ void upkeepDone(bbw::Upkeep job) {
     bbw::markUpkeepDone(g_maintenance, job, epochNow());
     g_maintenanceDirty = true;
   }
+  // A grinder cleaning changes what the advice learned from repeats (bbw::grindPairWeight).
+  if (job == bbw::Upkeep::GRINDER_CLEAN) g_grindAdviceStale = true;
 }
 
 void upkeepEvery(bbw::Upkeep job, uint32_t everyShots) {

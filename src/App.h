@@ -132,6 +132,11 @@ struct GrindLearned {
   float shotNoiseS;
   uint16_t repeats;
   float firstDropS;
+  // 3 Nov 2026: the adjustment's dead zone in stored steps, the reversals behind it, and what the
+  // first shot after turning the dial back counts.
+  float backlashSteps;
+  uint16_t reversals;
+  float reversalWeight;
 };
 GrindLearned grindLearned();
 // Past advice to move on this grinder (as now calibrated) and what the next shot did, newest first.
