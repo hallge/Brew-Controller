@@ -14,6 +14,7 @@
 
 #include "Log.h"
 #include "SafeTls.h"
+#include "BigMem.h"
 #include "core/HomeAssistant.h"
 
 // Mozilla's root certificates in ESP-IDF's bundle format, linked in by board_build.embed_files.
@@ -72,8 +73,11 @@ int haRequest(const char *url, const char *token, const char *body, char *out, s
     return -1;
   }
   const bool tls = strncmp(url, "https://", 8) == 0;
-  static char resolved[256];
-  const char *target = resolveLocal(url, resolved, sizeof(resolved)) ? resolved : url;
+  // The buffers here are taken from PSRAM the first time they are needed, so Home Assistant
+  // costs no memory inside the chip while it is not set up.
+  constexpr size_t RESOLVED_SIZE = 256;
+  static char *resolved = bigArray<char>(RESOLVED_SIZE);
+  const char *target = resolveLocal(url, resolved, RESOLVED_SIZE) ? resolved : url;
   std::unique_ptr<WiFiClient> plain;
   std::unique_ptr<SafeTlsClient> secure;
   HTTPClient http;
@@ -98,8 +102,9 @@ int haRequest(const char *url, const char *token, const char *body, char *out, s
     return -2;
   }
   if (token && token[0]) {
-    static char auth[HA_TOKEN_LEN + 8];
-    snprintf(auth, sizeof(auth), "Bearer %s", token);
+    constexpr size_t AUTH_SIZE = HA_TOKEN_LEN + 8;
+    static char *auth = bigArray<char>(AUTH_SIZE);
+    snprintf(auth, AUTH_SIZE, "Bearer %s", token);
     http.addHeader("Authorization", auth);
   }
   int code;
@@ -169,11 +174,12 @@ void onMessage(char *topic, uint8_t *payload, unsigned int length) {
 
 // The discovery configs, retained: Home Assistant makes the device from them, also after it restarts.
 void announce() {
-  static char topic[128];
-  static char payload[900];
+  constexpr size_t TOPIC_SIZE = 128, PAYLOAD_SIZE = 900;
+  static char *topic = bigArray<char>(TOPIC_SIZE);
+  static char *payload = bigArray<char>(PAYLOAD_SIZE);
   for (size_t i = 0; i < MQTT_ENTITY_COUNT; ++i) {
-    if (!mqttDiscoveryTopic(MQTT_ENTITIES[i], g_mqttNode, topic, sizeof(topic))) continue;
-    if (!mqttDiscoveryConfig(MQTT_ENTITIES[i], g_mqttNode, g_mqttFirmware, payload, sizeof(payload))) continue;
+    if (!mqttDiscoveryTopic(MQTT_ENTITIES[i], g_mqttNode, topic, TOPIC_SIZE)) continue;
+    if (!mqttDiscoveryConfig(MQTT_ENTITIES[i], g_mqttNode, g_mqttFirmware, payload, PAYLOAD_SIZE)) continue;
     g_mqtt.publish(topic, payload, true);
   }
   g_mqttAnnounced = true;
@@ -195,7 +201,8 @@ void mqttConfigure(const char *url, const char *user, const char *password, cons
   g_mqttProblem[0] = '\0';
   if (url && url[0] && !g_mqttOn) strlcpy(g_mqttProblem, "the broker address is not mqtt://host[:port]", sizeof(g_mqttProblem));
   g_mqtt.setServer(g_mqttHost, g_mqttPort);
-  g_mqtt.setBufferSize(1024);    // a discovery config is about 600 bytes
+  // A discovery config is about 600 bytes. The buffer is taken only when a broker is set.
+  if (g_mqttOn) g_mqtt.setBufferSize(1024);
   g_mqtt.setSocketTimeout(2);    // seconds: a broker that is gone must not hold up the loop
   g_mqtt.setKeepAlive(30);
   g_mqtt.setCallback(onMessage);

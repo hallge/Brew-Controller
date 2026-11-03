@@ -2723,7 +2723,7 @@ bbw::GrindAdvice grindAdvice() {
     size_t pairCount = 0;
     uint32_t cleanEpochS = 0;
   };
-  static Scan scan;
+  static Scan &scan = *bbw::bigNew<Scan>();   // 5.5 kB: in PSRAM, taken on the first advice
   const bbw::Settings s = settings();
   scan.recipe = activeRecipe();
   g_grindFresh = false;
@@ -4479,13 +4479,15 @@ void configureHomeAssistant() {
 bool haReadEntity(const char *entity, bool humidity, float &value, char *problem, size_t size,
                   bool *unreachable = nullptr) {
   if (unreachable) *unreachable = false;
-  static char url[bbw::HA_URL_LEN + bbw::HA_ENTITY_LEN + 16];
-  static char body[1536];
-  if (!bbw::haStateUrl(g_net.haUrl, entity, url, sizeof(url))) {
+  // In PSRAM, taken on first use: nothing inside the chip while Home Assistant is not set up.
+  constexpr size_t URL_SIZE = bbw::HA_URL_LEN + bbw::HA_ENTITY_LEN + 16, BODY_SIZE = 1536;
+  static char *url = bbw::bigArray<char>(URL_SIZE);
+  static char *body = bbw::bigArray<char>(BODY_SIZE);
+  if (!bbw::haStateUrl(g_net.haUrl, entity, url, URL_SIZE)) {
     snprintf(problem, size, "the address or the entity id %s cannot be used", entity);
     return false;
   }
-  const int code = bbw::haRequest(url, g_net.haToken, nullptr, body, sizeof(body), problem, size, 2000);
+  const int code = bbw::haRequest(url, g_net.haToken, nullptr, body, BODY_SIZE, problem, size, 2000);
   if (code < 0 && unreachable) *unreachable = true;
   if (code != 200) return false;
   static JsonDocument doc;
@@ -4637,7 +4639,9 @@ void mqttStart() {
 }
 
 void mqttPublishState() {
-  static char grind[24], advised[24], topic[64], payload[320];
+  constexpr size_t PAYLOAD_SIZE = 320;
+  static char grind[24], advised[24], topic[64];
+  static char *payload = bbw::bigArray<char>(PAYLOAD_SIZE);   // PSRAM, on first use
   const bbw::LiveStatus st = app::status();
   bbw::MqttState m;
   m.state = bbw::stateName(st.state);
@@ -4670,7 +4674,7 @@ void mqttPublishState() {
       bbw::formatSetting(a.suggestedUm, grinderNow, advised, sizeof(advised))) {
     m.adviceGrind = advised;
   }
-  if (!bbw::mqttStateJson(m, payload, sizeof(payload))) return;
+  if (!bbw::mqttStateJson(m, payload, PAYLOAD_SIZE)) return;
   bbw::mqttTopic(mqttNode(), "state", topic, sizeof(topic));
   bbw::mqttPublish(topic, payload, true);
 }
@@ -4708,8 +4712,9 @@ void homeAssistantService(bool idle) {
   if (g_haWebhookShot) {
     const uint32_t id = g_haWebhookShot;
     g_haWebhookShot = 0;
-    static char url[bbw::HA_URL_LEN + bbw::HA_WEBHOOK_LEN + 16];
-    static char body[3072];
+    constexpr size_t URL_SIZE = bbw::HA_URL_LEN + bbw::HA_WEBHOOK_LEN + 16, BODY_SIZE = 3072;
+    static char *url = bbw::bigArray<char>(URL_SIZE);     // PSRAM, on first use
+    static char *body = bbw::bigArray<char>(BODY_SIZE);
     bbw::ShotRecord shot;
     bool found = false;
     for (uint32_t i = 0; i < 3 && g_store.readShot(i, shot); ++i) {
@@ -4718,7 +4723,7 @@ void homeAssistantService(bool idle) {
         break;
       }
     }
-    if (found && bbw::haWebhookUrl(g_net.haUrl, g_net.haWebhookId, url, sizeof(url))) {
+    if (found && bbw::haWebhookUrl(g_net.haUrl, g_net.haWebhookId, url, URL_SIZE)) {
       static JsonDocument doc;
       doc.clear();
       JsonObject o = doc["shot"].to<JsonObject>();
@@ -4732,7 +4737,7 @@ void homeAssistantService(bool idle) {
         if (!std::isnan(amb.tempC)) doc["ambient"]["temp_c"] = amb.tempC;
       }
       doc["event"] = "shot";
-      if (serializeJson(doc, body, sizeof(body)) < sizeof(body) - 1) {
+      if (serializeJson(doc, body, BODY_SIZE) < BODY_SIZE - 1) {
         char problem[80];
         g_haWebhookCode = bbw::haRequest(url, nullptr, body, nullptr, 0, problem, sizeof(problem), 3000);
         haSetProblem(problem);
