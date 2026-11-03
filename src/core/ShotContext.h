@@ -30,13 +30,18 @@
 
 #include "Community.h"
 #include "GrindAdvisor.h"
+#include "HomeAssistant.h"
 #include "ShotData.h"
 #include "SimilarCoffee.h"
 #include "Types.h"
 
 namespace bbw {
 
-constexpr uint8_t SHOT_CONTEXT_VERSION = 1;
+// 2 (3 Nov 2026): the room's humidity and temperature added at the end; a version 1 file is
+// converted slot by slot (Store::prepareContexts), the new fields "not known".
+constexpr uint8_t SHOT_CONTEXT_VERSION = 2;
+constexpr uint8_t SHOT_CONTEXT_VERSION_V1 = 1;
+constexpr size_t SHOT_CONTEXT_V1_SIZE = 64;
 // Bumped whenever the advice or start rules change in a way that would change a recorded result.
 constexpr uint8_t SHOT_ENGINE_VERSION = 1;
 
@@ -96,7 +101,14 @@ struct ShotContext {
   // Entered by the owner afterwards, on the shot's page (applyShotPrep).
   uint16_t doseActualDg = 0;     // dose actually weighed, tenths of a gram; 0 unknown
   uint16_t prepFlags = 0;        // CTX_PREP_*
+  // Version 2: the room at the shot (core/HomeAssistant.h), recorded only. AMBIENT_NONE_X10: not known.
+  int16_t ambientRhX10 = AMBIENT_NONE_X10;    // relative humidity, tenths of a percent
+  int16_t ambientTempX10 = AMBIENT_NONE_X10;  // tenths of a degree C
+  uint8_t ambientSource = 0;                  // AmbientSource
+  uint8_t pad1 = 0;
+  uint16_t ambientAgeS = 0;                   // how old the reading was at the shot
 };
+static_assert(offsetof(ShotContext, ambientRhX10) == SHOT_CONTEXT_V1_SIZE, "version 1 is the start of version 2");
 
 static_assert(sizeof(ShotContext) % 4 == 0, "ShotContext must not need padding at its end");
 
@@ -151,6 +163,8 @@ struct ShotContextInputs {
   bool learnGrinder = false;
   const CurvePoint *curve = nullptr;
   size_t curvePoints = 0;
+  AmbientReading ambient;               // the room's latest reading
+  uint32_t nowMs = 0;                   // millis() at the shot, to judge its age
 };
 
 // What the owner says about a shot's preparation afterwards: the dose they weighed (0 = not
@@ -213,6 +227,13 @@ inline ShotContext buildShotContext(const ShotContextInputs &in) {
   c.defaultUmPerSx100 = static_cast<uint16_t>(d < 0.0f ? 0.0f : (d > 65535.0f ? 65535.0f : d));
   c.ratedTarget = in.ratedTarget ? 1 : 0;
   c.learnGrinder = in.learnGrinder ? 1 : 0;
+  if (ambientFresh(in.ambient, in.nowMs)) {
+    c.ambientRhX10 = ambientX10(in.ambient.rhPct);
+    c.ambientTempX10 = ambientX10(in.ambient.tempC);
+    c.ambientSource = static_cast<uint8_t>(in.ambient.source);
+    const uint32_t age = (in.nowMs - in.ambient.atMs) / 1000u;
+    c.ambientAgeS = static_cast<uint16_t>(age > 0xFFFF ? 0xFFFF : age);
+  }
   return c;
 }
 

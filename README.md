@@ -588,6 +588,10 @@ the brew bot starts the pump if the machine is on (press again to stop), the
 power bot switches the machine. Web page only, and only while no shot is in
 hand.
 
+### Home Assistant
+
+Optional, and off until set up: the room's humidity and temperature read from Home Assistant (or pushed to `POST /api/ambient`) and recorded with each shot; a webhook after each shot; MQTT discovery with sensors and a Start button; and a custom integration in `integrations/homeassistant`. See [docs/HOME_ASSISTANT.md](docs/HOME_ASSISTANT.md).
+
 ## 6. What happens when something goes wrong
 
 One press toggles the machine, and the Bot cannot tell the controller whether

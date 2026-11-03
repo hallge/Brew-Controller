@@ -569,10 +569,24 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <label>SwitchBot password (only if set in its app)<input id="botPassword" type="password"></label></div>
 <label class="chk"><input type="checkbox" id="webStartEnabled">Allow Start from this page</label>
 <div class="row"><button class="pri" data-save onclick="saveNet()">Save and restart</button></div></section>
+<section class="card" id="hacard"><div class="head"><h2>Home Assistant</h2><span class="sm dim" id="ha_state"></span></div>
+<div class="sm mid">Optional. The room's humidity and temperature are read from Home Assistant every 5 minutes and recorded with each shot (for later study: the grind advice does not use them yet). A finished shot can go to a webhook, and an MQTT broker shows the controller as a device with a Start button. See docs/HOME_ASSISTANT.md.</div>
+<div class="grid">
+<label>Home Assistant address<input id="ha_url" placeholder="http://homeassistant.local:8123"></label>
+<label>Long-lived access token (blank keeps current)<input id="ha_token" type="password" autocomplete="off"></label>
+<label>Humidity entity<input id="ha_rh" placeholder="sensor.kitchen_humidity"></label>
+<label>Temperature entity<input id="ha_temp" placeholder="sensor.kitchen_temperature"></label>
+<label>Webhook id for each finished shot (blank keeps current)<input id="ha_hook" type="password" autocomplete="off"></label>
+<label>MQTT broker (empty: off)<input id="ha_mqtt" placeholder="mqtt://homeassistant.local:1883"></label>
+<label>MQTT user<input id="ha_muser" autocomplete="off"></label>
+<label>MQTT password (blank keeps current)<input id="ha_mpass" type="password" autocomplete="off"></label></div>
+<div class="row"><label class="chk"><input type="checkbox" id="ha_cleartok">Remove the token</label><label class="chk"><input type="checkbox" id="ha_clearhook">Remove the webhook</label><label class="chk"><input type="checkbox" id="ha_clearmpass">Remove the MQTT password</label></div>
+<div class="sm" id="ha_msg"></div>
+<div class="row"><button class="pri" data-save onclick="saveHa()">Save</button><button onclick="testHa()">Test the reading</button></div></section>
 <section class="card" id="bkcard"><h2>Backup and restore</h2>
 <div class="sm mid">One file with this controller's settings, coffees, recipes, pairing and shots. Download one before you reflash it.</div>
 <label class="chk"><input type="checkbox" id="bk_hist" checked>Include the shot history</label>
-<label class="chk"><input type="checkbox" id="bk_sec">Include the Wi-Fi and bot passwords, the library token and the signing key <span class="dim">(keep that file private)</span></label>
+<label class="chk"><input type="checkbox" id="bk_sec">Include the Wi-Fi and bot passwords, the library and Home Assistant tokens, the MQTT password and the signing key <span class="dim">(keep that file private)</span></label>
 <div class="row"><button class="pri" onclick="bkDownload()">Download backup</button></div>
 <h2 style="margin-top:10px">Restore</h2>
 <div class="row"><input type="file" id="bk_file" accept=".bbwbak" aria-label="Backup file" style="flex:1 1 220px"><button onclick="bkRestore()">Restore this file</button></div>
@@ -722,7 +736,7 @@ function show(){let h=(location.hash||'#home').slice(1);
 if(['insights','discover','subscriptions','community','logs','start'].includes(h)&&!panelOn(h)){if(location.hash!='#home')history.replaceState(null,'','#home');h='home'}
 const disc=false;document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on',p.id=='p-'+h));
 document.querySelectorAll('nav a,#bnav a,#more a').forEach(a=>a.classList.toggle('on',a.getAttribute('href')=='#'+(disc?'discover':h)));
-$('bmore').classList.toggle('on',['start','recipes','insights','machine','subscriptions','discover','community','setup','logs'].includes(h));if(h=='start'||h=='home')loadStart();$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadRatings();loadFirmware()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees'){loadCommunityCoffees();loadRatings();if(panelOn('community'))loadDirectory()}if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights')drawInsights();if(h=='discover')loadDiscover();if(h=='community')loadCommunityPage();if(h=='home'&&panelOn('discover'))loadForYou();if(h=='subscriptions')loadSubs();}
+$('bmore').classList.toggle('on',['start','recipes','insights','machine','subscriptions','discover','community','setup','logs'].includes(h));if(h=='start'||h=='home')loadStart();$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadRatings();loadFirmware();loadHa()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees'){loadCommunityCoffees();loadRatings();if(panelOn('community'))loadDirectory()}if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights')drawInsights();if(h=='discover')loadDiscover();if(h=='community')loadCommunityPage();if(h=='home'&&panelOn('discover'))loadForYou();if(h=='subscriptions')loadSubs();}
 // The optional panels (bbw::WebPanel bits): key, name, what it is, bit.
 const PANELS=[['insights','Insights','Your taste profile from your ratings, and charts: roast level against grind, coffee age against brew time, a brewing calendar, dial-in shots per bag.',1],
 ['subscriptions','Subscriptions','Coffee subscriptions: when the next delivery comes, skipping one, what is on its way.',4],
@@ -848,6 +862,14 @@ SB.forEach(k=>$(k).checked=!!S[k]);loadShare();loadDiag();diagNotice();$('staSsi
 function saveSettings(scope){const inS=k=>!scope||scope.contains($(k));const b={};F.filter(inS).forEach(k=>{const e=$(k);b[k]=typeof S[k]==='boolean'?e.value==='1':+e.value});SB.filter(inS).forEach(k=>b[k]=$(k).checked);
 Object.keys(b).forEach(k=>{if(S&&k in S&&b[k]===S[k])delete b[k]});
 post('/api/settings',b).then(r=>{done(r,'Saved');loadSettings();loadGrind()})}
+function haRoom(a){if(!a||a.source=='none')return 'no reading yet';const p=[];if(a.rh_pct!=null)p.push(f1(a.rh_pct)+' % RH');if(a.temp_c!=null)p.push(f1(a.temp_c)+' \u00b0C');return p.join(', ')+' ('+(a.source=='ha'?'Home Assistant':'pushed')+', '+Math.round((a.age_s||0)/60)+' min ago)'}
+async function loadHa(){let h;try{h=await get('/api/homeassistant')}catch(e){return}$('ha_url').value=h.url||'';$('ha_rh').value=h.rh_entity||'';$('ha_temp').value=h.temp_entity||'';$('ha_mqtt').value=h.mqtt_url||'';$('ha_muser').value=h.mqtt_user||'';
+['ha_token','ha_hook','ha_mpass'].forEach(k=>$(k).value='');['ha_cleartok','ha_clearhook','ha_clearmpass'].forEach(k=>$(k).checked=false);
+$('ha_token').placeholder=h.token_set?'set':'not set';$('ha_hook').placeholder=h.webhook_set?'set':'not set';$('ha_mpass').placeholder=h.mqtt_password_set?'set':'not set';
+$('ha_state').textContent=h.url?(h.mqtt_url?(h.mqtt_connected?'MQTT connected':'MQTT not connected'):'reading the room'):'off';
+$('ha_msg').textContent='Room: '+haRoom(h.ambient)+(h.problem?'. Last problem: '+h.problem:'')+(h.mqtt_problem?'. MQTT: '+h.mqtt_problem:'')+(h.last_webhook_code?'. Last webhook answer: '+h.last_webhook_code:'')}
+function saveHa(){post('/api/homeassistant',{url:$('ha_url').value.trim(),token:$('ha_token').value.trim(),rh_entity:$('ha_rh').value.trim(),temp_entity:$('ha_temp').value.trim(),webhook_id:$('ha_hook').value.trim(),mqtt_url:$('ha_mqtt').value.trim(),mqtt_user:$('ha_muser').value.trim(),mqtt_password:$('ha_mpass').value,clear_token:$('ha_cleartok').checked,clear_webhook:$('ha_clearhook').checked,clear_mqtt_password:$('ha_clearmpass').checked}).then(r=>{done(r,'Saved');setTimeout(loadHa,800)})}
+async function testHa(){$('ha_msg').textContent='Reading...';let t;try{t=await get('/api/ambient/test')}catch(e){$('ha_msg').textContent='The controller did not answer';return}$('ha_msg').textContent=t.ok?'Room: '+haRoom(t.reading)+(t.problem?'. '+t.problem:''):'Not read: '+(t.problem||'unknown')}
 function saveNet(){post('/api/net',{staSsid:$('staSsid').value,staPassword:$('staPassword').value,apPassword:$('apPassword').value,botPassword:$('botPassword').value,webStartEnabled:$('webStartEnabled').checked}).then(r=>done(r,'Saved, restarting'))}
 
 async function loadLibrary(){L=await get('/api/library');if(C<0||(C&&!coffee(C)))C=(L.presets[L.activePreset]||{}).coffeeId||(L.coffees[0]||{}).id||0;

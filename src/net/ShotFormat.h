@@ -160,6 +160,12 @@ inline void shotContextToJson(const ShotContext &c, JsonObject o) {
   o["prep_flags"] = c.prepFlags;
   o["purged"] = (c.prepFlags & CTX_PREP_PURGED) != 0;
   o["uneven"] = (c.prepFlags & CTX_PREP_UNEVEN) != 0;
+  if (c.ambientRhX10 != AMBIENT_NONE_X10) o["ambient_rh_pct"] = c.ambientRhX10 / 10.0f;
+  if (c.ambientTempX10 != AMBIENT_NONE_X10) o["ambient_temp_c"] = c.ambientTempX10 / 10.0f;
+  if (c.ambientSource) {
+    o["ambient_source"] = ambientSourceName(static_cast<AmbientSource>(c.ambientSource));
+    o["ambient_age_s"] = c.ambientAgeS;
+  }
 }
 
 }  // namespace bbw

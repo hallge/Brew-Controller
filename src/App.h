@@ -7,6 +7,7 @@
 #include "ble/Ble.h"
 #include "core/BrewController.h"
 #include "core/GrindAdvisor.h"
+#include "core/HomeAssistant.h"
 #include "core/Maintenance.h"
 #include "core/SimilarCoffee.h"
 #include "core/Library.h"
@@ -139,6 +140,32 @@ struct GrindLearned {
   float reversalWeight;
 };
 GrindLearned grindLearned();
+
+// Home Assistant and the room's climate (core/HomeAssistant.h, docs/HOME_ASSISTANT.md).
+bbw::AmbientReading ambient();                 // the latest reading, from either source
+bool pushAmbient(float rhPct, float tempC);    // POST /api/ambient; NAN: not given. false: nothing usable
+struct HaStatus {
+  char url[bbw::HA_URL_LEN];
+  char rhEntity[bbw::HA_ENTITY_LEN];
+  char tempEntity[bbw::HA_ENTITY_LEN];
+  bool tokenSet, webhookSet;
+  char mqttUrl[bbw::MQTT_URL_LEN];
+  char mqttUser[bbw::MQTT_USER_LEN];
+  bool mqttPasswordSet, mqttConnected;
+  char problem[80];        // why the last read or webhook failed; "" when it worked
+  char mqttProblem[64];
+  int lastWebhookCode;     // 0: none sent
+};
+HaStatus haStatus();
+// Empty strings for the token, webhook id and MQTT password keep what is stored; the clear flags
+// remove them. Returns null when saved, else what is wrong.
+struct HaSettings {
+  const char *url, *token, *rhEntity, *tempEntity, *webhookId, *mqttUrl, *mqttUser, *mqttPassword;
+  bool clearToken, clearWebhook, clearMqttPassword;
+};
+const char *setHomeAssistant(const HaSettings &s);
+// One read of the two entities now (the Test button). false: neither could be read; why in problem.
+bool haReadNow(bbw::AmbientReading &out, char *problem, size_t size);
 // Past advice to move on this grinder (as now calibrated) and what the next shot did, newest first.
 size_t adviceOutcomes(bbw::AdviceOutcome *out, size_t max);
 void setGrind(uint16_t grindUm);                     // grinder setting of the active preset

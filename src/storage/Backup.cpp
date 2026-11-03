@@ -71,6 +71,9 @@ void blankSecrets(uint8_t *record, size_t length) {
   memset(n.value.apPassword, 0, sizeof(n.value.apPassword));
   memset(n.value.botPassword, 0, sizeof(n.value.botPassword));
   memset(n.value.libraryToken, 0, sizeof(n.value.libraryToken));
+  memset(n.value.haToken, 0, sizeof(n.value.haToken));
+  memset(n.value.haWebhookId, 0, sizeof(n.value.haWebhookId));
+  memset(n.value.mqttPassword, 0, sizeof(n.value.mqttPassword));
 }
 
 // A backup without secrets restored: the passwords and token this controller has now are kept.
@@ -93,6 +96,9 @@ void keepOwnSecrets(uint8_t *record, size_t length) {
   keep(in.value.apPassword, own.value.apPassword, sizeof(in.value.apPassword));
   keep(in.value.botPassword, own.value.botPassword, sizeof(in.value.botPassword));
   keep(in.value.libraryToken, own.value.libraryToken, sizeof(in.value.libraryToken));
+  keep(in.value.haToken, own.value.haToken, sizeof(in.value.haToken));
+  keep(in.value.haWebhookId, own.value.haWebhookId, sizeof(in.value.haWebhookId));
+  keep(in.value.mqttPassword, own.value.mqttPassword, sizeof(in.value.mqttPassword));
   if (in.value.apPassword[0] == '\0') strncpy(in.value.apPassword, NetConfig().apPassword, sizeof(in.value.apPassword) - 1);
   memcpy(record, &in, length < sizeof(in) ? length : sizeof(in));
 }

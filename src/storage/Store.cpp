@@ -395,6 +395,9 @@ bool Store::begin() {
     resetHistory();
   }
   LOGI("store: %u shots in history", static_cast<unsigned>(header_.count));
+  // An older context file is converted now, not at the next shot: until then its records could not
+  // be read (the advice confidence reads them).
+  if (bbw::fileExists(CONTEXT_PATH)) prepareContexts();
   return true;
 }
 
@@ -446,6 +449,47 @@ void Store::removeCurve(uint32_t id) {
   if (bbw::fileExists(path)) LittleFS.remove(path);
 }
 
+// A version 1 context file (64-byte slots) rewritten as version 2: each slot keeps every byte it
+// had, and the room reading added at the end is "not known". false: not a version 1 file, or the
+// rewrite failed (the old file is then kept as it was).
+bool Store::convertContextsV1() {
+  File in = LittleFS.open(CONTEXT_PATH, "r");
+  ContextHeader old = {};
+  const bool v1 = in && in.read(reinterpret_cast<uint8_t *>(&old), sizeof(old)) == sizeof(old) &&
+                  old.magic == CONTEXT_MAGIC && old.version == bbw::SHOT_CONTEXT_VERSION_V1 &&
+                  old.recordSize == bbw::SHOT_CONTEXT_V1_SIZE && old.capacity == HISTORY_CAPACITY &&
+                  in.size() == sizeof(old) + HISTORY_CAPACITY * bbw::SHOT_CONTEXT_V1_SIZE;
+  if (!v1) {
+    if (in) in.close();
+    return false;
+  }
+  constexpr const char *TMP = "/contexts.tmp";
+  File out = LittleFS.open(TMP, "w");
+  if (!out) {
+    in.close();
+    return false;
+  }
+  const ContextHeader header = {CONTEXT_MAGIC, SHOT_CONTEXT_VERSION,
+                                static_cast<uint16_t>(sizeof(ShotContext)), HISTORY_CAPACITY};
+  bool ok = out.write(reinterpret_cast<const uint8_t *>(&header), sizeof(header)) == sizeof(header);
+  uint32_t kept = 0;
+  for (uint32_t i = 0; ok && i < HISTORY_CAPACITY; ++i) {
+    ShotContext c;   // the new fields: not known
+    ok = in.read(reinterpret_cast<uint8_t *>(&c), bbw::SHOT_CONTEXT_V1_SIZE) == bbw::SHOT_CONTEXT_V1_SIZE &&
+         out.write(reinterpret_cast<const uint8_t *>(&c), sizeof(c)) == sizeof(c);
+    if (ok && c.shotId) ++kept;
+  }
+  in.close();
+  out.close();
+  if (!ok || !LittleFS.remove(CONTEXT_PATH) || !LittleFS.rename(TMP, CONTEXT_PATH)) {
+    if (bbw::fileExists(TMP) && bbw::fileExists(CONTEXT_PATH)) LittleFS.remove(TMP);
+    LOGW("store: shot contexts could not be converted");
+    return false;
+  }
+  LOGI("store: %u shot contexts converted to version 2", static_cast<unsigned>(kept));
+  return true;
+}
+
 bool Store::prepareContexts() {
   if (!fsOk_) return false;
   if (bbw::fileExists(CONTEXT_PATH)) {
@@ -457,6 +501,7 @@ bool Store::prepareContexts() {
                     file.size() == sizeof(header) + HISTORY_CAPACITY * sizeof(ShotContext);
     if (file) file.close();
     if (ok) return true;
+    if (convertContextsV1()) return true;
     LittleFS.remove(CONTEXT_PATH);  // another layout: start again (only recorded data is lost)
   }
   File file = LittleFS.open(CONTEXT_PATH, "w");
@@ -1042,6 +1087,10 @@ NetConfig Store::loadNet() {
   net.libraryRepo[sizeof(net.libraryRepo) - 1] = '\0';
   net.libraryToken[sizeof(net.libraryToken) - 1] = '\0';
   net.diagRelay[sizeof(net.diagRelay) - 1] = '\0';
+  net.haUrl[sizeof(net.haUrl) - 1] = net.haToken[sizeof(net.haToken) - 1] = '\0';
+  net.haRhEntity[sizeof(net.haRhEntity) - 1] = net.haTempEntity[sizeof(net.haTempEntity) - 1] = '\0';
+  net.haWebhookId[sizeof(net.haWebhookId) - 1] = net.mqttUrl[sizeof(net.mqttUrl) - 1] = '\0';
+  net.mqttUser[sizeof(net.mqttUser) - 1] = net.mqttPassword[sizeof(net.mqttPassword) - 1] = '\0';
   if (strlen(net.apPassword) < 8) strlcpy(net.apPassword, "brewbyweight", sizeof(net.apPassword));
   return net;
 }

@@ -37,6 +37,17 @@ struct NetConfig {
   char libraryToken[128] = {};           // never sent back to the web page
   // Where diagnostics reports go, for testing (a relay run on a PC); empty: the built-in relay.
   char diagRelay[96] = {};
+  // Home Assistant (core/HomeAssistant.h, docs/HOME_ASSISTANT.md), added at the end on 3 Nov 2026. The
+  // token, the webhook id and the MQTT password are never sent back to the web page and go into a
+  // backup only with its secrets.
+  char haUrl[HA_URL_LEN] = {};             // e.g. http://homeassistant.local:8123; empty: off
+  char haToken[HA_TOKEN_LEN] = {};         // a long-lived access token
+  char haRhEntity[HA_ENTITY_LEN] = {};     // sensor.kitchen_humidity
+  char haTempEntity[HA_ENTITY_LEN] = {};
+  char haWebhookId[HA_WEBHOOK_LEN] = {};   // empty: no webhook after a shot
+  char mqttUrl[MQTT_URL_LEN] = {};         // mqtt://broker:1883; empty: off
+  char mqttUser[MQTT_USER_LEN] = {};
+  char mqttPassword[MQTT_PASSWORD_LEN] = {};
 };
 
 class Store {
@@ -153,6 +164,7 @@ class Store {
   bool convertHistoryV9();
   void removeCurve(uint32_t id);
   bool prepareContexts();
+  bool convertContextsV1();   // a version 1 context file rewritten as version 2
   bool preparePowerLog();
   bool prepareRatings();
   bool editRatingSlot(uint32_t id, const CoffeeRating *with);

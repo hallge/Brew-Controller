@@ -101,7 +101,7 @@ void handleStatus() {
   {
     JsonArray caps = doc["capabilities"].to<JsonArray>();
     for (const char *c : {"status_v1", "shots_v1", "shot_data_v1", "shot_csv_v1", "grind_advice_v1",
-                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1", "coffee_taste_v1", "subscriptions_v1"}) {
+                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1", "coffee_taste_v1", "subscriptions_v1", "ambient_v1", "home_assistant_v1"}) {
       caps.add(c);
     }
   }
@@ -365,6 +365,8 @@ void handleShots() {
         doc["dose_weighed_g"] = context.doseActualDg / 10.0f;   // 0: not weighed
         doc["purged"] = (context.prepFlags & bbw::CTX_PREP_PURGED) != 0;
         doc["uneven"] = (context.prepFlags & bbw::CTX_PREP_UNEVEN) != 0;
+        if (context.ambientRhX10 != bbw::AMBIENT_NONE_X10) doc["ambient_rh_pct"] = context.ambientRhX10 / 10.0f;
+        if (context.ambientTempX10 != bbw::AMBIENT_NONE_X10) doc["ambient_temp_c"] = context.ambientTempX10 / 10.0f;
       }
     }
     String line;
@@ -2790,6 +2792,88 @@ void handlePostPower() {
   sendOk();
 }
 
+// ---- Home Assistant and the room ----------------------------------------
+// core/HomeAssistant.h, docs/HOME_ASSISTANT.md.
+void ambientToJson(const bbw::AmbientReading &r, JsonObject o) {
+  o["source"] = bbw::ambientSourceName(r.source);
+  if (!std::isnan(r.rhPct)) o["rh_pct"] = bbw::round2(r.rhPct);
+  if (!std::isnan(r.tempC)) o["temp_c"] = bbw::round2(r.tempC);
+  if (r.epochS) o["epoch"] = r.epochS;
+  if (bbw::ambientHasValue(r)) {
+    o["age_s"] = (millis() - r.atMs) / 1000u;
+    o["fresh"] = bbw::ambientFresh(r, millis());
+  }
+}
+
+void handleGetAmbient() {
+  JsonDocument doc;
+  ambientToJson(app::ambient(), doc.to<JsonObject>());
+  sendJson(doc);
+}
+
+// Pushed by anything on the network: {"rh_pct": 48.5, "temp_c": 21.2} (either may be left out).
+void handlePostAmbient() {
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  const float rh = doc["rh_pct"].is<float>() ? doc["rh_pct"].as<float>() : NAN;
+  const float temp = doc["temp_c"].is<float>() ? doc["temp_c"].as<float>() : NAN;
+  if (!app::pushAmbient(rh, temp)) return sendError(400, "rh_pct 0-100 and/or temp_c -40-70 expected");
+  sendOk();
+}
+
+// The Test button: one read of the two entities now.
+void handleAmbientTest() {
+  bbw::AmbientReading r;
+  char problem[80];
+  const bool ok = app::haReadNow(r, problem, sizeof(problem));
+  JsonDocument doc;
+  doc["ok"] = ok;
+  if (problem[0]) doc["problem"] = problem;
+  if (ok) ambientToJson(r, doc["reading"].to<JsonObject>());
+  sendJson(doc);
+}
+
+// The settings, without the token, the webhook id or the MQTT password: only whether each is set.
+void handleGetHomeAssistant() {
+  const app::HaStatus st = app::haStatus();
+  JsonDocument doc;
+  doc["url"] = st.url;
+  doc["rh_entity"] = st.rhEntity;
+  doc["temp_entity"] = st.tempEntity;
+  doc["token_set"] = st.tokenSet;
+  doc["webhook_set"] = st.webhookSet;
+  doc["mqtt_url"] = st.mqttUrl;
+  doc["mqtt_user"] = st.mqttUser;
+  doc["mqtt_password_set"] = st.mqttPasswordSet;
+  doc["mqtt_connected"] = st.mqttConnected;
+  if (st.problem[0]) doc["problem"] = st.problem;
+  if (st.mqttProblem[0]) doc["mqtt_problem"] = st.mqttProblem;
+  if (st.lastWebhookCode) doc["last_webhook_code"] = st.lastWebhookCode;
+  ambientToJson(app::ambient(), doc["ambient"].to<JsonObject>());
+  sendJson(doc);
+}
+
+void handlePostHomeAssistant() {
+  if (busyBrewing()) return sendError(409, "not while a shot is running");
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
+  const app::HaStatus now = app::haStatus();
+  app::HaSettings s = {};
+  s.url = doc["url"] | now.url;
+  s.token = doc["token"] | "";
+  s.rhEntity = doc["rh_entity"] | now.rhEntity;
+  s.tempEntity = doc["temp_entity"] | now.tempEntity;
+  s.webhookId = doc["webhook_id"] | "";
+  s.mqttUrl = doc["mqtt_url"] | now.mqttUrl;
+  s.mqttUser = doc["mqtt_user"] | now.mqttUser;
+  s.mqttPassword = doc["mqtt_password"] | "";
+  s.clearToken = doc["clear_token"] | false;
+  s.clearWebhook = doc["clear_webhook"] | false;
+  s.clearMqttPassword = doc["clear_mqtt_password"] | false;
+  if (const char *problem = app::setHomeAssistant(s)) return sendError(400, problem);
+  sendOk();
+}
+
 void handleNet() {
   JsonDocument doc;
   if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
@@ -3221,6 +3305,8 @@ void begin() {
     WiFi.begin(net.staSsid, net.staPassword);
   }
   MDNS.begin("brewbyweight");
+  // So Home Assistant can find it (integrations/homeassistant: zeroconf on _http._tcp, "brewbyweight*").
+  MDNS.addService("http", "tcp", 80);
 #ifndef BBW_EMULATOR
   // One radio for Wi-Fi and Bluetooth. The scale and the bots are the
   // controller's job; the web page can wait. Measured on the board with the
@@ -3423,6 +3509,11 @@ void begin() {
   server.on("/api/subscriptions/review/delete", HTTP_POST, handleDeleteServiceReview);
   server.on("/api/subscriptions/recommend", HTTP_GET, handleGetServiceRecommend);
   server.on("/api/net", HTTP_POST, handleNet);
+  server.on("/api/ambient", HTTP_GET, handleGetAmbient);
+  server.on("/api/ambient", HTTP_POST, handlePostAmbient);
+  server.on("/api/ambient/test", HTTP_GET, handleAmbientTest);
+  server.on("/api/homeassistant", HTTP_GET, handleGetHomeAssistant);
+  server.on("/api/homeassistant", HTTP_POST, handlePostHomeAssistant);
   server.on("/api/time", HTTP_POST, []() {
     const uint32_t epoch = strtoul(server.arg("epoch").c_str(), nullptr, 10);
     if (epoch > 1700000000UL) app::setEpoch(epoch);

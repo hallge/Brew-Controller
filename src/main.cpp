@@ -35,6 +35,7 @@
 #include "platform/BigMem.h"
 #include "platform/DeviceKey.h"
 #include "platform/FsUtil.h"
+#include "platform/HomeAssistantLink.h"
 #include "platform/FirmwareUpdate.h"
 #include "platform/LibraryLink.h"
 #include "platform/PagePreview.h"
@@ -1499,6 +1500,7 @@ void handleButton() {
 }
 
 }  // namespace
+void configureHomeAssistant();   // Home Assistant and MQTT, as g_net says (defined before loop)
 
 // =================================================================== app:: ==
 
@@ -1936,6 +1938,9 @@ void diagBuildScrubList() {
   g_scrub->add(stop, "<stop bot>");
   g_scrub->add(g_net.staSsid, "<wifi>");
   g_scrub->add(g_net.libraryRepo, "<repo>");
+  g_scrub->add(g_net.haUrl, "<home assistant>");
+  g_scrub->add(g_net.mqttUrl, "<mqtt broker>");
+  g_scrub->add(g_net.haWebhookId, "<webhook>");
   char model[24];
   bbw::scaleModelName(g_diag.scaleName, model, sizeof(model));
   if (strcmp(model, g_diag.scaleName) != 0) g_scrub->add(g_diag.scaleName, model);
@@ -4359,6 +4364,7 @@ void setup() {
   g_net = g_store.loadNet();
   g_maintenance = g_store.loadMaintenance();
   configureLibraryLink();
+  configureHomeAssistant();   // off unless set up (core/HomeAssistant.h)
   const bbw::Pairing pairing = g_store.loadPairing();
   // The cup on the scale before a restart is believed again (core/BrewController.h CupMemory), but
   // not after the power was off: the scale may have been switched off and on meanwhile.
@@ -4430,6 +4436,310 @@ void setup() {
   }
   const bbw::Recipe active = app::activeRecipe();
   LOGI("ready. recipe '%s' %.1f g", active.name, active.targetWeightG);
+}
+
+// ---------------------------------------------------------- Home Assistant --
+// core/HomeAssistant.h says what each part is for; every one is off until it is set up.
+bbw::AmbientReading g_ambient;          // guarded by Lock
+char g_haProblem[80] = {};              // guarded by Lock
+int g_haWebhookCode = 0;
+uint32_t g_haWebhookShot = 0;           // a finished shot still to post to the webhook; 0: none
+bool g_haPullSoon = true;
+bool g_mqttStatePending = true;
+
+void haSetProblem(const char *text) {
+  Lock lock;
+  strlcpy(g_haProblem, text ? text : "", sizeof(g_haProblem));
+}
+
+// A short id for this controller's MQTT topics and Home Assistant device: the end of its Wi-Fi
+// address, the same on every start.
+const char *mqttNode() {
+  static char node[8] = {};
+  if (!node[0]) {
+#ifndef BBW_EMULATOR
+    const uint64_t mac = ESP.getEfuseMac();   // known before Wi-Fi starts, unlike WiFi.macAddress
+    snprintf(node, sizeof(node), "%02x%02x%02x", static_cast<unsigned>((mac >> 24) & 0xFF),
+             static_cast<unsigned>((mac >> 32) & 0xFF), static_cast<unsigned>((mac >> 40) & 0xFF));
+#else
+    strlcpy(node, "emu000", sizeof(node));
+#endif
+  }
+  return node;
+}
+
+void configureHomeAssistant() {
+  bbw::mqttConfigure(g_net.mqttUrl, g_net.mqttUser, g_net.mqttPassword, mqttNode(), BBW_VERSION);
+  g_haPullSoon = true;
+  g_mqttStatePending = true;
+}
+
+// One entity's state, as a humidity or a temperature. false: not read, why in problem.
+// unreachable: no answer at all (then the other entity is not tried: the loop must not wait twice).
+bool haReadEntity(const char *entity, bool humidity, float &value, char *problem, size_t size,
+                  bool *unreachable = nullptr) {
+  if (unreachable) *unreachable = false;
+  static char url[bbw::HA_URL_LEN + bbw::HA_ENTITY_LEN + 16];
+  static char body[1536];
+  if (!bbw::haStateUrl(g_net.haUrl, entity, url, sizeof(url))) {
+    snprintf(problem, size, "the address or the entity id %s cannot be used", entity);
+    return false;
+  }
+  const int code = bbw::haRequest(url, g_net.haToken, nullptr, body, sizeof(body), problem, size, 2000);
+  if (code < 0 && unreachable) *unreachable = true;
+  if (code != 200) return false;
+  static JsonDocument doc;
+  doc.clear();
+  if (deserializeJson(doc, body)) {
+    snprintf(problem, size, "Home Assistant's answer for %s could not be read", entity);
+    return false;
+  }
+  const char *state = doc["state"] | "";
+  const char *unit = doc["attributes"]["unit_of_measurement"] | "";
+  if (!bbw::haReadingFromState(state, unit, humidity, value)) {
+    const bool number = state[0] && strtof(state, nullptr) != 0.0f;   // a value out of range or in another unit
+    snprintf(problem, size, "%s is %s%s%s", entity, state[0] ? state : "empty", number && unit[0] ? " " : "",
+             number ? unit : "");
+    return false;
+  }
+  return true;
+}
+
+namespace app {
+
+bbw::AmbientReading ambient() {
+  Lock lock;
+  return g_ambient;
+}
+
+bool pushAmbient(float rhPct, float tempC) {
+  const bool rh = bbw::ambientRhOk(rhPct), temp = bbw::ambientTempOk(tempC);
+  if (!rh && !temp) return false;
+  Lock lock;
+  g_ambient.rhPct = rh ? rhPct : NAN;
+  g_ambient.tempC = temp ? tempC : NAN;
+  g_ambient.epochS = epochNow();
+  g_ambient.atMs = millis();
+  g_ambient.source = bbw::AmbientSource::PUSHED;
+  return true;
+}
+
+bool haReadNow(bbw::AmbientReading &out, char *problem, size_t size) {
+  problem[0] = '\0';
+  if (!g_net.haUrl[0] || !g_net.haToken[0] || (!g_net.haRhEntity[0] && !g_net.haTempEntity[0])) {
+    strlcpy(problem, "Home Assistant is not set up (address, token and an entity)", size);
+    return false;
+  }
+  float rh = NAN, temp = NAN;
+  char why[80] = {};
+  bool any = false, unreachable = false;
+  if (g_net.haRhEntity[0]) any |= haReadEntity(g_net.haRhEntity, true, rh, why, sizeof(why), &unreachable);
+  if (why[0]) strlcpy(problem, why, size);
+  why[0] = '\0';
+  if (g_net.haTempEntity[0] && !unreachable) any |= haReadEntity(g_net.haTempEntity, false, temp, why, sizeof(why));
+  if (why[0] && !problem[0]) strlcpy(problem, why, size);
+  if (!any) return false;
+  out = bbw::AmbientReading();
+  out.rhPct = rh;
+  out.tempC = temp;
+  out.epochS = epochNow();
+  out.atMs = millis();
+  out.source = bbw::AmbientSource::HOME_ASSISTANT;
+  {
+    Lock lock;
+    // A pushed reading newer than this one is kept.
+    if (g_ambient.source != bbw::AmbientSource::PUSHED || millis() - g_ambient.atMs > bbw::AMBIENT_PULL_EVERY_MS) {
+      g_ambient = out;
+    }
+  }
+  return true;
+}
+
+HaStatus haStatus() {
+  HaStatus st = {};
+  strlcpy(st.url, g_net.haUrl, sizeof(st.url));
+  strlcpy(st.rhEntity, g_net.haRhEntity, sizeof(st.rhEntity));
+  strlcpy(st.tempEntity, g_net.haTempEntity, sizeof(st.tempEntity));
+  st.tokenSet = g_net.haToken[0] != '\0';
+  st.webhookSet = g_net.haWebhookId[0] != '\0';
+  strlcpy(st.mqttUrl, g_net.mqttUrl, sizeof(st.mqttUrl));
+  strlcpy(st.mqttUser, g_net.mqttUser, sizeof(st.mqttUser));
+  st.mqttPasswordSet = g_net.mqttPassword[0] != '\0';
+  st.mqttConnected = bbw::mqttConnected();
+  strlcpy(st.mqttProblem, bbw::mqttProblem(), sizeof(st.mqttProblem));
+  {
+    Lock lock;
+    strlcpy(st.problem, g_haProblem, sizeof(st.problem));
+  }
+  st.lastWebhookCode = g_haWebhookCode;
+  return st;
+}
+
+const char *setHomeAssistant(const HaSettings &s) {
+  bbw::NetConfig net = g_net;
+  char base[bbw::HA_URL_LEN];
+  const char *url = s.url ? s.url : "";
+  if (url[0] && !bbw::haBaseUrl(url, base, sizeof(base))) return "the address must be http:// or https:// and a host";
+  strlcpy(net.haUrl, url[0] ? base : "", sizeof(net.haUrl));
+  for (const char *e : {s.rhEntity, s.tempEntity}) {
+    if (e && e[0] && !bbw::haEntityIdOk(e)) return "an entity id looks like sensor.kitchen_humidity";
+  }
+  strlcpy(net.haRhEntity, s.rhEntity ? s.rhEntity : "", sizeof(net.haRhEntity));
+  strlcpy(net.haTempEntity, s.tempEntity ? s.tempEntity : "", sizeof(net.haTempEntity));
+  if (s.token && s.token[0]) {
+    if (strlen(s.token) >= sizeof(net.haToken)) return "the token is too long";
+    strlcpy(net.haToken, s.token, sizeof(net.haToken));
+  }
+  if (s.clearToken) net.haToken[0] = '\0';
+  if (s.webhookId && s.webhookId[0]) {
+    if (!bbw::haWebhookIdOk(s.webhookId)) return "a webhook id has only letters, digits, - and _";
+    strlcpy(net.haWebhookId, s.webhookId, sizeof(net.haWebhookId));
+  }
+  if (s.clearWebhook) net.haWebhookId[0] = '\0';
+  const char *mqtt = s.mqttUrl ? s.mqttUrl : "";
+  char host[64];
+  uint16_t port = 0;
+  if (mqtt[0] && !bbw::mqttBrokerFromUrl(mqtt, host, sizeof(host), port)) return "the broker is mqtt://host or mqtt://host:port";
+  strlcpy(net.mqttUrl, mqtt, sizeof(net.mqttUrl));
+  if (s.mqttUser && strlen(s.mqttUser) >= sizeof(net.mqttUser)) return "the MQTT user name is too long";
+  strlcpy(net.mqttUser, s.mqttUser ? s.mqttUser : "", sizeof(net.mqttUser));
+  if (s.mqttPassword && s.mqttPassword[0]) {
+    if (strlen(s.mqttPassword) >= sizeof(net.mqttPassword)) return "the MQTT password is too long";
+    strlcpy(net.mqttPassword, s.mqttPassword, sizeof(net.mqttPassword));
+  }
+  if (s.clearMqttPassword) net.mqttPassword[0] = '\0';
+  g_net = net;
+  g_store.saveNet(g_net);
+  // Never a token or password: only what is set.
+  LOGI("home assistant: saved: %s, token %s, webhook %s, mqtt %s", g_net.haUrl[0] ? "address set" : "off",
+       g_net.haToken[0] ? "set" : "none", g_net.haWebhookId[0] ? "set" : "none", g_net.mqttUrl[0] ? "set" : "off");
+  configureHomeAssistant();
+  haSetProblem("");
+  return nullptr;
+}
+
+}  // namespace app
+
+// After a shot is saved: the webhook and the MQTT state, sent from homeAssistantService.
+void haAfterShot(const bbw::ShotRecord &shot) {
+  if (g_net.haUrl[0] && g_net.haWebhookId[0]) g_haWebhookShot = shot.id;
+  g_mqttStatePending = true;
+}
+
+void mqttStart() {
+  if (!g_net.webStartEnabled) {
+    LOGW("mqtt: Start pressed, but start from the browser is off (Network section)");
+    return;
+  }
+  LOGI("mqtt: Start pressed");
+  app::noteActivity();
+  app::start();
+}
+
+void mqttPublishState() {
+  static char grind[24], advised[24], topic[64], payload[320];
+  const bbw::LiveStatus st = app::status();
+  bbw::MqttState m;
+  m.state = bbw::stateName(st.state);
+  bbw::ShotRecord last;
+  const bbw::Grinder grinderNow = app::grinder();
+  if (g_store.readShot(0, last)) {
+    m.lastShotTimeS = last.shotTimeS;
+    m.lastShotWeightG = last.finalWeightG;
+    if (last.grindUm && bbw::formatSetting(last.grindUm, grinderNow, grind, sizeof(grind))) m.lastShotGrind = grind;
+    // Shots made today, by the controller's clock.
+    const uint32_t today = bbw::dateFromEpoch(app::epochNow());
+    if (app::epochNow() > 1700000000u) {
+      static int count;
+      static uint32_t want;
+      count = 0;
+      want = today;
+      g_store.scanShots(60, [](const bbw::ShotRecord &r, void *) {
+        if (r.epochS && bbw::dateFromEpoch(r.epochS) == want) {
+          ++count;
+          return true;
+        }
+        return r.epochS == 0;   // newest first: the first older day ends it
+      }, nullptr);
+      m.shotsToday = count;
+    }
+  }
+  const bbw::GrindAdvice a = app::grindAdvice();
+  m.adviceAction = bbw::grindActionName(a.action);
+  if ((a.action == bbw::GrindAction::FINER || a.action == bbw::GrindAction::COARSER) && bbw::adviceHasNumber(a) &&
+      bbw::formatSetting(a.suggestedUm, grinderNow, advised, sizeof(advised))) {
+    m.adviceGrind = advised;
+  }
+  if (!bbw::mqttStateJson(m, payload, sizeof(payload))) return;
+  bbw::mqttTopic(mqttNode(), "state", topic, sizeof(topic));
+  bbw::mqttPublish(topic, payload, true);
+}
+
+void homeAssistantService(bool idle) {
+  const bool connected = bbw::mqttService(idle, mqttStart);
+  // The state on every change of the machine's state, after a shot, and every five minutes.
+  {
+    static uint8_t lastState = 0xFF;
+    static uint32_t lastMs = 0;
+    const uint8_t state = static_cast<uint8_t>(app::status().state);
+    if (state != lastState || millis() - lastMs > 5u * 60u * 1000u) g_mqttStatePending = true;
+    if (connected && g_mqttStatePending) {
+      g_mqttStatePending = false;
+      lastState = state;
+      lastMs = millis();
+      mqttPublishState();
+    }
+  }
+  if (!idle) return;
+  // The room, every few minutes.
+  {
+    static uint32_t lastMs = 0;
+    const bool set = g_net.haUrl[0] && g_net.haToken[0] && (g_net.haRhEntity[0] || g_net.haTempEntity[0]);
+    if (set && (g_haPullSoon || !lastMs || millis() - lastMs >= bbw::AMBIENT_PULL_EVERY_MS)) {
+      g_haPullSoon = false;
+      lastMs = millis() ? millis() : 1;
+      bbw::AmbientReading r;
+      char problem[80];
+      app::haReadNow(r, problem, sizeof(problem));
+      haSetProblem(problem);
+    }
+  }
+  // A finished shot to the webhook, once.
+  if (g_haWebhookShot) {
+    const uint32_t id = g_haWebhookShot;
+    g_haWebhookShot = 0;
+    static char url[bbw::HA_URL_LEN + bbw::HA_WEBHOOK_LEN + 16];
+    static char body[3072];
+    bbw::ShotRecord shot;
+    bool found = false;
+    for (uint32_t i = 0; i < 3 && g_store.readShot(i, shot); ++i) {
+      if (shot.id == id) {
+        found = true;
+        break;
+      }
+    }
+    if (found && bbw::haWebhookUrl(g_net.haUrl, g_net.haWebhookId, url, sizeof(url))) {
+      static JsonDocument doc;
+      doc.clear();
+      JsonObject o = doc["shot"].to<JsonObject>();
+      bbw::shotToJson(shot, o);
+      const bbw::GrindAdvice a = app::grindAdvice();
+      doc["advice"]["action"] = bbw::grindActionName(a.action);
+      if (bbw::adviceHasNumber(a)) doc["advice"]["suggested"] = a.suggestedUm;
+      const bbw::AmbientReading amb = app::ambient();
+      if (bbw::ambientFresh(amb, millis())) {
+        if (!std::isnan(amb.rhPct)) doc["ambient"]["rh_pct"] = amb.rhPct;
+        if (!std::isnan(amb.tempC)) doc["ambient"]["temp_c"] = amb.tempC;
+      }
+      doc["event"] = "shot";
+      if (serializeJson(doc, body, sizeof(body)) < sizeof(body) - 1) {
+        char problem[80];
+        g_haWebhookCode = bbw::haRequest(url, nullptr, body, nullptr, 0, problem, sizeof(problem), 3000);
+        haSetProblem(problem);
+        LOGI("home assistant: shot %u posted to the webhook (%d)", static_cast<unsigned>(id), g_haWebhookCode);
+      }
+    }
+  }
 }
 
 void loop() {
@@ -4539,11 +4849,14 @@ void loop() {
       in.learnGrinder = true;   // always since 17 Oct 2026; records from 16-17 Oct may say otherwise
       in.curve = g_curveOut;
       in.curvePoints = curvePoints;
+      in.ambient = app::ambient();   // the room, when a reading is fresh (core/HomeAssistant.h)
+      in.nowMs = millis();
       if (!g_store.saveContext(bbw::buildShotContext(in))) {
         LOGW("store: shot %u context not saved", static_cast<unsigned>(shot.id));
       }
     }
     shareAfterShot(shot);
+    haAfterShot(shot);
   }
   if (idle && g_maintenanceDirty) {
     static bbw::Maintenance snapshot;
@@ -4564,6 +4877,7 @@ void loop() {
   shareReadStatus(idle);
   libraryRefresh(idle);
   subscriptionsService(idle);
+  homeAssistantService(idle);
   if (saveSettings) g_store.saveSettings(snapshot);
   if (saveLibrary && !g_store.saveLibrary((*g_librarySaving))) LOGW("store: library not saved");
   if (g_ble.takePairingDirty()) g_store.savePairing(g_ble.pairing());

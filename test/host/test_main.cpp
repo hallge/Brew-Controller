@@ -16,6 +16,7 @@
 #include "core/Community.h"
 #include "core/FlowFeatures.h"
 #include "core/GrindAdvisor.h"
+#include "core/HomeAssistant.h"
 #include "core/Library.h"
 #include "core/Maintenance.h"
 #include "core/PowerControl.h"
@@ -7699,6 +7700,111 @@ static void testGrindAdjustment() {
   }
 }
 
+// Home Assistant and the room (core/HomeAssistant.h): what the owner types, a state as Home
+// Assistant returns it, the MQTT payloads, and the reading on a shot's context.
+static void testHomeAssistant() {
+  printf("home assistant: addresses, states, MQTT payloads, the room on a shot\n");
+  char out[256];
+  CHECK(haEntityIdOk("sensor.kitchen_humidity") && haEntityIdOk("sensor.t2"));
+  CHECK(!haEntityIdOk("sensor") && !haEntityIdOk(".x") && !haEntityIdOk("sensor.") && !haEntityIdOk("Sensor.x") &&
+        !haEntityIdOk("sensor.a.b") && !haEntityIdOk("sensor.a b") && !haEntityIdOk("") && !haEntityIdOk(nullptr));
+  CHECK(haStateUrl("http://homeassistant.local:8123/", "sensor.rh", out, sizeof(out)) &&
+        strcmp(out, "http://homeassistant.local:8123/api/states/sensor.rh") == 0);
+  CHECK(!haStateUrl("homeassistant.local:8123", "sensor.rh", out, sizeof(out)));
+  CHECK(!haStateUrl("http://", "sensor.rh", out, sizeof(out)));
+  CHECK(!haStateUrl("http://ha.local:8123/\"x", "sensor.rh", out, sizeof(out)));
+  CHECK(!haStateUrl("http://ha.local:8123", "sensor.rh/../x", out, sizeof(out)));
+  CHECK(haWebhookUrl("https://ha.example.org", "bbw-shot_1", out, sizeof(out)) &&
+        strcmp(out, "https://ha.example.org/api/webhook/bbw-shot_1") == 0);
+  CHECK(!haWebhookUrl("https://ha.example.org", "a/b", out, sizeof(out)));
+  float v = 0.0f;
+  CHECK(haReadingFromState("48.5", "%", true, v) && fabsf(v - 48.5f) < 1e-4f);
+  CHECK(haReadingFromState("50", "", true, v) && v == 50.0f);
+  CHECK(!haReadingFromState("101", "%", true, v) && !haReadingFromState("unavailable", "%", true, v) &&
+        !haReadingFromState("unknown", "%", true, v) && !haReadingFromState("", "%", true, v) &&
+        !haReadingFromState("48 %", "%", true, v) && !haReadingFromState("48", "g/m3", true, v));
+  CHECK(haReadingFromState("21.5", "\xC2\xB0" "C", false, v) && fabsf(v - 21.5f) < 1e-4f);
+  CHECK(haReadingFromState("70.7", "\xC2\xB0" "F", false, v) && fabsf(v - 21.5f) < 0.01f);
+  CHECK(haReadingFromState("294.65", "K", false, v) && fabsf(v - 21.5f) < 0.01f);
+  CHECK(!haReadingFromState("200", "\xC2\xB0" "C", false, v) && !haReadingFromState("21", "lux", false, v));
+  // MQTT
+  char host[64];
+  uint16_t port = 0;
+  CHECK(mqttBrokerFromUrl("mqtt://homeassistant.local", host, sizeof(host), port) &&
+        strcmp(host, "homeassistant.local") == 0 && port == 1883);
+  CHECK(mqttBrokerFromUrl("mqtt://broker:1884/", host, sizeof(host), port) && port == 1884);
+  CHECK(!mqttBrokerFromUrl("http://broker", host, sizeof(host), port) &&
+        !mqttBrokerFromUrl("mqtt://", host, sizeof(host), port) &&
+        !mqttBrokerFromUrl("mqtt://broker:0", host, sizeof(host), port) &&
+        !mqttBrokerFromUrl("mqtt://bro ker", host, sizeof(host), port) &&
+        !mqttBrokerFromUrl("mqtt://broker/x", host, sizeof(host), port));
+  char payload[900];
+  for (size_t i = 0; i < MQTT_ENTITY_COUNT; ++i) {
+    const MqttEntity &e = MQTT_ENTITIES[i];
+    CHECK(mqttDiscoveryTopic(e, "a1b2c3", out, sizeof(out)) && strncmp(out, "homeassistant/", 14) == 0);
+    const size_t n = mqttDiscoveryConfig(e, "a1b2c3", "v0.1.30", payload, sizeof(payload));
+    CHECK(n > 0 && n < sizeof(payload) && payload[0] == '{' && payload[n - 1] == '}');
+    CHECK(strstr(payload, "\"availability_topic\":\"bbw/a1b2c3/availability\"") != nullptr);
+    CHECK(strstr(payload, "\"identifiers\":[\"bbw_a1b2c3\"]") != nullptr);
+    // Braces balance: a valid JSON object.
+    int depth = 0, low = 0;
+    for (size_t k = 0; k < n; ++k) {
+      depth += payload[k] == '{' ? 1 : payload[k] == '}' ? -1 : 0;
+      if (depth < low) low = depth;
+    }
+    CHECK(depth == 0 && low == 0);
+  }
+  CHECK(mqttDiscoveryTopic(MQTT_ENTITIES[MQTT_ENTITY_COUNT - 1], "a1b2c3", out, sizeof(out)) &&
+        strcmp(out, "homeassistant/button/a1b2c3/start/config") == 0);
+  mqttDiscoveryConfig(MQTT_ENTITIES[MQTT_ENTITY_COUNT - 1], "a1b2c3", "v", payload, sizeof(payload));
+  CHECK(strstr(payload, "\"command_topic\":\"bbw/a1b2c3/start\"") != nullptr);
+  mqttDiscoveryConfig(MQTT_ENTITIES[1], "a1b2c3", "v", payload, sizeof(payload));
+  CHECK(strstr(payload, "value_json.last_shot_time_s") && strstr(payload, "\"unit_of_measurement\":\"s\""));
+  CHECK(mqttDiscoveryConfig(MQTT_ENTITIES[1], "a1b2c3", "v", payload, 40) == 0);   // too small: nothing
+  MqttState ms;
+  ms.state = "SHOT_COMPLETE";
+  ms.lastShotTimeS = 29.04f;
+  ms.lastShotGrind = "7.6";
+  ms.shotsToday = 3;
+  CHECK(mqttStateJson(ms, payload, sizeof(payload)) > 0);
+  CHECK(strcmp(payload, "{\"state\":\"SHOT_COMPLETE\",\"last_shot_time_s\":29.0,\"last_shot_weight_g\":null,"
+                        "\"last_shot_grind\":\"7.6\",\"advice_action\":null,\"advice_grind\":null,\"shots_today\":3}") == 0);
+  ms.state = "a\"b";
+  mqttStateJson(ms, payload, sizeof(payload));
+  CHECK(strncmp(payload, "{\"state\":\"ab\"", 13) == 0);   // a quote cannot break the JSON
+  // The room on a shot's context: only a fresh reading, and "not known" otherwise.
+  CHECK(sizeof(ShotContext) == SHOT_CONTEXT_V1_SIZE + 8 && sizeof(ShotContext) % 4 == 0);
+  ShotRecord shot;
+  shot.id = 7;
+  ShotContextInputs in;
+  in.shot = &shot;
+  in.nowMs = 10000000u;
+  in.ambient.rhPct = 48.5f;
+  in.ambient.tempC = 21.25f;
+  in.ambient.atMs = in.nowMs - 120000u;
+  in.ambient.source = AmbientSource::HOME_ASSISTANT;
+  ShotContext c = buildShotContext(in);
+  CHECK(c.ambientRhX10 == 485 && c.ambientTempX10 == 213 && c.ambientSource == 1 && c.ambientAgeS == 120);
+  in.ambient.atMs = in.nowMs - (AMBIENT_FRESH_S + 1) * 1000u;
+  c = buildShotContext(in);
+  CHECK(c.ambientRhX10 == AMBIENT_NONE_X10 && c.ambientTempX10 == AMBIENT_NONE_X10 && c.ambientSource == 0);
+  in.ambient.atMs = in.nowMs;
+  in.ambient.tempC = NAN;
+  c = buildShotContext(in);
+  CHECK(c.ambientRhX10 == 485 && c.ambientTempX10 == AMBIENT_NONE_X10);
+  // A version 1 slot read into a version 2 record keeps every byte and knows no room.
+  {
+    ShotContext v1;
+    v1.shotId = 42;
+    v1.adviceUm = 77;
+    v1.prepFlags = CTX_PREP_PURGED;
+    ShotContext v2;
+    memcpy(&v2, &v1, SHOT_CONTEXT_V1_SIZE);
+    CHECK(v2.shotId == 42 && v2.adviceUm == 77 && v2.prepFlags == CTX_PREP_PURGED &&
+          v2.ambientRhX10 == AMBIENT_NONE_X10 && v2.ambientSource == 0);
+  }
+}
+
 static void testLearnGrinder() {
   printf("grind advice: learn the grinder\n");
   const GrindConfig base;
@@ -8629,6 +8735,7 @@ int main() {
   testLearnGrinder();
   testGrindRealHistory();
   testGrindAdjustment();
+  testHomeAssistant();
   testSettingFormat();
   testGrinderUnitTidy();
   printf("\n%d checks, %d failed\n", g_checks, g_failures);
