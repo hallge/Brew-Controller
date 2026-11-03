@@ -182,6 +182,7 @@
           <label title="Connected, but no packets: the firmware should raise SCALE_DATA_STALE"><input type="checkbox" data-dev="lunar" data-key="silent"> go silent</label>
           <label title="The scale ends the session when heartbeats stop"><input type="checkbox" data-dev="lunar" data-key="heartbeatWatchdog"> needs heartbeat</label>
           <label title="This many tare commands over BLE are ignored">Ignore tares <input type="number" min="0" max="9" data-dev="lunar" data-key="ignoreTares"></label>
+          <label title="On each new connection, this many weight-stream requests are missed (a scale just woken)">Miss stream requests <input type="number" min="0" max="9" data-dev="lunar" data-key="missRequests"></label>
           <button class="warn" data-dev="lunar" data-key="dropLink">Drop connection</button>
         </div>
       </details>

@@ -90,6 +90,8 @@ class ScaleLink : private ScaleEventSink {
     lastKey_ = -1;
     lastPacketMs_ = nowMs;
     readyAtMs_ = nowMs;
+    notifications_ = 0;
+    reasks_ = 0;
     const ScaleDriver *d = driver();
     lastHeartbeatMs_ = nowMs - (d ? d->protocol().features.heartbeatPeriodMs : 0);  // one right away
   }
@@ -100,6 +102,7 @@ class ScaleLink : private ScaleEventSink {
     ScaleDriver *d = driver();
     if (!d) return;
     notifyAtMs_ = atMs;
+    ++notifications_;
     if (!d->feed(data, length, *this)) ++dropped_;
   }
 
@@ -125,6 +128,17 @@ class ScaleLink : private ScaleEventSink {
         write(buffer, static_cast<size_t>(length));
       }
     }
+    // No reading yet: ask again at 1.5 s and 3 s, within the first-packet
+    // deadline, for the scales that need it.
+    if (!gotPacket_ && !shotRunning && features.has(ScaleFeatureReinitWhileSilent) &&
+        reasks_ < REASK_COUNT &&
+        static_cast<uint32_t>(nowMs - readyAtMs_) >= REASK_EVERY_MS * (reasks_ + 1)) {
+      ++reasks_;
+      const ScaleProtocol &protocol = d->protocol();
+      for (size_t i = 0; i < protocol.initWriteCount; ++i) {
+        write(protocol.initWrites[i].data, static_cast<size_t>(protocol.initWrites[i].length));
+      }
+    }
     if (gotPacket_ && !shotRunning) {
       uint8_t request[SCALE_MAX_WRITE];
       size_t length = 0;
@@ -141,6 +155,12 @@ class ScaleLink : private ScaleEventSink {
     const uint32_t anchor = gotPacket_ ? lastPacketMs_.load() : readyAtMs_;
     return limit == 0 || static_cast<int32_t>(nowMs - anchor) <= static_cast<int32_t>(limit);
   }
+
+  // Since start(), for the log: how often the init writes went out again,
+  // and how many notifications came in.
+  uint32_t reasks() const { return reasks_; }
+  uint32_t notificationsSinceStart() const { return notifications_.load(); }
+  uint32_t droppedSinceStart() const { return dropped_.load(); }
 
   // The limit service() last judged the silence by, for the log.
   uint32_t silenceLimitMs() const {
@@ -183,6 +203,8 @@ class ScaleLink : private ScaleEventSink {
 
  private:
   static constexpr uint32_t FIRST_PACKET_TIMEOUT_MS = 5000;  // Open Brew: first valid packet deadline
+  static constexpr uint32_t REASK_EVERY_MS = 1500;
+  static constexpr uint32_t REASK_COUNT = 2;
 
   void onScaleEvent(const ScaleEvent &event) override {
     if (event.hasBattery) battery_ = event.batteryPercent;
@@ -252,6 +274,8 @@ class ScaleLink : private ScaleEventSink {
   bool pollAsked_ = false;
   uint32_t readyAtMs_ = 0;
   uint32_t lastHeartbeatMs_ = 0;
+  std::atomic<uint32_t> notifications_{0};
+  uint32_t reasks_ = 0;         // control task only
 };
 
 }  // namespace bbw
