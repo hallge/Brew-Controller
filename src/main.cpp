@@ -1003,7 +1003,8 @@ void libraryRefresh(bool idle) {
   static uint32_t lastMs = 0, passStartedMs = 0;
   static uint8_t step = 0;
   static uint16_t ids[bbw::MAX_COFFEES];
-  static char libraryIds[bbw::MAX_COFFEES][bbw::LIBRARY_ID_LEN];
+  static auto *libraryIds = static_cast<char (*)[bbw::LIBRARY_ID_LEN]>(
+      bbw::bigAlloc(bbw::MAX_COFFEES * bbw::LIBRARY_ID_LEN));  // PSRAM, on first use
   static uint8_t count = 0;
   if (!idle || !bbw::libraryLinkReady()) return;
   const uint32_t now = millis();
@@ -1333,8 +1334,12 @@ void logHealth() {
        static_cast<unsigned>(g_bleTask ? uxTaskGetStackHighWaterMark(g_bleTask) : 0),
        WiFi.status() == WL_CONNECTED ? static_cast<int>(WiFi.RSSI()) : 0,
        static_cast<unsigned>(scale.frames), static_cast<unsigned>(scale.badFrames));
-  if (memory.internalLowest < 30000) LOGW("health: chip RAM has been down to %u bytes",
-                                          static_cast<unsigned>(memory.internalLowest));
+  // Once per new low, not with every report.
+  static uint32_t warnedLowest = 0xFFFFFFFF;
+  if (memory.internalLowest < 30000 && memory.internalLowest < warnedLowest) {
+    warnedLowest = memory.internalLowest;
+    LOGW("health: chip RAM has been down to %u bytes", static_cast<unsigned>(memory.internalLowest));
+  }
 #endif
 }
 
@@ -1551,7 +1556,7 @@ void saveSubscriptions() {
 
 // Queues a service's description for review, unless the library has this very version already.
 bool queueService(uint16_t id) {
-  static bbw::Subscription s;
+  static bbw::Subscription &s = *bbw::bigNew<bbw::Subscription>();  // PSRAM, on first use
   bool found = false;
   {
     Lock lock;
@@ -1754,7 +1759,7 @@ void saveLinks() {
 
 // A suggested link to the library, for a reviewer. Loop task.
 void queueLink(uint16_t id) {
-  static bbw::LinkSuggestion l;
+  static bbw::LinkSuggestion &l = *bbw::bigNew<bbw::LinkSuggestion>();  // PSRAM, on first use
   bool found = false;
   {
     Lock lock;
@@ -1799,7 +1804,7 @@ void subscriptionsService(bool idle) {
     }
   }
   if (fetch) {
-    static bbw::PageMeta meta;
+    static bbw::PageMeta &meta = *bbw::bigNew<bbw::PageMeta>();  // PSRAM, on first use
     char problem[80];
     const int code = bbw::fetchPagePreview(url, meta, problem, sizeof(problem));
     Lock lock;
@@ -1898,7 +1903,7 @@ void diagLoadState() {
     g_diag = s;
     if (g_warns && f.read(reinterpret_cast<uint8_t *>(g_warns), sizeof(bbw::WarnTally)) == sizeof(bbw::WarnTally) &&
         !g_warns->valid()) {
-      *g_warns = bbw::WarnTally();
+      new (g_warns) bbw::WarnTally();  // in place: a temporary would put 9 kB on the loop stack
     }
   }
   f.close();
@@ -1960,7 +1965,8 @@ void diagBuildScrubList() {
 
 // The W and E lines logged since the last look, into the tally. Loop task.
 void diagTakeWarnings() {
-  static char chunk[2048];
+  constexpr size_t CHUNK_SIZE = 2048;
+  static char *chunk = bbw::bigArray<char>(CHUNK_SIZE);  // PSRAM, on first use
   static char line[224];
   static size_t lineLen = 0;
   static uint32_t lastMs = 0;
@@ -1968,7 +1974,7 @@ void diagTakeWarnings() {
   lastMs = millis();
   bool listBuilt = false;
   for (int rounds = 0; rounds < 8; ++rounds) {
-    const size_t n = bbw::logRead(g_diagLogPos, chunk, sizeof(chunk));
+    const size_t n = bbw::logRead(g_diagLogPos, chunk, CHUNK_SIZE);
     if (n == 0) break;
     for (size_t i = 0; i < n; ++i) {
       const char c = chunk[i];
@@ -2044,7 +2050,7 @@ void diagFillInput(bbw::DiagInput &in, uint32_t nowS) {
     links[k]->longestWaitMs = s.longestWaitMs;
   }
   // Each one's signal as last heard advertising.
-  static bbw::SeenDevice seen[bbw::BleManager::MAX_SEEN];
+  static bbw::SeenDevice *seen = bbw::bigArray<bbw::SeenDevice>(bbw::BleManager::MAX_SEEN);  // PSRAM, on first use
   const size_t heard = g_ble.seen(seen, bbw::BleManager::MAX_SEEN);
   const char *addresses[4] = {pairing.scaleAddress, pairing.botAddress, power, stop};
   for (int k = 0; k < 4; ++k) {
@@ -2884,7 +2890,7 @@ bbw::GrindAdvice grindAdvice() {
   }
   // How close past advice landed: sizes this step (unless turned off) and its window.
   {
-    static bbw::AdviceOutcome outcomes[bbw::ADVICE_CONFIDENCE_SHOTS];
+    static bbw::AdviceOutcome *outcomes = bbw::bigArray<bbw::AdviceOutcome>(bbw::ADVICE_CONFIDENCE_SHOTS);  // PSRAM
     const size_t n = adviceOutcomes(outcomes, bbw::ADVICE_CONFIDENCE_SHOTS);
     const bbw::AdviceConfidence conf = bbw::adviceConfidence(outcomes, n, config.toleranceS);
     bbw::applyAdviceConfidence(g_grindAdvice, conf, config.toleranceS, config.maxStepUm,
@@ -3329,7 +3335,8 @@ void readReviewState(void (*visit)(const bbw::RecipeShare *recipes, size_t recip
                      void *context) {
   Lock lock;
   loadReviewState();
-  static char targets[MAX_MY_REVIEWS][bbw::REVIEW_TARGET_LEN];
+  static auto *targets = static_cast<char (*)[bbw::REVIEW_TARGET_LEN]>(
+      bbw::bigAlloc(MAX_MY_REVIEWS * bbw::REVIEW_TARGET_LEN));  // PSRAM, on first use
   static bool approve[MAX_MY_REVIEWS];
   for (size_t i = 0; i < g_review.reviewCount; ++i) {
     memcpy(targets[i], g_review.reviews[i].target, bbw::REVIEW_TARGET_LEN);
@@ -4099,7 +4106,7 @@ float shotsPerDay() {
   bbw::ShotRecord newest;
   const uint32_t newestId = g_store.readShot(0, newest) ? newest.id : 0;
   if (cachedAtMs != 0 && newestId == cachedShot && millis() - cachedAtMs < 3600000u) return cached;
-  static uint32_t epochs[200];
+  static uint32_t *epochs = bbw::bigArray<uint32_t>(200);  // PSRAM, on first use
   size_t n = 0;
   bool historyEnds = false;   // the kept history began inside the 14 days
   for (uint32_t i = 0; i < 200; ++i) {

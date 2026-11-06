@@ -59,7 +59,7 @@ struct StoredNet {
 void blankSecrets(uint8_t *record, size_t length) {
   if (length < sizeof(StoredNet)) {
     // An older, shorter record: only the fields it has.
-    StoredNet full;
+    static StoredNet &full = *bigNew<StoredNet>();  // PSRAM, on first use
     memset(&full, 0, sizeof(full));
     memcpy(&full, record, length);
     blankSecrets(reinterpret_cast<uint8_t *>(&full), sizeof(full));
@@ -78,7 +78,9 @@ void blankSecrets(uint8_t *record, size_t length) {
 
 // A backup without secrets restored: the passwords and token this controller has now are kept.
 void keepOwnSecrets(uint8_t *record, size_t length) {
-  StoredNet in, own;
+  // PSRAM, on first use: two network records are too big for the stack.
+  static StoredNet &in = *bigNew<StoredNet>();
+  static StoredNet &own = *bigNew<StoredNet>();
   memset(&in, 0, sizeof(in));
   memset(&own, 0, sizeof(own));
   memcpy(&in, record, length < sizeof(in) ? length : sizeof(in));

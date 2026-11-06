@@ -850,7 +850,7 @@ void handlePostPreview() {
 
 void handleGetPreview() {
   static char url[256], problem[80];
-  static bbw::PageMeta meta;
+  static bbw::PageMeta &meta = *bbw::bigNew<bbw::PageMeta>();  // PSRAM, on first use
   const app::PreviewState state = app::pagePreview(url, sizeof(url), meta, problem, sizeof(problem));
   JsonDocument doc;
   static const char *names[] = {"none", "waiting", "done", "failed"};
@@ -2261,7 +2261,9 @@ void handleGetServiceRecommend() {
     if ((prefs.matters >> i) & 1u) matters.add(bbw::SERVICE_SOURCING[i]);
   }
   // What the owner has: by library id, or by the shop's host.
-  static char haveIds[bbw::MAX_SUBSCRIPTIONS][40], haveHosts[bbw::MAX_SUBSCRIPTIONS][64];
+  // PSRAM, on first use.
+  static auto *haveIds = static_cast<char (*)[40]>(bbw::bigAlloc(bbw::MAX_SUBSCRIPTIONS * 40));
+  static auto *haveHosts = static_cast<char (*)[64]>(bbw::bigAlloc(bbw::MAX_SUBSCRIPTIONS * 64));
   static size_t haveN;
   haveN = 0;
   auto hostOf = [](const char *url, char *out, size_t size) {
@@ -2295,7 +2297,7 @@ void handleGetServiceRecommend() {
     char key[bbw::LIBRARY_ID_LEN + 10];
     uint8_t stars;
   };
-  static Mine mine[bbw::MAX_COFFEES];
+  static Mine *mine = bbw::bigArray<Mine>(bbw::MAX_COFFEES);  // PSRAM, on first use
   static size_t nm;
   static RatedSet *rated;
   nm = 0;
@@ -2653,7 +2655,7 @@ void handleGetLinks() {
 void handleSuggestLink() {
   JsonDocument doc;
   if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "invalid JSON");
-  static bbw::LinkSuggestion l;
+  static bbw::LinkSuggestion &l = *bbw::bigNew<bbw::LinkSuggestion>();  // PSRAM, on first use
   l = bbw::LinkSuggestion();
   if (!bbw::cleanLinkUrl(doc["url"] | "", l.url, sizeof(l.url))) {
     return sendError(400, "a web link starting https://, without spaces or a login in it");
@@ -2697,7 +2699,8 @@ void handleDirectory() {
   JsonArray items = doc["coffees"].to<JsonArray>();
   size_t matched = 0, pages = 0;
   const size_t skip = static_cast<size_t>(page) * bbw::DIRECTORY_RESULTS;
-  static char shelf[bbw::MAX_COFFEES][bbw::LIBRARY_ID_LEN];
+  static auto *shelf = static_cast<char (*)[bbw::LIBRARY_ID_LEN]>(
+      bbw::bigAlloc(bbw::MAX_COFFEES * bbw::LIBRARY_ID_LEN));  // PSRAM, on first use
   static uint8_t shelfCount;
   shelfCount = 0;
   app::readLibrary([](const bbw::Library &lib, void *) {
