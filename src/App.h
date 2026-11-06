@@ -65,6 +65,8 @@ struct PowerView {
   bool lastWasSchedule = false;
   bbw::PowerScheduleEntry schedule[bbw::POWER_SCHEDULE_ENTRIES];
   int16_t utcOffsetMin = 0;
+  char tzRule[bbw::TZ_RULE_LEN] = {};  // empty: the fixed offset above is used
+  int16_t offsetNowMin = 0;            // local time minus UTC now, as the schedule uses it
 };
 
 bbw::LiveStatus status();
@@ -125,6 +127,9 @@ bbw::Grinder grinder();
 // Grinder. Advice is for the active preset and is cached; call from the
 // loop task only (it reads shot history from flash when the cache is stale).
 bbw::GrindAdvice grindAdvice();
+// The advice says turn the grinder and the setting has not been changed since the newest shot
+// (core/GrindAdvisor.h grindReminderDue): the screen reminds the owner when it wakes.
+bool grindReminderDue();
 // What the grinder's other coffees showed (computed with grindAdvice; empty until they show something).
 bbw::GrinderElasticity grinderElasticity();
 // What all the shots on this grinder showed, with grindAdvice: the owner's shot-to-shot noise (and
@@ -346,6 +351,9 @@ const char *testPressState();
 void restartSoon();
 void powerBelieve(bbw::PowerBelief belief);
 void applyPowerSchedule(const bbw::PowerScheduleEntry *entries, int16_t utcOffsetMin);
+// The local time zone as a POSIX rule from the web page; stored only when it changed. false: not a
+// rule core/TimeZone.h can read (nothing changes).
+bool setTimeZone(const char *rule);
 
 // Subscriptions (core/Subscriptions.h), kept in /subs.json.
 // Runs `visit` on the list with the lock held: keep it short.

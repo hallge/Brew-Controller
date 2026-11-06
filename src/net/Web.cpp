@@ -1326,6 +1326,7 @@ void handleGrind() {
   doc["current_um"] = a.currentUm;
   doc["suggested_um"] = a.suggestedUm;
   doc["delta_um"] = a.deltaUm;
+  doc["reminder_due"] = app::grindReminderDue();  // not acted on since the newest shot
   doc["target_time_s"] = a.targetTimeS;
   // The base verdict (Grind-by-Sync style, against the recipe's time) and the refinement by the
   // owner's ratings that may sit on top of it: `action` is the refined one only when `refined`.
@@ -1884,6 +1885,8 @@ void handleGetPower() {
   doc["last"] = v.lastOutcome;
   doc["last_by_schedule"] = v.lastWasSchedule;
   doc["utc_offset_min"] = v.utcOffsetMin;
+  doc["tz_rule"] = v.tzRule;
+  doc["utc_offset_min_now"] = v.offsetNowMin;
   doc["clock_set"] = app::epochNow() != 0;
   JsonArray entries = doc["schedule"].to<JsonArray>();
   for (const bbw::PowerScheduleEntry &e : v.schedule) {
@@ -2787,6 +2790,7 @@ void handlePostPower() {
       ++i;
     }
     app::applyPowerSchedule(entries, doc["utc_offset_min"] | 0);
+    if (doc["tz_rule"].is<const char *>()) app::setTimeZone(doc["tz_rule"].as<const char *>());
   } else return sendError(400, "bad action");
   if (!ok) return sendError(409, app::powerView().lastOutcome);
   sendOk();
@@ -3517,6 +3521,10 @@ void begin() {
   server.on("/api/time", HTTP_POST, []() {
     const uint32_t epoch = strtoul(server.arg("epoch").c_str(), nullptr, 10);
     if (epoch > 1700000000UL) app::setEpoch(epoch);
+    // The browser's time zone as a POSIX rule: the power schedule follows daylight saving with it.
+    if (server.hasArg("tz") && !app::setTimeZone(server.arg("tz").c_str())) {
+      return sendError(400, "tz: not a time zone rule this reads");
+    }
     sendOk();
   });
   server.on("/api/offset/reset", HTTP_POST, []() {

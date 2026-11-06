@@ -18,6 +18,7 @@
 
 #include "BrewController.h"
 #include "PusherDriver.h"
+#include "TimeZone.h"
 
 namespace bbw {
 
@@ -114,6 +115,14 @@ class PowerControl {
   static constexpr uint32_t MAX_CATCH_UP_MIN = 3;        // a schedule time missed by more is skipped
 
   void begin(PusherConfig *config) { config_ = config; }
+  // The local time zone as a rule (core/TimeZone.h). Without a valid one the fixed utcOffsetMin
+  // the browser last reported is used, as before.
+  void setTimeZone(const TzRule &rule) { tz_ = rule; }
+  const TzRule &timeZone() const { return tz_; }
+  // Local time minus UTC at that moment, in minutes.
+  int16_t offsetMinAt(uint32_t epochS) const {
+    return tzOffsetMinAt(tz_, epochS, config_ ? config_->utcOffsetMin : 0);
+  }
 
   // The machine switches itself off after this many minutes with nothing done on it (the Breville
   // Dual Boiler: 240, unless its "A OF" menu setting turned Auto Off off); 0: it does not, or it is
@@ -327,17 +336,25 @@ class PowerControl {
 
   void schedule(uint32_t nowMs, uint32_t epochS) {
     if (epochS < 1700000000u) return;  // clock not set
+    const int16_t offset = offsetMinAt(epochS);
     const uint32_t minute = static_cast<uint32_t>(
-        (static_cast<int64_t>(epochS) + static_cast<int64_t>(config_->utcOffsetMin) * 60) / 60);
+        (static_cast<int64_t>(epochS) + static_cast<int64_t>(offset) * 60) / 60);
     if (!haveMinute_) {
       haveMinute_ = true;
       lastMinute_ = minute;
+      lastOffsetMin_ = offset;
       return;
     }
+    // The clocks went forward with the offset: the local times skipped over are still done, once.
+    const uint32_t forward = offset > lastOffsetMin_ ? static_cast<uint32_t>(offset - lastOffsetMin_) : 0;
+    lastOffsetMin_ = offset;
     if (minute == lastMinute_) return;
+    // The clocks went back (daylight saving ended) or were corrected back a little: the local times
+    // seen again are not done again, so nothing happens until the clock is past where it was.
+    if (minute < lastMinute_ && lastMinute_ - minute <= 60 + MAX_CATCH_UP_MIN) return;
     // The clock was set or jumped: do not act on times long past, or again on times already done.
-    uint32_t from = minute > lastMinute_ && minute - lastMinute_ <= MAX_CATCH_UP_MIN ? lastMinute_ + 1 : minute;
-    if (minute < lastMinute_) from = minute + 1;  // went backwards: nothing is due
+    uint32_t from = minute > lastMinute_ && minute - lastMinute_ <= MAX_CATCH_UP_MIN + forward ? lastMinute_ + 1 : minute;
+    if (minute < lastMinute_) from = minute + 1;  // went far backwards: nothing is due
     lastMinute_ = minute;
     for (uint32_t m = from; m <= minute; ++m) {
       const uint32_t ofWeek = (m + 4 * 1440) % (7 * 1440);
@@ -366,6 +383,8 @@ class PowerControl {
   uint32_t tries_ = 0;
   bool haveMinute_ = false;
   uint32_t lastMinute_ = 0;
+  int16_t lastOffsetMin_ = 0;
+  TzRule tz_;
   uint32_t epochS_ = 0;
   uint16_t autoOffMin_ = 0;
   uint32_t lastUseMs_ = 0;    // last press that switched it on, or shot; 0 until the first tick

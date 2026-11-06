@@ -33,6 +33,7 @@
 #include "core/SwitchBotProtocol.h"
 #include "core/TasteProfile.h"
 #include "core/Telemetry.h"
+#include "core/TimeZone.h"
 #include "core/BackupFormat.h"
 #include <vector>
 
@@ -2340,6 +2341,166 @@ static void testBuiltinGrinders() {
   niche.divisor = 4;
   normalizeGrinder(niche);
   CHECK(niche.divisor == 4);
+}
+
+// The power schedule follows the clocks changing (seen on the board: with a fixed offset, 8:00 fired
+// at 7:00 for a week after 1 Nov 2026).
+static void testTimeZoneRule() {
+  printf("time zone: a POSIX rule gives the local offset, the schedule follows daylight saving\n");
+  TzRule ny;
+  CHECK(parseTzRule("EST5EDT,M3.2.0,M11.1.0", ny) && ny.valid && ny.hasDst);
+  CHECK(ny.stdOffsetMin == -300 && ny.dstOffsetMin == -240);
+  // 2026: into daylight saving on 8 Mar at 07:00 UTC, out on 1 Nov at 06:00 UTC.
+  CHECK(tzOffsetMinAt(ny, 1772953200u - 1) == -300 && tzOffsetMinAt(ny, 1772953200u) == -240);
+  CHECK(tzOffsetMinAt(ny, 1793512800u - 1) == -240 && tzOffsetMinAt(ny, 1793512800u) == -300);
+  // The form the web page writes, with quoted names and explicit times.
+  TzRule page;
+  CHECK(parseTzRule("<-05>5<-04>,M3.2.0/2,M11.1.0/2", page) && page.stdOffsetMin == -300);
+  CHECK(tzOffsetMinAt(page, 1793361600u) == -240 && tzOffsetMinAt(page, 1793620800u) == -300);
+  // Southern hemisphere: Sydney, out on 5 Apr 2026 (16:00 UTC the day before), in on 4 Oct.
+  TzRule syd;
+  CHECK(parseTzRule("AEST-10AEDT,M10.1.0,M4.1.0/3", syd) && syd.stdOffsetMin == 600 && syd.dstOffsetMin == 660);
+  CHECK(tzOffsetMinAt(syd, 1775318400u - 1) == 660 && tzOffsetMinAt(syd, 1775318400u) == 600);
+  CHECK(tzOffsetMinAt(syd, 1791043200u - 1) == 600 && tzOffsetMinAt(syd, 1791043200u) == 660);
+  CHECK(tzOffsetMinAt(syd, 1767225600u) == 660);  // 1 Jan: summer there
+  // What the page writes for London and Berlin (test/host/page_tz_check.mjs): both change at 01:00 UTC,
+  // on 29 Mar and 25 Oct 2026.
+  TzRule lon, ber;
+  CHECK(parseTzRule("<+00>0<+01>,M3.5.0/1,M10.5.0", lon) && parseTzRule("<+01>-1<+02>,M3.5.0,M10.5.0/3", ber));
+  CHECK(tzOffsetMinAt(lon, 1774746000u - 1) == 0 && tzOffsetMinAt(lon, 1774746000u) == 60);
+  CHECK(tzOffsetMinAt(lon, 1792890000u - 1) == 60 && tzOffsetMinAt(lon, 1792890000u) == 0);
+  CHECK(tzOffsetMinAt(ber, 1774746000u - 1) == 60 && tzOffsetMinAt(ber, 1774746000u) == 120);
+  CHECK(tzOffsetMinAt(ber, 1792890000u - 1) == 120 && tzOffsetMinAt(ber, 1792890000u) == 60);
+  // No daylight saving, and half hours.
+  TzRule india, utc;
+  CHECK(parseTzRule("IST-5:30", india) && !india.hasDst && tzOffsetMinAt(india, 1793620800u) == 330);
+  CHECK(parseTzRule("<+0530>-5:30", india) && tzOffsetMinAt(india, 1772953200u) == 330);
+  CHECK(parseTzRule("UTC0", utc) && tzOffsetMinAt(utc, 1793620800u) == 0);
+  // Anything not read in full is no rule: the fixed offset is used.
+  TzRule bad;
+  for (const char *text : {"", "EST", "E5", "EST5EDT", "EST5EDT,M3.2.0", "EST5EDT,J60,J300", "EST5EDT,M13.2.0,M11.1.0",
+                           "EST5EDT,M3.6.0,M11.1.0", "EST5EDT,M3.2.0,M11.1.0x", "EST99", "<-05>5<-04"}) {
+    CHECK(!parseTzRule(text, bad) && !bad.valid);
+  }
+  CHECK(tzOffsetMinAt(bad, 1793620800u, -240) == -240);
+  CHECK(!parseTzRule(nullptr, bad));
+
+  // The schedule: on at 8:00 Monday to Friday, New York.
+  PusherConfig config;
+  strcpy(config.powerAddress, "aa:bb:cc:dd:ee:ff");
+  config.utcOffsetMin = -240;  // what the browser reported in the summer
+  config.schedule[0] = {1, 1, 8 * 60, 0x3e};
+  PowerControl power;
+  power.begin(&config);
+  power.setTimeZone(ny);
+  FakeBot bot;
+  bot.up = true;
+  uint32_t now = 1000;
+  auto runTo = [&](uint32_t fromEpoch, uint32_t toEpoch) {
+    for (uint32_t e = fromEpoch; e <= toEpoch; e += 20) {
+      power.tick(now += 20000, e, true, bot);
+      if (bot.result() == PressResult::BUSY) bot.done();
+    }
+  };
+  power.believe(PowerBelief::OFF);
+  // Friday 30 Oct, daylight saving: 8:00 is 12:00 UTC.
+  runTo(1793361600u - 600, 1793361600u - 20);
+  CHECK(bot.presses == 0);
+  runTo(1793361600u, 1793361600u + 300);
+  CHECK(bot.presses == 1);
+  // Monday 2 Nov, standard time: nothing at 12:00 UTC (7:00 local), on at 13:00 UTC.
+  power.believe(PowerBelief::OFF);
+  runTo(1793620800u - 600, 1793620800u + 600);
+  CHECK(bot.presses == 1);
+  runTo(1793624400u - 600, 1793624400u + 300);
+  CHECK(bot.presses == 2);
+  // Without the rule the old fixed offset is still what counts.
+  PowerControl fixed;
+  PusherConfig fixedConfig = config;
+  fixed.begin(&fixedConfig);
+  FakeBot bot2;
+  bot2.up = true;
+  fixed.believe(PowerBelief::OFF);
+  for (uint32_t e = 1793620800u - 300; e <= 1793620800u + 300; e += 20) {
+    fixed.tick(now += 20000, e, true, bot2);
+    if (bot2.result() == PressResult::BUSY) bot2.done();
+  }
+  CHECK(bot2.presses == 1 && fixed.offsetMinAt(1793620800u) == -240);
+
+  // The clocks going back: 1:30 comes twice on 1 Nov (05:30 and 06:30 UTC) and is done once.
+  PusherConfig back;
+  strcpy(back.powerAddress, "aa:bb:cc:dd:ee:ff");
+  back.schedule[0] = {1, 1, 90, 0x7f};
+  PowerControl fall;
+  fall.begin(&back);
+  fall.setTimeZone(ny);
+  FakeBot bot3;
+  bot3.up = true;
+  fall.believe(PowerBelief::OFF);
+  for (uint32_t e = 1793511000u - 600; e <= 1793511000u + 2 * 3600; e += 20) {
+    fall.tick(now += 20000, e, true, bot3);
+    if (bot3.result() == PressResult::BUSY) bot3.done();
+    if (e == 1793511000u + 1200) fall.believe(PowerBelief::OFF);  // a second press would show
+  }
+  CHECK(bot3.presses == 1);
+  // The clocks going forward: 2:30 on 8 Mar does not exist; it is done once, at 3:00.
+  PusherConfig fwd;
+  strcpy(fwd.powerAddress, "aa:bb:cc:dd:ee:ff");
+  fwd.schedule[0] = {1, 1, 150, 0x7f};
+  PowerControl spring;
+  spring.begin(&fwd);
+  spring.setTimeZone(ny);
+  FakeBot bot4;
+  bot4.up = true;
+  spring.believe(PowerBelief::OFF);
+  uint32_t pressedAt = 0;
+  for (uint32_t e = 1772953200u - 1800; e <= 1772953200u + 3600; e += 20) {
+    const int before = bot4.presses;
+    spring.tick(now += 20000, e, true, bot4);
+    if (bot4.presses != before && !pressedAt) pressedAt = e;
+    if (bot4.result() == PressResult::BUSY) bot4.done();
+  }
+  CHECK(bot4.presses == 1 && pressedAt >= 1772953200u && pressedAt < 1772953200u + 60);
+}
+
+// Grind advice the owner forgot (seen 5-6 Nov 2026: finer 74 -> 66 advised, the next shot pulled at 74):
+// reminded of on waking only while the setting is still the newest shot's.
+static void testGrindReminder() {
+  printf("grind reminder: only for advice not acted on since the newest shot\n");
+  GrindAdvice a;
+  a.action = GrindAction::FINER;
+  a.currentUm = 74;
+  a.suggestedUm = 66;
+  a.deltaUm = -8;
+  CHECK(grindReminderDue(a, 74));
+  // Changed after the advice (to anything): the advice for the new setting is not reminded of.
+  GrindAdvice changed = a;
+  changed.currentUm = 54;
+  changed.suggestedUm = 60;
+  changed.deltaUm = 6;
+  changed.action = GrindAction::COARSER;
+  CHECK(!grindReminderDue(changed, 74));
+  // Changed and changed back: as if not changed.
+  CHECK(grindReminderDue(a, 74));
+  // Nothing to turn, or no shot behind it.
+  GrindAdvice hold = a;
+  hold.action = GrindAction::HOLD;
+  hold.deltaUm = 0;
+  hold.suggestedUm = 74;
+  CHECK(!grindReminderDue(hold, 74));
+  for (GrindAction other : {GrindAction::NO_DATA, GrindAction::NO_GRIND_SET, GrindAction::INCONSISTENT}) {
+    GrindAdvice o = a;
+    o.action = other;
+    CHECK(!grindReminderDue(o, 74));
+  }
+  CHECK(!grindReminderDue(a, 0));
+  GrindAdvice coarser = a;
+  coarser.action = GrindAction::COARSER;
+  coarser.suggestedUm = 80;
+  coarser.deltaUm = 6;
+  CHECK(grindReminderDue(coarser, 74));
+  coarser.suggestedUm = 74;  // kept in range down to no move at all
+  CHECK(!grindReminderDue(coarser, 74));
 }
 
 static void testPowerBeliefDrift() {
@@ -8717,6 +8878,8 @@ int main() {
   testPusherDrivers();
   testPusherHold();
   testPowerControl();
+  testTimeZoneRule();
+  testGrindReminder();
   testPowerAutoOffWaits();
   testPowerEvents();
   testPowerOffWithScale();

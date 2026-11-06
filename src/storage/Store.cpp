@@ -1091,6 +1091,7 @@ NetConfig Store::loadNet() {
   net.haRhEntity[sizeof(net.haRhEntity) - 1] = net.haTempEntity[sizeof(net.haTempEntity) - 1] = '\0';
   net.haWebhookId[sizeof(net.haWebhookId) - 1] = net.mqttUrl[sizeof(net.mqttUrl) - 1] = '\0';
   net.mqttUser[sizeof(net.mqttUser) - 1] = net.mqttPassword[sizeof(net.mqttPassword) - 1] = '\0';
+  net.tzRule[sizeof(net.tzRule) - 1] = '\0';
   if (strlen(net.apPassword) < 8) strlcpy(net.apPassword, "brewbyweight", sizeof(net.apPassword));
   return net;
 }

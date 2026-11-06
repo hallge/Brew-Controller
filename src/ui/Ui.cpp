@@ -869,11 +869,21 @@ lv_obj_t *recTitle, *recSetting, *recWhy, *recUseBtn, *recUseLabel, *recKeepLabe
 bool recNoGrind = false;
 uint16_t noGrindStart = 0;       // where SET starts the edit screen; 0 = nothing known
 uint32_t noGrindDismissed = 0;   // the pair NOT NOW was pressed for; cleared on wake
+// The same panel reminds of grind advice not acted on (refreshGrindReminder): once at start-up and
+// once each time the screen wakes with the scale, until SET, NOT NOW or a shot.
+bool recReminder = false;
+bool grindReminderArmed = true;
+uint16_t reminderUm = 0;         // what SET sets; 0: the advice has no number, SET only closes it
 uint32_t noGrindKey() {
   const bbw::Recipe r = app::activeRecipe();
   return (static_cast<uint32_t>(r.coffeeId) << 16) ^ r.recipeId ^ (static_cast<uint32_t>(app::activePreset()) << 8) ^ 1u;
 }
 void onRecUse(lv_event_t *) {
+  if (recReminder) {
+    grindReminderArmed = false;
+    if (reminderUm) app::setGrind(reminderUm);
+    return;
+  }
   if (!recNoGrind) {
     app::answerGrindRecommendation(true);
     return;
@@ -884,6 +894,10 @@ void onRecUse(lv_event_t *) {
   editOpen = true;
 }
 void onRecKeep(lv_event_t *) {
+  if (recReminder) {
+    grindReminderArmed = false;
+    return;
+  }
   if (!recNoGrind) {
     app::answerGrindRecommendation(false);
     return;
@@ -1337,6 +1351,7 @@ bool refreshNoGrind() {
   const bbw::Recipe active = app::activeRecipe();
   if (active.grindUm != 0 || noGrindDismissed == noGrindKey()) return false;
   recNoGrind = true;
+  recReminder = false;
   const uint16_t last = app::lastGrindSetting();
   const uint16_t guess = last ? 0 : bbw::grinderFirstGuess(app::grinder()).setting;
   noGrindStart = last ? last : guess;
@@ -1365,11 +1380,54 @@ bool refreshNoGrind() {
   return true;
 }
 
+// Grind advice from the last shot that was not acted on: the grinder is still at the setting that
+// shot was made at (app::grindReminderDue). Shown once per wake with the scale; false when there
+// is nothing to remind of.
+bool refreshGrindReminder(const bbw::LiveStatus &st) {
+  if (!grindReminderArmed || !st.scaleConnected) return false;
+  if (!app::grindReminderDue()) {
+    grindReminderArmed = false;  // nothing now: not asked later in this wake either
+    return false;
+  }
+  const bbw::GrindAdvice g = app::grindAdvice();
+  const bool finer = g.action == GrindAction::FINER;
+  const bool number = bbw::adviceHasNumber(g);
+  recNoGrind = false;
+  recReminder = true;
+  reminderUm = number ? g.suggestedUm : 0;
+  setText(recTitle, "GRIND REMINDER");
+  const char *unit = grindUnit();
+  char text[96], why[200];
+  if (number) snprintf(text, sizeof(text), "%s -> %s %s", gs(g.currentUm), gs(g.suggestedUm), unit);
+  else snprintf(text, sizeof(text), "GRIND %s", finer ? "FINER" : "COARSER");
+  setText(recSetting, text);
+  if (g.shotsUsed > 1) {
+    snprintf(why, sizeof(why), "The last %u shots averaged %.1f s (aim %.0f s): the advice was %s. The grinder is still set at %s %s.",
+             static_cast<unsigned>(g.shotsUsed), g.averageTimeS, g.targetTimeS, finer ? "finer" : "coarser",
+             gs(g.currentUm), unit);
+  } else {
+    snprintf(why, sizeof(why), "The last shot ran %.1f s (aim %.0f s): the advice was %s. The grinder is still set at %s %s.",
+             g.averageTimeS, g.targetTimeS, finer ? "finer" : "coarser", gs(g.currentUm), unit);
+  }
+  if (number && g.notePlay) {
+    const size_t used = strlen(why);
+    snprintf(why + used, sizeof(why) - used, " Incl. %s %s play.", gd(static_cast<int>(lroundf(g.backlashAddedSteps))), gdu());
+  }
+  setText(recWhy, why);
+  if (number) snprintf(text, sizeof(text), "SET\n%s", gs(g.suggestedUm));
+  else snprintf(text, sizeof(text), "OK");
+  setText(recUseLabel, text);
+  setText(recKeepLabel, "NOT NOW");
+  show(Panel::GRINDREC);
+  return true;
+}
+
 // The grind recommendation for a coffee or bag just put in use; false when there is none to ask about.
 bool refreshGrindRec() {
   const app::GrindRecommendation r = app::grindRecommendation();
   if (!r.setting) return false;
   recNoGrind = false;
+  recReminder = false;
   setText(recTitle, "NEW GRIND ADVICE");
   const char *unit = grindUnit();
   char text[96], now[16];
@@ -1877,6 +1935,7 @@ void setStandby(bool on) {
     setCpuFrequencyMhz(CPU_ACTIVE_MHZ);
     amoled.setBrightness(BRIGHT_ACTIVE);
     noGrindDismissed = 0;  // a missing grind setting is asked for again at each wake
+    grindReminderArmed = true;  // and advice not acted on is reminded of
     LOGI("ui: awake");
   }
 }
@@ -1958,6 +2017,12 @@ void refresh() {
   if (st.state == State::READY && refreshGrindRec()) return;
   // No setting at all for the pair in use: asked for before the shot (it shows on the result too).
   if (st.state == State::READY && refreshNoGrind()) return;
+  // Advice from the last shot not acted on: reminded of once, when the screen has woken with the scale.
+  if (st.state == State::READY && refreshGrindReminder(st)) return;
+  if (st.state != State::READY && st.state != State::CONNECTING_SCALE && st.state != State::BOOT &&
+      st.state != State::INITIALIZING) {
+    grindReminderArmed = false;  // a shot (or a fault) came first: not reminded after it
+  }
 
   switch (st.state) {
     case State::BOOT:

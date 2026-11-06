@@ -789,10 +789,14 @@ state, so the controller keeps count of what it believes. Rules:
   (the Breville does after a while), correct the belief on the page; that
   presses nothing. "Press the power button anyway" presses regardless.
 - The power button is never pressed while a shot is running or being set up.
-- The schedule needs the clock (set by the browser or by NTP) and uses the
-  time zone of the browser that saved it. Save it again after a
-  daylight-saving change. A time missed by more than three minutes (the
-  controller was off) is skipped, not caught up.
+- The schedule needs the clock (set by the browser or by NTP) and runs in
+  the browser's time zone. Each time the page opens it sends the zone as a
+  rule (`core/TimeZone.h`), so the schedule follows daylight saving by
+  itself: when the clocks go back, a time is not done twice, and a time
+  skipped when they go forward is done once, at the new hour. Firmware older
+  than v0.1.29 kept a fixed offset that had to be saved again after each
+  change. A time missed by more than three minutes (the controller was off)
+  is skipped, not caught up.
 
 The power bot is only connected for a press, like the brew bot around a shot.
 

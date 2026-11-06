@@ -1290,6 +1290,16 @@ inline void grindLearnAdjustment(GrindConfig &c, const GrindPair *pairs, size_t 
   c.currentDir = currentDir;
 }
 
+// Whether to remind the owner of this advice when the controller wakes (Ui.cpp): it says turn the
+// grinder, and the setting held now is still the one the newest shot was made at, so it has not been
+// acted on. A setting changed and changed back counts as not acted on. newestSettingUm: the newest
+// counted shot's setting for the pair in use, 0 if there is none.
+inline bool grindReminderDue(const GrindAdvice &a, uint16_t newestSettingUm) {
+  if (a.action != GrindAction::FINER && a.action != GrindAction::COARSER) return false;
+  return newestSettingUm != 0 && a.currentUm == newestSettingUm && a.deltaUm != 0 && a.suggestedUm != 0 &&
+         a.suggestedUm != a.currentUm;
+}
+
 // Whether to say the move includes the play: it turns the dial back across a dead zone of
 // at least GRIND_BACKLASH_NOTE_UM. umPerStep 0: in steps, from 2.
 inline void markNotePlay(GrindAdvice &a, float umPerStep) {

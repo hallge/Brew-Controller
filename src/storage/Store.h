@@ -20,6 +20,7 @@
 #include "platform/FirmwareUpdate.h"
 #include "core/Maintenance.h"
 #include "core/ShotContext.h"
+#include "core/TimeZone.h"
 #include "core/Types.h"
 
 namespace bbw {
@@ -48,6 +49,9 @@ struct NetConfig {
   char mqttUrl[MQTT_URL_LEN] = {};         // mqtt://broker:1883; empty: off
   char mqttUser[MQTT_USER_LEN] = {};
   char mqttPassword[MQTT_PASSWORD_LEN] = {};
+  // The local time zone as a POSIX rule (core/TimeZone.h), sent by the web page; added at the end on
+  // 6 Nov 2026. Empty: the power schedule uses the fixed offset the browser last reported.
+  char tzRule[TZ_RULE_LEN] = {};
 };
 
 class Store {

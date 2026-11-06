@@ -127,6 +127,7 @@ size_t g_backlashReversals = 0;  // ...from this many reversals
 float g_reversalWeight = 1.0f;   // ...and what the first shot after turning back counts
 bbw::GrindAdvice g_grindAdvice;
 uint32_t g_lastCountedEpochS = 0;  // newest shot behind g_grindAdvice; loop task only
+uint16_t g_adviceNewestSetting = 0;  // the setting that newest shot was made at; 0: none
 std::atomic<uint32_t> g_botHoldUntilMs{0};  // keep the Bot link up until then
 uint32_t g_settingsDirtyAtMs = 0;
 
@@ -2682,6 +2683,7 @@ size_t adviceOutcomes(bbw::AdviceOutcome *out, size_t max) {
 
 bbw::GrindAdvice grindAdvice() {
   if (!g_grindAdviceStale) return g_grindAdvice;
+  g_adviceNewestSetting = 0;
   constexpr uint32_t SCAN_SHOTS = 150;  // how far back to look
   struct Scan {
     bbw::Recipe recipe;
@@ -2891,8 +2893,14 @@ bbw::GrindAdvice grindAdvice() {
   bbw::keepAdviceInRange(g_grindAdvice, bbw::grinderRange(grinderNow));
   bbw::markNotePlay(g_grindAdvice, grinderNow.umPerUnit);
   g_lastCountedEpochS = scan.newestEpochS;
+  g_adviceNewestSetting = scan.newestSeen ? scan.newestSetting : 0;
   g_grindAdviceStale = false;
   return g_grindAdvice;
+}
+
+bool grindReminderDue() {
+  const bbw::GrindAdvice advice = grindAdvice();
+  return bbw::grindReminderDue(advice, g_adviceNewestSetting);
 }
 
 // The library's measured ageing rate, from its copy on flash.
@@ -3711,6 +3719,8 @@ PowerView powerView() {
   v.lastWasSchedule = g_powerControl.lastWasSchedule();
   memcpy(v.schedule, g_pushers.schedule, sizeof(v.schedule));
   v.utcOffsetMin = g_pushers.utcOffsetMin;
+  strlcpy(v.tzRule, g_net.tzRule, sizeof(v.tzRule));
+  v.offsetNowMin = g_powerControl.offsetMinAt(epochNow());
   return v;
 }
 
@@ -3955,6 +3965,20 @@ void applyPowerSchedule(const bbw::PowerScheduleEntry *entries, int16_t utcOffse
     bbw::sanitizePusherConfig(g_pushers);
   }
   g_pushersDirty = true;
+}
+
+bool setTimeZone(const char *rule) {
+  bbw::TzRule parsed;
+  if (!rule || strlen(rule) >= bbw::TZ_RULE_LEN || !bbw::parseTzRule(rule, parsed)) return false;
+  {
+    Lock lock;
+    if (strcmp(g_net.tzRule, rule) == 0) return true;  // as stored: no flash write
+    strlcpy(g_net.tzRule, rule, sizeof(g_net.tzRule));
+    g_powerControl.setTimeZone(parsed);
+  }
+  g_store.saveNet(g_net);
+  LOGI("clock: time zone %s", rule);
+  return true;
 }
 
 bbw::NetConfig netConfig() { return g_net; }
@@ -4388,6 +4412,10 @@ void setup() {
   g_controller.setMachine(&g_machine);
   g_pushers = g_store.loadPushers();
   g_powerControl.begin(&g_pushers);
+  {
+    bbw::TzRule zone;
+    if (bbw::parseTzRule(g_net.tzRule, zone)) g_powerControl.setTimeZone(zone);
+  }
   bbw::PusherSecrets brewSecrets = g_pushers.brew;
   strlcpy(brewSecrets.password, g_net.botPassword, sizeof(brewSecrets.password));
   g_bot.begin("bot", &g_settings, brewSecrets);
