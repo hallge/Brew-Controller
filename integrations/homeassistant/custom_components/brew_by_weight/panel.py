@@ -22,13 +22,19 @@ def _version() -> str:
         return "0"
 
 
+def _static_url() -> str:
+    """The frontend is served under the integration's version, so a browser never mixes a new panel
+    with cached modules of an older one (the sections import each other by relative address)."""
+    return f"{STATIC_URL}/{_version()}"
+
+
 async def async_register_static(hass: HomeAssistant) -> None:
     """Once per Home Assistant start (static routes cannot be removed)."""
     data = hass.data.setdefault(DOMAIN, {})
     if data.get("static"):
         return
     from homeassistant.components.http import StaticPathConfig
-    await hass.http.async_register_static_paths([StaticPathConfig(STATIC_URL, str(FRONTEND_DIR), False)])
+    await hass.http.async_register_static_paths([StaticPathConfig(_static_url(), str(FRONTEND_DIR), True)])
     data["static"] = True
 
 
@@ -43,7 +49,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         webcomponent_name="brew-panel",
         sidebar_title=PANEL_TITLE,
         sidebar_icon=PANEL_ICON,
-        module_url=f"{STATIC_URL}/brew-panel.js?v={_version()}",
+        module_url=f"{_static_url()}/brew-panel.js",
         embed_iframe=False,
         require_admin=False,
     )

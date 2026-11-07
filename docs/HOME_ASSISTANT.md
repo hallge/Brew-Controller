@@ -139,7 +139,16 @@ rest:
 
 There is also a custom integration in `integrations/homeassistant` (copy `custom_components/brew_by_weight` into Home Assistant's `config/custom_components`, restart, and add **Brew by Weight**). See its README.
 
-## 6. The controller's page as a full-screen Home Assistant panel
+## 6. The Brew Controller panel, and the controller's own page
+
+The custom integration (from 0.3.0) adds a **Brew Controller** panel to Home Assistant's sidebar: the
+controller's interface rebuilt in Home Assistant's style, with every feature that does not operate the
+hardware (shots, insights, coffees, recipes, grinder, upkeep, subscriptions, discover, community,
+settings, logs). It works in the Home Assistant app and away from home. What it may ask the controller
+is an allowlist; hardware actions are refused and stay in the controller's own page. See
+`integrations/homeassistant/README.md`.
+
+### The controller's own page as a full-screen panel
 
 A small Home Assistant add-on (`integrations/homeassistant/addon/brew_controller`) shows the
 controller's own page in the sidebar through Home Assistant's ingress, the way Music Assistant

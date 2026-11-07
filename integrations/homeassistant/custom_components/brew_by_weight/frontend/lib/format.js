@@ -46,7 +46,8 @@ export const money = (cents, currency) => {
 const dpl = (d) => (d == 2 || d == 5 || d == 10 ? 1 : 2);
 export const grindOf = (library) => {
   const g = (library && library.grinder) || {};
-  return { divisor: g.divisor || 1, subSteps: g.subSteps || 0, unit: g.unit || "µm" };
+  // The controller stores "um" for microns and shows "µm" (WebPage.h:876).
+  return { divisor: g.divisor || 1, subSteps: g.subSteps || 0, unit: !g.unit || g.unit == "um" ? "µm" : g.unit };
 };
 /** Display a stored setting, e.g. 35 -> "3.5" (divisor 10) or "4:8" (9 sub-steps). */
 export const fsn = (g, v) => {

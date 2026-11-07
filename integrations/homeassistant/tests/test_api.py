@@ -109,6 +109,6 @@ def test_error_message():
 def test_manifest_and_translations():
     manifest = json.loads((_PKG / "manifest.json").read_text())
     assert manifest["domain"] == "brew_by_weight" and manifest["config_flow"] is True
-    assert manifest["iot_class"] == "local_polling" and manifest["version"] == "0.3.0"
+    assert manifest["iot_class"] == "local_polling" and manifest["version"] == "0.3.1"
     assert json.loads((_PKG / "strings.json").read_text()) == json.loads(
         (_PKG / "translations" / "en.json").read_text())

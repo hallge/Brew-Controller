@@ -1,5 +1,5 @@
 name: Brew Controller
-version: "1.0.0"
+version: "1.0.1"
 slug: brew_controller
 description: The Brew Controller's own page as a full-screen Home Assistant panel, through ingress.
 url: https://github.com/
@@ -11,8 +11,8 @@ boot: auto
 ingress: true
 ingress_port: 8099
 ingress_stream: true
-panel_icon: mdi:coffee-maker
-panel_title: Brew Controller
+panel_icon: mdi:chip
+panel_title: Controller Page
 panel_admin: false
 options:
   controller: "192.168.0.242"
