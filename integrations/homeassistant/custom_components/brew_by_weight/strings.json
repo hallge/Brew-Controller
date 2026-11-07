@@ -31,7 +31,16 @@
       "shot_noise": {"name": "Shot noise"},
       "drift": {"name": "Grind drift"},
       "ambient_humidity": {"name": "Last shot humidity"},
-      "ambient_temperature": {"name": "Last shot ambient temperature"}
+      "ambient_temperature": {"name": "Last shot ambient temperature"},
+      "bot_battery": {"name": "Brew bot battery"},
+      "maintenance_due": {"name": "Maintenance due"},
+      "target_weight": {"name": "Target weight"},
+      "recipe": {"name": "Recipe"}
+    },
+    "binary_sensor": {
+      "scale_connected": {"name": "Scale connected"},
+      "cup_present": {"name": "Cup present"},
+      "bot_connected": {"name": "Brew bot connected"}
     },
     "button": {
       "start_shot": {"name": "Start shot"}

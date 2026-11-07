@@ -40,6 +40,14 @@ SENSORS: tuple[SensorEntityDescription, ...] = (
     SensorEntityDescription(key="ambient_temp_c", translation_key="ambient_temperature",
                             native_unit_of_measurement=UnitOfTemperature.CELSIUS,
                             device_class=SensorDeviceClass.TEMPERATURE, state_class=M),
+    SensorEntityDescription(key="bot_battery_pct", translation_key="bot_battery",
+                            native_unit_of_measurement=PERCENTAGE,
+                            device_class=SensorDeviceClass.BATTERY, state_class=M),
+    SensorEntityDescription(key="maintenance_due", translation_key="maintenance_due", state_class=M),
+    SensorEntityDescription(key="target_weight_g", translation_key="target_weight",
+                            native_unit_of_measurement=UnitOfMass.GRAMS,
+                            device_class=SensorDeviceClass.WEIGHT, state_class=M),
+    SensorEntityDescription(key="recipe", translation_key="recipe"),
 )
 
 

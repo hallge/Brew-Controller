@@ -139,6 +139,22 @@ rest:
 
 There is also a custom integration in `integrations/homeassistant` (copy `custom_components/brew_by_weight` into Home Assistant's `config/custom_components`, restart, and add **Brew by Weight**). See its README.
 
+## 6. The controller's page as a full-screen Home Assistant panel
+
+A small Home Assistant add-on (`integrations/homeassistant/addon/brew_controller`) shows the
+controller's own page in the sidebar through Home Assistant's ingress, the way Music Assistant
+appears. Home Assistant's sidebar folds into a slide-over drawer (the round button at the bottom left
+opens it), so the page is not shown with two sidebars side by side. Nothing is rebuilt: it is the
+controller's page, so a firmware update changes it with no change in the add-on. Because Home
+Assistant proxies it, it also works away from home and in the Home Assistant app over HTTPS, with
+Home Assistant's login in front of the open API. Install and options: its `README.md`
+(copy to `/addons/brew_controller`, set **controller** to the controller's address, use an IP address).
+
+Next to it, a native dashboard (a Home Assistant `sections` view of the custom integration's entities)
+covers the daily view and works anywhere Home Assistant does: machine state, scale, cup and brew bot,
+recipe and target, maintenance due, shots today, the last shot in words, the grind advice, 7-day graphs
+of shot time, weight and grind setting, and a tile that opens the full panel.
+
 ## The API
 
 | Endpoint | Method | What |

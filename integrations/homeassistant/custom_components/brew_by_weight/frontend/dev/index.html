@@ -1,0 +1,87 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brew panel harness</title>
+<style>
+  /* A subset of Home Assistant's theme variables, light and dark. */
+  :root {
+    --primary-color: #03a9f4; --text-primary-color: #fff; --primary-text-color: #212121; --secondary-text-color: #727272;
+    --primary-background-color: #fafafa; --secondary-background-color: #e5e5e5; --card-background-color: #fff;
+    --divider-color: rgba(0,0,0,.12); --success-color: #43a047; --warning-color: #ffa600; --error-color: #db4437;
+    --rgb-success-color: 67,160,71; --rgb-warning-color: 255,166,0; --rgb-error-color: 219,68,55;
+    --app-header-background-color: #fafafa; --app-header-text-color: #212121; --ha-card-border-radius: 12px;
+    --input-fill-color: rgba(0,0,0,.04);
+  }
+  html.dark {
+    --primary-text-color: #e1e1e1; --secondary-text-color: #9b9b9b; --primary-background-color: #111111;
+    --secondary-background-color: #282828; --card-background-color: #1c1c1c; --divider-color: rgba(225,225,225,.12);
+    --app-header-background-color: #101e24; --app-header-text-color: #e1e1e1; --input-fill-color: rgba(255,255,255,.05);
+  }
+  body { margin: 0; background: var(--primary-background-color); }
+  #bar { position: fixed; right: 8px; bottom: 8px; z-index: 100; display: flex; gap: 6px; font: 12px sans-serif; }
+  #bar button { font: inherit; padding: 4px 8px; }
+  #wrap { margin: 0 auto; }
+  #wrap.narrow { max-width: 390px; border-left: 1px solid #888; border-right: 1px solid #888; }
+</style>
+</head>
+<body>
+<div id="bar"><button id="dark">Dark</button><button id="narrow">Phone width</button></div>
+<div id="wrap"></div>
+<script type="module">
+  // Stand-ins for Home Assistant elements the panel uses.
+  customElements.define("ha-icon", class extends HTMLElement {
+    connectedCallback() { this.style.cssText = "display:inline-block;width:18px;height:18px;border-radius:4px;background:currentColor;opacity:.35"; }
+  });
+  customElements.define("ha-menu-button", class extends HTMLElement {
+    connectedCallback() { this.textContent = this.narrow ? "☰" : ""; this.style.cssText = "padding:0 12px;font-size:20px"; }
+  });
+
+  const ws = (msg) => fetch("/__ws", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(msg) })
+    .then(async (r) => { if (!r.ok) throw new Error((await r.json()).error || r.status); return r.json(); });
+
+  const userData = {};
+  const hass = {
+    user: { is_admin: true, name: "Dev" },
+    themes: { darkMode: false },
+    callWS(msg) {
+      if (msg.type === "frontend/get_user_data") return Promise.resolve({ value: userData[msg.key] ?? JSON.parse(localStorage.getItem("ud_" + msg.key) || "null") });
+      if (msg.type === "frontend/set_user_data") { userData[msg.key] = msg.value; localStorage.setItem("ud_" + msg.key, JSON.stringify(msg.value)); return Promise.resolve(null); }
+      return ws(msg);
+    },
+    connection: {
+      // brew_by_weight/subscribe_status: poll /api/status once a second.
+      subscribeMessage(cb, msg) {
+        let stop = false;
+        const loop = async () => {
+          if (stop) return;
+          try {
+            const r = await ws({ type: "brew_by_weight/request", entry_id: msg.entry_id, method: "GET", path: "/api/status" });
+            cb(r.status < 400 ? { status: r.json } : { error: (r.json && r.json.error) || "error" });
+          } catch (e) { cb({ error: String(e) }); }
+          setTimeout(loop, 1000);
+        };
+        loop();
+        return Promise.resolve(() => { stop = true; });
+      },
+    },
+    fetchWithAuth: (url, init) => fetch(url, init),
+  };
+
+  await import("/brew-panel.js");
+  const panel = document.createElement("brew-panel");
+  let narrow = false;
+  panel.narrow = narrow;
+  document.getElementById("wrap").appendChild(panel);
+  panel.hass = hass;
+
+  document.getElementById("dark").onclick = () => document.documentElement.classList.toggle("dark");
+  document.getElementById("narrow").onclick = () => {
+    narrow = !narrow;
+    document.getElementById("wrap").classList.toggle("narrow", narrow);
+    panel.narrow = narrow;
+  };
+</script>
+</body>
+</html>

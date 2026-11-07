@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 from .const import CONF_HOST, DOMAIN
 from .coordinator import BrewCoordinator
 
-PLATFORMS = [Platform.SENSOR, Platform.BUTTON]
+PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

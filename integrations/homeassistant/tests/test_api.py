@@ -64,6 +64,30 @@ def test_bool_and_string_are_not_numbers():
     assert s["last_shot_time_s"] is None and s["last_shot_weight_g"] is None
 
 
+def test_status_fields_for_the_dashboard():
+    status = dict(STATUS, scale_connected=False, cup_present=True, bot_connected=False,
+                  bot_battery=100, maintenance_due=2, target_weight_g=48, recipe="Triple")
+    s = api.build_snapshot(status, SHOTS, GRIND)
+    assert (s["scale_connected"], s["cup_present"], s["bot_connected"]) == (False, True, False)
+    assert (s["bot_battery_pct"], s["maintenance_due"], s["target_weight_g"], s["recipe"]) == (100, 2, 48, "Triple")
+
+
+def test_status_fields_absent_or_wrong_type_are_none():
+    s = api.build_snapshot(STATUS, SHOTS, GRIND)
+    for key in ("scale_connected", "cup_present", "bot_connected", "bot_battery_pct", "maintenance_due",
+                "target_weight_g", "recipe"):
+        assert s[key] is None
+    bad = {"scale_connected": 1, "cup_present": "yes", "bot_battery": True, "maintenance_due": "2",
+           "target_weight_g": 0, "recipe": ""}
+    s = api.build_snapshot(bad, [], {})
+    assert all(s[k] is None for k in ("scale_connected", "cup_present", "bot_battery_pct", "maintenance_due",
+                                      "target_weight_g", "recipe"))
+
+
+def test_maintenance_due_zero_is_a_value():
+    assert api.build_snapshot({"maintenance_due": 0}, [], {})["maintenance_due"] == 0
+
+
 def test_web_start_flag():
     assert api.build_snapshot({"web_start": False}, [], {})["web_start"] is False
     assert api.build_snapshot({}, [], {})["web_start"] is None
@@ -85,6 +109,6 @@ def test_error_message():
 def test_manifest_and_translations():
     manifest = json.loads((_PKG / "manifest.json").read_text())
     assert manifest["domain"] == "brew_by_weight" and manifest["config_flow"] is True
-    assert manifest["iot_class"] == "local_polling" and manifest["version"] == "0.1.0"
+    assert manifest["iot_class"] == "local_polling" and manifest["version"] == "0.2.0"
     assert json.loads((_PKG / "strings.json").read_text()) == json.loads(
         (_PKG / "translations" / "en.json").read_text())

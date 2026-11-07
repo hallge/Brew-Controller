@@ -20,7 +20,12 @@ shot and the grind advice as sensors, plus a "Start shot" button. It polls every
 | Advised grind setting, Grind advice | `/api/grind` (`suggested_um`, `action`) |
 | Shot noise, Grind drift | `/api/grind` (`shot_noise_s`, `drift_s_per_day`) |
 | Last shot humidity, ambient temperature | newest shot (`ambient_rh_pct`, `ambient_temp_c`) |
+| Scale connected, Cup present, Brew bot connected (binary sensors) | `/api/status` (`scale_connected`, `cup_present`, `bot_connected`) |
+| Brew bot battery, Maintenance due, Target weight, Recipe | `/api/status` (`bot_battery`, `maintenance_due`, `target_weight_g`, `recipe`) |
 | Start shot (button) | `POST /api/cmd?c=start` |
+
+All of these come from the same three requests every 30 seconds (version 0.2.0 added the
+`/api/status` ones). A "Brew" dashboard built from them is described in `docs/HOME_ASSISTANT.md`.
 
 A value the firmware does not send (older firmware, or nothing known yet) makes that sensor
 unavailable. The grind sensors show a setting number only when the controller has one.

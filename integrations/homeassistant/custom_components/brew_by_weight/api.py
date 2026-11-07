@@ -31,6 +31,11 @@ def text(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def flag(value: Any) -> bool | None:
+    """A JSON true/false, else None (0, 1 and strings are not flags)."""
+    return value if isinstance(value, bool) else None
+
+
 def newest_shot(shots: Any) -> dict[str, Any]:
     """The first shot of an /api/shots list (newest first), or an empty dict."""
     if isinstance(shots, list) and shots and isinstance(shots[0], dict):
@@ -46,7 +51,14 @@ def build_snapshot(status: Any, shots: Any, grind: Any) -> dict[str, Any]:
     has_number = grind.get("has_number") is not False
     return {
         "state": text(status.get("state")),
-        "web_start": status.get("web_start") if isinstance(status.get("web_start"), bool) else None,
+        "web_start": flag(status.get("web_start")),
+        "scale_connected": flag(status.get("scale_connected")),
+        "cup_present": flag(status.get("cup_present")),
+        "bot_connected": flag(status.get("bot_connected")),
+        "bot_battery_pct": number(status.get("bot_battery")),
+        "maintenance_due": number(status.get("maintenance_due")),
+        "target_weight_g": positive(status.get("target_weight_g")),
+        "recipe": text(status.get("recipe")),
         "last_shot_time_s": number(shot.get("shot_time_s")),
         "last_shot_weight_g": number(shot.get("final_weight_g")),
         "last_shot_grind": positive(shot.get("grind_um")),
