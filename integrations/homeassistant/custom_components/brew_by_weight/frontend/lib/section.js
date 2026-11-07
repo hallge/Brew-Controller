@@ -57,7 +57,13 @@ export class BrewSection extends HTMLElement {
 
   async refresh() {
     try {
-      await this.load();
+      try {
+        await this.load();
+      } catch (first) {
+        // One quiet retry: the controller sometimes drops a connection when it is busy.
+        await new Promise((r) => setTimeout(r, 800));
+        await this.load();
+      }
       this._error = null;
     } catch (e) {
       this._error = e && e.message ? e.message : String(e);
@@ -69,7 +75,9 @@ export class BrewSection extends HTMLElement {
   _paint() {
     const css = `<style>${sharedStyles}${this.constructor.styles}</style>`;
     if (this._error) {
-      this.shadowRoot.innerHTML = `${css}<div class="card err">Could not load: ${this._error.replace(/[<>&]/g, "")}</div>`;
+      this.shadowRoot.innerHTML = `${css}<div class="card"><div class="err">Could not load: ${this._error.replace(/[<>&]/g, "")}</div>
+        <div class="row" style="margin-top:10px"><button class="primary" id="retry">Try again</button><span class="hint">The controller may be busy (during a shot it answers fewer requests).</span></div></div>`;
+      this.shadowRoot.getElementById("retry").onclick = () => this.refresh();
       return;
     }
     this.shadowRoot.innerHTML = css + this.render();
