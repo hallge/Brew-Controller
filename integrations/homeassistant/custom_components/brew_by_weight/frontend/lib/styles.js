@@ -53,14 +53,18 @@ details > summary { cursor: pointer; color: var(--primary-color); margin: 8px 0;
 @media (max-width: 600px) { .grid { grid-template-columns: 1fr; gap: 12px; } .card { padding: 12px; } .big { font-size: 32px; } }
 `;
 
-/** Tagged template that escapes interpolations unless wrapped in raw(). */
+/** Tagged template that escapes interpolations unless they are raw() or another html`` result.
+ *  The result is a raw value whose toString() is the HTML, so it nests and concatenates. */
 export function html(strings, ...values) {
   let out = strings[0];
   values.forEach((v, i) => { out += render(v) + strings[i + 1]; });
-  return out;
+  return raw(out);
 }
 const RAW = Symbol("raw");
-export const raw = (s) => ({ [RAW]: String(s == null ? "" : s) });
+export const raw = (s) => {
+  const str = String(s == null ? "" : s);
+  return { [RAW]: str, toString: () => str };
+};
 function render(v) {
   if (v == null || v === false) return "";
   if (Array.isArray(v)) return v.map(render).join("");
