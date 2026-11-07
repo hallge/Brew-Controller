@@ -23,6 +23,33 @@
   "entity": {
     "sensor": {
       "state": {"name": "Machine state"},
+      "machine_status": {
+        "name": "Machine status",
+        "state": {
+          "boot": "Starting",
+          "initializing": "Starting",
+          "connecting_scale": "Connecting scale",
+          "ready": "Ready",
+          "taring": "Taring",
+          "waiting_for_cup": "Waiting for the cup",
+          "ready_to_brew": "Ready to brew",
+          "starting_shot": "Starting the shot",
+          "brewing": "Brewing",
+          "blooming": "Blooming",
+          "stopping_shot": "Stopping",
+          "post_shot_drip": "Drip",
+          "shot_complete": "Shot complete",
+          "scale_disconnected": "Scale disconnected",
+          "switchbot_disconnected": "Brew bot disconnected",
+          "scale_data_stale": "Scale not reading",
+          "start_command_failed": "Start failed",
+          "stop_command_failed": "Stop failed",
+          "tare_failed": "Tare failed",
+          "shot_timeout": "Shot timed out",
+          "invalid_weight": "Weight not valid",
+          "ble_error": "Bluetooth error"
+        }
+      },
       "last_shot_time": {"name": "Last shot time"},
       "last_shot_weight": {"name": "Last shot weight"},
       "last_shot_grind": {"name": "Last shot grind setting"},
@@ -35,15 +62,96 @@
       "bot_battery": {"name": "Brew bot battery"},
       "maintenance_due": {"name": "Maintenance due"},
       "target_weight": {"name": "Target weight"},
-      "recipe": {"name": "Recipe"}
+      "recipe": {"name": "Recipe"},
+      "coffee_in_use": {"name": "Coffee in use"},
+      "bag_age": {"name": "Bag age"},
+      "shots_total": {"name": "Shots total"},
+      "grind_recommendation": {"name": "Grind recommendation"},
+      "subs_due_soon": {"name": "Subscriptions due soon"},
+      "backflush_since": {"name": "Shots since backflush"},
+      "descale_since": {"name": "Shots since descale"},
+      "grinder_clean_since": {"name": "Shots since grinder clean"}
     },
     "binary_sensor": {
       "scale_connected": {"name": "Scale connected"},
       "cup_present": {"name": "Cup present"},
-      "bot_connected": {"name": "Brew bot connected"}
+      "bot_connected": {"name": "Brew bot connected"},
+      "backflush_due": {"name": "Backflush due"},
+      "descale_due": {"name": "Descale due"},
+      "grinder_clean_due": {"name": "Grinder clean due"},
+      "grind_reminder_due": {"name": "Grind reminder"}
     },
     "button": {
-      "start_shot": {"name": "Start shot"}
+      "start_shot": {"name": "Start shot"},
+      "backflush_done": {"name": "Backflush done"},
+      "descale_done": {"name": "Descale done"},
+      "grinder_clean_done": {"name": "Grinder cleaned"},
+      "grind_recommendation_use": {"name": "Use grind recommendation"},
+      "grind_recommendation_keep": {"name": "Keep current grind"}
+    },
+    "select": {
+      "active_preset": {"name": "Active preset"}
+    }
+  },
+  "services": {
+    "set_grind": {
+      "name": "Set grind setting",
+      "description": "Tell the controller the grinder is now at this setting (stored steps).",
+      "fields": {
+        "setting": {"name": "Setting", "description": "Grinder setting in stored steps (1-2000)."},
+        "entry_id": {"name": "Controller", "description": "Which controller (optional when there is one)."}
+      }
+    },
+    "rate_shot": {
+      "name": "Rate a shot",
+      "description": "Rate a shot and say how it tasted. Without a shot id, the newest shot.",
+      "fields": {
+        "rating": {"name": "Rating", "description": "0 to 5 stars (0 clears)."},
+        "taste": {"name": "Taste", "description": "0 not said, 1 sour, 2 balanced, 3 bitter."},
+        "shot_id": {"name": "Shot id", "description": "Optional; the newest shot when left out."},
+        "entry_id": {"name": "Controller", "description": "Which controller (optional when there is one)."}
+      }
+    },
+    "set_shot_tds": {
+      "name": "Set shot TDS",
+      "description": "Record a refractometer reading for a shot (0 clears).",
+      "fields": {
+        "tds": {"name": "TDS", "description": "Percent, 0.5 to 25, or 0 to clear."},
+        "shot_id": {"name": "Shot id", "description": "Optional; the newest shot when left out."},
+        "entry_id": {"name": "Controller", "description": "Which controller (optional when there is one)."}
+      }
+    },
+    "bag_finished": {
+      "name": "Bag finished",
+      "description": "Mark the coffee's bag as used up (the coffee in use when no id is given).",
+      "fields": {
+        "coffee_id": {"name": "Coffee id", "description": "Optional; the coffee in use when left out."},
+        "entry_id": {"name": "Controller", "description": "Which controller (optional when there is one)."}
+      }
+    },
+    "subscription_arrived": {
+      "name": "Subscription arrived",
+      "description": "A subscription delivery arrived; moves its next date on.",
+      "fields": {
+        "subscription_id": {"name": "Subscription id", "description": "The subscription's id."},
+        "entry_id": {"name": "Controller", "description": "Which controller (optional when there is one)."}
+      }
+    },
+    "subscription_skip": {
+      "name": "Skip a subscription delivery",
+      "description": "Skip the next delivery of a subscription.",
+      "fields": {
+        "subscription_id": {"name": "Subscription id", "description": "The subscription's id."},
+        "entry_id": {"name": "Controller", "description": "Which controller (optional when there is one)."}
+      }
+    },
+    "maintenance_done": {
+      "name": "Maintenance done",
+      "description": "Mark an upkeep job done today.",
+      "fields": {
+        "job": {"name": "Job", "description": "Backflush, descale or grinder clean."},
+        "entry_id": {"name": "Controller", "description": "Which controller (optional when there is one)."}
+      }
     }
   }
 }

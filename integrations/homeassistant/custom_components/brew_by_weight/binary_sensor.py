@@ -1,4 +1,4 @@
-"""Binary sensors: what the controller can see right now. A value it did not send makes the entity unavailable."""
+"""Binary sensors: what the controller can see right now, and what upkeep is due."""
 from __future__ import annotations
 
 from homeassistant.components.binary_sensor import (
@@ -8,12 +8,9 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
-from .coordinator import BrewCoordinator
+from .entity import BrewEntity
 
 BINARY_SENSORS: tuple[BinarySensorEntityDescription, ...] = (
     BinarySensorEntityDescription(key="scale_connected", translation_key="scale_connected",
@@ -22,30 +19,32 @@ BINARY_SENSORS: tuple[BinarySensorEntityDescription, ...] = (
                                   device_class=BinarySensorDeviceClass.OCCUPANCY),
     BinarySensorEntityDescription(key="bot_connected", translation_key="bot_connected",
                                   device_class=BinarySensorDeviceClass.CONNECTIVITY),
+    # 0.3.0
+    BinarySensorEntityDescription(key="backflush_due", translation_key="backflush_due",
+                                  device_class=BinarySensorDeviceClass.PROBLEM, icon="mdi:water-sync"),
+    BinarySensorEntityDescription(key="descale_due", translation_key="descale_due",
+                                  device_class=BinarySensorDeviceClass.PROBLEM, icon="mdi:water-alert"),
+    BinarySensorEntityDescription(key="grinder_clean_due", translation_key="grinder_clean_due",
+                                  device_class=BinarySensorDeviceClass.PROBLEM, icon="mdi:broom"),
+    BinarySensorEntityDescription(key="grind_reminder_due", translation_key="grind_reminder_due",
+                                  icon="mdi:grain"),
 )
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry,
                             async_add_entities: AddEntitiesCallback) -> None:
-    coordinator: BrewCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
     async_add_entities(BrewBinarySensor(coordinator, entry, d) for d in BINARY_SENSORS)
 
 
-class BrewBinarySensor(CoordinatorEntity[BrewCoordinator], BinarySensorEntity):
-    _attr_has_entity_name = True
-
-    def __init__(self, coordinator: BrewCoordinator, entry: ConfigEntry,
-                 description: BinarySensorEntityDescription) -> None:
-        super().__init__(coordinator)
+class BrewBinarySensor(BrewEntity, BinarySensorEntity):
+    def __init__(self, coordinator, entry, description: BinarySensorEntityDescription) -> None:
+        super().__init__(coordinator, entry, description.key)
         self.entity_description = description
-        self._attr_unique_id = f"{entry.entry_id}_{description.key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)}, name="Brew by Weight",
-            manufacturer="Brew by Weight", configuration_url=coordinator.host)
 
     @property
     def is_on(self) -> bool | None:
-        return (self.coordinator.data or {}).get(self.entity_description.key)
+        return self.value()
 
     @property
     def available(self) -> bool:
