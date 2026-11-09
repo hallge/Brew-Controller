@@ -161,6 +161,8 @@ inline void shotContextToJson(const ShotContext &c, JsonObject o) {
   o["learn_grinder"] = c.learnGrinder != 0;
   o["dose_actual_g"] = c.doseActualDg / 10.0f;
   o["prep_flags"] = c.prepFlags;
+  o["dose_from_grinder"] = (c.prepFlags & CTX_PREP_DOSE_GRINDER) != 0;  // a grinder add-on measured it
+  if (c.stopTargetDg > 0) o["stop_target_g"] = c.stopTargetDg / 10.0f;  // the shot had a target of its own
   o["purged"] = (c.prepFlags & CTX_PREP_PURGED) != 0;
   o["uneven"] = (c.prepFlags & CTX_PREP_UNEVEN) != 0;
   if (c.ambientRhX10 != AMBIENT_NONE_X10) o["ambient_rh_pct"] = c.ambientRhX10 / 10.0f;

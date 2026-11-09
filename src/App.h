@@ -17,6 +17,7 @@
 #include "platform/LibraryLink.h"
 #include "core/Types.h"
 #include "storage/Store.h"
+#include "addons/AddonManager.h"
 
 namespace app {
 
@@ -176,6 +177,14 @@ bool haReadNow(bbw::AmbientReading &out, char *problem, size_t size);
 // Past advice to move on this grinder (as now calibrated) and what the next shot did, newest first.
 size_t adviceOutcomes(bbw::AdviceOutcome *out, size_t max);
 void setGrind(uint16_t grindUm);                     // grinder setting of the active preset
+// For add-ons (addons/AddonHost.cpp): the machine as believed, the recipes, the grinder; a grinder's
+// setting for one recipe (with the coffee in use), the next shot's own target, selecting a recipe.
+bbw::addon::MachineState addonMachineState();
+size_t addonRecipes(bbw::addon::RecipeView *out, size_t max);
+bbw::addon::GrinderInfo addonGrinder(float &umPerStep);
+bool addonAdoptSetting(uint16_t recipeId, uint16_t steps);
+void addonNextShotTarget(float targetG, uint16_t recipeId);
+void addonSelectRecipe(uint16_t recipeId);
 bool setShotRating(uint32_t shotId, uint8_t rating, uint8_t taste);
 bool setShotTds(uint32_t shotId, uint16_t tdsX100);
 // The room's slow temperature at a past shot (Store::setShotRoom); NAN clears it.

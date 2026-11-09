@@ -51,6 +51,9 @@ ok('the note carries taste and TDS when there are some', (!shot.taste || new Reg
 // a shot with no clock is sent with the date it is given; rating 0 and no data are left out
 const bare = api.bcEnvelope(Object.assign({}, shot, { timestamp: '', rating: 0, first_drop_s: 0, dose_g: 0, taste: '', tds_pct: 0, extraction_pct: 0 }), null, null, null, '2026-10-13T00:00:00.000Z');
 ok('no clock: dated as asked; no rating, no flow, no bean', bare.brew.date === '2026-10-13T00:00:00.000Z' && !('rating' in bare.brew) && !bare.flow && !bare.bean && !('doseIn' in bare.brew) && !('firstDripTime' in bare.brew));
+// A shot that stopped for a target of its own (a grinder add-on's measured dose): that target goes out.
+const own = api.bcEnvelope(Object.assign({}, shot, { stop_target_g: 36.68 }), null, null, null, '');
+ok('the target the shot stopped for', own.imported.params.controllerTargetG === 36.68 && env.imported.params.controllerTargetG === 36);
 // more than 10,000 readings are thinned and said to be
 const huge = api.bcEnvelope(shot, { time_s: Array.from({ length: 30000 }, (_, i) => i * 0.01), weight_g: Array.from({ length: 30000 }, (_, i) => i * 0.001) }, null, null, '');
 ok('over 10,000 readings: downsampled', huge.flow.fidelity === 'downsampled' && huge.flow.t.length <= 10000);

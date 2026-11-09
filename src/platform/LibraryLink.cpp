@@ -292,19 +292,20 @@ bool getHere(const char *path, char *out, size_t size) {
 // On the network task's stack (NetWorker.h).
 bool libraryPut(const char *path, const char *text) {
   struct Job { const char *path, *text; bool ok; } job{path, text, false};
-  netRun([](void *c) {
+  // Skipped while an add-on's network job runs (NetWorker.h): false, tried again later.
+  if (!netRun([](void *c) {
     Job &j = *static_cast<Job *>(c);
     j.ok = putHere(j.path, j.text);
-  }, &job);
+  }, &job)) return false;
   return job.ok;
 }
 
 bool libraryGet(const char *path, char *out, size_t size) {
   struct Job { const char *path; char *out; size_t size; bool ok; } job{path, out, size, false};
-  netRun([](void *c) {
+  if (!netRun([](void *c) {
     Job &j = *static_cast<Job *>(c);
     j.ok = getHere(j.path, j.out, j.size);
-  }, &job);
+  }, &job)) return false;
   return job.ok;
 }
 

@@ -56,6 +56,9 @@ constexpr uint16_t CTX_PREP_SCREEN = 0x0002;
 constexpr uint16_t CTX_PREP_PAPER = 0x0004;
 constexpr uint16_t CTX_PREP_PURGED = 0x0008;       // the grinder was purged before this dose
 constexpr uint16_t CTX_PREP_UNEVEN = 0x0010;       // the owner saw or suspected uneven flow / channeling
+// The dose came from a grinder add-on's measured grind (docs/ADDONS.md), not typed by the owner. An
+// owner's own entry afterwards (applyShotPrep) replaces it and clears this.
+constexpr uint16_t CTX_PREP_DOSE_GRINDER = 0x0020;
 constexpr uint16_t SHOT_DOSE_MIN_DG = 50;          // a weighed dose outside 5..40 g is a typing error
 constexpr uint16_t SHOT_DOSE_MAX_DG = 400;
 
@@ -113,7 +116,9 @@ struct ShotContext {
   // Version 3: the room's slow temperature at the shot, tenths of a degree C (12 h average,
   // roomEffectiveUpdate); AMBIENT_NONE_X10: not known. Steers the grind advice (grindRoomEffect).
   int16_t roomEffX10 = AMBIENT_NONE_X10;
-  int16_t pad2 = 0;
+  // The weight this shot stopped for, tenths of a gram, when it had a target of its own (a grinder
+  // add-on's measured dose); 0: the recipe's. Was padding; version 3 was not yet released.
+  int16_t stopTargetDg = 0;
 };
 static_assert(offsetof(ShotContext, ambientRhX10) == SHOT_CONTEXT_V1_SIZE, "version 1 is the start of version 2");
 static_assert(offsetof(ShotContext, roomEffX10) == SHOT_CONTEXT_V2_SIZE, "version 2 is the start of version 3");
@@ -174,6 +179,9 @@ struct ShotContextInputs {
   AmbientReading ambient;               // the room's latest reading
   uint32_t nowMs = 0;                   // millis() at the shot, to judge its age
   float roomEffC = NAN;                 // the room's slow temperature (roomEffectiveUpdate); NAN not known
+  // A grinder add-on's measured dose for this shot, tenths of a gram (0: none). Written with the
+  // rest of the context at the save, so nothing written earlier can be overwritten by it.
+  uint16_t doseActualDg = 0;
 };
 
 // The room's slow temperature for a shot, set afterwards (backfilled from Home Assistant's history).
@@ -195,7 +203,7 @@ inline bool applyShotRoom(ShotContext &c, float roomC) {
 inline bool applyShotPrep(ShotContext &c, uint16_t doseDg, bool purged, bool uneven) {
   if (doseDg != 0 && (doseDg < SHOT_DOSE_MIN_DG || doseDg > SHOT_DOSE_MAX_DG)) return false;
   c.doseActualDg = doseDg;
-  c.prepFlags = static_cast<uint16_t>((c.prepFlags & ~(CTX_PREP_PURGED | CTX_PREP_UNEVEN)) |
+  c.prepFlags = static_cast<uint16_t>((c.prepFlags & ~(CTX_PREP_PURGED | CTX_PREP_UNEVEN | CTX_PREP_DOSE_GRINDER)) |
                                       (purged ? CTX_PREP_PURGED : 0) | (uneven ? CTX_PREP_UNEVEN : 0));
   return true;
 }
@@ -256,6 +264,14 @@ inline ShotContext buildShotContext(const ShotContextInputs &in) {
     c.ambientAgeS = static_cast<uint16_t>(age > 0xFFFF ? 0xFFFF : age);
   }
   if (ambientTempOk(in.roomEffC)) c.roomEffX10 = ambientX10(in.roomEffC);
+  if (in.doseActualDg >= SHOT_DOSE_MIN_DG && in.doseActualDg <= SHOT_DOSE_MAX_DG) {
+    c.doseActualDg = in.doseActualDg;
+    c.prepFlags = static_cast<uint16_t>(c.prepFlags | CTX_PREP_DOSE_GRINDER);
+  }
+  if (s.flags & SHOT_FLAG_OWN_TARGET) {
+    const float dg = shotStopTargetG(s) * 10.0f + 0.5f;
+    if (dg > 0.0f && dg < 32767.0f) c.stopTargetDg = static_cast<int16_t>(dg);
+  }
   return c;
 }
 

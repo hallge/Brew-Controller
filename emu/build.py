@@ -4,6 +4,8 @@
     python emu/build.py            build .pio/emu/bbw_emu.exe
     python emu/build.py --run      build, then start it and open the page
     python emu/build.py --clean    remove the build directory first
+    python emu/build.py --addons=C:/path/to/addon;D:/other   build these add-ons in (docs/ADDONS.md);
+                                   without it, BBW_ADDONS or addons.local.txt, else none
 
 Needs the libraries PlatformIO already fetched (.pio/libdeps, from `pio run`
 or `pio pkg install`) and a C++17 compiler. By default the compiler is zig
@@ -33,6 +35,7 @@ FIRMWARE = [
     "src/ble/Ble.cpp",
     "src/core/BrewController.cpp",
     "src/net/Web.cpp",
+    "src/addons/AddonHost.cpp",
     "src/storage/Store.cpp",
     "src/storage/Backup.cpp",
     "src/ui/Ui.cpp",
@@ -67,6 +70,12 @@ def newest(paths):
 def main():
     # The helper extension the controller serves (/extension.zip), packed as the firmware build does.
     subprocess.check_call([sys.executable, str(ROOT / "browser-extension" / "make_zip.py")])
+    # The add-ons to build in (scripts/addons.py writes .pio/gen/AddonList.h).
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import addons
+    given = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--addons=")), None)
+    addon_list = addons.write_table(ROOT, given)
+    addon_dirs = [m["folder"] for m in addon_list]
     if "--clean" in sys.argv and OUT.exists():
         shutil.rmtree(OUT)
     if not LVGL.exists() or not ARDUINOJSON.exists():
@@ -76,7 +85,7 @@ def main():
 
     # Any header change rebuilds the firmware and emulator sources; LVGL only
     # depends on its configuration.
-    headers = [p for d in (ROOT / "src", ROOT / "lib", EMU / "shims", EMU / "src", ROOT / ".pio" / "gen")
+    headers = [p for d in [ROOT / "src", ROOT / "lib", EMU / "shims", EMU / "src", ROOT / ".pio" / "gen"] + addon_dirs
                for p in d.rglob("*.h")]
     lv_conf = ROOT / "include" / "lv_conf.h"
     own_stamp = max(newest(headers), lv_conf.stat().st_mtime, Path(__file__).stat().st_mtime)
@@ -90,6 +99,10 @@ def main():
     for src in own:
         obj = OUT / "obj" / ("_".join(src.relative_to(ROOT).with_suffix(".o").parts))
         jobs.append((src, obj, cxx + ["-std=gnu++17", "-Wall", "-Wextra", "-Wno-c++11-narrowing"], own_stamp))
+    for m in addon_list:  # outside the repository: named by the add-on's id
+        for src in addons.sources([m]):
+            obj = OUT / "obj" / f"addon_{m['id']}_{src.stem}.o"
+            jobs.append((src, obj, cxx + ["-std=gnu++17", "-Wall", "-Wextra", f"-I{m['folder']}"], own_stamp))
 
     def compile_one(job):
         src, obj, compiler, stamp = job
@@ -116,6 +129,11 @@ def main():
 
     exe = OUT / "bbw_emu.exe"
     objs = [j[1] for j in jobs]
+    stale = [o for o in (OUT / "obj").glob("addon_*.o") if o not in objs]
+    for o in stale:  # an add-on no longer listed
+        o.unlink()
+    if stale:
+        todo = todo or stale
     if todo or not exe.exists():
         rsp = OUT / "link.rsp"
         rsp.write_text("\n".join('"' + str(o).replace("\\", "/") + '"' for o in objs))

@@ -38,10 +38,13 @@ int postHere(const char *url, const char *envelope, char *problem, size_t proble
 // On the network task's stack (NetWorker.h).
 int diagPost(const char *url, const char *envelope, char *problem, size_t problemSize) {
   struct Job { const char *url, *envelope; char *problem; size_t size; int code; } job{url, envelope, problem, problemSize, -1};
-  netRun([](void *c) {
+  if (!netRun([](void *c) {
     Job &j = *static_cast<Job *>(c);
     j.code = postHere(j.url, j.envelope, j.problem, j.size);
-  }, &job);
+  }, &job)) {
+    say(problem, problemSize, "the network is busy; sent on a later turn");
+    return -1;  // like any network failure: the report stays queued
+  }
   return job.code;
 }
 

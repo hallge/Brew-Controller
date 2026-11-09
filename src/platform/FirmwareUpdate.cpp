@@ -21,6 +21,10 @@ const char *updatePhaseName(UpdatePhase phase) {
 // ---------------------------------------------------------------- emulator --
 #include <Arduino.h>
 
+#include <thread>
+
+#include "addons/NetGate.h"
+
 namespace bbw {
 
 namespace {
@@ -28,7 +32,17 @@ UpdateConfig g_config;
 }
 
 void tlsUseExternalMemory() {}
-void netRun(void (*fn)(void *), void *context) { fn(context); }
+// The emulator has no network task: an add-on's job runs on a thread of its own, and other jobs
+// skip their turn while it does, as on the board.
+NetGate g_gate([](NetGate &gate, NetGate::Job fn, void *context) {
+  std::thread([&gate, fn, context]() {
+    fn(context);
+    gate.finished();
+  }).detach();
+});
+bool netRun(void (*fn)(void *), void *context) { return g_gate.run(fn, context); }
+bool netSubmit(void (*fn)(void *), void *context) { return g_gate.submit(fn, context); }
+bool netAddonBusy() { return g_gate.busy(); }
 void updateBegin(const UpdateConfig &config) { g_config = config; }
 void updateConfigure(const UpdateConfig &config) { g_config = config; }
 UpdateConfig updateConfig() { return g_config; }
@@ -118,6 +132,10 @@ SemaphoreHandle_t g_jobLock;   // one caller at a time
 SemaphoreHandle_t g_jobDone;   // given by the task when the job has run
 volatile bool g_jobWaiting = false;
 NetJob g_job;
+// netSubmit(): an add-on's job, not waited for. While it is set nothing else is handed over.
+volatile bool g_addonWaiting = false;
+volatile bool g_addonRunning = false;
+NetJob g_addonJob;
 volatile bool g_working = false;  // a check or an install is under way
 volatile bool g_uploading = false;  // a firmware file is arriving from the browser
 uint8_t *g_chunk;  // CHUNK bytes, PSRAM
@@ -486,6 +504,12 @@ void updateTask(void *) {
       xSemaphoreGive(g_jobDone);
       continue;
     }
+    if (g_addonWaiting) {
+      g_addonWaiting = false;
+      g_addonJob.fn(g_addonJob.context);
+      g_addonRunning = false;
+      continue;
+    }
     const uint8_t want = g_want;
     if (want == WANT_NONE) {
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -517,18 +541,25 @@ bool request(uint8_t want) {
 
 }  // namespace
 
-void netRun(void (*fn)(void *), void *context) {
+bool netRun(void (*fn)(void *), void *context) {
+  // An add-on's job holds the task: skip this turn (NetWorker.h). Called from that job itself (the
+  // network task), it runs here.
+  if (g_addonRunning && xTaskGetCurrentTaskHandle() != g_task) return false;
   // Here, as before: no task yet, called from it, or it is busy with a firmware (a download takes
   // minutes, and the caller must not wait that long).
   if (!g_task || !g_jobLock || xTaskGetCurrentTaskHandle() == g_task || g_working || g_want != WANT_NONE) {
     fn(context);
-    return;
+    return true;
   }
   xSemaphoreTake(g_jobLock, portMAX_DELAY);
+  if (g_addonRunning) {  // an add-on's job was handed over meanwhile
+    xSemaphoreGive(g_jobLock);
+    return false;
+  }
   if (g_working || g_want != WANT_NONE) {  // a check was asked for meanwhile
     xSemaphoreGive(g_jobLock);
     fn(context);
-    return;
+    return true;
   }
   g_job.fn = fn;
   g_job.context = context;
@@ -537,7 +568,26 @@ void netRun(void (*fn)(void *), void *context) {
   // Not bounded: the job is a request with its own time-outs, and it uses the caller's data.
   xSemaphoreTake(g_jobDone, portMAX_DELAY);
   xSemaphoreGive(g_jobLock);
+  return true;
 }
+
+bool netSubmit(void (*fn)(void *), void *context) {
+  if (!g_task || !g_jobLock || g_working || g_want != WANT_NONE || g_uploading || g_addonRunning) return false;
+  // Never waits: a netRun() job being handed over or run holds the lock.
+  if (xSemaphoreTake(g_jobLock, 0) != pdTRUE) return false;
+  const bool free = !g_working && g_want == WANT_NONE && !g_addonRunning && !g_jobWaiting;
+  if (free) {
+    g_addonJob.fn = fn;
+    g_addonJob.context = context;
+    g_addonRunning = true;
+    g_addonWaiting = true;
+  }
+  xSemaphoreGive(g_jobLock);
+  if (free) xTaskNotifyGive(g_task);
+  return free;
+}
+
+bool netAddonBusy() { return g_addonRunning; }
 
 void updateBegin(const UpdateConfig &config) {
   g_mutex = xSemaphoreCreateMutex();

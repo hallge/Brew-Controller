@@ -75,6 +75,8 @@ void WebServer::handleClient() {
     body_.clear();
     headers_.clear();
     const HTTPMethod method = request.method == "POST" ? HTTP_POST : HTTP_GET;
+    uri_ = request.path;
+    method_ = method;
     const Handler *handler = &notFound_;
     for (const Route &route : routes_) {
       if (route.path == request.path && route.method == method) handler = &route.handler;

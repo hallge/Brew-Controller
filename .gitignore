@@ -12,5 +12,8 @@ emu/data.backup-*/
 # Personal Claude Code instructions for this machine
 CLAUDE.local.md
 
+# The add-on folders this machine builds into its image (docs/ADDONS.md): local paths, often private
+addons.local.txt
+
 # A relay deployer's own Cloudflare ids and repository names (telemetry-relay/README.md, Deploy)
 telemetry-relay/wrangler.local.toml

@@ -45,6 +45,8 @@
 #include "storage/Store.h"
 #include "storage/Backup.h"
 #include "ui/Ui.h"
+#include "addons/AddonHost.h"
+#include "core/GrinderRegistry.h"
 
 using bbw::State;
 
@@ -3061,6 +3063,106 @@ BeanAge beanAge() {
   return result;
 }
 
+// ---- what add-ons see and may change (addons/AddonHost.cpp, docs/ADDONS.md) ----
+
+bbw::addon::MachineState addonMachineState() {
+  Lock lock;
+  bbw::addon::MachineState m;
+  const bbw::PowerBelief belief = g_powerControl.belief();
+  m.power = belief == bbw::PowerBelief::ON    ? bbw::addon::MachineState::ON
+            : belief == bbw::PowerBelief::OFF ? bbw::addon::MachineState::OFF
+                                              : bbw::addon::MachineState::UNKNOWN;
+  m.warming = g_powerControl.switchedOnWithin(millis(), 30UL * 60UL * 1000UL);
+  const bbw::State s = g_controller.state();
+  m.brewing = g_controller.machineMayBeRunning() || s == bbw::State::STARTING_SHOT || s == bbw::State::BREWING ||
+              s == bbw::State::BLOOMING || s == bbw::State::STOPPING_SHOT || s == bbw::State::POST_SHOT_DRIP;
+  m.scaleConnected = g_controller.status(millis()).scaleConnected;
+  if (g_controller.hasLastShot()) {
+    const bbw::ShotRecord &last = g_controller.lastShot();
+    m.lastShotId = last.id;
+    m.lastShotTimeS = last.shotTimeS;
+    m.lastShotYieldG = last.finalWeightG;
+    const uint32_t now = epochNow();
+    if (now && last.epochS && now >= last.epochS) m.lastShotAgeS = now - last.epochS;
+  }
+  return m;
+}
+
+size_t addonRecipes(bbw::addon::RecipeView *out, size_t max) {
+  Lock lock;
+  size_t n = 0;
+  for (uint8_t i = 0; i < g_library.recipeCount && n < max; ++i) {
+    const bbw::RecipeDef &r = g_library.recipes[i];
+    bbw::addon::RecipeView &v = out[n++];
+    v = bbw::addon::RecipeView();
+    v.id = r.id;
+    strlcpy(v.name, r.name, sizeof(v.name));
+    v.doseG = r.doseG;
+    v.targetG = r.useRatio ? r.doseG * r.ratio : r.targetWeightG;
+  }
+  return n;
+}
+
+// A burr gap is taken over only by a grinder read in microns (unit "um": one micron per stored step).
+bbw::addon::GrinderInfo addonGrinder(float &umPerStep) {
+  Lock lock;
+  const bbw::Grinder &g = g_library.grinder;
+  bbw::addon::GrinderInfo info;
+  info.modelId = g.modelId;
+  strlcpy(info.unit, g.unit, sizeof(info.unit));
+  info.divisor = g.divisor;
+  info.subSteps = g.subSteps;
+  const bbw::StepRange range = bbw::stepRange(g.modelId, g.minStep, g.maxStep);
+  info.minStep = range.lo;
+  info.maxStep = range.hi;
+  info.rangeKnown = range.known;
+  umPerStep = strcmp(g.unit, "um") == 0 ? 1.0f : 0.0f;
+  return info;
+}
+
+namespace {
+// The preset of this recipe with the coffee in use; -1 none. Under the Lock.
+int presetForRecipe(uint16_t recipeId) {
+  if (g_library.presetCount == 0) return -1;
+  const uint8_t active = g_library.activePreset < g_library.presetCount ? g_library.activePreset : 0;
+  const uint16_t coffee = g_library.presets[active].coffeeId;
+  for (uint8_t i = 0; i < g_library.presetCount; ++i) {
+    if (g_library.presets[i].recipeId == recipeId && g_library.presets[i].coffeeId == coffee) return i;
+  }
+  return -1;
+}
+}  // namespace
+
+// The grinder's burr gap as this recipe's setting (with the coffee in use), never another recipe's.
+bool addonAdoptSetting(uint16_t recipeId, uint16_t steps) {
+  Lock lock;
+  if (g_controller.machineMayBeRunning() || steps == 0 || steps > 2000) return false;
+  const int index = presetForRecipe(recipeId);
+  if (index < 0) return false;
+  if (g_library.presets[index].grindUm != steps) {
+    g_library.presets[index].grindUm = steps;
+    markLibraryDirty();
+    g_grindAdviceStale = true;
+  }
+  return true;
+}
+
+// The next shot's own target (BrewController::setNextShotTarget): the recipe keeps its own.
+void addonNextShotTarget(float targetG, uint16_t recipeId) {
+  Lock lock;
+  g_controller.setNextShotTarget(targetG, recipeId);
+}
+
+void addonSelectRecipe(uint16_t recipeId) {
+  int index;
+  {
+    Lock lock;
+    index = presetForRecipe(recipeId);
+    if (index < 0 || index == g_library.activePreset) return;
+  }
+  selectRecipe(static_cast<uint8_t>(index));
+}
+
 void setGrind(uint16_t grindUm) {
   Lock lock;
   if (g_controller.machineMayBeRunning() || g_library.presetCount == 0) return;
@@ -4580,6 +4682,9 @@ void setup() {
   xTaskCreatePinnedToCore(controlTask, "control", 8192, nullptr, 5, &g_controlTask, 1);
 #endif
 
+  // The add-ons compiled into this image (none in the public firmware), before the web server
+  // answers their routes.
+  addons::begin();
   LOGI("start-up: starting Wi-Fi and the web server");
   web::begin();
   bbw::updateBegin(g_store.loadUpdateConfig());
@@ -4958,6 +5063,7 @@ void loop() {
     bbw::RamJobScope job(bbw::RAM_WEB);
     web::loop();
   }
+  addons::loop();  // marks its own work (RAM_ADDON)
   handleButton();
   handleSerial();
   logLoop();
@@ -5066,10 +5172,13 @@ void loop() {
       in.ambient = app::ambient();   // the room, when a reading is fresh (core/HomeAssistant.h)
       in.roomEffC = app::roomEffectiveC();
       in.nowMs = millis();
+      // A grinder add-on's measured dose for this shot, saved with the rest of its context.
+      in.doseActualDg = addons::doseForShot(shot);
       if (!g_store.saveContext(bbw::buildShotContext(in))) {
         LOGW("store: shot %u context not saved", static_cast<unsigned>(shot.id));
       }
     }
+    addons::shotSaved(shot);  // the grind is used up; shot feedback, if the owner turned it on
     shareAfterShot(shot);
     bbw::RamJobScope ha(bbw::RAM_HA);
     haAfterShot(shot);

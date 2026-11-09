@@ -72,10 +72,13 @@ int fetchHere(const char *url, PageMeta &out, char *problem, size_t problemSize)
 // On the network task's stack (NetWorker.h).
 int fetchPagePreview(const char *url, PageMeta &out, char *problem, size_t problemSize) {
   struct Job { const char *url; PageMeta *out; char *problem; size_t size; int code; } job{url, &out, problem, problemSize, -1};
-  netRun([](void *c) {
+  if (!netRun([](void *c) {
     Job &j = *static_cast<Job *>(c);
     j.code = fetchHere(j.url, *j.out, j.problem, j.size);
-  }, &job);
+  }, &job)) {
+    say(problem, problemSize, "the network is busy; trying again shortly");
+    return -1;  // like any network failure: read again later
+  }
   return job.code;
 }
 

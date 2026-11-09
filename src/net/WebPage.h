@@ -364,6 +364,7 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <div class="head"><h1>Grinder</h1><span class="sm dim" id="gfor"></span></div>
 <div class="cols"><section class="card"><h2>Setting now</h2>
 <div><span class="big" id="gcur">--</span> <span class="dim un">&micro;m</span></div>
+<div class="sm mid" id="gmeas"></div>
 <div class="row"><label style="flex:1 1 150px"><span>I moved the grinder to (<span class="un">&micro;m</span>)</span><input id="gset" inputmode="decimal" autocomplete="off" placeholder="as the dial shows"></label><button style="align-self:flex-end" onclick="setGrind(ps($('gset').value))">Set</button></div>
 <div class="sm dim">Shots are only compared with others made at the same setting.</div></section>
 <section class="card"><h2>Advice</h2><div><span class="pill" id="gadv" style="font-size:16px"></span></div>
@@ -593,6 +594,7 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <div class="row"><input type="file" id="bk_file" accept=".bbwbak" aria-label="Backup file" style="flex:1 1 220px"><button onclick="bkRestore()">Restore this file</button></div>
 <div id="bk_msg" class="sm mid"></div>
 <details class="note"><summary>What a restore replaces</summary><ul><li>The settings, coffees, recipes, grinder and pairing, then the controller restarts.</li><li>The shot history too, when the backup has it. Without it, the shots here stay.</li><li>A backup without passwords keeps the ones this controller has now.</li><li>A backup without the signing key keeps this controller's key. If the keys differ, sharing starts over under this one.</li></ul></details></section>
+<section class="card" id="adcard" style="display:none"><div class="head"><h2>Add-ons</h2><span class="sm dim">compiled into this firmware</span></div><div id="adlist"></div><div class="sm dim">An add-on is off until you switch it on. docs/ADDONS.md says what one may do.</div></section>
 <section class="card"><h2>Firmware</h2><div id="fw" class="mid"></div>
 <div class="scroll"><table id="fwslots"></table></div>
 <h2 style="margin-top:10px">From GitHub</h2><div id="fwgh" class="mid"></div>
@@ -737,7 +739,7 @@ function show(){let h=(location.hash||'#home').slice(1);
 if(['insights','discover','subscriptions','community','logs','start'].includes(h)&&!panelOn(h)){if(location.hash!='#home')history.replaceState(null,'','#home');h='home'}
 const disc=false;document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on',p.id=='p-'+h));
 document.querySelectorAll('nav a,#bnav a,#more a').forEach(a=>a.classList.toggle('on',a.getAttribute('href')=='#'+(disc?'discover':h)));
-$('bmore').classList.toggle('on',['start','recipes','insights','machine','subscriptions','discover','community','setup','logs'].includes(h));if(h=='start'||h=='home')loadStart();$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadRatings();loadFirmware();loadHa()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees'){loadCommunityCoffees();loadRatings();if(panelOn('community'))loadDirectory()}if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights')drawInsights();if(h=='discover')loadDiscover();if(h=='community')loadCommunityPage();if(h=='home'&&panelOn('discover'))loadForYou();if(h=='subscriptions')loadSubs();}
+$('bmore').classList.toggle('on',['start','recipes','insights','machine','subscriptions','discover','community','setup','logs'].includes(h));if(h=='start'||h=='home')loadStart();$('more').classList.remove('open');$('bmore').setAttribute('aria-expanded','false');if(h=='setup'){loadDevices();loadRatings();loadFirmware();loadHa();loadAddons()}if(h=='machine'){loadUpkeep();loadMachine();loadPower()}if(h=='logs')loadLog();if(h=='coffees'){loadCommunityCoffees();loadRatings();if(panelOn('community'))loadDirectory()}if(h=='grinder'){drawScatter();loadCommunityGrinders();loadUpkeep()}if(h=='insights')drawInsights();if(h=='discover')loadDiscover();if(h=='community')loadCommunityPage();if(h=='home'&&panelOn('discover'))loadForYou();if(h=='subscriptions')loadSubs();}
 // The optional panels (bbw::WebPanel bits): key, name, what it is, bit.
 const PANELS=[['insights','Insights','Your taste profile from your ratings, and charts: roast level against grind, coffee age against brew time, a brewing calendar, dial-in shots per bag.',1],
 ['subscriptions','Subscriptions','Coffee subscriptions: when the next delivery comes, skipping one, what is on its way.',4],
@@ -800,13 +802,40 @@ say('Brew bot: waking it up...');let n=0;const t=setInterval(async()=>{let s;try
 async function swapBots(){let d;try{d=await get('/api/devices')}catch(e){return}const b=d.pairing.bot,p=d.pairing.power;if(!b||!p)return say('Both a brew bot and a power bot must be paired first',false);if(!await ask('Swap them?\n\nBrew bot becomes '+p+'\nPower bot becomes '+b))return;
 const ty=a=>{const s=d.seen.find(x=>x.address==a);return s?s.type:1};await post('/api/pair',{kind:'bot',address:'',type:0});await post('/api/pair',{kind:'power',address:b,type:ty(b)});await post('/api/pair',{kind:'bot',address:p,type:ty(p)});say('Swapped');setTimeout(loadDevices,800)}
 let FW=null,FWT=0;
+/*ADDONS*/
+let AD=null;
+async function loadAddons(){let a;try{a=await get('/api/addons')}catch(e){return}AD=a;$('adcard').style.display=a.compiled?'':'none';if(!a.compiled)return;
+let rs=[];try{rs=(await get('/api/library')).recipes||[]}catch(e){}
+$('adlist').innerHTML=(a.addons||[]).map(x=>{const id=esc(x.id);
+const fields=(x.fields||[]).map(f=>`<label>${esc(f.label)}${f.type=='bool'?`<input type="checkbox" data-ad="${id}" data-k="${esc(f.key)}" ${f.value=='1'?'checked':''}>`:`<input data-ad="${id}" data-k="${esc(f.key)}" ${f.type=='secret'?'type="password" placeholder="'+(f.set?'set; blank keeps it, - forgets it':'not set')+'"':'value="'+esc(f.value)+'"'} maxlength="127">`}${f.help?'<span class="sm dim">'+esc(f.help)+'</span>':''}</label>`).join('');
+const o=x.options||{};
+const opts=x.kind=='grinder'?`<label class="chk"><input type="checkbox" data-ado="${id}" data-k="dose_sets_target" ${o.dose_sets_target?'checked':''}>The measured dose sets the next shot's own target (the recipe keeps its own)</label>
+<label class="chk"><input type="checkbox" data-ado="${id}" data-k="select_recipe" ${o.select_recipe?'checked':''}>A grind selects its recipe here</label>
+${x.shot_feedback_possible?`<label class="chk"><input type="checkbox" data-ado="${id}" data-k="shot_feedback" ${o.shot_feedback?'checked':''}>Report each shot back to the grinder</label>`:''}`:'';
+const map=x.kind=='grinder'?'<h3>Grinder recipes</h3><div class="scroll"><table><tr><th class="l">Grinder recipe</th><th class="l">Recipe here</th><th class="l"></th></tr>'+[1,2,3,4,5,6].map(g=>{const m=(x.map||[]).find(e=>e.grinder_recipe==g);
+return `<tr><td class="l">${g}</td><td class="l"><select onchange="adMap('${id}',${g},this.value)"><option value="0">${m?'(not mapped)':'not mapped'}</option>${rs.map(r=>`<option value="${r.id}" ${m&&m.recipe_id==r.id?'selected':''}>${esc(r.name)}</option>`).join('')}</select></td><td class="l sm dim">${m?(m.source=='auto'?'matched by its dose and yield':'set by you'):''}</td></tr>`}).join('')+'</table></div>':'';
+const g=x.last_grind;const last=g?`<div class="sm mid">Last grind ${Math.round(g.age_s/60)} min ago: grinder recipe ${g.grinder_recipe}${g.dose_g!=null?', '+f2(g.dose_g)+' g':''}${g.gap_um!=null?', '+f1(g.gap_um)+' µm':''}. ${g.mapped?'Recipe '+esc((rs.find(r=>r.id==g.recipe_id)||{}).name||g.recipe_id)+(g.setting?', setting '+g.setting:'')+(g.shot_target_g?', next shot stops at '+f2(g.shot_target_g)+' g':''):'Not mapped to a recipe.'} ${esc(g.note||'')}</div>`:'';
+const ram=x.chip_ram_used!=null?`<div class="sm dim">Chip RAM: ${x.chip_ram_used} bytes when started, lowest ${x.chip_low_during} free since.</div>`:'';
+return `<div class="card" style="margin:8px 0"><div class="head"><h3>${esc(x.name||x.id)} <span class="sm dim">${esc(x.version||'')}</span></h3>
+<label class="chk"><input type="checkbox" ${x.enabled?'checked':''} ${x.api_ok?'':'disabled'} onchange="adEnable('${id}',this.checked)">On</label></div>
+${x.api_ok?'':'<div class="sm">Built for another add-on interface: it cannot be switched on.</div>'}
+<div class="sm mid">${x.enabled?'<span class="pill '+(x.link=='connected'?'ok':'')+'">'+esc(x.link)+'</span> ':''}${esc(x.status||'')}</div>${last}
+<div class="grid">${fields}</div>${opts}
+<div class="row"><button data-save onclick="adSave('${id}')">Save</button>${x.enabled?`<button onclick="adDo('${id}','read')">Read the grinder now</button>`:''}<button onclick="adForget('${id}')">Forget its settings</button></div>${map}${ram}</div>`}).join('')}
+function adEnable(id,on){post('/api/addons/enable?id='+encodeURIComponent(id)+'&on='+(on?1:0)).then(r=>{done(r,on?'Switched on':'Switched off');loadAddons()})}
+function adSave(id){const values={},options={};document.querySelectorAll('[data-ad="'+id+'"]').forEach(e=>{if(e.type=='password'&&!e.value)return;values[e.dataset.k]=e.type=='checkbox'?(e.checked?'1':'0'):e.value.trim()});
+document.querySelectorAll('[data-ado="'+id+'"]').forEach(e=>options[e.dataset.k]=e.checked);post('/api/addons/config',{id,values,options}).then(r=>{done(r,'Saved');loadAddons()})}
+function adMap(id,g,recipe){post('/api/addons/map?id='+encodeURIComponent(id)+'&grinder='+g+'&recipe='+recipe).then(r=>{done(r,'Saved');loadAddons()})}
+function adDo(id,cmd){post('/api/addons/do?id='+encodeURIComponent(id)+'&cmd='+cmd).then(r=>{say(r.reply||'Done',!!r.ok);setTimeout(loadAddons,4000)})}
+async function adForget(id){if(!await ask('Forget everything set for this add-on (its settings, the recipe map) and switch it off?'))return;post('/api/addons/forget?id='+encodeURIComponent(id)).then(r=>{done(r,'Forgotten');loadAddons()})}
+/*END-ADDONS*/
 async function loadFirmware(){let f;try{f=await get('/api/update')}catch(e){return}FW=f;
 $('fw').innerHTML='Running <b>'+esc(f.version)+'</b>, built '+esc(f.built)+'.'+(f.can_update===false?' <span class="dim">This is the PC emulator: it is updated by rebuilding it.</span>':'');
 $('fwslots').innerHTML=(f.slots||[]).length?'<tr><th class="l">Slot</th><th class="l">Holds</th><th class="l">State</th><th></th></tr>'+f.slots.map(s=>`<tr><td class="l">${esc(s.label)}</td><td class="l">${esc(s.version||'?')}</td><td class="l">${esc(s.state)}</td><td>${s.running?'<span class="pill ok">running</span>':''}${s.boot_next&&!s.running?'<span class="pill">starts next</span>':''}</td></tr>`).join(''):'';
 const busy=f.state=='checking'||f.state=='downloading';
 $('fwgh').innerHTML=esc(f.repo)+(f.token_set?' (with a token)':'')+'. '+(f.state=='downloading'?'<b>Downloading: '+f.percent+' %</b> ':'')+esc(f.message||'Not checked since start-up.')+(f.checked_epoch?' <span class="dim">Checked '+new Date(f.checked_epoch*1000).toLocaleString()+'.</span>':'');
 const ib=$('fwinst');ib.style.display=f.available&&f.latest&&!busy?'':'none';if(f.latest)ib.textContent='Install '+f.latest.tag+' ('+Math.round(f.latest.bytes/1024)+' kB)';
-if(document.activeElement!=$('fwrepo'))$('fwrepo').value=f.repo||'';$('fwauto').checked=!!f.auto_check;$('fwrel').href=f.releases;
+if((f.addons||[]).length&&f.repo=='hallge/Brew-Controller')$('fwgh').innerHTML+=' <b>This firmware has add-ons ('+esc(f.addons.join(', '))+'). The public releases do not: installing one removes them. Releases from the repository that built this one keep them.</b>';if(document.activeElement!=$('fwrepo'))$('fwrepo').value=f.repo||'';$('fwauto').checked=!!f.auto_check;$('fwrel').href=f.releases;
 clearTimeout(FWT);if(busy||f.state=='installed')FWT=setTimeout(loadFirmware,1500);if(f.state=='installed')setTimeout(()=>location.reload(),25000)}
 function fwCheck(){post('/api/update/check').then(r=>{done(r,'Asking GitHub');setTimeout(loadFirmware,800)})}
 async function fwInstall(){if(!FW||!FW.latest)return;if(!await ask('Download and install '+FW.latest.tag+'?\n\nThe controller restarts into it when it is done. If it does not run properly in its first 45 seconds, the controller goes back to '+FW.version+' by itself.'))return;post('/api/update/install').then(r=>{done(r,'Downloading '+FW.latest.tag);setTimeout(loadFirmware,800)})}
@@ -1387,7 +1416,7 @@ $('hgrect').innerHTML='<b>New grind recommendation for '+esc(G.coffee||'this bag
 $('hgrecu').textContent='Use '+fs(r.setting);$('hgreck').textContent=r.current?'Keep '+fs(r.current):'Not now';box.style.display=''}
 async function answerRec(use){await post('/api/grind/recommendation?use='+use);await loadGrind();if(use)loadLibrary()}
 async function loadGrind(){try{G=await get('/api/grind')}catch(e){return}
-const cur=fsn(G.current_um)||'--';$('gcur').textContent=cur;$('hg').textContent=cur;$('gfor').textContent='Advice for '+G.recipe+(G.coffee?', '+G.coffee:'');
+const cur=fsn(G.current_um)||'--';$('gcur').textContent=cur;$('gmeas').textContent=G.grinder_gap_um!=null?'The grinder measured '+f1(G.grinder_gap_um)+' µm'+(G.grinder_dose_g!=null?', '+f2(G.grinder_dose_g)+' g':'')+' at its last grind ('+Math.round((G.grinder_age_s||0)/60)+' min ago).':'';$('hg').textContent=cur;$('gfor').textContent='Advice for '+G.recipe+(G.coffee?', '+G.coffee:'');
 const b=$('gapply');b.style.display='none';let title,cls='',why,short;
 const basis=`Average ${G.time_basis=='pour'?'pour':'total'} time ${f1(G.average_time_s)} s over ${G.shots_used} shot${G.shots_used==1?'':'s'} at ${fs(G.current_um)}, target ${G.target_time_s} s ± ${G.tolerance_s} s.`;
 const fdo=G.first_drop_one_off_s||0,fdw=fdo?`its first drops came ${f1(Math.abs(fdo))} s ${fdo<0?'early':'late'}${G.usual_first_drop_s?' (usually '+f1(G.usual_first_drop_s)+' s)':''}`:'';

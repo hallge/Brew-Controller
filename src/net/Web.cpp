@@ -17,6 +17,7 @@
 #include "Version.h"
 #include "ShotFormat.h"
 #include "WebPage.h"
+#include "addons/AddonHost.h"
 #include "ExtensionZip.h"   // made from browser-extension/ by its make_zip.py
 #include "core/Directory.h"
 #include "core/TasteProfile.h"
@@ -101,7 +102,7 @@ void handleStatus() {
   {
     JsonArray caps = doc["capabilities"].to<JsonArray>();
     for (const char *c : {"status_v1", "shots_v1", "shot_data_v1", "shot_csv_v1", "grind_advice_v1",
-                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1", "coffee_taste_v1", "subscriptions_v1", "ambient_v1", "home_assistant_v1", "shot_room_v1", "grind_room_v1"}) {
+                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1", "coffee_taste_v1", "subscriptions_v1", "ambient_v1", "home_assistant_v1", "shot_room_v1", "grind_room_v1", "addons_v1"}) {
       caps.add(c);
     }
   }
@@ -1441,6 +1442,14 @@ void handleGrind() {
     r["current"] = rec.current;
     r["people"] = rec.people;
     r["from"] = rec.from;
+  }
+  // The newest grind a grinder add-on reported (docs/ADDONS.md): what the grinder measured.
+  float grinderDose = NAN, grinderGap = NAN;
+  uint32_t grinderAge = 0;
+  if (addons::lastGrind(grinderDose, grinderGap, grinderAge)) {
+    if (!isnan(grinderGap)) doc["grinder_gap_um"] = grinderGap;
+    if (!isnan(grinderDose)) doc["grinder_dose_g"] = grinderDose;
+    doc["grinder_age_s"] = grinderAge;
   }
   sendJson(doc);
 }
@@ -3032,6 +3041,8 @@ void handleUpdateInfo() {
   snprintf(releases, sizeof(releases), "https://github.com/%s/releases", config.repo);
   doc["releases"] = releases;
   doc["repo"] = config.repo;
+  // The add-ons compiled into this image: a release from another repository may not have them.
+  addons::namesJson(doc["addons"].to<JsonArray>());
   doc["token_set"] = config.token[0] != '\0';
   doc["auto_check"] = config.autoCheck;
   // The update from GitHub: what the last check found, and how it is going.
@@ -3593,6 +3604,7 @@ void begin() {
   server.on("/api/diagnostics", HTTP_GET, []() {
     JsonDocument doc;
     app::diagnostics(doc.to<JsonObject>());
+    addons::diagnosticsJson(doc["addons"].to<JsonObject>());
     sendJson(doc);
   });
   // Diagnostics reports (docs/TELEMETRY.md): the next one as it would go, a send now, where they go.
@@ -3665,7 +3677,62 @@ void begin() {
 #endif
   server.on("/api/backup", HTTP_GET, handleBackup);
   server.on("/api/restore/apply", HTTP_POST, handleRestoreApply);
-  server.onNotFound([]() { sendError(404, "not found"); });
+  // Add-ons (docs/ADDONS.md): the ones compiled in, switched on and off, their settings.
+  server.on("/api/addons", HTTP_GET, []() {
+    JsonDocument doc;
+    addons::listJson(doc.to<JsonObject>());
+    sendJson(doc);
+  });
+  server.on("/api/addons/enable", HTTP_POST, []() {
+    const char *problem = "";
+    if (!addons::enable(server.arg("id").c_str(), server.arg("on") == "1", problem)) return sendError(409, problem);
+    sendOk();
+  });
+  server.on("/api/addons/config", HTTP_POST, []() {
+    JsonDocument body;
+    if (deserializeJson(body, server.arg("plain"))) return sendError(400, "invalid JSON");
+    const char *problem = "";
+    if (!addons::configure(body["id"] | "", body["values"].as<JsonObjectConst>(), body["options"].as<JsonObjectConst>(),
+                           problem)) {
+      return sendError(400, problem);
+    }
+    sendOk();
+  });
+  server.on("/api/addons/map", HTTP_POST, []() {
+    const char *problem = "";
+    const long grinder = server.arg("grinder").toInt(), recipe = server.arg("recipe").toInt();
+    if (grinder < 1 || grinder > 255 || recipe < 0 || recipe > 65535) return sendError(400, "grinder 1-8, recipe an id");
+    if (!addons::map(server.arg("id").c_str(), static_cast<uint8_t>(grinder), static_cast<uint16_t>(recipe), problem)) {
+      return sendError(400, problem);
+    }
+    sendOk();
+  });
+  server.on("/api/addons/do", HTTP_POST, []() {
+    char reply[160];
+    const bool ok = addons::command(server.arg("id").c_str(), server.arg("cmd").c_str(), server.arg("arg").c_str(),
+                                    reply, sizeof(reply));
+    JsonDocument doc;
+    doc["ok"] = ok;
+    doc["reply"] = reply;
+    sendJson(doc, ok ? 200 : 400);
+  });
+  server.on("/api/addons/forget", HTTP_POST, []() {
+    if (busyBrewing()) return sendError(409, "not while a shot is running");
+    if (!addons::forget(server.arg("id").c_str())) return sendError(404, "no such add-on");
+    sendOk();
+  });
+  // A path no route above answers: an add-on switched on may answer it, under the prefixes it
+  // declared in addon.json (a device that calls the controller). Otherwise 404.
+  server.onNotFound([]() {
+    int status = 404;
+    const char *type = "application/json", *text = "";
+    const String uri = server.uri();
+    if (addons::route(server.method() == HTTP_POST, uri.c_str(), server.arg("plain").c_str(), status, type, text)) {
+      server.send(status, type, text);
+      return;
+    }
+    sendError(404, "not found");
+  });
   server.begin();
   LOGI("web: access point %s, http://192.168.4.1", apSsid);
 }

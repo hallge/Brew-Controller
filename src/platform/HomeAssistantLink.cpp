@@ -13,6 +13,7 @@
 #include <memory>
 
 #include "Log.h"
+#include "NetWorker.h"
 #include "SafeTls.h"
 #include "BigMem.h"
 #include "core/HomeAssistant.h"
@@ -70,6 +71,12 @@ int haRequest(const char *url, const char *token, const char *body, char *out, s
   }
   if (WiFi.status() != WL_CONNECTED) {
     say(problem, problemSize, "not on a Wi-Fi network");
+    return -1;
+  }
+  // An add-on's network job is running (NetWorker.h): skip this turn rather than open a second
+  // connection beside it.
+  if (netAddonBusy()) {
+    say(problem, problemSize, "the network is busy; trying again shortly");
     return -1;
   }
   const bool tls = strncmp(url, "https://", 8) == 0;
@@ -215,7 +222,7 @@ bool mqttService(bool idle, void (*onStart)()) {
     g_mqtt.loop();
     return true;
   }
-  if (!idle || WiFi.status() != WL_CONNECTED) return false;
+  if (!idle || WiFi.status() != WL_CONNECTED || netAddonBusy()) return false;
   const uint32_t now = millis();
   if (g_mqttTriedMs && now - g_mqttTriedMs < 60000u) return false;
   g_mqttTriedMs = now ? now : 1;

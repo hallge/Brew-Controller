@@ -33,6 +33,9 @@
 #include "core/SwitchBotProtocol.h"
 #include "core/TasteProfile.h"
 #include "core/Telemetry.h"
+#include "addons/AddonManager.h"
+#include "addons/NetGate.h"
+#include "core/Inflate.h"
 #include "core/TimeZone.h"
 #include "platform/RamWatch.h"
 #include "core/BackupFormat.h"
@@ -3052,6 +3055,385 @@ static void testShotOwnTarget() {
   CHECK(diag.overshootCount == 1);
   CHECK_NEAR(diag.overshoots[0], 0.0, 0.0001);
   // The CSV (net/ShotFormat.h, Arduino-only) is checked in the emulator: stop_target_g is its last column.
+}
+
+// ---------------------------------------------------------------- add-ons --
+
+// The log the inflate vectors were made from (Python zlib / zipfile, raw deflate).
+static std::string grindLogText() {
+  std::string s = "id;weight;gap\n";
+  char line[48];
+  for (int i = 0; i < 40; ++i) {
+    snprintf(line, sizeof(line), "%d;%d;%d\n", i, 24000 + i * 7, 670 + i);
+    s += line;
+  }
+  return s;
+}
+
+static void testInflate() {
+  printf("inflate and zip entries\n");
+  uint8_t out[1024];
+  size_t n = 0;
+  const std::vector<uint8_t> fixed = hexBytes("cb48cdc9c957c8402701");
+  CHECK(inflateRaw(fixed.data(), fixed.size(), out, sizeof(out), n) == InflateResult::OK);
+  CHECK(std::string(reinterpret_cast<char *>(out), n) == "hello hello hello hello");
+  const std::vector<uint8_t> stored = hexBytes("010300fcff616263");
+  CHECK(inflateRaw(stored.data(), stored.size(), out, sizeof(out), n) == InflateResult::OK);
+  CHECK(std::string(reinterpret_cast<char *>(out), n) == "abc");
+  const std::vector<uint8_t> dyn = hexBytes(
+    "1d90316a45310c04fb3d8db5b22d89779a40c2cfef520472fdacd4cd62cc8cfdfe7cfebedeafefdfe7f5f183f570afb5"
+    "9e1b0b361c62039b6d8b096fa6891d7b38c51ba7d98ff8e0366f8a2f62b8c4816c3e579ca8e6ebe2828d38244e89c71c"
+    "32a7c1469d522761e32eb9d361232fc973c3da6e4bf63cb0d69b6edebcb098217f06ac038c0ac8847581b90ab2c02eb0"
+    "ad825aa0cd5041e9ed5d60470545b00becaaa01cdc3354501b9c8250411d700a520575c1294815548053502aa804bb80"
+    "4b0555f02ea07e22d682db8cd030781750b658fafe2ea0ce63397ccf488d0def02eea371e05dc0438d0b8f19a511f02e"
+    "e0bd1a099f82708dc23f");
+  CHECK(inflateRaw(dyn.data(), dyn.size(), out, sizeof(out), n) == InflateResult::OK);
+  CHECK(std::string(reinterpret_cast<char *>(out), n) == grindLogText());
+  CHECK(inflateRaw(dyn.data(), dyn.size() / 2, out, sizeof(out), n) == InflateResult::TRUNCATED);
+  CHECK(inflateRaw(dyn.data(), dyn.size(), out, 100, n) == InflateResult::OUT_FULL);
+  std::vector<uint8_t> bad = dyn;
+  bad[0] |= 0x06;  // block type 3 does not exist
+  CHECK(inflateRaw(bad.data(), bad.size(), out, sizeof(out), n) != InflateResult::OK);
+
+  const std::vector<uint8_t> zip = hexBytes(
+    "504b03041400000008006282695db4733130100000000e00000016000000446576696365536572766963654c6f675f58"
+    "2e6373762b4e2d2acb4c4eb5aee032b436e20200504b03041400000008006282695dd6ab8c01fa0000000c0200001300"
+    "000044657669636553686f744c6f675f582e6373761d90316a45310c04fb3d8db5b22d89779a40c2cfef520472fdacd4"
+    "cd62cc8cfdfe7cfebedeafefdfe7f5f183f570afb59e1b0b361c62039b6d8b096fa6891d7b38c51ba7d98ff8e0366f8a"
+    "2f62b8c4816c3e579ca8e6ebe2828d38244e89c71c32a7c1469d522761e32eb9d361232fc973c3da6e4bf63cb0d69b6e"
+    "debcb098217f06ac038c0ac8847581b90ab2c02eb0ad825aa0cd5041e9ed5d60470545b00becaaa01cdc3354501b9c82"
+    "50411d700a520575c1294815548053502aa804bb804b0555f02ea07e22d682db8cd030781750b658fafe2ea0ce63397c"
+    "cf488d0def02eea371e05dc0438d0b8f19a511f02ee0bd1a099f82708dc23f504b010214001400000008006282695db4"
+    "733130100000000e000000160000000000000000000000800100000000446576696365536572766963654c6f675f582e"
+    "637376504b010214001400000008006282695dd6ab8c01fa0000000c0200001300000000000000000000008001440000"
+    "0044657669636553686f744c6f675f582e637376504b05060000000002000200850000006f0100000000");
+  ZipEntry e;
+  CHECK(zipFind(zip.data(), zip.size(), "ShotLog", ".csv", e));
+  CHECK(strcmp(e.name, "DeviceShotLog_X.csv") == 0 && e.method == 8 && e.size == grindLogText().size());
+  CHECK(zipExtract(e, out, sizeof(out), n) == InflateResult::OK);
+  CHECK(std::string(reinterpret_cast<char *>(out), n) == grindLogText());
+  CHECK(!zipFind(zip.data(), zip.size(), "NoSuchLog", ".csv", e));
+  CHECK(!zipFind(zip.data(), 10, "ShotLog", ".csv", e));
+}
+
+static void testNetGate() {
+  printf("an add-on's network job and the others\n");
+  static NetGate::Job heldFn = nullptr;
+  static void *heldCtx = nullptr;
+  NetGate gate([](NetGate &, NetGate::Job fn, void *ctx) {  // the network task, by hand
+    heldFn = fn;
+    heldCtx = ctx;
+  });
+  int ran = 0;
+  auto job = [](void *c) { ++*static_cast<int *>(c); };
+  CHECK(gate.run(job, &ran) && ran == 1);   // no add-on job: as before
+  CHECK(gate.submit(job, &ran) && gate.busy());
+  CHECK(ran == 1);                           // handed over, not run here
+  CHECK(!gate.submit(job, &ran));            // one at a time
+  CHECK(!gate.run(job, &ran) && ran == 1);   // busy: not run, and not run here instead
+  heldFn(heldCtx);
+  gate.finished();
+  CHECK(ran == 2 && !gate.busy());
+  CHECK(gate.run(job, &ran) && ran == 3);
+}
+
+// A grinder add-on for the tests only: what it reports is set by the test.
+struct TestGrinder : addon::Addon, addon::GrinderDriver {
+  static constexpr addon::ConfigField FIELDS[] = {
+      {"grinder_url", "Grinder address", addon::FieldType::URL, "https://10.0.0.9", ""},
+      {"owner_password", "Owner password", addon::FieldType::SECRET, "", ""},
+      {"poll_min", "Poll", addon::FieldType::NUMBER, "0", ""},
+  };
+  addon::AddonInfo meta{"test-grinder", "Test grinder", "1", addon::ADDON_API_VERSION, addon::Kind::GRINDER, FIELDS, 3};
+  int begun = 0, ended = 0, ticks = 0, shots = 0;
+  std::vector<addon::GrindEvent> queue;
+  addon::ShotReport lastReport;
+  const addon::AddonInfo &info() const override { return meta; }
+  void begin(addon::Host &) override { ++begun; }
+  void end() override { ++ended; }
+  void tick(uint32_t) override { ++ticks; }
+  addon::GrinderDriver *grinder() override { return this; }
+  uint32_t caps() const override { return addon::GRIND_EVENTS | addon::SHOT_FEEDBACK; }
+  addon::Link link() const override { return addon::Link::CONNECTED; }
+  bool takeGrind(addon::GrindEvent &out) override {
+    if (queue.empty()) return false;
+    out = queue.front();
+    queue.erase(queue.begin());
+    return true;
+  }
+  void onShotComplete(const addon::ShotReport &r) override {
+    ++shots;
+    lastReport = r;
+  }
+};
+constexpr addon::ConfigField TestGrinder::FIELDS[];
+static TestGrinder *g_testGrinder = nullptr;
+static TestGrinder *g_oldGrinder = nullptr;
+
+struct TestActions : addon::Actions {
+  bool brew = false;
+  std::vector<addon::RecipeView> list;
+  addon::GrinderInfo info;
+  float um = 1.0f;
+  std::vector<std::pair<uint16_t, uint16_t>> adopted;
+  float target = 0.0f;
+  uint16_t targetRecipe = 0;
+  int targetCalls = 0, changes = 0;
+  std::vector<uint16_t> selected;
+  bool brewing() const override { return brew; }
+  size_t recipes(addon::RecipeView *out, size_t max) const override {
+    size_t n = 0;
+    for (; n < list.size() && n < max; ++n) out[n] = list[n];
+    return n;
+  }
+  addon::GrinderInfo grinder() const override { return info; }
+  float umPerStep() const override { return um; }
+  bool adoptSetting(uint16_t recipeId, uint16_t steps) override {
+    adopted.push_back({recipeId, steps});
+    return true;
+  }
+  void setNextShotTarget(float g, uint16_t recipeId) override {
+    target = g;
+    targetRecipe = recipeId;
+    ++targetCalls;
+  }
+  void selectRecipe(uint16_t recipeId) override { selected.push_back(recipeId); }
+  void changed() override { ++changes; }
+  void log(const char *) override {}
+};
+
+static addon::RecipeView recipeView(uint16_t id, const char *name, float dose, float target) {
+  addon::RecipeView r;
+  r.id = id;
+  strncpy(r.name, name, sizeof(r.name) - 1);
+  r.doseG = dose;
+  r.targetG = target;
+  return r;
+}
+
+static addon::GrindEvent grindOf(uint8_t recipe, float dose, float doseTarget, float yieldG, float gapUm, uint32_t atMs) {
+  addon::GrindEvent e;
+  e.grinderRecipe = recipe;
+  e.doseActualG = dose;
+  e.doseTargetG = doseTarget;
+  e.beverageTargetG = yieldG;
+  e.gapUm = gapUm;
+  e.atMs = atMs;
+  return e;
+}
+
+struct NullHost : addon::Host {
+  uint32_t nowMs() const override { return 0; }
+  uint32_t epochS() const override { return 0; }
+  const char *config(const char *) const override { return ""; }
+  void log(const char *) override {}
+  addon::MachineState machine() const override { return {}; }
+  addon::GrinderInfo grinder() const override { return {}; }
+  void *allocate(size_t size) override { return calloc(1, size); }
+  bool fetchStart(addon::FetchJob &) override { return false; }
+};
+
+static void testAddonManager() {
+  printf("add-ons: none, switching on, settings, routes\n");
+  {  // No add-ons compiled in: nothing answers, nothing changes.
+    addon::Manager m;
+    m.attach(nullptr, 0);
+    TestActions act;
+    m.tick(1000, act);
+    CHECK(m.count() == 0 && m.routeFor("/api/dev/status") == -1);
+    CHECK(act.targetCalls == 0 && act.adopted.empty() && m.doseForShot(1) == 0);
+  }
+  static const addon::AddonEntry table[] = {
+      {"test-grinder", []() -> addon::Addon * { return g_testGrinder = new TestGrinder(); }, {"/api/dev/", "/api/"}},
+      {"old-grinder", []() -> addon::Addon * {
+         g_oldGrinder = new TestGrinder();
+         g_oldGrinder->meta.id = "old-grinder";
+         g_oldGrinder->meta.api = addon::ADDON_API_VERSION + 1;  // built for another interface
+         return g_oldGrinder;
+       }, {nullptr, nullptr}},
+  };
+  addon::Manager m;
+  m.attach(table, 2);
+  NullHost host;
+  m.setHost(0, &host);
+  m.setHost(1, &host);
+  CHECK(m.count() == 2 && m.find("test-grinder") == 0 && m.find("nope") == -1);
+  CHECK(m.slot(0).apiOk && !m.slot(1).apiOk);
+  CHECK(!m.setEnabled(1, true) && g_oldGrinder->begun == 0);  // another interface: listed, never started
+  CHECK(g_testGrinder->begun == 0 && m.routeFor("/api/dev/status") == -1);  // off: not begun, no routes
+  TestActions act;
+  m.tick(10, act);
+  CHECK(g_testGrinder->ticks == 0);
+  CHECK(m.setEnabled(0, true) && g_testGrinder->begun == 1);
+  CHECK(m.routeFor("/api/dev/status") == 0);
+  CHECK(m.routeFor("/api/status") == -1);       // "/api/" is not a prefix it may claim
+  CHECK(!addon::validRoutePrefix("/api/addons/x/") && !addon::validRoutePrefix("/api/") &&
+        addon::validRoutePrefix("/api/dev/") && !addon::validRoutePrefix("/api/dev"));
+  m.setEnabled(0, false);
+  CHECK(g_testGrinder->ended == 1 && m.routeFor("/api/dev/status") == -1);
+  m.setEnabled(0, true);
+  CHECK(g_testGrinder->begun == 2);
+
+  // Settings: defaults, secrets kept and forgotten, fetches only to its own address.
+  CHECK(strcmp(m.value(0, "grinder_url"), "https://10.0.0.9") == 0);
+  CHECK(m.setValue(0, "owner_password", "Secret1x") && strcmp(m.value(0, "owner_password"), "Secret1x") == 0);
+  CHECK(m.setValue(0, "owner_password", "") && strcmp(m.value(0, "owner_password"), "Secret1x") == 0);
+  CHECK(m.setValue(0, "owner_password", "-") && m.value(0, "owner_password")[0] == '\0');
+  CHECK(!m.setValue(0, "no_such", "1"));
+  CHECK(m.urlAllowed(0, "https://10.0.0.9/export/log"));
+  CHECK(m.urlAllowed(0, "https://10.0.0.9/session"));
+  CHECK(!m.urlAllowed(0, "https://10.0.0.10/session"));
+  CHECK(!m.urlAllowed(0, "http://10.0.0.9/session"));          // another scheme is another origin
+  CHECK(!m.urlAllowed(0, "https://10.0.0.9@evil.example/"));
+  CHECK(!m.urlAllowed(0, "ftp://10.0.0.9/"));
+
+  printf("add-ons: a grinder's grinds\n");
+  act.list = {recipeView(1, "Double", 18.0f, 36.0f), recipeView(2, "Triple", 24.0f, 48.0f),
+              recipeView(3, "Single", 9.0f, 18.0f)};
+  act.info.rangeKnown = true;
+  act.info.minStep = 1;
+  act.info.maxStep = 300;
+  // A Triple grind: mapped by its dose and yield, its gap becomes the Triple's setting, the next
+  // shot's own target scales with the measured dose. The recipe itself is not touched.
+  g_testGrinder->queue.push_back(grindOf(2, 24.058f, 24.0f, 48.0f, 67.7f, 1000));
+  m.tick(1010, act);
+  CHECK(m.slot(0).map[2].recipeId == 2 && m.slot(0).map[2].source == addon::MAP_AUTO && act.changes == 1);
+  CHECK(act.adopted.size() == 1 && act.adopted[0].first == 2 && act.adopted[0].second == 68);
+  CHECK_NEAR(act.target, 48.12, 0.001);
+  CHECK(act.targetRecipe == 2 && act.selected.empty());
+  CHECK(act.list[1].doseG == 24.0f && act.list[1].targetG == 48.0f);
+  // The dose goes on the shot that followed the grind, on that recipe, within 15 minutes.
+  CHECK(m.doseForShot(2) == 0);  // no shot started since the grind
+  m.noteShotStart(5000);
+  CHECK(m.doseForShot(2) == 241 && m.doseForShot(1) == 0);
+  addon::ShotReport report;
+  report.shotId = 9;
+  report.totalTimeS = 30.0f;
+  report.yieldG = 48.1f;
+  m.shotSaved(2, report);
+  CHECK(g_testGrinder->shots == 0);  // shot feedback is off until the owner turns it on
+  CHECK(!m.pending().active && m.doseForShot(2) == 0);
+
+  // A Double grind sets the Double's setting, not the Triple's.
+  g_testGrinder->queue.push_back(grindOf(1, 18.1f, 18.0f, 36.0f, 74.2f, 20000));
+  m.tick(20010, act);
+  CHECK(act.adopted.size() == 2 && act.adopted[1].first == 1 && act.adopted[1].second == 74);
+  CHECK(act.targetRecipe == 1);
+  // A grinder recipe that matches nothing changes nothing.
+  const size_t adoptedBefore = act.adopted.size();
+  g_testGrinder->queue.push_back(grindOf(5, 30.0f, 30.0f, 60.0f, 80.0f, 30000));
+  m.tick(30010, act);
+  CHECK(act.adopted.size() == adoptedBefore && m.slot(0).map[5].recipeId == 0 && !m.slot(0).plan.mapped);
+  // Two recipes that both match: not guessed.
+  act.list.push_back(recipeView(4, "Triple decaf", 24.0f, 48.0f));
+  g_testGrinder->queue.push_back(grindOf(6, 24.0f, 24.0f, 48.0f, 70.0f, 31000));
+  m.tick(31010, act);
+  CHECK(m.slot(0).map[6].recipeId == 0 && act.adopted.size() == adoptedBefore);
+  // The owner maps it: from then on it is used, and never re-matched.
+  CHECK(m.setMap(0, 6, 4));
+  g_testGrinder->queue.push_back(grindOf(6, 24.0f, 24.0f, 48.0f, 70.0f, 32000));
+  m.tick(32010, act);
+  CHECK(act.adopted.back().first == 4 && m.slot(0).map[6].source == addon::MAP_MANUAL);
+
+  // While a shot runs, a grind waits; it is dealt with once the shot has finished.
+  act.brew = true;
+  g_testGrinder->queue.push_back(grindOf(2, 23.9f, 24.0f, 48.0f, 66.0f, 40000));
+  const size_t beforeShot = act.adopted.size();
+  m.tick(40010, act);
+  CHECK(act.adopted.size() == beforeShot && m.slot(0).queued);
+  act.brew = false;
+  m.tick(41000, act);
+  CHECK(act.adopted.size() == beforeShot + 1 && act.adopted.back().second == 66);
+
+  // A dose far from the recipe's is recorded but sets no target; outside 5..40 g it is not used.
+  g_testGrinder->queue.push_back(grindOf(2, 27.0f, 24.0f, 48.0f, 66.0f, 50000));
+  m.tick(50010, act);
+  CHECK(act.target == 0.0f && m.slot(0).plan.doseDg == 270);
+  g_testGrinder->queue.push_back(grindOf(2, 55.0f, 24.0f, 48.0f, 66.0f, 51000));
+  m.tick(51010, act);
+  CHECK(act.target == 0.0f && m.slot(0).plan.doseDg == 0);
+  // A shot that began before the grind, or more than 15 minutes after it, does not get its dose.
+  g_testGrinder->queue.push_back(grindOf(2, 24.2f, 24.0f, 48.0f, 66.0f, 60000));
+  m.tick(60010, act);
+  m.noteShotStart(59000);
+  CHECK(m.doseForShot(2) == 0);
+  m.noteShotStart(60000 + addon::GRIND_WINDOW_MS + 1);
+  CHECK(m.doseForShot(2) == 0);
+  // Unused for 15 minutes: the next shot's own target is taken back.
+  m.tick(60000 + addon::GRIND_WINDOW_MS + 10, act);
+  CHECK(act.target == 0.0f && act.targetRecipe == 0 && !m.pending().active);
+  // A grinder setting not in microns is not taken over.
+  act.um = 0.0f;
+  g_testGrinder->queue.push_back(grindOf(2, 24.0f, 24.0f, 48.0f, 66.0f, 2000000));
+  const size_t beforeUm = act.adopted.size();
+  m.tick(2000010, act);
+  CHECK(act.adopted.size() == beforeUm && act.target > 0.0f);
+  act.um = 1.0f;
+  // The owner's options: a grind selects its recipe; shots are reported back.
+  m.slot(0).options.selectRecipe = true;
+  m.slot(0).options.shotFeedback = true;
+  g_testGrinder->queue.push_back(grindOf(1, 18.0f, 18.0f, 36.0f, 74.0f, 3000000));
+  m.tick(3000010, act);
+  CHECK(!act.selected.empty() && act.selected.back() == 1);
+  m.shotSaved(1, report);
+  CHECK(g_testGrinder->shots == 1 && g_testGrinder->lastReport.shotId == 9);
+  // Forgotten: off, settings and map gone.
+  m.forget(0);
+  CHECK(!m.slot(0).enabled && m.slot(0).map[2].recipeId == 0 && !m.slot(0).options.shotFeedback);
+}
+
+// Five grinds of 23.8 to 24.2 g on one recipe: every shot keeps the recipe's dose and target, so grind
+// advice keeps them in one group, and each stops for its own target.
+static void testGrindsKeepOneHistory() {
+  printf("measured doses keep one history\n");
+  Rig r;
+  r.toReady();
+  const uint8_t p = r.library.activePreset;
+  const Recipe recipe = resolvePreset(r.library, p);
+  const float doses[5] = {23.8f, 24.2f, 23.9f, 24.1f, 24.0f};
+  for (int i = 0; i < 5; ++i) {
+    const float own = recipe.targetWeightG * doses[i] / 24.0f;
+    r.ctl.setNextShotTarget(own, recipe.recipeId);
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+    ShotRecord shot;
+    CHECK(r.ctl.takeCompletedShot(shot));
+    CHECK(shot.doseG == recipe.doseG && shot.targetWeightG == recipe.targetWeightG);
+    CHECK(fabsf(shot.doseG - recipe.doseG) <= 0.05f && fabsf(shot.targetWeightG - recipe.targetWeightG) <= 0.05f);
+    if (fabsf(own - recipe.targetWeightG) > 0.005f) CHECK_NEAR(shotStopTargetG(shot), own, 0.006);
+    r.nextShot();
+    r.toReady();
+  }
+  const Recipe after = resolvePreset(r.library, p);
+  CHECK(after.doseG == recipe.doseG && after.targetWeightG == recipe.targetWeightG);
+}
+
+// The grinder's dose goes into the shot's context with the rest of it at the save, where nothing can
+// overwrite it; an owner's own entry afterwards replaces it.
+static void testContextGrinderDose() {
+  printf("the grinder's dose in the shot's context\n");
+  ShotRecord shot;
+  shot.id = 12;
+  shot.targetWeightG = 48.0f;
+  shot.flags = SHOT_FLAG_FINAL_VALID | SHOT_FLAG_OWN_TARGET;
+  shot.stopTargetCg = 4812;
+  ShotContextInputs in;
+  in.shot = &shot;
+  in.doseActualDg = 241;
+  ShotContext c = buildShotContext(in);
+  CHECK(c.doseActualDg == 241 && (c.prepFlags & CTX_PREP_DOSE_GRINDER));
+  CHECK(c.stopTargetDg == 481);
+  CHECK(applyShotPrep(c, 240, true, false));
+  CHECK(c.doseActualDg == 240 && !(c.prepFlags & CTX_PREP_DOSE_GRINDER) && (c.prepFlags & CTX_PREP_PURGED));
+  // No grinder dose, no own target: as before.
+  ShotRecord plain;
+  plain.id = 13;
+  ShotContextInputs none;
+  none.shot = &plain;
+  const ShotContext d = buildShotContext(none);
+  CHECK(d.doseActualDg == 0 && !(d.prepFlags & CTX_PREP_DOSE_GRINDER) && d.stopTargetDg == 0);
+  in.doseActualDg = 30;  // 3 g: not a dose
+  CHECK(buildShotContext(in).doseActualDg == 0);
 }
 
 static void testMachineProfiles() {
@@ -9249,6 +9631,11 @@ int main() {
   testMachineProfiles();
   testShotRecordGolden();
   testShotOwnTarget();
+  testInflate();
+  testNetGate();
+  testAddonManager();
+  testGrindsKeepOneHistory();
+  testContextGrinderDose();
   testShotDataSet();
   testReadingNewerThanTick();
   testResultScreenLetsGo();

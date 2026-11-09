@@ -13,7 +13,17 @@
 
 namespace bbw {
 
-// Runs fn(context) on the network task and returns when it has finished.
-void netRun(void (*fn)(void *), void *context);
+// Runs fn(context) on the network task and returns when it has finished. false: not run at all,
+// because an add-on's job (netSubmit) holds the network task: the caller tries again on a later
+// turn, as after any network failure. It never runs such a job where it is called instead: the loop
+// task has about 2.6 kB of stack to spare, not the kilobytes a TLS handshake takes.
+bool netRun(void (*fn)(void *), void *context);
+
+// An add-on's network job (docs/ADDONS.md), on the network task, without waiting for it: returns at
+// once. fn must say itself when it has finished (its context is the caller's, and must outlive the
+// job). false: not taken (the task is busy with a firmware check or install, or another job), try
+// again later. While it runs, netRun() refuses other jobs and netAddonBusy() is true.
+bool netSubmit(void (*fn)(void *), void *context);
+bool netAddonBusy();
 
 }  // namespace bbw

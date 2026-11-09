@@ -30,11 +30,12 @@ enum RamJob : uint16_t {
   RAM_BLE_BOT = 1u << 10,   // connecting a bot (brew, power or stop)
   RAM_BREWING = 1u << 11,   // a shot is running
   RAM_LOG = 1u << 12,       // log to flash
+  RAM_ADDON = 1u << 13,     // an add-on (docs/ADDONS.md): its tick, routes and network jobs
 };
 
 constexpr const char *RAM_JOB_NAMES[] = {"ui",      "web",    "shot save", "advice", "update",
                                          "sharing", "diag",   "subs",      "ha",     "ble scale",
-                                         "ble bot", "brewing", "log"};
+                                         "ble bot", "brewing", "log",   "addon"};
 
 inline std::atomic<uint16_t> &ramJobsActive() {
   static std::atomic<uint16_t> active{0};

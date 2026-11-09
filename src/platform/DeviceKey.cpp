@@ -75,10 +75,11 @@ class MbedSigner : public ISigner {
   // On the network task's stack (NetWorker.h): an ECDSA signature takes kilobytes of it.
   bool sign(const uint8_t hash[32], uint8_t signature[SIGNATURE_LEN]) override {
     struct Job { MbedSigner *self; const uint8_t *hash; uint8_t *signature; bool ok; } job{this, hash, signature, false};
-    netRun([](void *c) {
+    // Not signed while an add-on's network job runs (NetWorker.h): the caller sends it later.
+    if (!netRun([](void *c) {
       Job &j = *static_cast<Job *>(c);
       j.ok = j.self->signHere(j.hash, j.signature);
-    }, &job);
+    }, &job)) return false;
     return job.ok;
   }
 
