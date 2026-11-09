@@ -1851,8 +1851,23 @@ void refreshResult(State state) {
       setTextF(resReview, "First drops %.0f s %s.\nReview preparation routine.\nGrind kept for now.",
                fabsf(g.firstDropOneOffS), g.firstDropOneOffS < 0.0f ? "early" : "late");
     } else {
-      setTextF(resReview, "Shot %s than expected.\nReview preparation routine.\nGrind %s if necessary.",
-               fast ? "faster" : "slower", fast ? "finer" : "coarser");
+      // The advice goes with the warning. A shot too far off to count still says which way to go
+      // and by how much (adviseOutOfRange); leaving the setting off this screen left the owner to guess.
+      const bool way = g.action == (fast ? GrindAction::FINER : GrindAction::COARSER);
+      const char *dir = fast ? "finer" : "coarser";
+      char advice[48];
+      snprintf(advice, sizeof(advice), "Grind %s if necessary.", dir);
+      if (way && bbw::adviceHasNumber(g) && g.suggestedUm) {
+        snprintf(advice, sizeof(advice), "Advice: %s, set %s %s", dir, gs(g.suggestedUm), grindUnit());
+        // One line only: the label has room for three.
+        if (lv_txt_get_width(advice, strlen(advice), &lv_font_montserrat_20, 0, LV_TEXT_FLAG_NONE) > LEFT_W) {
+          snprintf(advice, sizeof(advice), "Advice: set %s %s", gs(g.suggestedUm), grindUnit());
+        }
+      } else if (way) {
+        snprintf(advice, sizeof(advice), "Advice: grind %s.", dir);
+      }
+      setTextF(resReview, "Shot %s than expected.\nReview preparation routine.\n%s", fast ? "faster" : "slower",
+               advice);
     }
     show(Panel::RESULT);
     return;
