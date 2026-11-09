@@ -90,6 +90,11 @@ def test_shot_summary():
     s = api.shot_summary({"id": 34, "coffee": "Honduras", "recipe": "Triple", "final_weight_g": 50.4,
                           "target_weight_g": 48, "shot_time_s": 17.6, "target_time_s": 29, "grind_um": 74})
     assert s["id"] == 34 and s["grind"] == 74 and s["final_weight_g"] == 50.4
+    # Older firmware has no stop_target_g: the shot stopped for the recipe's target.
+    assert s["stop_target_g"] == 48
+    # A shot with a target of its own (a grinder add-on's measured dose): kept apart from the recipe's.
+    own = api.shot_summary({"id": 35, "final_weight_g": 49.0, "target_weight_g": 48, "stop_target_g": 49.0})
+    assert own["target_weight_g"] == 48 and own["stop_target_g"] == 49.0
 
 
 def test_shape_answer():

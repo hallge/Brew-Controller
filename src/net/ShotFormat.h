@@ -32,7 +32,8 @@ inline const char *shotCsvHeader() {
          "pour_time_s,pour_flow_g_s,time_basis,"
          "coffee,roast_level,roast_date,preinfusion_hold_s,rating,taste,"
          "flow_25_g_s,flow_50_g_s,flow_75_g_s,flow_acceleration,flow_roughness_g_s,"
-         "region,varietal,grind_vote,coffee_id,recipe_id,bloom_pause_s,grinder_calibration,tds_pct,extraction_pct\n";
+         "region,varietal,grind_vote,coffee_id,recipe_id,bloom_pause_s,grinder_calibration,tds_pct,extraction_pct,"
+         "stop_target_g\n";
 }
 
 inline size_t shotCsvLine(const ShotRecord &s, char *out, size_t size) {
@@ -45,7 +46,7 @@ inline size_t shotCsvLine(const ShotRecord &s, char *out, size_t size) {
   return snprintf(out, size,
                   "%u,%s,\"%s\",%.1f,%.2f,%.2f,%.2f,%.3f,%.3f,%.2f,%.2f,%.2f,%.2f,%u,%s,%d,%d,%d,%d,"
                   "%.2f,%.2f,%u,%.1f,%.1f,%.2f,%.3f,%s,\"%s\",%s,%u,%.1f,%u,%s,"
-                  "%.2f,%.2f,%.2f,%.2f,%.3f,\"%s\",\"%s\",%s,%u,%u,%.1f,%u,%s,%s\n",
+                  "%.2f,%.2f,%.2f,%.2f,%.3f,\"%s\",\"%s\",%s,%u,%u,%.1f,%u,%s,%s,%.2f\n",
                   static_cast<unsigned>(s.id), stamp, s.recipe, s.targetWeightG, s.stopWeightG,
                   s.finalWeightG, s.shotTimeS, s.averageFlowGS, s.peakFlowGS, s.dripWeightG,
                   s.stopOffsetG, s.nextStopOffsetG, s.firstDropS,
@@ -61,7 +62,8 @@ inline size_t shotCsvLine(const ShotRecord &s, char *out, size_t size) {
                   tasteName(s.taste), s.flow25GS, s.flow50GS, s.flow75GS, s.flowAcceleration,
                   s.flowRoughnessGS, s.region, s.varietal, grindVoteName(s.grindVote),
                   static_cast<unsigned>(s.coffeeId), static_cast<unsigned>(s.recipeId),
-                  s.bloomPauseMs / 1000.0f, static_cast<unsigned>(s.grinderId), tds, ey);
+                  s.bloomPauseMs / 1000.0f, static_cast<unsigned>(s.grinderId), tds, ey,
+                  shotStopTargetG(s));
 }
 
 inline float round2(float v) { return roundf(v * 100.0f) / 100.0f; }
@@ -72,7 +74,8 @@ inline void shotToJson(const ShotRecord &s, JsonObject o) {
   o["id"] = s.id;
   o["timestamp"] = stamp;
   o["recipe"] = s.recipe;
-  o["target_weight_g"] = round2(s.targetWeightG);
+  o["target_weight_g"] = round2(s.targetWeightG);   // the recipe's: what grind advice groups by
+  o["stop_target_g"] = round2(shotStopTargetG(s));  // what this shot stopped for
   o["stop_weight_g"] = round2(s.stopWeightG);
   o["final_weight_g"] = round2(s.finalWeightG);
   o["shot_time_s"] = round2(s.shotTimeS);

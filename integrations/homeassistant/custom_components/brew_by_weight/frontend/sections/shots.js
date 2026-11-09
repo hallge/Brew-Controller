@@ -58,7 +58,7 @@ class BrewShots extends BrewSection {
     const late = (s) => byW(s) && s.target_time_s && Math.abs(bt(s) - s.target_time_s) > tol;
     const all = this.filtered();
     const w = all.filter(byW), timed = w.filter((s) => s.target_time_s), good = timed.filter((s) => !late(s)).length;
-    const miss = w.map((s) => Math.abs(s.final_weight_g - s.target_weight_g)).sort((a, b) => a - b), rated = all.filter((s) => s.rating);
+    const miss = w.map((s) => Math.abs(s.final_weight_g - (s.stop_target_g ?? s.target_weight_g))).sort((a, b) => a - b), rated = all.filter((s) => s.rating);
     const coffees = [...new Set(this.SH.map((s) => s.coffee).filter((x) => x))];
     let rows = "", day = "";
     all.slice(0, UI.shown).forEach((s) => {
@@ -105,7 +105,7 @@ class BrewShots extends BrewSection {
     return `<div class="spread"><div><b>${esc((s.coffee ? s.coffee + ", " : "") + s.recipe)}</b> <span class="muted">${esc(when(s))}</span></div>
       <div class="row"><button id="cmp">${inCmp ? "Remove from comparison" : "Add to comparison"}</button><button id="dlshot">Readings CSV</button></div></div>
       <div class="tiles" style="margin:8px 0">
-        ${tile("In the cup", f1(s.final_weight_g) + " g", "target " + s.target_weight_g + ", drip " + f1(s.drip_weight_g))}
+        ${tile("In the cup", f1(s.final_weight_g) + " g", "target " + f1(s.stop_target_g ?? s.target_weight_g) + ", drip " + f1(s.drip_weight_g))}
         ${tile("Brew time", f1(s.shot_time_s) + " s", s.target_time_s ? "target " + s.target_time_s : "")}
         ${tile("Pour", f1(s.pour_time_s) + " s", f2(s.pour_flow_g_s) + " g/s, first drops " + f1(s.first_drop_s) + " s")}
         ${tile("Grind", s.grind_um ? esc(fs(g, s.grind_um)) : "--", s.dose_g + ' g dose · <a class="link" id="editgrind">change</a>')}

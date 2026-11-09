@@ -11,7 +11,7 @@ export function summaryLine(s) {
 
 /** "Last shot 2.4 g over" (WebPage.h:1843). */
 export function resultLine(s) {
-  const d = s.final_weight_g - s.target_weight_g;
+  const d = s.final_weight_g - (s.stop_target_g ?? s.target_weight_g);  // the shot's own target
   return "Last shot " + (Math.abs(d) < 0.05 ? "on target" : f1(Math.abs(d)) + " g " + (d > 0 ? "over" : "under")) + (s.final_valid === false ? ", did not settle" : "");
 }
 

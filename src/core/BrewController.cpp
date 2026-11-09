@@ -425,7 +425,7 @@ void BrewController::acceptBrewSample(const WeightSample &sample) {
     runningConfirmed_ = true;
   }
 
-  const float cutG = shotRecipe_.targetWeightG - shotRecipe_.stopOffsetG;
+  const float cutG = shotStopTargetG_ - shotRecipe_.stopOffsetG;
   directConfirm_ = sample.weightG >= cutG ? directConfirm_ + 1 : 0;
   const float fallbackS = shotRecipe_.maxShotTimeS;
   expectedEndS_ = predictStopTimeS(curve_.timeS, curve_.weightG, curve_.count,
@@ -532,6 +532,7 @@ void BrewController::tick(uint32_t nowMs) {
           recoveryUntilMs_ = 0;
           runningConfirmed_ = true;  // the flow just seen is the evidence
           shotRecipe_ = recipe();
+          shotStopTargetG_ = shotRecipe_.targetWeightG;
           shotRecipeIndex_ = activePreset();
           shotRecipe_.bloomPauseMs = 0;  // whatever was planned, this is a plain brew now
           shotStartMs_ = brewPhaseStartMs_ = nowMs;
@@ -665,6 +666,9 @@ void BrewController::tickPreparation(uint32_t nowMs, Intent intent) {
 void BrewController::beginShot(uint32_t nowMs) {
   shotRecipeIndex_ = activePreset();
   shotRecipe_ = resolvePreset(library_, shotRecipeIndex_);
+  shotStopTargetG_ = shotRecipe_.targetWeightG;
+  if (nextShotTargetG_ > 0.0f && nextShotRecipeId_ == shotRecipe_.recipeId) shotStopTargetG_ = nextShotTargetG_;
+  nextShotTargetG_ = 0.0f;  // one shot only, whichever recipe it was for
   shotStarts_ = machine().controllerStarts();
   shotStops_ = machine().controllerStops();
   cueGiven_ = false;
@@ -1257,6 +1261,10 @@ void BrewController::finalizeShot(uint32_t nowMs, State nextState) {
   memcpy(record.recipe, shotRecipe_.name, RECIPE_NAME_LEN);
   record.recipe[RECIPE_NAME_LEN - 1] = '\0';
   record.targetWeightG = shotRecipe_.targetWeightG;
+  if (shotStopTargetG_ != shotRecipe_.targetWeightG && shotStopTargetG_ > 0.0f && shotStopTargetG_ < 650.0f) {
+    record.flags |= SHOT_FLAG_OWN_TARGET;
+    record.stopTargetCg = static_cast<uint16_t>(shotStopTargetG_ * 100.0f + 0.5f);
+  }
   record.stopOffsetG = shotRecipe_.stopOffsetG;
   record.nextStopOffsetG = shotRecipe_.stopOffsetG;
   // Cup lifted mid-pour: what was in it is the most it held, not a reading
@@ -1342,7 +1350,7 @@ void BrewController::finalizeShot(uint32_t nowMs, State nextState) {
         now.targetWeightG == shotRecipe_.targetWeightG &&
         live.stopOffsetG == shotRecipe_.stopOffsetG &&
         learnStopOffset(shotRecipe_.stopOffsetG, record.finalWeightG,
-                        shotRecipe_.targetWeightG, stepAlpha / 100.0f, updated)) {
+                        shotStopTargetG_, stepAlpha / 100.0f, updated)) {
       live.stopOffsetG = updated;
       if (live.learnedShots < 255) ++live.learnedShots;
       record.nextStopOffsetG = updated;
@@ -1355,7 +1363,7 @@ void BrewController::finalizeShot(uint32_t nowMs, State nextState) {
           evidenceTargetG_[shotRecipeIndex_] = shotRecipe_.targetWeightG;
         }
         const float observation =
-            shotRecipe_.stopOffsetG + (record.finalWeightG - shotRecipe_.targetWeightG);
+            shotRecipe_.stopOffsetG + (record.finalWeightG - shotStopTargetG_);
         live.learnedAlpha = evidence_[shotRecipeIndex_].observe(
             observation, shotRecipe_.stopOffsetG, alpha);
         record.alphaNext = live.learnedAlpha;
@@ -1415,7 +1423,7 @@ LiveStatus BrewController::status(uint32_t nowMs) const {
   const bool inShot = state_ == State::STARTING_SHOT || state_ == State::BREWING ||
                       state_ == State::BLOOMING || state_ == State::STOPPING_SHOT || state_ == State::POST_SHOT_DRIP;
   const Recipe &r = inShot ? shotRecipe_ : recipe();
-  s.targetWeightG = r.targetWeightG;
+  s.targetWeightG = inShot ? shotStopTargetG_ : r.targetWeightG;
   s.stopOffsetG = r.stopOffsetG;
   memcpy(s.recipe, r.name, RECIPE_NAME_LEN);
   s.recipe[RECIPE_NAME_LEN - 1] = '\0';

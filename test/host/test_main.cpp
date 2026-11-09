@@ -2925,6 +2925,135 @@ static bool pullByHand(Rig &r, uint32_t reactionMs, float stopAtG = 0.0f) {
   return cue;
 }
 
+// Every field of a shot record and the learned stop, as text, for the golden test below.
+static std::string dumpShot(const ShotRecord &r) {
+  char b[1400];
+  snprintf(b, sizeof(b),
+           "id=%u ep=%u rc=%s tw=%.4f so=%.4f sw=%.4f fw=%.4f dw=%.4f st=%.4f fd=%.4f af=%.4f pf=%.4f ns=%.4f "
+           "lat=%u er=%u fl=%u au=%u an=%u gu=%u dg=%.4f tt=%.4f pt=%.4f pfl=%.4f tb=%u cf=%s rg=%s vr=%s rd=%u "
+           "rl=%u ph=%u f25=%.4f f50=%.4f f75=%.4f fa=%.4f fr=%.4f ra=%u ta=%u gv=%u ci=%u ri=%u gi=%u bp=%u "
+           "bi=%u tds=%u|",
+           (unsigned)r.id, (unsigned)r.epochS, r.recipe, r.targetWeightG, r.stopOffsetG, r.stopWeightG,
+           r.finalWeightG, r.dripWeightG, r.shotTimeS, r.firstDropS, r.averageFlowGS, r.peakFlowGS,
+           r.nextStopOffsetG, (unsigned)r.stopLatencyMs, (unsigned)r.endReason, (unsigned)r.flags,
+           (unsigned)r.alphaUsed, (unsigned)r.alphaNext, (unsigned)r.grindUm, r.doseG, r.targetTimeS,
+           r.pourTimeS, r.pourFlowGS, (unsigned)r.timeBasis, r.coffee, r.region, r.varietal,
+           (unsigned)r.roastDate, (unsigned)r.roastLevel, (unsigned)r.preinfusionHoldMs, r.flow25GS,
+           r.flow50GS, r.flow75GS, r.flowAcceleration, r.flowRoughnessGS, (unsigned)r.rating,
+           (unsigned)r.taste, (unsigned)r.grindVote, (unsigned)r.coffeeId, (unsigned)r.recipeId,
+           (unsigned)r.grinderId, (unsigned)r.bloomPauseMs, (unsigned)r.bagId, (unsigned)r.tdsX100);
+  return b;
+}
+
+// Three shots in a row with no adjusted target: every field of each record and the stop offset the
+// preset learned must be exactly what they were before shots could have a target of their own.
+static void testShotRecordGolden() {
+  printf("shot records and the learned stop, unchanged with no adjusted target\n");
+  Rig r;
+  r.toReady();
+  std::string dump;
+  for (int i = 0; i < 3; ++i) {
+    r.ctl.requestStart();
+    CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+    ShotRecord shot;
+    CHECK(r.ctl.takeCompletedShot(shot));
+    dump += dumpShot(shot);
+    CHECK(!(shot.flags & SHOT_FLAG_OWN_TARGET) && shot.spare0 == 0 && shot.stopTargetCg == 0);
+    CHECK(shotStopTargetG(shot) == shot.targetWeightG);
+    char learned[64];
+    snprintf(learned, sizeof(learned), "learned=%.5f/%u/%u|", r.library.presets[0].stopOffsetG,
+             (unsigned)r.library.presets[0].learnedShots, (unsigned)r.library.presets[0].learnedAlpha);
+    dump += learned;
+    r.nextShot();
+    r.toReady();
+  }
+  static const char *const kGolden = 
+      "id=1 ep=0 rc=Double tw=36.0000 so=1.5000 sw=34.7000 fw=35.4000 dw=0.7000 st=27.6600 fd=6.2600 af=1.2798 pf=1.6091 ns=1.0800 lat=1600 er=1 fl=7 au=70 an=30 gu=0 dg=18.0000 tt=28.0000 pt=21.4000 pfl=1.6542 tb=0 cf= rg= vr= rd=0 rl=0 ph=0 f25=1.6000 f50=1.6014 f75=1.6014 fa=1.0009 fr=0.0061 ra=0 ta=0 gv=0 ci=0 ri=1 gi=0 bp=0 bi=0 tds=0|"
+      "learned=1.08000/1/0|"
+      "id=2 ep=0 rc=Double tw=36.0000 so=1.0800 sw=35.2000 fw=35.9000 dw=0.7000 st=27.9700 fd=6.2700 af=1.2835 pf=1.6091 ns=1.0100 lat=1600 er=1 fl=7 au=70 an=30 gu=0 dg=18.0000 tt=28.0000 pt=21.7000 pfl=1.6544 tb=0 cf= rg= vr= rd=0 rl=0 ph=0 f25=1.5909 f50=1.6014 f75=1.6091 fa=1.0114 fr=0.0063 ra=0 ta=0 gv=0 ci=0 ri=1 gi=0 bp=0 bi=0 tds=0|"
+      "learned=1.01000/2/0|"
+      "id=3 ep=0 rc=Double tw=36.0000 so=1.0100 sw=35.2000 fw=35.9000 dw=0.7000 st=27.9700 fd=6.2700 af=1.2835 pf=1.6091 ns=0.9400 lat=1600 er=1 fl=7 au=70 an=30 gu=0 dg=18.0000 tt=28.0000 pt=21.7000 pfl=1.6544 tb=0 cf= rg= vr= rd=0 rl=0 ph=0 f25=1.5909 f50=1.6014 f75=1.6091 fa=1.0114 fr=0.0063 ra=0 ta=0 gv=0 ci=0 ri=1 gi=0 bp=0 bi=0 tds=0|"
+      "learned=0.94000/3/0|";
+  if (dump != kGolden) printf("  got: %s\n", dump.c_str());
+  CHECK(dump == kGolden);
+}
+
+// One shot's own stop target (a grinder add-on's measured dose): that shot alone stops for it, the
+// record keeps the recipe's target (grind advice groups by it) with the shot's own beside it, and
+// the stop offset learns from the target the shot really had.
+static void testShotOwnTarget() {
+  printf("a shot with a target of its own\n");
+  Rig r;
+  r.toReady();
+  const uint8_t p = r.library.activePreset;
+  const uint16_t recipeId = r.library.presets[p].recipeId;
+  const float recipeTarget = resolvePreset(r.library, p).targetWeightG;
+  const float offsetBefore = r.library.presets[p].stopOffsetG;
+  const float own = recipeTarget + 1.0f;
+  r.ctl.setNextShotTarget(own, recipeId);
+  CHECK(r.ctl.nextShotTarget() == own);
+  r.ctl.requestStart();
+  r.run(3000);
+  CHECK_NEAR(r.ctl.status(r.sim.nowMs).targetWeightG, own, 0.001);  // live: what it stops for
+  CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+  ShotRecord shot;
+  CHECK(r.ctl.takeCompletedShot(shot));
+  CHECK(r.ctl.nextShotTarget() == 0.0f);                          // used up
+  CHECK(shot.targetWeightG == recipeTarget);                      // the recipe's, for grouping
+  CHECK(shot.flags & SHOT_FLAG_OWN_TARGET);
+  CHECK(shot.stopTargetCg == static_cast<uint16_t>(own * 100.0f + 0.5f));
+  CHECK_NEAR(shotStopTargetG(shot), own, 0.005);
+  CHECK_NEAR(shot.stopWeightG, own - offsetBefore, 0.6);          // the cut moved with it
+  // The first shot of a fresh rig misses its target by -0.6 g (testShotRecordGolden: 35.4 of 36);
+  // with its own target it misses that by the same.
+  CHECK_NEAR(shot.finalWeightG - own, -0.6, 0.3);
+  // Learned against the shot's own target, not the recipe's.
+  float expected = 0.0f;
+  CHECK(learnStopOffset(offsetBefore, shot.finalWeightG, own, shot.alphaUsed / 100.0f, expected));
+  CHECK_NEAR(r.library.presets[p].stopOffsetG, expected, 0.0001);
+  CHECK_NEAR(shot.nextStopOffsetG, expected, 0.0001);
+  CHECK(resolvePreset(r.library, p).targetWeightG == recipeTarget);  // the recipe is unchanged
+
+  // The next shot is back on the recipe's target.
+  r.nextShot();
+  r.toReady();
+  r.ctl.requestStart();
+  CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+  CHECK(r.ctl.takeCompletedShot(shot));
+  CHECK(!(shot.flags & SHOT_FLAG_OWN_TARGET) && shot.stopTargetCg == 0);
+  CHECK(shotStopTargetG(shot) == recipeTarget);
+
+  // A target meant for another recipe is dropped by whichever shot starts next.
+  r.nextShot();
+  r.toReady();
+  r.ctl.setNextShotTarget(own, static_cast<uint16_t>(recipeId + 100));
+  r.ctl.requestStart();
+  CHECK(r.runUntil(State::SHOT_COMPLETE, 60000));
+  CHECK(r.ctl.takeCompletedShot(shot));
+  CHECK(!(shot.flags & SHOT_FLAG_OWN_TARGET));
+  CHECK(r.ctl.nextShotTarget() == 0.0f);
+
+  // An old record: anything in what was padding, no flag. It reads as the recipe's target.
+  ShotRecord old;
+  old.targetWeightG = 36.0f;
+  old.finalWeightG = 36.4f;
+  old.spare0 = 0xA5;
+  old.stopTargetCg = 0xBEEF;
+  CHECK(shotStopTargetG(old) == 36.0f);
+  // Over/under, here and in the diagnostics, against the real target: on it exactly is +0.0.
+  ShotRecord onTarget;
+  onTarget.targetWeightG = 36.0f;
+  onTarget.finalWeightG = 36.4f;
+  onTarget.flags = SHOT_FLAG_FINAL_VALID | SHOT_FLAG_OWN_TARGET;
+  onTarget.stopTargetCg = 3640;
+  CHECK_NEAR(onTarget.finalWeightG - shotStopTargetG(onTarget), 0.0, 0.0001);
+  DiagInput diag;
+  diag.addShot(onTarget);
+  CHECK(diag.overshootCount == 1);
+  CHECK_NEAR(diag.overshoots[0], 0.0, 0.0001);
+  // The CSV (net/ShotFormat.h, Arduino-only) is checked in the emulator: stop_target_g is its last column.
+}
+
 static void testMachineProfiles() {
   printf("machine profiles: Breville unchanged, generic button, dose button, by hand\n");
   {
@@ -9118,6 +9247,8 @@ int main() {
   testPowerOffWithScale();
   testCoffeeTaste();
   testMachineProfiles();
+  testShotRecordGolden();
+  testShotOwnTarget();
   testShotDataSet();
   testReadingNewerThanTick();
   testResultScreenLetsGo();

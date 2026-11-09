@@ -542,6 +542,12 @@ struct ShotRecord {
   char coffee[COFFEE_NAME_LEN] = {};
   char region[ORIGIN_LEN] = {};
   char varietal[ORIGIN_LEN] = {};
+  // The three bytes after varietal were padding. stopTargetCg is the weight this shot itself stopped
+  // for, in centigrams, when it had a target of its own (SHOT_FLAG_OWN_TARGET): a grinder add-on's
+  // measured dose scales one shot's target (docs/ADDONS.md). targetWeightG stays the recipe's, which
+  // grind advice groups shots by. Old records may hold anything here: trust it only with the flag.
+  uint8_t spare0 = 0;
+  uint16_t stopTargetCg = 0;
   uint32_t roastDate = 0;          // YYYYMMDD
   uint8_t roastLevel = 0;          // RoastLevel
   uint16_t preinfusionHoldMs = 0;  // 0 = machine's own pre-infusion
@@ -567,6 +573,14 @@ struct ShotRecord {
   uint16_t bagId = 0;
   uint16_t tdsX100 = 0;
 };
+
+// The on-flash history record: the new field sits in what was padding, so neither the size nor any
+// existing field's place changes (no new history version).
+static_assert(sizeof(ShotRecord) == 232, "ShotRecord is the on-flash history record");
+static_assert(offsetof(ShotRecord, varietal) == 153 && offsetof(ShotRecord, stopTargetCg) == 186 &&
+                  offsetof(ShotRecord, roastDate) == 188 && offsetof(ShotRecord, flow25GS) == 196 &&
+                  offsetof(ShotRecord, coffeeId) == 220 && offsetof(ShotRecord, tdsX100) == 230,
+              "ShotRecord layout");
 
 // Extraction yield, percent of the dose that ended up in the cup: TDS x beverage mass / dose. 0 when
 // there is no measured TDS or no dose.
@@ -616,6 +630,15 @@ constexpr uint8_t SHOT_FLAG_STOP_RETRIED = 1 << 3;
 // The stop press went out before any coffee had been seen, and turned out to
 // start the pump (the start press had never reached the button).
 constexpr uint8_t SHOT_FLAG_STOP_STARTED_PUMP = 1 << 4;
+// The shot stopped for a target of its own (ShotRecord::stopTargetCg), not the recipe's.
+constexpr uint8_t SHOT_FLAG_OWN_TARGET = 1 << 5;
+
+// The weight a shot stopped for: its own target when it had one, else the recipe's. Every
+// over/under figure compares the final weight against this, never against targetWeightG.
+inline float shotStopTargetG(const ShotRecord &s) {
+  if ((s.flags & SHOT_FLAG_OWN_TARGET) && s.stopTargetCg != 0) return s.stopTargetCg / 100.0f;
+  return s.targetWeightG;
+}
 
 // Live values for the display, the web UI and the serial log.
 struct LiveStatus {

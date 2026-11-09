@@ -121,11 +121,12 @@ export function shotChart(canvas, s, T, W, F, REF, Th, height = 220) {
   if (!T || T.length < 2) { x.fillStyle = Th.dim; x.fillText("No readings stored for this shot.", 16, 30); return; }
   const fv = F ? F.filter((v) => v != null) : [];
   const tm = Math.max(T[T.length - 1], REF ? REF.T[REF.T.length - 1] : 0, 1);
-  const wm = Math.max((s.target_weight_g || 0) * 1.1, ...W, ...(REF ? REF.W : [0]));
+  const tg = s.stop_target_g ?? s.target_weight_g ?? 0;
+  const wm = Math.max(tg * 1.1, ...W, ...(REF ? REF.W : [0]));
   const fm = Math.max(1, ...fv), R = 52;
   const X = (t) => 34 + t / tm * (cw - 34 - R), Y = (w) => ch - 20 - Math.max(w, 0) / wm * (ch - 32), YF = (v) => ch - 20 - Math.max(v, 0) / fm * (ch - 32);
   x.lineWidth = 1; x.strokeStyle = "#6b7280"; x.setLineDash([4, 6]);
-  x.beginPath(); x.moveTo(34, Y(s.target_weight_g)); x.lineTo(cw - R, Y(s.target_weight_g)); x.stroke();
+  x.beginPath(); x.moveTo(34, Y(tg)); x.lineTo(cw - R, Y(tg)); x.stroke();
   x.fillStyle = Th.dim; x.strokeStyle = Th.edge;
   [[s.first_drop_s, "first drops"], [s.shot_time_s, "stop"]].forEach((m) => {
     if (!(m[0] > 0 && m[0] <= tm)) return;

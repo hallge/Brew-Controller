@@ -218,6 +218,9 @@ def shot_summary(shot: Any) -> dict[str, Any]:
         "recipe": text(shot.get("recipe")),
         "final_weight_g": number(shot.get("final_weight_g")),
         "target_weight_g": number(shot.get("target_weight_g")),
+        # What the shot stopped for (its own target when a grinder add-on scaled it); older
+        # firmware has no such field: the recipe's target.
+        "stop_target_g": number(shot.get("stop_target_g", shot.get("target_weight_g"))),
         "shot_time_s": number(shot.get("shot_time_s")),
         "target_time_s": number(shot.get("target_time_s")),
         "grind": positive(shot.get("grind_um")),

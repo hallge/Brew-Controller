@@ -1744,7 +1744,7 @@ void refreshResult(State state) {
   const bool timedOut = abnormal && (ended == bbw::EndReason::TIMEOUT ||
                                      ended == bbw::EndReason::MACHINE_STOPPED);
   if (have) {
-    const float error = shot.finalWeightG - shot.targetWeightG;
+    const float error = shot.finalWeightG - bbw::shotStopTargetG(shot);  // its own target, if it had one
     char yield[32];
     if (fabsf(error) < 0.05f) snprintf(yield, sizeof(yield), "ON TARGET");
     else snprintf(yield, sizeof(yield), "%s %+.1f g", error > 0 ? "OVER" : "UNDER", error);

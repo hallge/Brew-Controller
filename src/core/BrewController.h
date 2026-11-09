@@ -108,6 +108,14 @@ class BrewController {
   void acknowledge();         // leave SHOT_COMPLETE or a fault state
   void requestManualPress();  // one raw button press, only from a fault state
   void raiseBleError();
+  // One shot's own stop target (a grinder add-on's measured dose, docs/ADDONS.md): used by the next
+  // shot that starts on this recipe, then forgotten. A shot on another recipe drops it. 0 clears.
+  // The recipe, and the record's targetWeightG, keep the recipe's target.
+  void setNextShotTarget(float targetG, uint16_t recipeId) {
+    nextShotTargetG_ = targetG > 0.0f ? targetG : 0.0f;
+    nextShotRecipeId_ = recipeId;
+  }
+  float nextShotTarget() const { return nextShotTargetG_; }
   // After an unexpected restart during a shot: if the scale shows espresso
   // flowing once everything reconnects, press stop.
   void armRestartRecovery(uint32_t nowMs);
@@ -281,6 +289,9 @@ class BrewController {
   // Shot
   ShotCurve curve_;
   Recipe shotRecipe_;           // snapshot taken at shot start
+  float shotStopTargetG_ = 0.0f;  // what this shot stops for: the recipe's, or its own
+  float nextShotTargetG_ = 0.0f;  // setNextShotTarget()
+  uint16_t nextShotRecipeId_ = 0;
   uint8_t shotRecipeIndex_ = 0;  // preset index
   uint32_t shotStartMs_ = 0;
   float expectedEndS_ = 0.0f;

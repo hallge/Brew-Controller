@@ -310,7 +310,7 @@ struct DiagInput {
     if (r.flags & SHOT_FLAG_STOP_RETRIED) ++stopRetried;
     if (r.stopLatencyMs > 0 && latencyCount < 64) latencies[latencyCount++] = r.stopLatencyMs;
     if ((r.flags & SHOT_FLAG_FINAL_VALID) && r.targetWeightG > 0.0f && overshootCount < 64) {
-      overshoots[overshootCount++] = r.finalWeightG - r.targetWeightG;
+      overshoots[overshootCount++] = r.finalWeightG - shotStopTargetG(r);
     }
   }
   void addPower(const PowerEvent &e) {

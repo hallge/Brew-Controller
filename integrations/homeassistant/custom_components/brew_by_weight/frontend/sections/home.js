@@ -101,7 +101,7 @@ class BrewHome extends BrewSection {
       <div class="card" style="grid-column:1/-1">
         <div class="spread"><h3>Most recent shot</h3><a class="link" data-go="shots">All shots</a></div>
         ${last ? html`
-          <div class="row" style="gap:26px;align-items:baseline"><span><span class="big">${f1(last.final_weight_g)} g</span> <span class="muted">of ${last.target_weight_g}</span></span>
+          <div class="row" style="gap:26px;align-items:baseline"><span><span class="big">${f1(last.final_weight_g)} g</span> <span class="muted">of ${f1(last.stop_target_g ?? last.target_weight_g)}</span></span>
           <span><span class="big">${f1(last.shot_time_s)} s</span>${last.target_time_s ? html` <span class="muted">of ${last.target_time_s}</span>` : ""}</span></div>
           <div class="hint">${raw(summaryLine(last))} ${resultLine(last)}.</div>
           <canvas id="hchart" style="margin-top:8px"></canvas><div id="href" class="hint"></div>
