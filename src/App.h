@@ -148,6 +148,8 @@ GrindLearned grindLearned();
 
 // Home Assistant and the room's climate (core/HomeAssistant.h, docs/HOME_ASSISTANT.md).
 bbw::AmbientReading ambient();                 // the latest reading, from either source
+float roomEffectiveC();                         // the room's slow temperature; NAN not known or stale
+bbw::GrindRoomFit grindRoomFit();               // the room's effect as the current advice learned it
 bool pushAmbient(float rhPct, float tempC);    // POST /api/ambient; NAN: not given. false: nothing usable
 struct HaStatus {
   char url[bbw::HA_URL_LEN];
@@ -176,6 +178,8 @@ size_t adviceOutcomes(bbw::AdviceOutcome *out, size_t max);
 void setGrind(uint16_t grindUm);                     // grinder setting of the active preset
 bool setShotRating(uint32_t shotId, uint8_t rating, uint8_t taste);
 bool setShotTds(uint32_t shotId, uint16_t tdsX100);
+// The room's slow temperature at a past shot (Store::setShotRoom); NAN clears it.
+bool setShotRoom(uint32_t shotId, float roomC);
 
 // Upkeep counters (core/Maintenance.h): shots since backflush, descale, grinder clean.
 bbw::Maintenance maintenance();
@@ -344,6 +348,9 @@ void diagStatus(JsonObject out);
 size_t lastCrash(char *out, size_t size);
 // Empty: the built-in relay.
 void setDiagRelay(const char *url);
+// Allocations over bbw::SMALL_TO_PSRAM_LIMIT bytes from PSRAM, from the next start-up (stored).
+bool ramSmallToPsramStored();
+bool setRamSmallToPsram(bool on);
 // The scale has been seen taring itself (an auto-tare mode).
 bool scaleZeroesItself();
 const char *testPressState();

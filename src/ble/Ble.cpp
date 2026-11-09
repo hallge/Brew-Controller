@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "Log.h"
+#include "platform/RamWatch.h"
 
 namespace bbw {
 
@@ -563,7 +564,11 @@ void BleManager::servePusher(BlePusher &pusher, const char *name, const char *ad
   LOGI("%s: connecting to %s", name, address);
   attemptStarted(stats);
   const uint32_t startMs = millis();
-  const bool connected = pusher.connectTo(NimBLEAddress(address, type));
+  bool connected;
+  {
+    RamJobScope job(RAM_BLE_BOT);
+    connected = pusher.connectTo(NimBLEAddress(address, type));
+  }
   attemptEnded(stats, connected);
   if (connected) {
     failures = 0;
@@ -655,7 +660,11 @@ void BleManager::run() {
       LOGI("scale: connecting to %s (%s)", scaleTarget.address, scaleTarget.name);
       scale_.setName(scaleTarget.name);  // some makes are only told apart by it
       attemptStarted(scaleStats_);
-      const bool scaleConnected = scale_.connectTo(NimBLEAddress(scaleTarget.address, scaleTarget.addressType));
+      bool scaleConnected;
+      {
+        RamJobScope job(RAM_BLE_SCALE);
+        scaleConnected = scale_.connectTo(NimBLEAddress(scaleTarget.address, scaleTarget.addressType));
+      }
       attemptEnded(scaleStats_, scaleConnected);
       if (scaleConnected) {
         scaleFailures_ = 0;

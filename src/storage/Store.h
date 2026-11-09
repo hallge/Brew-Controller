@@ -102,13 +102,20 @@ class Store {
   size_t loadCurve(uint32_t id, CurvePoint *out, size_t max);  // 0: none stored
   bool hasCurve(uint32_t id);
   // The circumstances of the shot (core/ShotContext.h): one fixed slot per shot in a ring file
-  // beside the history (/contexts.bin, 500 x 64 bytes). Only recorded, never read by the advice.
+  // beside the history (/contexts.bin, 500 slots). Recorded; the grind advice reads only the room's
+  // slow temperature from it (roomEffX10, 9 Nov 2026).
   bool saveContext(const ShotContext &context);
   bool loadContext(uint32_t id, ShotContext &out);  // false: none stored, or another version
+  // The room's slow temperature of each shot (ShotContext::roomEffX10), NAN where not known; one
+  // pass over the file, for the grind advice.
+  void loadRooms(const uint32_t *ids, size_t count, float *roomC);
   // The owner's entries for a shot still in the history (core/ShotContext.h applyShotPrep). A shot
   // from before contexts were kept gets a context holding only these. false: no such shot, or a dose
   // outside 5..40 g.
   bool setShotPrep(uint32_t id, uint16_t doseDg, bool purged, bool uneven);
+  // The room's slow temperature for a shot still in the history (core/ShotContext.h applyShotRoom),
+  // for shots made before it was kept. NAN clears it. false: no such shot, or not a temperature.
+  bool setShotRoom(uint32_t id, float roomC);
   bool historyOk() const { return fsOk_; }
 
   // The power presses the controller made (core/PowerControl.h PowerEvent), in a ring file
@@ -168,7 +175,7 @@ class Store {
   bool convertHistoryV9();
   void removeCurve(uint32_t id);
   bool prepareContexts();
-  bool convertContextsV1();   // a version 1 context file rewritten as version 2
+  bool convertContextsOld();  // a version 1 or 2 context file rewritten as the current version
   bool preparePowerLog();
   bool prepareRatings();
   bool editRatingSlot(uint32_t id, const CoffeeRating *with);

@@ -590,7 +590,7 @@ hand.
 
 ### Home Assistant
 
-Optional, and off until set up: the room's humidity and temperature read from Home Assistant (or pushed to `POST /api/ambient`) and recorded with each shot; a webhook after each shot; MQTT discovery with sensors and a Start button; and a custom integration in `integrations/homeassistant`. See [docs/HOME_ASSISTANT.md](docs/HOME_ASSISTANT.md).
+Optional, and off until set up: the room's humidity and temperature read from Home Assistant (or pushed to `POST /api/ambient`) and recorded with each shot. The grind advice allows for the room's temperature once it has learned its effect on this grinder: on the first board, about 3 s of brew time per degree C, colder slower (setting "Room", `core/GrindAdvisor.h` grindRoomEffect); a webhook after each shot; MQTT discovery with sensors and a Start button; and a custom integration in `integrations/homeassistant`. See [docs/HOME_ASSISTANT.md](docs/HOME_ASSISTANT.md).
 
 ## 6. What happens when something goes wrong
 

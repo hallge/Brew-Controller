@@ -33,6 +33,7 @@
 #include "net/ShotFormat.h"
 #include "net/Web.h"
 #include "platform/BigMem.h"
+#include "platform/RamWatch.h"
 #include "platform/DeviceKey.h"
 #include "platform/FsUtil.h"
 #include "platform/HomeAssistantLink.h"
@@ -61,6 +62,8 @@ constexpr uint32_t BOT_PAIR_CHECK_MS = 20000;
 // Switching the Lunar on is the cue that a shot is coming: the Bot is woken
 // then, so Start does not have to wait for it. Released again if unused.
 constexpr uint32_t BOT_PREWAKE_MS = 120000;
+// The brew bot is held from the machine's power-on until a shot, for at most this long.
+constexpr uint32_t BOT_WARMUP_HOLD_MAX_MS = 4UL * 60UL * 60UL * 1000UL;
 constexpr uint32_t LONG_PRESS_MS = 1200;
 
 // Survives a panic / watchdog / software reset, not a power cycle.
@@ -118,6 +121,11 @@ bool g_libraryDirty = false;
 bbw::Maintenance g_maintenance;     // guarded by Lock
 bool g_maintenanceDirty = false;
 bool g_grindAdviceStale = true;  // loop task only
+// The room's slow temperature (bbw::roomEffectiveUpdate), and the figure the current advice used.
+bbw::RoomEffective g_roomEff;   // guarded by Lock
+float g_adviceRoomC = NAN;      // loop task only
+bbw::GrindRoomFit g_roomFit;    // as the current advice learned it; loop task only
+constexpr float ROOM_ADVICE_STEP_C = 0.3f;
 bbw::GrinderElasticity g_grinderElasticity;  // with grindAdvice(): what the grinder's other coffees showed
 float g_shotNoiseS = 0.0f;       // with grindAdvice(): the owner's shot-to-shot noise (bbw::grindShotNoise)
 size_t g_shotNoiseRepeats = 0;   // ...from this many repeats
@@ -1123,6 +1131,18 @@ void controlTask(void *) {
         if (static_cast<int32_t>(until - g_botHoldUntilMs.load()) > 0) g_botHoldUntilMs = until;
       }
       scaleWasConnected = scaleConnected;
+      // The machine was switched on and no shot has run yet: link the brew bot now, so that it is
+      // ready when the Lunar comes on (PowerControl::warmingForShot; the owner's choice, 9 Nov 2026).
+      static bool warmHeld = false;
+      const bool warm = g_powerControl.warmingForShot(now, BOT_WARMUP_HOLD_MAX_MS);
+      if (warm) {
+        const uint32_t until = now + BOT_LINGER_MS;
+        if (static_cast<int32_t>(until - g_botHoldUntilMs.load()) > 0) g_botHoldUntilMs = until;
+      }
+      if (warm != warmHeld) {
+        LOGI(warm ? "bot: holding the link from power-on" : "bot: power-on hold ended");
+        warmHeld = warm;
+      }
       // A cup going on the scale means a shot is coming: wake the brew bot
       // now, it takes a sleeping SwitchBot several seconds to answer.
       static bool cupWasPresent = false;
@@ -1339,6 +1359,29 @@ void logHealth() {
   if (memory.internalLowest < 30000 && memory.internalLowest < warnedLowest) {
     warnedLowest = memory.internalLowest;
     LOGW("health: chip RAM has been down to %u bytes", static_cast<unsigned>(memory.internalLowest));
+  }
+#endif
+}
+
+// Which jobs ran when chip RAM reached each new low (platform/RamWatch.h). Sampled every loop.
+bbw::RamLow g_ramLow;   // loop task only; read by diagnostics
+bool g_ramSmallToPsram = false;   // as this start-up found it (bbw::smallAllocsToPsram)
+void ramWatch() {
+#ifndef BBW_EMULATOR
+  // The loop's own jobs are over by now; a shot running in the control task counts as one.
+  bool running;
+  {
+    Lock lock;
+    running = g_controller.machineMayBeRunning();
+  }
+  if (running) bbw::ramJobBegin(bbw::RAM_BREWING);
+  else bbw::ramJobEnd(bbw::RAM_BREWING);
+  const uint32_t lowest = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (bbw::ramWatchSample(g_ramLow, lowest, millis() / 1000u) && lowest < 40000) {
+    char jobs[96];
+    bbw::ramJobNames(g_ramLow.jobs, jobs, sizeof(jobs));
+    LOGW("ram: new chip low %u bytes (-%u) during %s", static_cast<unsigned>(g_ramLow.lowest),
+         static_cast<unsigned>(g_ramLow.drop), jobs);
   }
 #endif
 }
@@ -2689,6 +2732,7 @@ size_t adviceOutcomes(bbw::AdviceOutcome *out, size_t max) {
 
 bbw::GrindAdvice grindAdvice() {
   if (!g_grindAdviceStale) return g_grindAdvice;
+  bbw::RamJobScope job(bbw::RAM_ADVICE);
   g_adviceNewestSetting = 0;
   constexpr uint32_t SCAN_SHOTS = 150;  // how far back to look
   struct Scan {
@@ -2730,8 +2774,15 @@ bbw::GrindAdvice grindAdvice() {
     float pairDrops[40][2];
     size_t pairCount = 0;
     uint32_t cleanEpochS = 0;
+    // 9 Nov 2026: every valid shot on the grinder, for the room's effect (bbw::grindRoomEffect), and
+    // the ids behind them and behind shots[], to read the room at each from the contexts.
+    uint32_t shotIds[40];
+    bbw::RoomShot rooms[190];
+    uint32_t roomIds[190];
+    float roomC[190];
+    size_t roomCount = 0;
   };
-  static Scan &scan = *bbw::bigNew<Scan>();   // 5.5 kB: in PSRAM, taken on the first advice
+  static Scan &scan = *bbw::bigNew<Scan>();   // 9 kB: in PSRAM, taken on the first advice
   const bbw::Settings s = settings();
   scan.recipe = activeRecipe();
   g_grindFresh = false;
@@ -2746,6 +2797,7 @@ bbw::GrindAdvice grindAdvice() {
   scan.lastCount = 0;
   scan.seqCount = 0;
   scan.pairCount = 0;
+  scan.roomCount = 0;
   {
     Lock lock;
     scan.cleanEpochS = g_maintenance.doneAtEpochS[static_cast<size_t>(bbw::Upkeep::GRINDER_CLEAN)];
@@ -2838,7 +2890,15 @@ bbw::GrindAdvice grindAdvice() {
       sc.shots[sc.count].firstDropS = record.firstDropS;
       sc.shots[sc.count].epochS = record.epochS;
       sc.shotSeq[sc.count] = seqIdx;
+      sc.shotIds[sc.count] = record.id;
       ++sc.count;
+    }
+    if (valid && sc.roomCount < sizeof(sc.rooms) / sizeof(sc.rooms[0])) {
+      bbw::RoomShot &r = sc.rooms[sc.roomCount];
+      r.timeS = bbw::grindShotTime(record, sc.basis);
+      r.setting = static_cast<float>(record.grindUm);
+      r.group = group;
+      sc.roomIds[sc.roomCount++] = record.id;
     }
     return true;   // SCAN_SHOTS bounds the pass
   }, &scan);
@@ -2883,6 +2943,26 @@ bbw::GrindAdvice grindAdvice() {
     g_backlashSteps = config.backlashSteps;
     g_reversalWeight = config.reversalWeight;
   }
+  // The room (9 Nov 2026): its effect learned from every shot on the grinder with a reading, and
+  // applied when it stands clear of zero and the room now is known.
+  {
+    g_store.loadRooms(scan.roomIds, scan.roomCount, scan.roomC);
+    for (size_t j = 0; j < scan.roomCount; ++j) scan.rooms[j].roomC = scan.roomC[j];
+    for (size_t i = 0; i < count; ++i) {
+      for (size_t j = 0; j < scan.roomCount; ++j) {
+        if (scan.roomIds[j] == scan.shotIds[i]) {
+          scan.shots[i].roomC = scan.roomC[j];
+          break;
+        }
+      }
+    }
+    g_roomFit = bbw::grindRoomEffect(scan.rooms, scan.roomCount);
+    g_adviceRoomC = roomEffectiveC();
+    if (g_roomFit.used && !bbw::grindRoomOff(s) && !std::isnan(g_adviceRoomC)) {
+      config.roomSPerC = g_roomFit.sPerC;
+      config.roomNowC = g_adviceRoomC;
+    }
+  }
   g_grindAdvice = bbw::adviseGrindRated(shots, count, recipe.grindUm, recipe.targetTimeS, config,
                                         s.grindRatedTarget);
   if (scan.newestSeen && scan.newestSetting == recipe.grindUm) {
@@ -2907,6 +2987,11 @@ bbw::GrindAdvice grindAdvice() {
 bool grindReminderDue() {
   const bbw::GrindAdvice advice = grindAdvice();
   return bbw::grindReminderDue(advice, g_adviceNewestSetting);
+}
+
+bbw::GrindRoomFit grindRoomFit() {
+  grindAdvice();   // up to date
+  return g_roomFit;
 }
 
 // The library's measured ageing rate, from its copy on flash.
@@ -3015,6 +3100,11 @@ void upkeepEvery(bbw::Upkeep job, uint32_t everyShots) {
 
 bool setShotTds(uint32_t shotId, uint16_t tdsX100) {
   return g_store.setShotTds(shotId, tdsX100 > 2500 ? 0 : tdsX100);
+}
+
+bool setShotRoom(uint32_t shotId, float roomC) {
+  g_grindAdviceStale = true;  // the room steers the advice (bbw::grindRoomEffect)
+  return g_store.setShotRoom(shotId, roomC);
 }
 
 bool setShotRating(uint32_t shotId, uint8_t rating, uint8_t taste) {
@@ -3771,6 +3861,16 @@ void diagnostics(JsonObject out) {
   mem["internal_largest"] = memory.internalLargest;
   mem["psram_total"] = memory.psramTotal;
   mem["psram_free"] = memory.psramFree;
+  // What was running at the newest low (platform/RamWatch.h), and the PSRAM switch.
+  if (g_ramLow.uptimeS) {
+    char jobs[96];
+    bbw::ramJobNames(g_ramLow.jobs, jobs, sizeof(jobs));
+    mem["low_during"] = jobs;
+    mem["low_drop"] = g_ramLow.drop;
+    mem["low_at_uptime_s"] = g_ramLow.uptimeS;
+  }
+  mem["small_to_psram"] = g_ramSmallToPsram;
+  mem["small_to_psram_next"] = ramSmallToPsramStored();
 #ifndef BBW_EMULATOR
   JsonObject stacks = out["stack_left"].to<JsonObject>();
   stacks["loop"] = uxTaskGetStackHighWaterMark(nullptr);
@@ -3913,6 +4013,23 @@ void setDiagRelay(const char *url) {
   g_libraryReadSoon = true;
   g_diagRetryAtMs = 0;
   g_diagBackoffMs = 0;
+}
+
+bool ramSmallToPsramStored() {
+  Preferences prefs;
+  if (!prefs.begin("bbw", true)) return false;
+  const bool on = prefs.getBool("small_psram", false);
+  prefs.end();
+  return on;
+}
+
+bool setRamSmallToPsram(bool on) {
+  Preferences prefs;
+  if (!prefs.begin("bbw", false)) return false;
+  prefs.putBool("small_psram", on);
+  prefs.end();
+  LOGI("ram: small allocations to PSRAM %s from the next start-up", on ? "on" : "off");
+  return true;
 }
 
 bool scaleZeroesItself() {
@@ -4346,12 +4463,21 @@ void setup() {
       }
       g_bootCount = boots + 1;
       prefs.putBytes("boots", &g_bootCount, sizeof(g_bootCount));
+      g_ramSmallToPsram = prefs.getBool("small_psram", false);
+      // The room's slow temperature as last saved; roomEffectiveUpdate starts it again if it is old.
+      g_roomEff.c = prefs.getFloat("room_c", NAN);
+      g_roomEff.epochS = prefs.getUInt("room_at", 0);
       prefs.end();
     }
+    if (g_ramSmallToPsram) bbw::smallAllocsToPsram();
   }
   // The first line kept: what is running, and why it started. After a crash
   // or a watchdog reset this is the line to look for in the Logs page.
   LOGI("boot: firmware %s (built %s), reset reason: %s", BBW_VERSION, BBW_BUILT, resetReasonText());
+  if (g_ramSmallToPsram) {
+    LOGI("ram: allocations over %u bytes go to PSRAM (switched on in diagnostics)",
+         static_cast<unsigned>(bbw::SMALL_TO_PSRAM_LIMIT));
+  }
 
   g_settings = g_store.loadSettings();
   g_store.loadLibrary(g_library);
@@ -4549,15 +4675,55 @@ bbw::AmbientReading ambient() {
   return g_ambient;
 }
 
+// NAN when not known, or when no reading has come in for ROOM_STALE_S (the room may have changed).
+float roomEffectiveC() {
+  constexpr uint32_t ROOM_STALE_S = 3u * 3600u;
+  const uint32_t now = epochNow();
+  Lock lock;
+  if (std::isnan(g_roomEff.c) || g_roomEff.epochS == 0 || now < g_roomEff.epochS ||
+      now - g_roomEff.epochS > ROOM_STALE_S) {
+    return NAN;
+  }
+  return g_roomEff.c;
+}
+
+// A temperature reading taken in (loop task: a push to the web server, or the Home Assistant pull).
+// The slow figure is kept across a restart (saved hourly), and a move of ROOM_ADVICE_STEP_C from
+// the figure behind the current advice asks for new advice.
+void noteRoomReading(float tempC, uint32_t epochS) {
+  bbw::RoomEffective now;
+  {
+    Lock lock;
+    bbw::roomEffectiveUpdate(g_roomEff, tempC, epochS);
+    now = g_roomEff;
+  }
+  if (std::isnan(now.c)) return;
+  if (std::isnan(g_adviceRoomC) || fabsf(now.c - g_adviceRoomC) >= ROOM_ADVICE_STEP_C) g_grindAdviceStale = true;
+  static uint32_t savedEpochS = 0;
+  if (now.epochS - savedEpochS >= 3600u) {
+    savedEpochS = now.epochS;
+    Preferences prefs;
+    if (prefs.begin("bbw", false)) {
+      prefs.putFloat("room_c", now.c);
+      prefs.putUInt("room_at", now.epochS);
+      prefs.end();
+    }
+  }
+}
+
 bool pushAmbient(float rhPct, float tempC) {
   const bool rh = bbw::ambientRhOk(rhPct), temp = bbw::ambientTempOk(tempC);
   if (!rh && !temp) return false;
-  Lock lock;
-  g_ambient.rhPct = rh ? rhPct : NAN;
-  g_ambient.tempC = temp ? tempC : NAN;
-  g_ambient.epochS = epochNow();
-  g_ambient.atMs = millis();
-  g_ambient.source = bbw::AmbientSource::PUSHED;
+  uint32_t epochS;
+  {
+    Lock lock;
+    g_ambient.rhPct = rh ? rhPct : NAN;
+    g_ambient.tempC = temp ? tempC : NAN;
+    g_ambient.epochS = epochS = epochNow();
+    g_ambient.atMs = millis();
+    g_ambient.source = bbw::AmbientSource::PUSHED;
+  }
+  if (temp) noteRoomReading(tempC, epochS);
   return true;
 }
 
@@ -4589,6 +4755,7 @@ bool haReadNow(bbw::AmbientReading &out, char *problem, size_t size) {
       g_ambient = out;
     }
   }
+  if (bbw::ambientTempOk(temp)) noteRoomReading(temp, out.epochS);
   return true;
 }
 
@@ -4783,8 +4950,14 @@ void homeAssistantService(bool idle) {
 }
 
 void loop() {
-  ui::loop();
-  web::loop();
+  {
+    bbw::RamJobScope job(bbw::RAM_UI);
+    ui::loop();
+  }
+  {
+    bbw::RamJobScope job(bbw::RAM_WEB);
+    web::loop();
+  }
   handleButton();
   handleSerial();
   logLoop();
@@ -4826,6 +4999,7 @@ void loop() {
     }
   }
   if (haveShot) {
+    bbw::RamJobScope saving(bbw::RAM_SHOT_SAVE);
     printShot(shot);
     if (bbw::upkeepCountsShot(shot)) {
       Lock lock;
@@ -4890,12 +5064,14 @@ void loop() {
       in.curve = g_curveOut;
       in.curvePoints = curvePoints;
       in.ambient = app::ambient();   // the room, when a reading is fresh (core/HomeAssistant.h)
+      in.roomEffC = app::roomEffectiveC();
       in.nowMs = millis();
       if (!g_store.saveContext(bbw::buildShotContext(in))) {
         LOGW("store: shot %u context not saved", static_cast<unsigned>(shot.id));
       }
     }
     shareAfterShot(shot);
+    bbw::RamJobScope ha(bbw::RAM_HA);
     haAfterShot(shot);
   }
   if (idle && g_maintenanceDirty) {
@@ -4907,17 +5083,39 @@ void loop() {
     }
     g_store.saveMaintenance(snapshot);
   }
-  bbw::logService(idle);
-  bbw::updateService(idle, true);
+  {
+    bbw::RamJobScope job(bbw::RAM_LOG);
+    bbw::logService(idle);
+  }
+  {
+    bbw::RamJobScope job(bbw::RAM_UPDATE);
+    bbw::updateService(idle, true);
+  }
   if (bbw::updateStatus().phase == bbw::UpdatePhase::INSTALLED) {
     // the update task restarts the controller itself in a moment
   }
-  shareSendOne(idle);
-  diagService(idle);
-  shareReadStatus(idle);
-  libraryRefresh(idle);
-  subscriptionsService(idle);
-  homeAssistantService(idle);
+  {
+    bbw::RamJobScope job(bbw::RAM_SHARE);
+    shareSendOne(idle);
+  }
+  {
+    bbw::RamJobScope job(bbw::RAM_DIAG);
+    diagService(idle);
+  }
+  {
+    bbw::RamJobScope job(bbw::RAM_SHARE);
+    shareReadStatus(idle);
+    libraryRefresh(idle);
+  }
+  {
+    bbw::RamJobScope job(bbw::RAM_SUBS);
+    subscriptionsService(idle);
+  }
+  {
+    bbw::RamJobScope job(bbw::RAM_HA);
+    homeAssistantService(idle);
+  }
+  ramWatch();
   if (saveSettings) g_store.saveSettings(snapshot);
   if (saveLibrary && !g_store.saveLibrary((*g_librarySaving))) LOGW("store: library not saved");
   if (g_ble.takePairingDirty()) g_store.savePairing(g_ble.pairing());

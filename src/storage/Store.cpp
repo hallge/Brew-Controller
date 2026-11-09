@@ -449,17 +449,21 @@ void Store::removeCurve(uint32_t id) {
   if (bbw::fileExists(path)) LittleFS.remove(path);
 }
 
-// A version 1 context file (64-byte slots) rewritten as version 2: each slot keeps every byte it
-// had, and the room reading added at the end is "not known". false: not a version 1 file, or the
-// rewrite failed (the old file is then kept as it was).
-bool Store::convertContextsV1() {
+// An older context file (version 1, 64-byte slots; version 2, 72) rewritten as the current version:
+// each slot keeps every byte it had, and the fields added since are "not known". false: not an older
+// file, or the rewrite failed (the old file is then kept as it was).
+bool Store::convertContextsOld() {
   File in = LittleFS.open(CONTEXT_PATH, "r");
   ContextHeader old = {};
-  const bool v1 = in && in.read(reinterpret_cast<uint8_t *>(&old), sizeof(old)) == sizeof(old) &&
-                  old.magic == CONTEXT_MAGIC && old.version == bbw::SHOT_CONTEXT_VERSION_V1 &&
-                  old.recordSize == bbw::SHOT_CONTEXT_V1_SIZE && old.capacity == HISTORY_CAPACITY &&
-                  in.size() == sizeof(old) + HISTORY_CAPACITY * bbw::SHOT_CONTEXT_V1_SIZE;
-  if (!v1) {
+  const bool read = in && in.read(reinterpret_cast<uint8_t *>(&old), sizeof(old)) == sizeof(old) &&
+                    old.magic == CONTEXT_MAGIC && old.capacity == HISTORY_CAPACITY;
+  const size_t oldSize = !read ? 0
+                         : old.version == bbw::SHOT_CONTEXT_VERSION_V1 && old.recordSize == bbw::SHOT_CONTEXT_V1_SIZE
+                             ? bbw::SHOT_CONTEXT_V1_SIZE
+                         : old.version == bbw::SHOT_CONTEXT_VERSION_V2 && old.recordSize == bbw::SHOT_CONTEXT_V2_SIZE
+                             ? bbw::SHOT_CONTEXT_V2_SIZE
+                             : 0;
+  if (!oldSize || in.size() != sizeof(old) + HISTORY_CAPACITY * oldSize) {
     if (in) in.close();
     return false;
   }
@@ -475,7 +479,7 @@ bool Store::convertContextsV1() {
   uint32_t kept = 0;
   for (uint32_t i = 0; ok && i < HISTORY_CAPACITY; ++i) {
     ShotContext c;   // the new fields: not known
-    ok = in.read(reinterpret_cast<uint8_t *>(&c), bbw::SHOT_CONTEXT_V1_SIZE) == bbw::SHOT_CONTEXT_V1_SIZE &&
+    ok = in.read(reinterpret_cast<uint8_t *>(&c), oldSize) == oldSize &&
          out.write(reinterpret_cast<const uint8_t *>(&c), sizeof(c)) == sizeof(c);
     if (ok && c.shotId) ++kept;
   }
@@ -486,7 +490,8 @@ bool Store::convertContextsV1() {
     LOGW("store: shot contexts could not be converted");
     return false;
   }
-  LOGI("store: %u shot contexts converted to version 2", static_cast<unsigned>(kept));
+  LOGI("store: %u shot contexts converted from version %u to %u", static_cast<unsigned>(kept),
+       static_cast<unsigned>(old.version), static_cast<unsigned>(SHOT_CONTEXT_VERSION));
   return true;
 }
 
@@ -501,7 +506,7 @@ bool Store::prepareContexts() {
                     file.size() == sizeof(header) + HISTORY_CAPACITY * sizeof(ShotContext);
     if (file) file.close();
     if (ok) return true;
-    if (convertContextsV1()) return true;
+    if (convertContextsOld()) return true;
     LittleFS.remove(CONTEXT_PATH);  // another layout: start again (only recorded data is lost)
   }
   File file = LittleFS.open(CONTEXT_PATH, "w");
@@ -739,6 +744,38 @@ bool Store::setShotPrep(uint32_t id, uint16_t doseDg, bool purged, bool uneven) 
   }
   if (!applyShotPrep(context, doseDg, purged, uneven)) return false;
   return saveContext(context);
+}
+
+bool Store::setShotRoom(uint32_t id, float roomC) {
+  if (!fsOk_ || id == 0 || id >= header_.nextId) return false;
+  if (header_.nextId > HISTORY_CAPACITY && id < header_.nextId - HISTORY_CAPACITY) return false;  // left the history
+  ShotContext context;
+  if (!loadContext(id, context)) {
+    context = ShotContext();
+    context.shotId = id;
+    context.engineVersion = 0;   // made afterwards
+  }
+  if (!applyShotRoom(context, roomC)) return false;
+  return saveContext(context);
+}
+
+void Store::loadRooms(const uint32_t *ids, size_t count, float *roomC) {
+  for (size_t i = 0; i < count; ++i) roomC[i] = NAN;
+  if (!fsOk_ || !ids || count == 0 || !bbw::fileExists(CONTEXT_PATH)) return;
+  File file = LittleFS.open(CONTEXT_PATH, "r");
+  if (!file) return;
+  ContextHeader header = {};
+  const bool ok = file.read(reinterpret_cast<uint8_t *>(&header), sizeof(header)) == sizeof(header) &&
+                  header.magic == CONTEXT_MAGIC && header.version == SHOT_CONTEXT_VERSION &&
+                  header.recordSize == sizeof(ShotContext) && header.capacity == HISTORY_CAPACITY;
+  for (size_t i = 0; ok && i < count; ++i) {
+    if (ids[i] == 0) continue;
+    ShotContext c;
+    const size_t offset = sizeof(ContextHeader) + (ids[i] % HISTORY_CAPACITY) * sizeof(ShotContext);
+    if (!file.seek(offset) || file.read(reinterpret_cast<uint8_t *>(&c), sizeof(c)) != sizeof(c)) break;
+    if (c.shotId == ids[i] && c.roomEffX10 != bbw::AMBIENT_NONE_X10) roomC[i] = c.roomEffX10 / 10.0f;
+  }
+  file.close();
 }
 
 bool Store::loadContext(uint32_t id, ShotContext &out) {

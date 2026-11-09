@@ -80,6 +80,30 @@ inline int16_t ambientX10(float v) {
 inline bool ambientRhOk(float rh) { return !std::isnan(rh) && rh >= 0.0f && rh <= 100.0f; }
 inline bool ambientTempOk(float c) { return !std::isnan(c) && c >= -40.0f && c <= 70.0f; }
 
+// The room's slow temperature (9 Nov 2026): what the beans and the grinder have taken on. A running
+// average of the readings with a 12 h time constant. On the board's real shots (Oct-Nov 2026) the
+// room's mean over the 8-24 h before a shot told its time better than the reading at the shot.
+constexpr float ROOM_EFF_TAU_S = 12.0f * 3600.0f;
+struct RoomEffective {
+  float c = NAN;          // degrees C; NAN until the first reading
+  uint32_t epochS = 0;    // of the last reading taken in
+};
+// One reading. Older than the last, or without a clock: left out. After a gap of more than two
+// time constants the old figure says nothing any more and the reading starts it again.
+inline void roomEffectiveUpdate(RoomEffective &r, float tempC, uint32_t epochS) {
+  if (!ambientTempOk(tempC) || epochS == 0) return;
+  if (std::isnan(r.c) || r.epochS == 0 || epochS - r.epochS > static_cast<uint32_t>(2.0f * ROOM_EFF_TAU_S)) {
+    if (!std::isnan(r.c) && r.epochS != 0 && epochS <= r.epochS) return;
+    r.c = tempC;
+    r.epochS = epochS;
+    return;
+  }
+  if (epochS <= r.epochS) return;
+  const float w = 1.0f - expf(-static_cast<float>(epochS - r.epochS) / ROOM_EFF_TAU_S);
+  r.c += w * (tempC - r.c);
+  r.epochS = epochS;
+}
+
 // A Home Assistant entity id: domain.object_id, lower-case letters, digits and underscores.
 inline bool haEntityIdOk(const char *id) {
   if (!id || !id[0] || strlen(id) >= HA_ENTITY_LEN) return false;

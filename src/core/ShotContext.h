@@ -39,9 +39,12 @@ namespace bbw {
 
 // 2 (3 Nov 2026): the room's humidity and temperature added at the end; a version 1 file is
 // converted slot by slot (Store::prepareContexts), the new fields "not known".
-constexpr uint8_t SHOT_CONTEXT_VERSION = 2;
+// 3 (9 Nov 2026): the room's slow temperature (roomEffectiveUpdate), which the grind advice reads.
+constexpr uint8_t SHOT_CONTEXT_VERSION = 3;
 constexpr uint8_t SHOT_CONTEXT_VERSION_V1 = 1;
+constexpr uint8_t SHOT_CONTEXT_VERSION_V2 = 2;
 constexpr size_t SHOT_CONTEXT_V1_SIZE = 64;
+constexpr size_t SHOT_CONTEXT_V2_SIZE = 72;
 // Bumped whenever the advice or start rules change in a way that would change a recorded result.
 constexpr uint8_t SHOT_ENGINE_VERSION = 1;
 
@@ -107,8 +110,13 @@ struct ShotContext {
   uint8_t ambientSource = 0;                  // AmbientSource
   uint8_t pad1 = 0;
   uint16_t ambientAgeS = 0;                   // how old the reading was at the shot
+  // Version 3: the room's slow temperature at the shot, tenths of a degree C (12 h average,
+  // roomEffectiveUpdate); AMBIENT_NONE_X10: not known. Steers the grind advice (grindRoomEffect).
+  int16_t roomEffX10 = AMBIENT_NONE_X10;
+  int16_t pad2 = 0;
 };
 static_assert(offsetof(ShotContext, ambientRhX10) == SHOT_CONTEXT_V1_SIZE, "version 1 is the start of version 2");
+static_assert(offsetof(ShotContext, roomEffX10) == SHOT_CONTEXT_V2_SIZE, "version 2 is the start of version 3");
 
 static_assert(sizeof(ShotContext) % 4 == 0, "ShotContext must not need padding at its end");
 
@@ -165,7 +173,20 @@ struct ShotContextInputs {
   size_t curvePoints = 0;
   AmbientReading ambient;               // the room's latest reading
   uint32_t nowMs = 0;                   // millis() at the shot, to judge its age
+  float roomEffC = NAN;                 // the room's slow temperature (roomEffectiveUpdate); NAN not known
 };
+
+// The room's slow temperature for a shot, set afterwards (backfilled from Home Assistant's history).
+// false: not a plausible temperature; nothing changed. NAN clears it.
+inline bool applyShotRoom(ShotContext &c, float roomC) {
+  if (std::isnan(roomC)) {
+    c.roomEffX10 = AMBIENT_NONE_X10;
+    return true;
+  }
+  if (!ambientTempOk(roomC)) return false;
+  c.roomEffX10 = ambientX10(roomC);
+  return true;
+}
 
 // What the owner says about a shot's preparation afterwards: the dose they weighed (0 = not
 // weighed), whether the grinder was purged first, and whether the flow looked uneven. false: a
@@ -234,6 +255,7 @@ inline ShotContext buildShotContext(const ShotContextInputs &in) {
     const uint32_t age = (in.nowMs - in.ambient.atMs) / 1000u;
     c.ambientAgeS = static_cast<uint16_t>(age > 0xFFFF ? 0xFFFF : age);
   }
+  if (ambientTempOk(in.roomEffC)) c.roomEffX10 = ambientX10(in.roomEffC);
   return c;
 }
 

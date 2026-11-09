@@ -466,8 +466,14 @@ struct Settings {
   // Grind advice sized by its confidence (core/GrindAdvisor.h applyAdviceConfidence) unless this is
   // set. Stored the other way round so that a record saved before it existed reads 0: on.
   bool grindConfidenceOff = false;
+  // The room's temperature taken into the grind advice (core/GrindAdvisor.h grindRoomEffect) unless
+  // this holds GRIND_ROOM_OFF (9 Nov 2026). A marker, not a bool: it sits where an older record had
+  // padding, and whatever that held must read as on.
+  uint8_t grindRoomMark = 0;
 };
 constexpr uint8_t WEB_PANELS_CHOSEN = 0x5A;
+constexpr uint8_t GRIND_ROOM_OFF = 0xA5;
+inline bool grindRoomOff(const Settings &s) { return s.grindRoomMark == GRIND_ROOM_OFF; }
 
 // The web page's optional panels: hidden unless the owner turns them on in Setup.
 enum WebPanel : uint16_t {

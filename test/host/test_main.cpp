@@ -34,6 +34,7 @@
 #include "core/TasteProfile.h"
 #include "core/Telemetry.h"
 #include "core/TimeZone.h"
+#include "platform/RamWatch.h"
 #include "core/BackupFormat.h"
 #include <vector>
 
@@ -2190,6 +2191,234 @@ static void testPowerAutoOffWaits() {
   CHECK(power.request(true, now, PowerBy::SCHEDULE));
   power.tick(now += PowerControl::CONNECT_TIMEOUT_MS + 10, 0, true, bot);
   CHECK(!power.wantsLink() && power.lastOutcome() == PowerControl::Outcome::BOT_UNREACHABLE);
+}
+
+// 9 Nov 2026: the room's temperature in the grind advice (core/GrindAdvisor.h grindRoomEffect).
+static void testGrindRoom() {
+  printf("grind advice: the room's temperature\n");
+  // The slow figure: 12 h time constant, a long gap starts it again, an older reading is left out.
+  {
+    RoomEffective r;
+    roomEffectiveUpdate(r, NAN, 1000);
+    CHECK(std::isnan(r.c));
+    roomEffectiveUpdate(r, 20.0f, 1000);
+    CHECK(r.c == 20.0f && r.epochS == 1000);
+    uint32_t t = 1000;
+    for (int i = 0; i < 144; ++i) roomEffectiveUpdate(r, 14.0f, t += 300);   // 12 h at 14 C
+    CHECK_NEAR(r.c, 14.0f + 6.0f * expf(-1.0f), 0.05f);
+    roomEffectiveUpdate(r, 30.0f, t - 600);                                  // older: left out
+    CHECK_NEAR(r.c, 14.0f + 6.0f * expf(-1.0f), 0.05f);
+    roomEffectiveUpdate(r, 25.0f, t + 25 * 3600);                            // a day without readings
+    CHECK(r.c == 25.0f);
+  }
+  // The shot's context keeps it; a backfill sets or clears it.
+  {
+    ShotRecord shot;
+    shot.id = 9;
+    ShotContextInputs in;
+    in.shot = &shot;
+    in.roomEffC = 18.36f;
+    CHECK(buildShotContext(in).roomEffX10 == 184);
+    in.roomEffC = NAN;
+    CHECK(buildShotContext(in).roomEffX10 == AMBIENT_NONE_X10);
+    ShotContext c;
+    CHECK(applyShotRoom(c, 17.04f) && c.roomEffX10 == 170);
+    CHECK(!applyShotRoom(c, 99.0f) && c.roomEffX10 == 170);
+    CHECK(applyShotRoom(c, NAN) && c.roomEffX10 == AMBIENT_NONE_X10);
+  }
+  // Learning it: a synthetic grinder, time = base - 0.3 s/um - 3 s/C, with a little noise.
+  {
+    RoomShot shots[30];
+    size_t n = 0;
+    const float rooms[] = {17.0f, 21.5f, 18.5f, 23.0f, 16.5f, 20.0f, 19.0f, 22.0f, 17.5f, 20.5f};
+    for (int g = 0; g < 3; ++g) {
+      for (int i = 0; i < 10; ++i) {
+        RoomShot &s = shots[n++];
+        s.group = static_cast<uint16_t>(g + 1);
+        s.setting = 60.0f + 4.0f * static_cast<float>((i * 3 + g) % 7);
+        s.roomC = rooms[(i + g) % 10];
+        const float noise = 0.8f * sinf(static_cast<float>(n) * 2.1f);
+        s.timeS = 120.0f + 5.0f * g - 0.3f * s.setting - 3.0f * s.roomC + noise;
+      }
+    }
+    const GrindRoomFit fit = grindRoomEffect(shots, n);
+    printf("  synthetic: %.2f s/C (se %.2f), %u shots, span %.1f C, used %d\n", fit.sPerC, fit.se,
+           static_cast<unsigned>(fit.shots), fit.spanC, fit.used ? 1 : 0);
+    CHECK(fit.used && fit.shots == 30 && fit.spanC >= 6.0f);
+    CHECK(fit.sPerC > -4.0f && fit.sPerC < -2.0f && fit.se > 0.0f && fit.se < 0.5f);
+    // Too few shots, too little span, or warmer-is-slower: not used.
+    CHECK(!grindRoomEffect(shots, 5).used);
+    RoomShot narrow[30];
+    for (size_t i = 0; i < n; ++i) {
+      narrow[i] = shots[i];
+      narrow[i].roomC = 19.0f + 0.1f * static_cast<float>(i % 10);
+    }
+    CHECK(!grindRoomEffect(narrow, n).used && grindRoomEffect(narrow, n).spanC < 2.0f);
+    RoomShot wrong[30];
+    for (size_t i = 0; i < n; ++i) {
+      wrong[i] = shots[i];
+      wrong[i].timeS += 6.0f * shots[i].roomC;   // now +3 s per degree
+    }
+    const GrindRoomFit w = grindRoomEffect(wrong, n);
+    CHECK(!w.used && w.sPerC > 0.0f);
+    // Readings missing: those shots are left out.
+    RoomShot some[30];
+    for (size_t i = 0; i < n; ++i) {
+      some[i] = shots[i];
+      if (i % 2) some[i].roomC = NAN;
+    }
+    CHECK(grindRoomEffect(some, n).shots == 15);
+  }
+  // The board's real shots (13 Oct - 9 Nov 2026) with Home Assistant's room means: about -3 s/C.
+  {
+    struct Real { uint16_t group; float setting, timeS, roomC; };
+    const Real real[] = {
+        {1, 59, 42.26f, 18.2f}, {1, 70, 40.62f, 17.9f}, {1, 85, 34.42f, 18.0f},
+        {2, 100, 28.22f, 17.9f}, {2, 98, 25.28f, 18.6f}, {2, 78, 26.94f, 18.6f}, {2, 63, 30.32f, 18.5f},
+        {2, 64, 27.56f, 18.8f}, {2, 64, 30.12f, 18.8f}, {2, 64, 35.74f, 19.0f}, {2, 64, 34.08f, 18.7f},
+        {2, 73, 32.53f, 18.7f}, {2, 76, 30.67f, 18.8f}, {2, 76, 33.08f, 18.7f}, {2, 77, 32.48f, 19.5f},
+        {2, 77, 33.04f, 19.5f},
+        {3, 95, 27.56f, 19.2f}, {3, 96, 20.76f, 19.3f}, {3, 76, 25.64f, 19.0f}, {3, 59, 32.78f, 18.4f},
+        {3, 68, 41.46f, 19.5f}, {3, 74, 27.70f, 21.3f}, {3, 74, 24.50f, 22.4f}, {3, 74, 17.62f, 22.0f},
+        {3, 54, 35.98f, 19.7f}, {3, 68, 44.34f, 17.6f}, {3, 68, 47.10f, 17.4f}};
+    RoomShot shots[sizeof(real) / sizeof(real[0])];
+    size_t n = 0;
+    for (const Real &x : real) shots[n++] = {x.timeS, x.setting, x.roomC, x.group};
+    const GrindRoomFit fit = grindRoomEffect(shots, n);
+    printf("  real shots: %.2f s/C (se %.2f), %u shots, span %.1f C, used %d\n", fit.sPerC, fit.se,
+           static_cast<unsigned>(fit.shots), fit.spanC, fit.used ? 1 : 0);
+    CHECK(fit.used && fit.sPerC > -4.5f && fit.sPerC < -1.5f);
+  }
+  // Applying it: two shots at 70 um ran 30 s (target 29) in a 20 C room. The room is 17 C now.
+  {
+    GrindShot shots[2];
+    for (int i = 0; i < 2; ++i) {
+      shots[i].timeS = 30.0f;
+      shots[i].grindUm = 70;
+      shots[i].epochS = 1793800000u - static_cast<uint32_t>(i) * 86400u;
+      shots[i].roomC = 20.0f;
+    }
+    GrindConfig config;
+    const GrindAdvice plain = adviseGrind(shots, 2, 70, 29.0f, config);
+    CHECK(plain.action == GrindAction::HOLD && plain.roomShiftS == 0.0f);
+    config.roomSPerC = -3.0f;
+    config.roomNowC = 17.0f;
+    const GrindAdvice roomed = adviseGrind(shots, 2, 70, 29.0f, config);
+    // +9 s, capped at 3 tolerances (6 s): counted as 36 s, so coarser.
+    CHECK(roomed.action == GrindAction::COARSER && roomed.suggestedUm > 70);
+    CHECK_NEAR(roomed.roomShiftS, 6.0f, 0.01f);
+    CHECK(roomed.roomSPerC == -3.0f && roomed.roomNowC == 17.0f);
+    // Warmer now: counted as faster.
+    config.roomNowC = 21.0f;
+    CHECK_NEAR(adviseGrind(shots, 2, 70, 29.0f, config).roomShiftS, -3.0f, 0.01f);
+    // The room now not known, or the shots' rooms not known: as without it.
+    config.roomNowC = NAN;
+    CHECK(adviseGrind(shots, 2, 70, 29.0f, config).action == GrindAction::HOLD);
+    config.roomNowC = 17.0f;
+    GrindShot bare[2] = {shots[0], shots[1]};
+    bare[0].roomC = bare[1].roomC = NAN;
+    const GrindAdvice none = adviseGrind(bare, 2, 70, 29.0f, config);
+    CHECK(none.action == plain.action && none.suggestedUm == plain.suggestedUm && none.roomShiftS == 0.0f);
+  }
+  // Off (k 0), the advice is the same, field by field, with the drift and learning on.
+  {
+    GrindShot shots[8];
+    const uint16_t settings[] = {74, 74, 74, 68, 68, 59, 76, 76};
+    const float times[] = {17.6f, 24.5f, 27.7f, 41.5f, 40.0f, 32.8f, 25.6f, 25.6f};
+    for (int i = 0; i < 8; ++i) {
+      shots[i].timeS = times[i];
+      shots[i].grindUm = settings[i];
+      shots[i].epochS = 1793975109u - static_cast<uint32_t>(i) * 86400u;
+      shots[i].firstDropS = 12.0f;
+      shots[i].roomC = 18.0f + 0.5f * static_cast<float>(i);
+    }
+    GrindConfig config;
+    config.priorCv = 0.4f;
+    config.learnDrift = true;
+    config.firstDropRefS = 13.0f;
+    GrindShot bare[8];
+    for (int i = 0; i < 8; ++i) {
+      bare[i] = shots[i];
+      bare[i].roomC = NAN;
+    }
+    const GrindAdvice a = adviseGrind(shots, 8, 74, 29.0f, config);
+    const GrindAdvice b = adviseGrind(bare, 8, 74, 29.0f, config);
+    CHECK(a.action == b.action && a.suggestedUm == b.suggestedUm && a.deltaUm == b.deltaUm);
+    CHECK(a.umPerS == b.umPerS && a.shotsUsed == b.shotsUsed && a.averageTimeS == b.averageTimeS);
+    CHECK(a.driftSPerDay == b.driftSPerDay && a.sensitivityCv == b.sensitivityCv && a.roomShiftS == 0.0f);
+    // On: it moves the newest shot by k x (now - then), within the cap, and the drift still runs.
+    config.roomSPerC = -3.0f;
+    config.roomNowC = 17.0f;
+    const GrindAdvice c = adviseGrind(shots, 8, 74, 29.0f, config);
+    CHECK_NEAR(c.roomShiftS, 3.0f, 0.01f);
+    CHECK(c.averageTimeS > a.averageTimeS);
+  }
+}
+
+// 9 Nov 2026: a new chip RAM low is put down to the jobs seen running since the sample before.
+static void testRamWatch() {
+  printf("ram watch: new lows and the jobs behind them\n");
+  RamLow low;
+  CHECK(!ramWatchSample(low, 50000, 1) && low.lowest == 50000);   // the first sample sets the mark
+  {
+    RamJobScope web(RAM_WEB);
+    RamJobScope ha(RAM_HA);
+  }
+  CHECK(ramWatchSample(low, 42000, 5));
+  CHECK(low.lowest == 42000 && low.drop == 8000 && low.uptimeS == 5 && low.jobs == (RAM_WEB | RAM_HA));
+  char names[64];
+  ramJobNames(low.jobs, names, sizeof(names));
+  CHECK(strcmp(names, "web+ha") == 0);
+  CHECK(!ramWatchSample(low, 42000, 6));          // no new low
+  CHECK(!ramWatchSample(low, 45000, 7));          // the low never goes back up
+  // A job still running is counted for the next low too.
+  ramJobBegin(RAM_BLE_BOT);
+  CHECK(!ramWatchSample(low, 42000, 8));
+  CHECK(ramWatchSample(low, 41000, 9) && low.jobs == RAM_BLE_BOT);
+  ramJobEnd(RAM_BLE_BOT);
+  CHECK(!ramWatchSample(low, 41000, 10));
+  CHECK(ramWatchSample(low, 40000, 11) && low.jobs == 0);
+  ramJobNames(low.jobs, names, sizeof(names));
+  CHECK(strcmp(names, "none") == 0);
+}
+
+// 9 Nov 2026: the brew bot is linked from the machine's power-on until the first shot.
+static void testBotWarmupHold() {
+  printf("power bot: brew bot held from power-on until a shot\n");
+  constexpr uint32_t HOLD = 4UL * 3600UL * 1000UL;
+  PusherConfig config;
+  strcpy(config.powerAddress, "aa:bb:cc:dd:ee:ff");
+  PowerControl power;
+  power.begin(&config);
+  FakeBot bot;
+  uint32_t now = 1000;
+  CHECK(!power.warmingForShot(now, HOLD));               // not known: nothing held
+  power.believe(PowerBelief::OFF);
+  CHECK(!power.warmingForShot(now, HOLD));
+  // Switched on by a press: held.
+  CHECK(power.request(true, now));
+  bot.up = true;
+  power.tick(now += 10, 0, true, bot);
+  bot.done();
+  power.tick(now += 10, 0, true, bot);
+  CHECK(power.belief() == PowerBelief::ON);
+  CHECK(power.warmingForShot(now, HOLD));
+  CHECK(power.warmingForShot(now + HOLD - 1000, HOLD));
+  CHECK(!power.warmingForShot(now + HOLD + 1000, HOLD));  // never longer than the limit
+  // A shot ran: no longer held.
+  power.noteUse(now += 60000);
+  CHECK(!power.warmingForShot(now, HOLD));
+  // Off, then on again by the owner's word: held again until the next shot.
+  power.believe(PowerBelief::OFF, now += 1000);
+  CHECK(!power.warmingForShot(now, HOLD));
+  power.believe(PowerBelief::ON, now += 1000);
+  CHECK(power.warmingForShot(now, HOLD));
+  power.noteUse(now += 1000);
+  CHECK(!power.warmingForShot(now, HOLD));
+  // A shot that shows a machine believed off to be on: it is on, but the shot has run.
+  power.believe(PowerBelief::OFF, now += 1000);
+  power.noteUse(now += 1000);
+  CHECK(power.belief() == PowerBelief::ON && !power.warmingForShot(now, HOLD));
 }
 
 static void testPowerControl() {
@@ -7996,7 +8225,8 @@ static void testHomeAssistant() {
   mqttStateJson(ms, payload, sizeof(payload));
   CHECK(strncmp(payload, "{\"state\":\"ab\"", 13) == 0);   // a quote cannot break the JSON
   // The room on a shot's context: only a fresh reading, and "not known" otherwise.
-  CHECK(sizeof(ShotContext) == SHOT_CONTEXT_V1_SIZE + 8 && sizeof(ShotContext) % 4 == 0);
+  CHECK(SHOT_CONTEXT_V2_SIZE == SHOT_CONTEXT_V1_SIZE + 8);   // version 2 as it was stored
+  CHECK(sizeof(ShotContext) == SHOT_CONTEXT_V2_SIZE + 4 && sizeof(ShotContext) % 4 == 0);
   ShotRecord shot;
   shot.id = 7;
   ShotContextInputs in;
@@ -8878,6 +9108,9 @@ int main() {
   testPusherDrivers();
   testPusherHold();
   testPowerControl();
+  testBotWarmupHold();
+  testRamWatch();
+  testGrindRoom();
   testTimeZoneRule();
   testGrindReminder();
   testPowerAutoOffWaits();

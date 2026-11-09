@@ -166,6 +166,7 @@ inline void shotContextToJson(const ShotContext &c, JsonObject o) {
     o["ambient_source"] = ambientSourceName(static_cast<AmbientSource>(c.ambientSource));
     o["ambient_age_s"] = c.ambientAgeS;
   }
+  if (c.roomEffX10 != AMBIENT_NONE_X10) o["room_eff_c"] = c.roomEffX10 / 10.0f;
 }
 
 }  // namespace bbw

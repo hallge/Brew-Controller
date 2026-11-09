@@ -101,7 +101,7 @@ void handleStatus() {
   {
     JsonArray caps = doc["capabilities"].to<JsonArray>();
     for (const char *c : {"status_v1", "shots_v1", "shot_data_v1", "shot_csv_v1", "grind_advice_v1",
-                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1", "coffee_taste_v1", "subscriptions_v1", "ambient_v1", "home_assistant_v1"}) {
+                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1", "coffee_taste_v1", "subscriptions_v1", "ambient_v1", "home_assistant_v1", "shot_room_v1", "grind_room_v1"}) {
       caps.add(c);
     }
   }
@@ -195,6 +195,7 @@ void handleGetSettings() {
   doc["shareRatings"] = s.shareRatings;
   doc["grindRatedTarget"] = s.grindRatedTarget;
   doc["grindConfidence"] = !s.grindConfidenceOff;
+  doc["grindRoom"] = !bbw::grindRoomOff(s);
   doc["activeRecipe"] = activePreset;
   doc["maxRecipes"] = bbw::MAX_PRESETS;
   // The controller's list, one flat entry per preset: the form this page's
@@ -300,6 +301,7 @@ void handlePostSettings() {
   s.shareRatings = doc["shareRatings"] | s.shareRatings;
   s.grindRatedTarget = doc["grindRatedTarget"] | s.grindRatedTarget;
   if (!doc["grindConfidence"].isNull()) s.grindConfidenceOff = !(doc["grindConfidence"] | true);
+  if (!doc["grindRoom"].isNull()) s.grindRoomMark = (doc["grindRoom"] | true) ? 0 : bbw::GRIND_ROOM_OFF;
 
   JsonArrayConst recipes = doc["recipes"];
   if (!recipes.isNull() && recipes.size() >= 1) {
@@ -367,6 +369,7 @@ void handleShots() {
         doc["uneven"] = (context.prepFlags & bbw::CTX_PREP_UNEVEN) != 0;
         if (context.ambientRhX10 != bbw::AMBIENT_NONE_X10) doc["ambient_rh_pct"] = context.ambientRhX10 / 10.0f;
         if (context.ambientTempX10 != bbw::AMBIENT_NONE_X10) doc["ambient_temp_c"] = context.ambientTempX10 / 10.0f;
+        if (context.roomEffX10 != bbw::AMBIENT_NONE_X10) doc["room_eff_c"] = context.roomEffX10 / 10.0f;
       }
     }
     String line;
@@ -1409,6 +1412,22 @@ void handleGrind() {
     c["window"] = roundf(a.windowUm * 10.0f) / 10.0f;
     c["scaled"] = a.confidenceScaled;
     c["on"] = !s.grindConfidenceOff;
+  }
+  // The room's temperature (core/GrindAdvisor.h grindRoomEffect, 9 Nov 2026): what was learned on
+  // this grinder, the room now, and how far it moved the newest shot's time in this advice.
+  {
+    const bbw::GrindRoomFit rf = app::grindRoomFit();
+    JsonObject r = doc["room"].to<JsonObject>();
+    r["on"] = !bbw::grindRoomOff(s);
+    r["learned"] = rf.used;
+    r["s_per_c"] = roundf(rf.sPerC * 100.0f) / 100.0f;
+    r["se"] = roundf(rf.se * 100.0f) / 100.0f;
+    r["shots"] = rf.shots;
+    r["span_c"] = roundf(rf.spanC * 10.0f) / 10.0f;
+    const float now = app::roomEffectiveC();
+    if (!std::isnan(now)) r["now_c"] = roundf(now * 10.0f) / 10.0f;
+    r["applied"] = a.roomSPerC < 0.0f;
+    r["shift_s"] = roundf(a.roomShiftS * 10.0f) / 10.0f;
   }
   // No setting for the pair in use: where its newest shot was pulled (a start for the owner).
   if (a.currentUm == 0) doc["last_um"] = app::lastGrindSetting();
@@ -3453,6 +3472,17 @@ void begin() {
     }
     sendOk();
   });
+  // POST /api/shot/room?id=N&c=18.4 : the room's slow temperature at a past shot (backfilled from a
+  // home's history); c empty clears it. The grind advice uses it (core/GrindAdvisor.h grindRoomEffect).
+  server.on("/api/shot/room", HTTP_POST, []() {
+    if (busyBrewing()) return sendError(409, "not while a shot is running");
+    const uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 10);
+    const String c = server.arg("c");
+    const float roomC = c.length() ? static_cast<float>(atof(c.c_str())) : NAN;
+    if (c.length() && !bbw::ambientTempOk(roomC)) return sendError(400, "c must be a temperature in degrees C");
+    if (!app::setShotRoom(id, roomC)) return sendError(404, "shot not found");
+    sendOk();
+  });
   server.on("/api/shot/tds", HTTP_POST, []() {
     if (busyBrewing()) return sendError(409, "not while a shot is running");
     const float tds = static_cast<float>(atof(server.arg("tds").c_str()));   // percent TDS from a refractometer; 0 clears it
@@ -3593,6 +3623,17 @@ void begin() {
       return sendError(409, "Diagnostics are off: turn them on above to send a report");
     }
     sendOk();
+  });
+  // {"small_to_psram": true|false}: stored, and the controller restarts to apply it (never mid-shot).
+  server.on("/api/diagnostics/ram", HTTP_POST, []() {
+    JsonDocument doc;
+    if (deserializeJson(doc, server.arg("plain"))) return sendError(400, "not JSON");
+    if (!doc["small_to_psram"].is<bool>()) return sendError(400, "small_to_psram: true or false");
+    if (busyBrewing()) return sendError(409, "not while a shot is running");
+    if (!app::setRamSmallToPsram(doc["small_to_psram"].as<bool>())) return sendError(500, "not stored");
+    sendOk();
+    restartPending = true;
+    restartAtMs = millis() + 1500;
   });
   server.on("/api/diagnostics/relay", HTTP_POST, []() {
     JsonDocument doc;

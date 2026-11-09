@@ -61,6 +61,17 @@ inline T *bigNew() {
 // setup(), before any connection is opened.
 void tlsUseExternalMemory();
 
+// Every allocation over SMALL_TO_PSRAM_LIMIT bytes from PSRAM, unless it asks for chip RAM (Wi-Fi,
+// Bluetooth and DMA buffers do). The framework sends only those over 4 kB there. Off unless the owner
+// turns it on (POST /api/diagnostics/ram; 9 Nov 2026): it moves memory under code that has never
+// run that way, so it is a switch to try on the board and take back, not a default.
+constexpr size_t SMALL_TO_PSRAM_LIMIT = 256;
+inline void smallAllocsToPsram() {
+#ifndef BBW_EMULATOR
+  heap_caps_malloc_extmem_enable(SMALL_TO_PSRAM_LIMIT);
+#endif
+}
+
 // For the Setup page and the serial log: is there room to spare?
 struct MemoryReport {
   bool known = false;            // false in the emulator

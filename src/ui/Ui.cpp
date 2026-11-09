@@ -1463,12 +1463,18 @@ bool refreshGrindRec() {
 
 void refreshHome(const bbw::LiveStatus &st) {
   const bool ready = st.state == State::READY;
+  // Ready, and the brew bot is wanted (the scale is on) but not linked yet: say so, in amber.
+  const bool botWaking = ready && st.botPaired && !st.botConnected &&
+                         st.machineStyle != static_cast<uint8_t>(bbw::MachineStyle::MANUAL);
   if (!ready) {
     setText(homeStatus, app::scaleResting() ? "SCALE RESTING" : "NO SCALE");
   } else if (!st.botPaired && st.machineStyle != static_cast<uint8_t>(bbw::MachineStyle::MANUAL)) {
     setText(homeStatus, "NO BOT");
   } else if (st.cupRequired && !st.cupPresent) {
     setTextF(homeStatus, "NO CUP  %.1f g", st.weightG);
+  } else if (botWaking) {
+    // BREW still works: the shot starts as soon as the bot answers.
+    setTextF(homeStatus, "WAKING BOT  %.1f g", st.weightG);
   } else {
     setTextF(homeStatus, "READY  %.1f g", st.weightG);
   }
@@ -1482,7 +1488,10 @@ void refreshHome(const bbw::LiveStatus &st) {
     setText(homeScaleBattery, "");
   }
   // Grey: paired and asleep, which is the normal idle state.
-  setDot(homeBotDot, st.botConnected ? COLOR_OK : (st.botPaired ? COLOR_SLEEP : COLOR_BAD));
+  setDot(homeBotDot, st.botConnected ? COLOR_OK
+                     : botWaking    ? COLOR_ACCENT
+                     : st.botPaired ? COLOR_SLEEP
+                                    : COLOR_BAD);
   if (st.botBatteryPercent >= 0) {
     setTextF(homeBotBattery, "%d%%", st.botBatteryPercent);
     setColor(homeBotBattery, st.botBatteryPercent <= 15 ? COLOR_ACCENT : COLOR_DIM);
@@ -1634,7 +1643,7 @@ void refreshBrew(const bbw::LiveStatus &st) {
       break;
     case State::READY_TO_BREW:
       phase = st.botConnected || st.machineStyle == static_cast<uint8_t>(bbw::MachineStyle::MANUAL)
-                  ? "TOUCH KEY\nTO BREW" : "WAKING BOT";
+                  ? "TOUCH KEY\nTO BREW" : "WAKING BOT\nSTARTS WHEN LINKED";
       stopText = "CANCEL";
       break;
     case State::STARTING_SHOT:

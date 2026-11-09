@@ -133,6 +133,7 @@ class PowerControl {
   void noteUse(uint32_t nowMs) {
     cancelAutoOff();
     lastUseMs_ = nowMs ? nowMs : 1;
+    shotSinceOn_ = true;
     if (belief() != PowerBelief::ON) {
       config_->belief = static_cast<uint8_t>(PowerBelief::ON);
       onSinceMs_ = lastUseMs_;
@@ -166,6 +167,13 @@ class PowerControl {
            static_cast<uint32_t>(nowMs - onSinceMs_) < withinMs;
   }
 
+  // Switched on within `withinMs` and no shot run since: warming up for a shot. The brew bot is
+  // linked for this time (9 Nov 2026, the owner's choice): a sleeping SwitchBot advertises only every
+  // 20-30 s, and a Lunar switched on just before brewing left Start waiting up to 30 s for it.
+  bool warmingForShot(uint32_t nowMs, uint32_t withinMs) const {
+    return !shotSinceOn_ && switchedOnWithin(nowMs, withinMs);
+  }
+
   PowerBelief belief() const { return static_cast<PowerBelief>(config_->belief); }
   Job job() const { return job_; }
   Outcome lastOutcome() const { return outcome_; }
@@ -193,7 +201,10 @@ class PowerControl {
   void believe(PowerBelief belief, uint32_t nowMs = 0) {
     if (belief == PowerBelief::ON && nowMs) {
       lastUseMs_ = nowMs;
-      if (config_->belief != static_cast<uint8_t>(belief)) onSinceMs_ = nowMs;
+      if (config_->belief != static_cast<uint8_t>(belief)) {
+        onSinceMs_ = nowMs;
+        shotSinceOn_ = false;
+      }
     }
     if (config_->belief == static_cast<uint8_t>(belief)) return;
     config_->belief = static_cast<uint8_t>(belief);
@@ -269,7 +280,10 @@ class PowerControl {
             } else {
               config_->belief = static_cast<uint8_t>(target_ ? PowerBelief::ON : PowerBelief::OFF);
               dirty_ = true;
-              if (target_) onSinceMs_ = lastUseMs_ = nowMs ? nowMs : 1;
+              if (target_) {
+                onSinceMs_ = lastUseMs_ = nowMs ? nowMs : 1;
+                shotSinceOn_ = false;
+              }
             }
             end(Outcome::DONE);
             break;
@@ -389,6 +403,7 @@ class PowerControl {
   uint16_t autoOffMin_ = 0;
   uint32_t lastUseMs_ = 0;    // last press that switched it on, or shot; 0 until the first tick
   uint32_t onSinceMs_ = 0;    // when it was last switched on; 0: not since start-up
+  bool shotSinceOn_ = false;  // a shot ran since it was last switched on (warmingForShot)
   bool autoOff_ = false;
   bool believedOnByShot_ = false;
   bool skipped_ = false;

@@ -64,6 +64,10 @@ struct GrindConfig {
   bool learnDrift = false;          // learn how fast this coffee drifts, and bring older shots forward
   bool freshBag = false;            // the bag is under GRIND_DRIFT_FRESH_DAYS from roast
   uint32_t cleanEpochS = 0;         // the grinder was last cleaned then; 0 = not known
+  // Added 9 Nov 2026 (grindRoomEffect): seconds of brew time per degree C of the room's slow
+  // temperature (negative: colder is slower), and that temperature now. 0 / NAN: off.
+  float roomSPerC = 0.0f;
+  float roomNowC = NAN;
 };
 
 // Where the sensitivity applied came from.
@@ -96,6 +100,7 @@ struct GrindShot {
   // known; and whether it was the first shot after the dial turned back (grindApproachDirections).
   int8_t dir = 0;
   bool afterReversal = false;
+  float roomC = NAN;        // the room's slow temperature at it (roomEffectiveUpdate); NAN not known
 };
 
 enum class GrindAction : uint8_t {
@@ -282,6 +287,11 @@ struct GrindAdvice {
   float driftSPerDay = 0.0f;       // this coffee's drift at one setting (+ slower), learned; 0: none
   uint8_t driftPairs = 0;          // pairs of shots behind it
   bool newestAfterReversal = false;  // the newest shot was the first after the dial turned back
+  // Added 9 Nov 2026 (GrindConfig::roomSPerC): the room's effect applied, and how far it moved the
+  // newest shot's time (+ counted as slower: the room is colder now than at that shot).
+  float roomSPerC = 0.0f;
+  float roomNowC = NAN;
+  float roomShiftS = 0.0f;
 };
 
 // The grinder cannot go past the ends of its range: a suggestion beyond one is the end itself, and
@@ -1006,6 +1016,122 @@ inline GrindConfig grindConfigForGrinder(const GrindConfig &base, float umPerSte
   return c;
 }
 
+// ------------------------------------------------------------------- room --
+// The room's temperature moves brew time at one setting: colder beans grind finer and run slower.
+// Measured on the board's real shots (Oct-Nov 2026, Home Assistant's history): about -3 s per degree
+// C of the room's slow temperature (roomEffectiveUpdate), well beyond the noise, and the misses of a
+// cold weekend fell from +12 and +15 s to +4 and +8 s with it taken in. Learned on each grinder from
+// all its coffees: within each coffee, bag and recipe, time against setting and room together, so a
+// dial-in that followed the weather is not counted twice. Weighed against k ~ N(0, PRIOR_SD), never
+// positive (warmer is never slower), and used only when the shots behind it span enough of a range
+// and it stands clear of zero. Applied like the drift: every shot's time brought to the room now.
+constexpr float GRIND_ROOM_PRIOR_SD = 3.0f;        // s per degree C
+constexpr float GRIND_ROOM_MIN_S_PER_C = -6.0f;    // the most it is believed
+constexpr size_t GRIND_ROOM_MIN_SHOTS = 6;
+constexpr float GRIND_ROOM_MIN_SPAN_C = 2.0f;
+constexpr float GRIND_ROOM_MIN_Z = 2.0f;           // standard errors from zero
+constexpr float GRIND_ROOM_MAX_TOLERANCES = 3.0f;  // largest correction of one shot, in tolerances
+constexpr float GRIND_ROOM_NOISE_MIN_S = 1.0f;     // the residual noise assumed is never less
+
+struct RoomShot {
+  float timeS = 0.0f;
+  float setting = 0.0f;
+  float roomC = NAN;
+  uint16_t group = 0;   // coffee, bag and recipe
+};
+
+struct GrindRoomFit {
+  bool used = false;      // stands clear of zero: apply sPerC
+  float sPerC = 0.0f;     // as learned (0 when not)
+  float se = 0.0f;
+  uint16_t shots = 0;     // with a room reading, in groups of two or more
+  float spanC = 0.0f;     // coldest to warmest of them
+};
+
+inline GrindRoomFit grindRoomEffect(const RoomShot *shots, size_t count) {
+  GrindRoomFit fit;
+  if (!shots || count < GRIND_ROOM_MIN_SHOTS) return fit;
+  constexpr size_t MAX_GROUPS = 32;
+  uint16_t ids[MAX_GROUPS];
+  double sumT[MAX_GROUPS] = {}, sumS[MAX_GROUPS] = {}, sumR[MAX_GROUPS] = {};
+  uint16_t n[MAX_GROUPS] = {};
+  size_t groups = 0;
+  auto ok = [](const RoomShot &s) { return s.timeS > 0.0f && s.setting > 0.0f && !std::isnan(s.roomC); };
+  auto find = [&](uint16_t id) -> int {
+    for (size_t g = 0; g < groups; ++g) {
+      if (ids[g] == id) return static_cast<int>(g);
+    }
+    if (groups == MAX_GROUPS) return -1;
+    ids[groups] = id;
+    return static_cast<int>(groups++);
+  };
+  for (size_t i = 0; i < count; ++i) {
+    if (!ok(shots[i])) continue;
+    const int g = find(shots[i].group);
+    if (g < 0) continue;
+    sumT[g] += shots[i].timeS;
+    sumS[g] += shots[i].setting;
+    sumR[g] += shots[i].roomC;
+    ++n[g];
+  }
+  // Within each group: deviations from its means.
+  double sss = 0, ssr = 0, srr = 0, sst = 0, srt = 0, stt = 0;
+  float lo = 1e9f, hi = -1e9f;
+  size_t used = 0, usedGroups = 0;
+  for (size_t g = 0; g < groups; ++g) {
+    if (n[g] < 2) continue;
+    ++usedGroups;
+    const double mt = sumT[g] / n[g], ms = sumS[g] / n[g], mr = sumR[g] / n[g];
+    for (size_t i = 0; i < count; ++i) {
+      if (!ok(shots[i]) || shots[i].group != ids[g]) continue;
+      const double dt = shots[i].timeS - mt, ds = shots[i].setting - ms, dr = shots[i].roomC - mr;
+      sss += ds * ds;
+      ssr += ds * dr;
+      srr += dr * dr;
+      sst += ds * dt;
+      srt += dr * dt;
+      stt += dt * dt;
+      if (shots[i].roomC < lo) lo = shots[i].roomC;
+      if (shots[i].roomC > hi) hi = shots[i].roomC;
+      ++used;
+    }
+  }
+  fit.shots = static_cast<uint16_t>(used > 0xFFFF ? 0xFFFF : used);
+  fit.spanC = used ? hi - lo : 0.0f;
+  if (used < GRIND_ROOM_MIN_SHOTS || fit.spanC < GRIND_ROOM_MIN_SPAN_C || !(srr > 0.0)) return fit;
+  // Least squares for the setting's slope b and the room's k; then the noise from what is left; then
+  // k again weighed against its prior (ridge) with that noise. Without spread of settings, k alone.
+  const bool withSetting = sss > 1e-6;
+  auto solve = [&](double lambda, double &b, double &k, double &vk) {
+    const double a = sss, c = srr + lambda, d = ssr;
+    if (withSetting) {
+      const double det = a * c - d * d;
+      if (!(det > 1e-9)) return false;
+      b = (c * sst - d * srt) / det;
+      k = (a * srt - d * sst) / det;
+      vk = a / det;   // times the noise variance
+    } else {
+      b = 0.0;
+      k = srt / c;
+      vk = 1.0 / c;
+    }
+    return true;
+  };
+  double b = 0, k = 0, vk = 0;
+  if (!solve(0.0, b, k, vk)) return fit;
+  const double rss = stt - 2.0 * b * sst - 2.0 * k * srt + b * b * sss + 2.0 * b * k * ssr + k * k * srr;
+  const long dof = static_cast<long>(used) - static_cast<long>(usedGroups) - (withSetting ? 2 : 1);
+  double noise = dof > 0 && rss > 0.0 ? rss / dof : 0.0;
+  if (noise < GRIND_ROOM_NOISE_MIN_S * GRIND_ROOM_NOISE_MIN_S) noise = GRIND_ROOM_NOISE_MIN_S * GRIND_ROOM_NOISE_MIN_S;
+  if (!solve(noise / (GRIND_ROOM_PRIOR_SD * GRIND_ROOM_PRIOR_SD), b, k, vk)) return fit;
+  fit.sPerC = static_cast<float>(k);
+  fit.se = static_cast<float>(sqrt(noise * vk));
+  if (!(k < 0.0) || !(fit.se > 0.0f) || -k < GRIND_ROOM_MIN_Z * fit.se) return fit;
+  if (fit.sPerC < GRIND_ROOM_MIN_S_PER_C) fit.sPerC = GRIND_ROOM_MIN_S_PER_C;
+  fit.used = true;
+  return fit;
+}
+
 // shots: valid shots of one recipe, newest first.
 inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t currentUm,
                                float targetTimeS, const GrindConfig &config) {
@@ -1016,8 +1142,26 @@ inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t cu
   if (currentUm == 0) return advice;
 
   advice.source = static_cast<SensitivitySource>(config.guessSource);
-  // A shot set aside for its first drop teaches nothing about the grind either.
   constexpr size_t LEARN_MAX = 64;
+  // Shots brought forward: to the room now (grindRoomEffect) first, then by the drift (below), both
+  // in this one buffer (the loop task's stack has no room for another).
+  GrindShot forward[LEARN_MAX];
+  if (config.roomSPerC < 0.0f && !std::isnan(config.roomNowC) && count <= LEARN_MAX) {
+    const float cap = GRIND_ROOM_MAX_TOLERANCES * config.toleranceS;
+    for (size_t i = 0; i < count; ++i) {
+      forward[i] = shots[i];
+      if (std::isnan(shots[i].roomC)) continue;
+      float add = config.roomSPerC * (config.roomNowC - shots[i].roomC);
+      if (add > cap) add = cap;
+      if (add < -cap) add = -cap;
+      forward[i].timeS += add;
+      if (i == 0) advice.roomShiftS = add;
+    }
+    shots = forward;
+    advice.roomSPerC = config.roomSPerC;
+    advice.roomNowC = config.roomNowC;
+  }
+  // A shot set aside for its first drop teaches nothing about the grind either.
   GrindShot kept[LEARN_MAX];
   const GrindShot *learnFrom = shots;
   size_t learnCount = count;
@@ -1032,7 +1176,6 @@ inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t cu
   // The coffee's drift (learnDrift): learned with the sensitivity from a first pass, then every
   // older shot brought forward to the newest one's day, and the sensitivity learned again from those,
   // so the drift no longer hides in the slope. The run, the bracket and the average use them too.
-  GrindShot forward[LEARN_MAX];
   uint32_t bracketMaxAgeS = config.bracketMaxAgeS;
   if (config.learnDrift && config.priorCv > 0.0f && count <= LEARN_MAX && count >= 3) {
     float first = config.defaultUmPerS, w0 = 0.0f;
@@ -1057,13 +1200,18 @@ inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t cu
         }
         return o;
       };
+      // The same shots as before left out, decided on their times before the drift (shots may be
+      // this very buffer, after the room).
+      const bool rebuild = learnFrom != shots;
+      bool keep[LEARN_MAX];
+      for (size_t i = 0; rebuild && i < count; ++i) keep[i] = !grindFirstDropOneOff(shots[i], targetTimeS, config);
       for (size_t i = 0; i < count; ++i) forward[i] = bring(shots[i]);
-      if (learnFrom == shots) {
+      if (!rebuild) {
         learnFrom = forward;
-      } else {   // the same shots as before left out (decided on their own times)
+      } else {
         learnCount = 0;
         for (size_t i = 0; i < count; ++i) {
-          if (!grindFirstDropOneOff(shots[i], targetTimeS, config)) kept[learnCount++] = forward[i];
+          if (keep[i]) kept[learnCount++] = forward[i];
         }
       }
       shots = forward;

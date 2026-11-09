@@ -376,6 +376,7 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <label>Shots averaged<input id="grindWindow" type="number" min="1" max="10"></label>
 <label>Ratings<select id="grindRatedTarget"><option value="1">Refine the advice towards the shots I rated 4 or 5 stars, inside its tolerance</option><option value="0">Off: time advice only</option></select></label>
 <label>Confidence<select id="grindConfidence"><option value="1">Size each change by how well past advice landed</option><option value="0">Off: the same size every time</option></select></label>
+<label>Room<select id="grindRoom"><option value="1">Allow for the room’s temperature, once it is learned (needs Home Assistant)</option><option value="0">Off: times as they ran</option></select></label>
 <label><span>Starting guess (<span class="un">&micro;m</span> per s)</span><input id="grindUmPerS" type="number" step="0.5" min="0.5" max="20"></label>
 <label><span>Largest single change (<span class="un">&micro;m</span>)</span><input id="grindMaxStepUm" type="number" min="1" max="100"></label>
 <label>Brew time measured<select id="grindTimeBasis"><option value="0">Total: start press to stop (with pre-infusion)</option><option value="1">Pour: first drops to stop</option></select></label></div>
@@ -697,7 +698,7 @@ else{const x=parseFloat(t.replace(',','.'));if(!isFinite(x)||!/^[\d.,]+$/.test(t
 return v>=1&&v<=2000?v:null};
 const fs=v=>fsn(v)+' '+U;
 let U='µm',S=null,L=null,G=null,SH=[],ST=null,C=-1,R=-1,SEL=0,lastShotId=-1;
-const F=["learningEnabled","learningFactor","adaptiveLearning","minValidWeightG","scaleTimeoutMs","dripObserveMs","minShotTimeMs","noFlowTimeoutS","cupMode","cupMinWeightG","autoStartAfterTare","scaleTimer","requireCup","actuationMode","pressDurationMs","releaseSettleMs","botHoldSeconds","grindToleranceS","grindWindow","grindUmPerS","grindMaxStepUm","grindTimeBasis","grindRatedTarget","grindConfidence","scaleRestMin"];
+const F=["learningEnabled","learningFactor","adaptiveLearning","minValidWeightG","scaleTimeoutMs","dripObserveMs","minShotTimeMs","noFlowTimeoutS","cupMode","cupMinWeightG","autoStartAfterTare","scaleTimer","requireCup","actuationMode","pressDurationMs","releaseSettleMs","botHoldSeconds","grindToleranceS","grindWindow","grindUmPerS","grindMaxStepUm","grindTimeBasis","grindRatedTarget","grindConfidence","grindRoom","scaleRestMin"];
 const SB=['shareEnabled','shareCoffees','shareDialIns','shareShots','shareRatings','keepPowerBotConnected','displayFlipped','powerOffWithScale','namedDrinkers'];
 // Diagnostics reports (docs/TELEMETRY.md).
 const ago=s=>{if(!s)return 'never';const d=Math.round(Date.now()/1000-s);return d<90?'just now':d<5400?Math.round(d/60)+' min ago':d<129600?Math.round(d/3600)+' h ago':Math.round(d/86400)+' days ago'};
@@ -1409,6 +1410,7 @@ why=short+sens+(G.step_limited?' Limited to the largest single change; expect an
 {const c=G.confidence;if(c&&(G.action=='finer'||G.action=='coarser')&&!G.out_of_range){const pc=Math.round(100*c.score),lv=pc>=60?'high':pc>=35?'medium':'low';
 const ct=` \u00b1 ${fdn(c.window)} ${fdu()} \u00b7 confidence ${lv} (${pc}%)`;short+=ct.replace(' \u00b7',',').replace(/^ /,' Window ')+'.';
 why+=` Confidence ${pc}% from ${c.followed} change${c.followed==1?'':'s'} that ${c.followed==1?'was':'were'} followed`+(c.followed?`, landing ${f1(c.rms_s)} s from the target, typically`:'')+'.'+(c.on?(c.scaled?(pc<50?' The step is made smaller while advice is still being proved.':' The step is allowed to be larger because past advice landed close.'):''):' Sizing by confidence is off.')}}
+{const r=G.room;if(r&&r.applied&&Math.abs(r.shift_s)>=1){const d=r.shift_s/r.s_per_c;why+=` The room (${f1(r.now_c)} °C) is ${f1(Math.abs(d))} °C ${d<0?'colder':'warmer'} than at the last shot: counted as ${r.shift_s>0?'+':''}${f1(r.shift_s)} s (learned ${f1(Math.abs(r.s_per_c))} s per °C from ${r.shots} shots).`}}
 $('gadv').textContent=$('hgadv').textContent=title;$('gadv').className=$('hgadv').className='pill '+cls;$('gwhy').textContent=why;$('hgwhy').textContent=short;
 const ag=G.bean_age_days,ds=G.days_since_brewed,sh=G.age_shift;let at='',as='';
 if(!G.coffee){at=''}else if(ag==null||ag<0){at='Bean age: no roast date is entered for this bag, so its age cannot be taken into account.'}
