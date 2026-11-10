@@ -5160,6 +5160,7 @@ void loop() {
     }
     g_grindAdviceStale = true;
     subscriptionsShotTaken();
+    float roomTempC = NAN;   // the shot's slow room temperature, for add-on shot reports
     // What surrounded the shot, kept for the learning work (core/ShotContext.h). Recorded only: nothing
     // reads it back to steer a shot.
     {
@@ -5204,6 +5205,7 @@ void loop() {
       in.curvePoints = curvePoints;
       in.ambient = app::ambient();   // the room, when a reading is fresh (core/HomeAssistant.h)
       in.roomEffC = app::roomEffectiveC();
+      if (bbw::ambientTempOk(in.roomEffC)) roomTempC = in.roomEffC;
       in.nowMs = millis();
       // A grinder add-on's measured dose for this shot, saved with the rest of its context.
       in.doseActualDg = addons::doseForShot(shot);
@@ -5211,7 +5213,7 @@ void loop() {
         LOGW("store: shot %u context not saved", static_cast<unsigned>(shot.id));
       }
     }
-    addons::shotSaved(shot);  // the grind is used up; shot feedback, if the owner turned it on
+    addons::shotSaved(shot, roomTempC);  // the grind is used up; shot feedback, if the owner turned it on
     shareAfterShot(shot);
     bbw::RamJobScope ha(bbw::RAM_HA);
     haAfterShot(shot);

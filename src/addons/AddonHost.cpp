@@ -218,6 +218,12 @@ class SlotHost : public Host {
     return n;
   }
 
+  uint16_t recipeForGrinderRecipe(uint8_t grinderRecipe) const override {
+    RecipeView recipes[24];
+    const size_t n = app::addonRecipes(recipes, 24);
+    return g_manager->recipeForGrinderRecipe(index_, grinderRecipe, recipes, n);
+  }
+
  private:
   const char *id() const { return g_manager->slot(index_).entry->id; }
   size_t index_ = 0;
@@ -776,10 +782,14 @@ bool filePath(const char *id, const char *name, char *path, size_t size, const c
 
 uint16_t doseForShot(const bbw::ShotRecord &shot) { return g_manager ? g_manager->doseForShot(shot.recipeId) : 0; }
 
-void shotSaved(const bbw::ShotRecord &shot) {
+void shotSaved(const bbw::ShotRecord &shot, float roomTempC) {
   if (!g_manager) return;
   ShotReport r;
   r.shotId = shot.id;
+  r.coffeeId = shot.coffeeId;
+  r.bagId = shot.bagId;
+  r.roomTempC = roomTempC;
+  strlcpy(r.coffee, shot.coffee, sizeof(r.coffee));
   r.totalTimeS = shot.shotTimeS;
   r.yieldG = shot.finalWeightG;
   r.weighed = (shot.flags & bbw::SHOT_FLAG_FINAL_VALID) != 0;

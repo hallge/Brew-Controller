@@ -121,7 +121,8 @@ An add-on implements `Addon`. A grinder add-on also implements `GrinderDriver`:
 | `caps()` | `GRIND_EVENTS` (delivers grinds), `SHOT_FEEDBACK` (wants each shot), `WRITE_SETTING` (reserved: no driver writes a setting yet) |
 | `link()` | off, waiting, connected, failed |
 | `takeGrind(GrindEvent&)` | the newest grind not yet taken |
-| `onShotComplete(ShotReport)` | after a shot is saved, only when the owner turned shot feedback on |
+| `onShotComplete(ShotReport)` | after a shot is saved, when the owner turned shot feedback on, or while `wantsShotReports()` is true |
+| `wantsShotReports()` | interface 2. True while the add-on wants every report with the owner's switch off, e.g. any recipe is in shadow mode. Shadow mode only watches, so this adds no control over the grinder or the controller. The add-on needs no card switch for it: the report simply arrives |
 | `requestSetting(steps)` | reserved |
 
 One grind is one event, because a grinder knows all of it at once:
@@ -135,6 +136,7 @@ One grind is one event, because a grinder knows all of it at once:
 | `beverageTargetG`, `recipeTimeS` | the grinder recipe's yield and brew time, when it has them |
 | `grinderRecipe` | the grinder's own recipe number (1-8), 0 if not known |
 | `filter` | the grinder's basket type |
+| `recipeId` | interface 2, set by the controller: the recipe `grinderRecipe` maps to when the grind was dealt with, 0 if unmapped |
 
 `ShotReport`: shot id, total time (start press to stop, pre-infusion included), yield, settled, aborted, and
 (interface 2) the recipe, its target time and time basis, the pour time and first drop, `grindSeq` (the
@@ -142,7 +144,9 @@ One grind is one event, because a grinder knows all of it at once:
 grind advice for the shot's recipe worked out with this shot included: its verdict (none, hold, finer,
 coarser), the current and suggested setting in stored steps, microns per step, the sensitivity, whether the
 step was limited and whether the shot counted. `advice.valid` is false when the active recipe is not the
-shot's.
+shot's. Also in interface 2 (appended): `coffeeId`, `bagId` (0: none), `roomTempC` (the room's slow 12 h
+temperature saved in the shot's context, NaN when not known) and `coffee`, the coffee's name as the shot recorded
+it (32 characters, NUL-ended).
 
 ### What an add-on is handed: `Host`
 
@@ -158,6 +162,7 @@ shot's.
 | `chipFree()` | chip RAM free now, for work that should wait while it is short |
 | `requestShotStart(recipeId)` | asks the controller to start a shot (§5). Returns why it was refused, or null |
 | `appendFile`, `writeFile`, `fileSize`, `readFile` | its own files (§5) |
+| `recipeForGrinderRecipe(n)` | the controller recipe grinder recipe `n` (1-8) is linked to, by the automatic match or the owner's mapping; 0 if unmapped or the recipe is gone. Lets the add-on ask for the right recipe before any shot exists |
 
 ### The card
 
