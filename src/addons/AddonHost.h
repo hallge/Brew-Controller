@@ -19,6 +19,7 @@ bool route(bool post, const char *path, const char *body, int &status, const cha
 // /api/addons and its changes. false: no such add-on, or the change is refused (problem says why).
 void listJson(JsonObject out);
 void namesJson(JsonArray out);  // the ids compiled in (for /api/update)
+void moduleNamesJson(JsonArray out);  // the ids of the module files (board only; none in the emulator)
 bool enable(const char *id, bool on, const char *&problem);
 bool configure(const char *id, JsonObjectConst values, JsonObjectConst options, const char *&problem);
 bool map(const char *id, uint8_t grinderRecipe, uint16_t recipeId, const char *&problem);

@@ -158,6 +158,7 @@ typedef struct bbw_addon_info {
   uint8_t kind;              /* 1 grinder */
   uint8_t field_count;
   const bbw_config_field *fields;
+  const char *routes[2];     /* web prefixes it may answer (addon.json "routes" for a compiled-in add-on), NULL: unused */
 } bbw_addon_info;
 
 /* ------------------------------------------------------------------------ the tables -- */

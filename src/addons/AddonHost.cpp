@@ -17,11 +17,15 @@
 #include "Log.h"
 #include "addons/AddonManager.h"
 #include "addons/AddonRules.h"
+#include "addons/ModuleAddon.h"
 #include "core/GrindAdvisor.h"
 #include "platform/BigMem.h"
 #include "platform/FsUtil.h"
 #include "platform/NetWorker.h"
 #include "platform/RamWatch.h"
+#ifndef BBW_EMULATOR
+#include "platform/AddonLoader.h"
+#endif
 #include "storage/Store.h"
 
 namespace bbw {
@@ -363,30 +367,79 @@ int slotOf(const char *id, const char *&problem) {
 
 bool shotRunning() { return app::addonMachineState().brewing; }
 
+// ---- modules (docs/ADDONS.md, "Add-ons as modules"; board only) ----
+// The manager's table is the compiled-in entries followed by one entry per module file. A module that
+// cannot start (another interface, a crash, a refusal) is still listed, with a stub that never runs.
+AddonEntry *g_table = nullptr;  // PSRAM
+size_t g_tableCount = 0;
+size_t g_moduleCount = 0;
+
+#ifndef BBW_EMULATOR
+template <size_t N>
+Addon *moduleMake() {
+  return N < bbw::addonloader::count() ? bbw::addonloader::module(N).addon : nullptr;
+}
+using MakeFn = Addon *(*)();
+const MakeFn MODULE_MAKE[bbw::addonloader::MAX_MODULES] = {moduleMake<0>, moduleMake<1>, moduleMake<2>,
+                                                           moduleMake<3>};
+static_assert(bbw::addonloader::MAX_MODULES == 4, "one moduleMake<N> per module");
+#endif
+
+// Slot i is a module's when it is past the compiled-in ones.
+bool isModuleSlot(size_t i) { return i >= BBW_ADDON_COUNT && i < g_tableCount; }
+
 }  // namespace
 
 size_t compiledCount() { return BBW_ADDON_COUNT; }
 
 void begin() {
-  if (BBW_ADDON_COUNT == 0) return;  // the public firmware: nothing allocated, nothing running
+#ifndef BBW_EMULATOR
+  {
+    // Module files on the file system: read, checked and loaded (the crash guard decides first). With
+    // none, nothing is allocated and the public firmware stays as it was.
+    bbw::RamJobScope ram(bbw::RAM_ADDON);
+    g_moduleCount = bbw::addonloader::scan(millis());
+  }
+#endif
+  if (BBW_ADDON_COUNT == 0 && g_moduleCount == 0) return;  // the public firmware: nothing allocated, nothing running
   g_text = bbw::bigArray<char>(STATE_MAX);
   g_manager = bbw::bigNew<Manager>();
   g_hosts = bbw::bigArray<SlotHost>(MAX_ADDONS);
   for (size_t i = 0; i < MAX_ADDONS; ++i) new (&g_hosts[i]) SlotHost();
+  g_table = bbw::bigArray<AddonEntry>(MAX_ADDONS);
+  for (size_t i = 0; i < BBW_ADDON_COUNT && g_tableCount < MAX_ADDONS; ++i) {
+    g_table[g_tableCount++] = bbw::addon::addonTable()[i];
+  }
+#ifndef BBW_EMULATOR
+  for (size_t i = 0; i < g_moduleCount && g_tableCount < MAX_ADDONS; ++i) {
+    const bbw::addonloader::Module &m = bbw::addonloader::module(i);
+    AddonEntry &e = g_table[g_tableCount++];
+    e.id = m.id;
+    e.make = MODULE_MAKE[i];
+    e.routes[0] = e.routes[1] = nullptr;
+    if (m.state == bbw::addonloader::State::LOADED) {
+      const ModuleAddon *a = static_cast<const ModuleAddon *>(m.addon);
+      for (size_t r = 0; r < MAX_ROUTES; ++r) e.routes[r] = a->route(r);
+    }
+  }
+#endif
   {
     bbw::RamJobScope ram(bbw::RAM_ADDON);
-    g_manager->attach(bbw::addon::addonTable(), BBW_ADDON_COUNT);
+    g_manager->attach(g_table, g_tableCount);
   }
   for (size_t i = 0; i < g_manager->count(); ++i) {
     g_hosts[i].attach(i);
     g_manager->setHost(i, &g_hosts[i]);
     const Slot &s = g_manager->slot(i);
-    LOGI("addon %s: compiled in%s", s.entry->id, s.apiOk ? "" : " (built for another add-on interface: not started)");
+    LOGI("addon %s: %s%s", s.entry->id, isModuleSlot(i) ? "module" : "compiled in",
+         s.apiOk ? "" : " (not started: see the card)");
   }
   load();
   for (size_t i = 0; i < g_manager->count(); ++i) {
     Slot &s = g_manager->slot(i);
     if (!s.enabled) continue;
+    // A module that cannot start now (a crash, a rebuild due) keeps the owner's "on" for when it can.
+    if (isModuleSlot(i) && !s.apiOk) continue;
     s.enabled = false;
     s.chipBefore = chipFree();
     bbw::RamJobScope ram(bbw::RAM_ADDON);
@@ -398,6 +451,9 @@ void begin() {
 
 void loop() {
   if (!g_manager) return;
+#ifndef BBW_EMULATOR
+  if (g_moduleCount) bbw::addonloader::service(millis());
+#endif
   static bool wasShot = false;
   const bool shot = shotRunning();
   if (shot && !wasShot) g_manager->noteShotStart(millis());
@@ -442,9 +498,45 @@ void namesJson(JsonArray out) {
   for (size_t i = 0; i < g_manager->count(); ++i) out.add(g_manager->slot(i).entry->id);
 }
 
+#ifndef BBW_EMULATOR
+// Where modules come from and how the last check or download went (the card's "Add-ons from").
+static void moduleDeliveryJson(JsonObject out) {
+  const bbw::addonloader::Source src = bbw::addonloader::source();
+  out["repo"] = src.repo;
+  out["token_set"] = src.token[0] != '\0';
+  const bbw::addonloader::Delivery d = bbw::addonloader::delivery();
+  static const char *const phases[] = {"idle", "checking", "downloading", "done", "failed"};
+  out["state"] = phases[static_cast<uint8_t>(d.phase) < 5 ? static_cast<uint8_t>(d.phase) : 0];
+  out["message"] = d.message;
+  if (d.checkedEpoch) out["checked_epoch"] = d.checkedEpoch;
+  out["restart_needed"] = d.restartNeeded;
+  JsonArray offers = out["offers"].to<JsonArray>();
+  for (size_t i = 0; i < d.offerCount; ++i) {
+    JsonObject o = offers.add<JsonObject>();
+    o["id"] = d.offers[i].id;
+    o["tag"] = d.offers[i].tag;
+    o["bytes"] = d.offers[i].bytes;
+    o["installed"] = d.offers[i].installed;
+    o["differs"] = d.offers[i].differs;
+  }
+}
+#endif
+
+void moduleNamesJson(JsonArray out) {
+#ifndef BBW_EMULATOR
+  for (size_t i = 0; i < g_moduleCount; ++i) out.add(bbw::addonloader::module(i).id);
+#else
+  (void)out;
+#endif
+}
+
 void listJson(JsonObject out) {
   out["compiled"] = static_cast<unsigned>(BBW_ADDON_COUNT);
   out["api"] = ADDON_API_VERSION;
+#ifndef BBW_EMULATOR
+  out["modules"] = static_cast<unsigned>(g_moduleCount);
+  moduleDeliveryJson(out["module_source"].to<JsonObject>());
+#endif
   JsonArray list = out["addons"].to<JsonArray>();
   if (!g_manager) return;
   const uint32_t now = millis();
@@ -456,6 +548,20 @@ void listJson(JsonObject out) {
     a["id"] = s.entry->id;
     a["api_ok"] = s.apiOk;
     a["enabled"] = s.enabled;
+#ifndef BBW_EMULATOR
+    if (isModuleSlot(i)) {
+      const bbw::addonloader::Module &m = bbw::addonloader::module(i - BBW_ADDON_COUNT);
+      JsonObject mo = a["module"].to<JsonObject>();
+      mo["state"] = bbw::addonloader::stateName(m.state);
+      mo["loaded"] = m.state == bbw::addonloader::State::LOADED;
+      mo["crashed"] = m.state == bbw::addonloader::State::CRASHED;
+      mo["problem"] = m.problem;
+      mo["version"] = m.version;
+      mo["file_bytes"] = m.fileBytes;
+      mo["load_ms"] = m.loadMs;
+      mo["chip_used"] = m.chipUsed;
+    }
+#endif
     if (!s.addon) continue;
     const AddonInfo &info = s.addon->info();
     a["name"] = info.name;

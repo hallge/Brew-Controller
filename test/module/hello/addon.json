@@ -1,0 +1,2 @@
+{"id": "hello", "name": "Hello (loader spike)", "version": "0.0.1", "api": 2, "kind": "grinder",
+ "header": "Hello.h", "factory": "bbw::addon::makeHello", "routes": ["/api/hello/"]}

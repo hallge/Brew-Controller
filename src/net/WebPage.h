@@ -594,7 +594,7 @@ textarea{resize:vertical;min-height:96px;padding:10px 12px;line-height:1.45}
 <div class="row"><input type="file" id="bk_file" accept=".bbwbak" aria-label="Backup file" style="flex:1 1 220px"><button onclick="bkRestore()">Restore this file</button></div>
 <div id="bk_msg" class="sm mid"></div>
 <details class="note"><summary>What a restore replaces</summary><ul><li>The settings, coffees, recipes, grinder and pairing, then the controller restarts.</li><li>The shot history too, when the backup has it. Without it, the shots here stay.</li><li>A backup without passwords keeps the ones this controller has now.</li><li>A backup without the signing key keeps this controller's key. If the keys differ, sharing starts over under this one.</li></ul></details></section>
-<section class="card" id="adcard" style="display:none"><div class="head"><h2>Add-ons</h2><span class="sm dim">compiled into this firmware</span></div><div id="adlist"></div><div class="sm dim">An add-on is off until you switch it on. docs/ADDONS.md says what one may do.</div></section>
+<section class="card" id="adcard" style="display:none"><div class="head"><h2>Add-ons</h2><span class="sm dim">compiled in, or loaded as modules</span></div><div id="adlist"></div><div id="admod"></div><div class="sm dim">An add-on is off until you switch it on. docs/ADDONS.md says what one may do.</div></section>
 <section class="card"><h2>Firmware</h2><div id="fw" class="mid"></div>
 <div class="scroll"><table id="fwslots"></table></div>
 <h2 style="margin-top:10px">From GitHub</h2><div id="fwgh" class="mid"></div>
@@ -804,7 +804,8 @@ const ty=a=>{const s=d.seen.find(x=>x.address==a);return s?s.type:1};await post(
 let FW=null,FWT=0;
 /*ADDONS*/
 let AD=null;
-async function loadAddons(){let a;try{a=await get('/api/addons')}catch(e){return}AD=a;$('adcard').style.display=a.compiled?'':'none';if(!a.compiled)return;
+async function loadAddons(){let a;try{a=await get('/api/addons')}catch(e){return}AD=a;$('adcard').style.display=(a.compiled||a.module_source)?'':'none';if(!a.compiled&&!a.module_source)return;
+$('admod').innerHTML=adModules(a.module_source,a.modules);
 let rs=[];try{rs=(await get('/api/library')).recipes||[]}catch(e){}
 $('adlist').innerHTML=(a.addons||[]).map(x=>{const id=esc(x.id);
 const fields=(x.fields||[]).map(f=>`<label>${esc(f.label)}${f.type=='bool'?`<input type="checkbox" data-ad="${id}" data-k="${esc(f.key)}" ${f.value=='1'?'checked':''}>`:`<input data-ad="${id}" data-k="${esc(f.key)}" ${f.type=='secret'?'type="password" placeholder="'+(f.set?'set; blank keeps it, - forgets it':'not set')+'"':'value="'+esc(f.value)+'"'} maxlength="127">`}${f.help?'<span class="sm dim">'+esc(f.help)+'</span>':''}</label>`).join('');
@@ -818,10 +819,33 @@ const g=x.last_grind;const last=g?`<div class="sm mid">Last grind ${Math.round(g
 const ram=x.chip_ram_used!=null?`<div class="sm dim">Chip RAM: ${x.chip_ram_used} bytes when started, lowest ${x.chip_low_during} free since.</div>`:'';
 return `<div class="card" style="margin:8px 0"><div class="head"><h3>${esc(x.name||x.id)} <span class="sm dim">${esc(x.version||'')}</span></h3>
 <label class="chk"><input type="checkbox" ${x.enabled?'checked':''} ${x.api_ok?'':'disabled'} onchange="adEnable('${id}',this.checked)">On</label></div>
-${x.api_ok?'':'<div class="sm">Built for another add-on interface: it cannot be switched on.</div>'}
+${x.module?adModuleLine(id,x.module):x.api_ok?'':'<div class="sm">Built for another add-on interface: it cannot be switched on.</div>'}
 <div class="sm mid">${x.enabled?'<span class="pill '+(x.link=='connected'?'ok':'')+'">'+esc(x.link)+'</span> ':''}${esc(x.status||'')}</div>${last}
 <div class="grid">${fields}</div>${opts}
 <div class="row"><button data-save onclick="adSave('${id}')">Save</button>${x.enabled?`<button onclick="adDo('${id}','read')">Read the grinder now</button>`:''}<button onclick="adForget('${id}')">Forget its settings</button></div>${map}${adCard(id,x.card)}${ram}</div>`}).join('')}
+/* Add-on modules (docs/ADDONS.md, Add-ons as modules): files on the controller, delivered from a repository of your own or uploaded. */
+function adModuleLine(id,m){const bad=!m.loaded;
+return `<div class="sm ${bad?'':'dim'}">Module ${esc(m.version||'')}: ${esc(m.state)}${m.problem?' ('+esc(m.problem)+')':''}${m.loaded?', loaded in '+m.load_ms+' ms, '+m.chip_used+' bytes of chip RAM':''}.
+${m.crashed?`<button onclick="adModuleDo('retry','${id}')">Try it again</button> `:''}<button onclick="adModuleDo('remove','${id}')">Remove the module file</button></div>`}
+function adModules(s,have){if(!s)return'';const offers=s.offers||[];
+const rows=offers.map(o=>`<tr><td class="l">${esc(o.id)}</td><td class="l">${esc(o.tag)}</td><td class="l">${Math.max(1,Math.round(o.bytes/1024))} kB</td><td class="l">${o.installed?(o.differs?'a different version is installed':'installed, the same'):'not installed'}</td><td class="l">${o.installed&&!o.differs?'':`<button onclick="adModuleInstall('${esc(o.id)}')">${o.installed?'Update':'Install'}</button>`}</td></tr>`).join('');
+return `<h3>Add-ons from</h3><div class="sm dim">Add-ons that are not part of this firmware come from a GitHub repository of your own (release files named &lt;id&gt;.bbwmod with a SHA256SUMS.txt), or a file you upload. They load at the next restart.</div>
+<div class="grid"><label>Repository (owner/name)<input id="admrepo" maxlength="63" value="${esc(s.repo||'')}" placeholder="owner/name"></label>
+<label>Access token (private repository)<input id="admtok" type="password" maxlength="127" placeholder="${s.token_set?'set; blank keeps it, - forgets it':'not set'}"></label></div>
+<div class="row"><button onclick="adSource()">Save</button><button onclick="adModuleCheck()" ${s.state=='checking'||s.state=='downloading'?'disabled':''}>Check for add-on updates</button></div>
+<div class="sm mid">${s.state=='failed'?'<span class="pill">failed</span> ':''}${esc(s.message||'')}</div>
+${offers.length?`<div class="scroll"><table><tr><th class="l">Add-on</th><th class="l">Release</th><th class="l">Size</th><th class="l">Here</th><th class="l"></th></tr>${rows}</table></div>`:''}
+<div class="row"><input type="file" id="admfile" accept=".bbwmod"><button onclick="adModuleUpload()">Upload a module file</button></div>
+${s.restart_needed?'<div class="sm"><b>A module was stored or changed: it loads at the next restart.</b> <button onclick="adRestart()">Restart now</button></div>':''}`}
+function adSource(){const t=$('admtok').value.trim();post('/api/addons/source',{repo:$('admrepo').value.trim(),token:t}).then(r=>{done(r,'Saved');loadAddons()})}
+function adModuleCheck(){post('/api/addons/module/check').then(r=>{done(r,'Asking GitHub');adWatch()})}
+function adModuleInstall(id){post('/api/addons/module/install?id='+encodeURIComponent(id)).then(r=>{done(r,'Downloading');adWatch()})}
+function adWatch(){let n=0;const t=setInterval(async()=>{await loadAddons();const s=AD&&AD.module_source;if(++n>60||!s||(s.state!='checking'&&s.state!='downloading'))clearInterval(t)},2000)}
+async function adModuleDo(what,id){if(what=='remove'&&!await ask('Delete this module file? The add-on stops being listed at the next restart.'))return;post('/api/addons/module/'+what+'?id='+encodeURIComponent(id)).then(r=>{done(r,what=='retry'?'It will be tried again at the next restart':'Removed');loadAddons()})}
+async function adModuleUpload(){const f=$('admfile').files[0];if(!f)return say('Choose a .bbwmod file first',false);if(!/\.bbwmod$/i.test(f.name)||f.size>262272)return say('That does not look like an add-on module',false);
+const fd=new FormData();fd.append('module',f,f.name);let r=null;try{r=await(await fetch('/api/addons/module',{method:'POST',body:fd})).json()}catch(e){}
+if(!r||r.ok===false)return say(r&&r.error?'Not stored: '+r.error:'The upload did not finish',false);say('Stored: it loads at the next restart',true);loadAddons()}
+async function adRestart(){if(!await ask('Restart the controller now?'))return;post('/api/addons/module/restart').then(r=>{done(r,'Restarting');if(r.ok)setTimeout(()=>location.reload(),15000)})}
 /* What the add-on declares for its card (docs/ADDONS.md, The card): the labels and values are its own. */
 function adCard(id,c){if(!c)return'';let h='';const s=c.steer;
 if(s){const modes=s.modes||[];
@@ -850,7 +874,7 @@ $('fwslots').innerHTML=(f.slots||[]).length?'<tr><th class="l">Slot</th><th clas
 const busy=f.state=='checking'||f.state=='downloading';
 $('fwgh').innerHTML=esc(f.repo)+(f.token_set?' (with a token)':'')+'. '+(f.state=='downloading'?'<b>Downloading: '+f.percent+' %</b> ':'')+esc(f.message||'Not checked since start-up.')+(f.checked_epoch?' <span class="dim">Checked '+new Date(f.checked_epoch*1000).toLocaleString()+'.</span>':'');
 const ib=$('fwinst');ib.style.display=f.available&&f.latest&&!busy?'':'none';if(f.latest)ib.textContent='Install '+f.latest.tag+' ('+Math.round(f.latest.bytes/1024)+' kB)';
-if((f.addons||[]).length&&f.repo=='hallge/Brew-Controller')$('fwgh').innerHTML+=' <b>This firmware has add-ons ('+esc(f.addons.join(', '))+'). The public releases do not: installing one removes them. Releases from the repository that built this one keep them.</b>';if(document.activeElement!=$('fwrepo'))$('fwrepo').value=f.repo||'';$('fwauto').checked=!!f.auto_check;$('fwrel').href=f.releases;
+if((f.modules||[]).length)$('fwgh').innerHTML+=' <span class="sm dim">Add-on modules ('+esc(f.modules.join(', '))+') are files and stay through an update; one built for another add-on interface is listed as needing a rebuild until a matching module is installed.</span>';if((f.addons||[]).length&&f.repo=='hallge/Brew-Controller')$('fwgh').innerHTML+=' <b>This firmware has add-ons ('+esc(f.addons.join(', '))+'). The public releases do not: installing one removes them. Releases from the repository that built this one keep them.</b>';if(document.activeElement!=$('fwrepo'))$('fwrepo').value=f.repo||'';$('fwauto').checked=!!f.auto_check;$('fwrel').href=f.releases;
 clearTimeout(FWT);if(busy||f.state=='installed')FWT=setTimeout(loadFirmware,1500);if(f.state=='installed')setTimeout(()=>location.reload(),25000)}
 function fwCheck(){post('/api/update/check').then(r=>{done(r,'Asking GitHub');setTimeout(loadFirmware,800)})}
 async function fwInstall(){if(!FW||!FW.latest)return;if(!await ask('Download and install '+FW.latest.tag+'?\n\nThe controller restarts into it when it is done. If it does not run properly in its first 45 seconds, the controller goes back to '+FW.version+' by itself.'))return;post('/api/update/install').then(r=>{done(r,'Downloading '+FW.latest.tag);setTimeout(loadFirmware,800)})}

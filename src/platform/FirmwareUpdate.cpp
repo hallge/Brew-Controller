@@ -201,7 +201,7 @@ const char *slotVersion(const SlotVersions &v, const char *label) {
 }
 
 // ---- GitHub ----
-void apiRequest(HTTPClient &http, WiFiClientSecure &client, const char *url, const char *accept) {
+void apiRequestWith(HTTPClient &http, WiFiClientSecure &client, const char *url, const char *accept, const char *token) {
   client.setCACert(GITHUB_ROOTS_PEM);
   client.setHandshakeTimeout(CONNECT_TIMEOUT_MS / 1000);
   http.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -212,11 +212,15 @@ void apiRequest(HTTPClient &http, WiFiClientSecure &client, const char *url, con
   http.setUserAgent("brew-by-weight-controller/" BBW_VERSION);
   http.addHeader("Accept", accept);
   http.addHeader("X-GitHub-Api-Version", "2022-11-28");
-  if (g_config.token[0]) {
+  if (token && token[0]) {
     char authorization[160];
-    snprintf(authorization, sizeof(authorization), "Bearer %s", g_config.token);
+    snprintf(authorization, sizeof(authorization), "Bearer %s", token);
     http.addHeader("Authorization", authorization);
   }
+}
+
+void apiRequest(HTTPClient &http, WiFiClientSecure &client, const char *url, const char *accept) {
+  apiRequestWith(http, client, url, accept, g_config.token);
 }
 
 const char *explain(int code) {
@@ -315,15 +319,15 @@ bool doCheck() {
 // Opens a release file for reading: the API answers with a redirect to the
 // download host, which is asked without the token. `http` and `client` are
 // left reading the file's body. Returns its length, or -1.
-int openAsset(uint32_t assetId, HTTPClient &http, WiFiClientSecure &client) {
+int openAssetOf(const char *repo, const char *token, uint32_t assetId, HTTPClient &http, WiFiClientSecure &client) {
   char url[160];
-  snprintf(url, sizeof(url), "https://api.github.com/repos/%s/releases/assets/%u", g_config.repo,
+  snprintf(url, sizeof(url), "https://api.github.com/repos/%s/releases/assets/%u", repo,
            static_cast<unsigned>(assetId));
   String location;
   {
     SafeTlsClient apiClient;
     HTTPClient api;
-    apiRequest(api, apiClient, url, "application/octet-stream");
+    apiRequestWith(api, apiClient, url, "application/octet-stream", token);
     const char *keep[] = {"Location"};
     api.collectHeaders(keep, 1);
     const int code = api.GET();
@@ -350,6 +354,10 @@ int openAsset(uint32_t assetId, HTTPClient &http, WiFiClientSecure &client) {
     return -1;
   }
   return http.getSize();
+}
+
+int openAsset(uint32_t assetId, HTTPClient &http, WiFiClientSecure &client) {
+  return openAssetOf(g_config.repo, g_config.token, assetId, http, client);
 }
 
 bool hexToBytes(const char *hex, uint8_t out[32]) {
@@ -495,6 +503,103 @@ bool doInstall() {
   LOGI("update: %s", message);
   return true;
 }
+
+}  // namespace
+
+// ---- release files from another repository (FirmwareUpdate.h): the add-on modules' delivery ----
+bool releaseListLatest(const char *repo, const char *token, ReleaseAssets &out, char *why, size_t whySize) {
+  out = ReleaseAssets();
+  if (WiFi.status() != WL_CONNECTED) {
+    strlcpy(why, "not on a network with internet: join one under Network", whySize);
+    return false;
+  }
+  if (time(nullptr) < 1700000000) {
+    strlcpy(why, "the clock is not set yet, so certificates cannot be checked", whySize);
+    return false;
+  }
+  if (!repo || !repo[0]) {
+    strlcpy(why, "no repository set", whySize);
+    return false;
+  }
+  char url[160];
+  snprintf(url, sizeof(url), "https://api.github.com/repos/%s/releases/latest", repo);
+  SafeTlsClient client;
+  HTTPClient http;
+  apiRequestWith(http, client, url, "application/vnd.github+json", token);
+  const int code = http.GET();
+  if (code != 200) {
+    snprintf(why, whySize, "%s (%d)", explain(code), code);
+    http.end();
+    return false;
+  }
+  JsonDocument filter;
+  filter["tag_name"] = true;
+  filter["assets"][0]["name"] = true;
+  filter["assets"][0]["id"] = true;
+  filter["assets"][0]["size"] = true;
+  JsonDocument doc;
+  const DeserializationError error = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+  http.end();
+  if (error) {
+    strlcpy(why, "the release information could not be read", whySize);
+    return false;
+  }
+  strlcpy(out.tag, doc["tag_name"] | "", sizeof(out.tag));
+  const size_t room = sizeof(out.asset) / sizeof(out.asset[0]);
+  for (JsonObject asset : doc["assets"].as<JsonArray>()) {
+    if (out.count >= room) break;
+    ReleaseAssetInfo &a = out.asset[out.count++];
+    strlcpy(a.name, asset["name"] | "", sizeof(a.name));
+    a.id = asset["id"] | 0u;
+    a.bytes = asset["size"] | 0u;
+  }
+  return true;
+}
+
+bool releaseStreamAsset(const char *repo, const char *token, uint32_t assetId, size_t maxBytes,
+                        bool (*sink)(const uint8_t *, size_t, void *), void *context, char *why, size_t whySize) {
+  if (!g_chunk) g_chunk = bigArray<uint8_t>(CHUNK);
+  SafeTlsClient client;
+  HTTPClient http;
+  const int length = openAssetOf(repo, token, assetId, http, client);
+  if (length <= 0 || static_cast<size_t>(length) > maxBytes) {
+    http.end();
+    strlcpy(why, length <= 0 ? "the download could not be started" : "the file is larger than allowed", whySize);
+    return false;
+  }
+  WiFiClient &stream = http.getStream();
+  size_t received = 0;
+  uint32_t lastDataMs = millis();
+  bool ok = true;
+  while (received < static_cast<size_t>(length)) {
+    const size_t available = stream.available();
+    if (available == 0) {
+      if (!http.connected() || millis() - lastDataMs > STALL_TIMEOUT_MS) {
+        ok = false;
+        break;
+      }
+      delay(5);
+      continue;
+    }
+    const size_t n = stream.readBytes(g_chunk, available < CHUNK ? available : CHUNK);
+    if (n == 0) continue;
+    lastDataMs = millis();
+    if (!sink(g_chunk, n, context)) {
+      http.end();
+      strlcpy(why, "the file could not be stored", whySize);
+      return false;
+    }
+    received += n;
+  }
+  http.end();
+  if (!ok) {
+    strlcpy(why, "the download broke off", whySize);
+    return false;
+  }
+  return true;
+}
+
+namespace {
 
 void updateTask(void *) {
   for (;;) {
