@@ -33,7 +33,9 @@
 #include "core/SwitchBotProtocol.h"
 #include "core/TasteProfile.h"
 #include "core/Telemetry.h"
+#include "addons/AddonAbi.h"
 #include "addons/AddonManager.h"
+#include "addons/AddonRules.h"
 #include "addons/NetGate.h"
 #include "core/Inflate.h"
 #include "core/TimeZone.h"
@@ -3231,6 +3233,13 @@ struct NullHost : addon::Host {
   addon::GrinderInfo grinder() const override { return {}; }
   void *allocate(size_t size) override { return calloc(1, size); }
   bool fetchStart(addon::FetchJob &) override { return false; }
+  void notice(const char *) override {}
+  uint32_t chipFree() const override { return 0; }
+  const char *requestShotStart(uint16_t) override { return "no"; }
+  const char *appendFile(const char *, const char *, size_t) override { return "no"; }
+  const char *writeFile(const char *, const char *, size_t) override { return "no"; }
+  int32_t fileSize(const char *) const override { return -1; }
+  int32_t readFile(const char *, uint32_t, uint8_t *, size_t) const override { return -1; }
 };
 
 static void testAddonManager() {
@@ -3380,6 +3389,161 @@ static void testAddonManager() {
   // Forgotten: off, settings and map gone.
   m.forget(0);
   CHECK(!m.slot(0).enabled && m.slot(0).map[2].recipeId == 0 && !m.slot(0).options.shotFeedback);
+}
+
+// Interface 2 (docs/ADDONS.md): the report's grind, the file and start rules, the C table's layout.
+static void testAddonGroundwork() {
+  printf("add-ons: interface 2, report, files, start, C table\n");
+  CHECK(addon::ADDON_API_VERSION == 2 && BBW_ADDON_ABI == addon::ADDON_API_VERSION);
+
+  // The report carries the grind the shot followed, and its new fields default to "not known".
+  {
+    addon::ShotReport blank;
+    CHECK(blank.recipeId == 0 && blank.grindSeq == 0 && !blank.advice.valid && blank.advice.action == addon::AdviceSnapshot::NONE);
+    CHECK(blank.targetTimeS == 0.0f && blank.pourTimeS == 0.0f && blank.firstDropS == 0.0f);
+    addon::MachineState ms;
+    CHECK(ms.shotPhase == addon::MachineState::PHASE_NONE && ms.shotElapsedMs == 0);
+  }
+  static const addon::AddonEntry table[] = {
+      {"test-grinder", []() -> addon::Addon * { return g_testGrinder = new TestGrinder(); }, {"/api/dev/", nullptr}},
+  };
+  {
+    addon::Manager m;
+    m.attach(table, 1);
+    NullHost host;
+    m.setHost(0, &host);
+    m.setEnabled(0, true);
+    m.slot(0).options.shotFeedback = true;
+    TestActions act;
+    act.list = {recipeView(2, "Triple", 24.0f, 48.0f)};
+    act.info.rangeKnown = true;
+    act.info.minStep = 1;
+    act.info.maxStep = 300;
+    addon::GrindEvent ev = grindOf(2, 24.0f, 24.0f, 48.0f, 80.0f, 1000);
+    ev.seq = 41;
+    g_testGrinder->queue.push_back(ev);
+    m.tick(1010, act);
+    CHECK(m.grindSeqForShot(2) == 0);            // no shot has started since the grind
+    m.noteShotStart(5000);
+    CHECK(m.grindSeqForShot(2) == 41 && m.grindSeqForShot(1) == 0);
+    addon::ShotReport given;
+    given.shotId = 7;
+    given.recipeId = 2;
+    given.targetTimeS = 30.0f;
+    given.advice.valid = true;
+    given.advice.action = addon::AdviceSnapshot::COARSER;
+    given.advice.suggestedSteps = 84;
+    m.shotSaved(2, given);
+    const addon::ShotReport &got = g_testGrinder->lastReport;
+    CHECK(got.shotId == 7 && got.grindSeq == 41 && got.recipeId == 2 && got.targetTimeS == 30.0f);
+    CHECK(got.advice.valid && got.advice.action == addon::AdviceSnapshot::COARSER && got.advice.suggestedSteps == 84);
+    // The grind is used up: a second shot on the recipe followed no grind.
+    m.noteShotStart(9000);
+    CHECK(m.grindSeqForShot(2) == 0);
+    m.shotSaved(2, given);
+    CHECK(g_testGrinder->lastReport.grindSeq == 0);
+    // A shot more than 15 minutes after its grind, or before it, followed no grind.
+    ev.seq = 42;
+    ev.atMs = 100000;
+    g_testGrinder->queue.push_back(ev);
+    m.tick(100010, act);
+    m.noteShotStart(100000 + addon::GRIND_WINDOW_MS + 5);
+    CHECK(m.grindSeqForShot(2) == 0);
+    // The add-on with nothing to say about a card: nothing declared.
+    char card[64];
+    CHECK(!g_testGrinder->cardJson(card, sizeof(card)));
+  }
+
+  // Which files an add-on may touch: /addons/<its id>/<name>, nothing else.
+  {
+    char p[64];
+    CHECK(addon::addonFilePath("mill", "compare.csv", p, sizeof(p)) && strcmp(p, "/addons/mill/compare.csv") == 0);
+    CHECK(addon::addonFilePath("mill", "compare_summary.csv", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "../x", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "..", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "a..b", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "/etc/passwd", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "/addons/other/x.csv", p, sizeof(p)));   // another id, by path
+    CHECK(!addon::addonFilePath("mill", "sub/x.csv", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "..\\x", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", ".hidden", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "UPPER.csv", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "this-name-is-far-too-long.csv", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("../mill", "x.csv", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("Mill", "x.csv", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("", "x.csv", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill/x", "y.csv", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "x.csv", p, 8));                          // does not fit
+    // A path that would not fit a backup entry is refused, and what is allowed is a backup name.
+    CHECK(!addon::addonFilePath("an-addon-with-a-long-id-abc", "compare_summary.csv", p, sizeof(p)));
+    CHECK(addon::addonFilePath("my-grinder-addon", "compare_summary.csv", p, sizeof(p)) && strlen(p) <= bbw::BACKUP_NAME_MAX);
+    CHECK(bbw::backupNameOk(bbw::BACKUP_ENTRY_FILE, "/addons/mill/compare.csv"));
+    CHECK(!bbw::backupNameOk(bbw::BACKUP_ENTRY_FILE, "/other/compare.csv"));
+    CHECK(!bbw::backupNameOk(bbw::BACKUP_ENTRY_FILE, "/addons/mill/sub/x.csv"));
+    CHECK(!bbw::backupNameOk(bbw::BACKUP_ENTRY_FILE, "/addons/../x.csv"));
+    CHECK(!bbw::backupNameOk(bbw::BACKUP_ENTRY_FILE, "/addons//x.csv"));
+    CHECK(!bbw::backupNameOk(bbw::BACKUP_ENTRY_FILE, "/addons/mill/"));
+  }
+
+  // The limit and the reserve.
+  {
+    using addon::fileWriteRefusal;
+    const uint32_t big = 100u * 1024u * 1024u;
+    CHECK(fileWriteRefusal(0, 0, 300, big) == nullptr);
+    CHECK(fileWriteRefusal(addon::ADDON_FILE_LIMIT - 300, 0, 300, big) == nullptr);        // exactly at the limit
+    CHECK(fileWriteRefusal(addon::ADDON_FILE_LIMIT - 299, 0, 300, big) != nullptr);        // one byte over
+    // A replacement counts the new size, not old plus new.
+    CHECK(fileWriteRefusal(addon::ADDON_FILE_LIMIT, addon::ADDON_FILE_LIMIT, addon::ADDON_FILE_LIMIT, big) == nullptr);
+    CHECK(fileWriteRefusal(addon::ADDON_FILE_LIMIT, 1000, addon::ADDON_FILE_LIMIT, big) != nullptr);   // other files fill it
+    CHECK(fileWriteRefusal(addon::ADDON_FILE_LIMIT, 1000, 1000, big) == nullptr);
+    CHECK(fileWriteRefusal(addon::ADDON_FILE_LIMIT, addon::ADDON_FILE_LIMIT, addon::ADDON_FILE_LIMIT + 1, big) != nullptr);
+    // Free space: at least 512 kB must be left after the write.
+    CHECK(fileWriteRefusal(0, 0, 300, addon::ADDON_FILE_RESERVE + 300) == nullptr);
+    const char *low = fileWriteRefusal(0, 0, 300, addon::ADDON_FILE_RESERVE + 299);
+    CHECK(low && strcmp(low, "storage low") == 0);
+    CHECK(fileWriteRefusal(0, 0, 300, 100) != nullptr);                                    // less free than the write
+    CHECK(fileWriteRefusal(0, 0, 0, addon::ADDON_FILE_RESERVE) == nullptr);                // nothing to add
+    // A replacement that does not grow the file is allowed even when storage is low, and one that
+    // grows it is not.
+    CHECK(fileWriteRefusal(5000, 5000, 3000, addon::ADDON_FILE_RESERVE - 10) == nullptr);
+    CHECK(fileWriteRefusal(5000, 5000, 5001, addon::ADDON_FILE_RESERVE - 10) != nullptr);
+  }
+
+  // Starting a shot: every one of the checks, one at a time.
+  {
+    addon::StartContext c;
+    c.webStartEnabled = c.ready = c.scaleConnected = true;
+    c.activeRecipeId = c.wantedRecipeId = 2;
+    CHECK(addon::startRefusal(c) == nullptr);
+    { auto x = c; x.webStartEnabled = false; CHECK(addon::startRefusal(x) && strstr(addon::startRefusal(x), "web page is off")); }
+    { auto x = c; x.updateBusy = true; CHECK(addon::startRefusal(x) != nullptr); }
+    { auto x = c; x.ready = false; CHECK(addon::startRefusal(x) != nullptr); }
+    { auto x = c; x.scaleConnected = false; CHECK(addon::startRefusal(x) != nullptr); }
+    { auto x = c; x.dripOrResult = true; CHECK(addon::startRefusal(x) != nullptr); }
+    { auto x = c; x.activeRecipeId = 3; CHECK(addon::startRefusal(x) && strstr(addon::startRefusal(x), "recipe")); }
+    { auto x = c; x.wantedRecipeId = 0; x.activeRecipeId = 0; CHECK(addon::startRefusal(x) != nullptr); }
+    { auto x = c; x.cupRequired = true; x.cupPresent = false; CHECK(addon::startRefusal(x) && strstr(addon::startRefusal(x), "cup")); }
+    { auto x = c; x.cupRequired = true; x.cupPresent = true; CHECK(addon::startRefusal(x) == nullptr); }
+    { auto x = c; x.webStartEnabled = false; x.activeRecipeId = 9; x.ready = false; CHECK(addon::startRefusal(x) != nullptr); }  // off wins
+  }
+
+  // The C table: sizes are fixed, and match the C++ interface where they carry the same data.
+  {
+    CHECK(sizeof(bbw_machine_state) == 28 && sizeof(bbw_grinder_info) == 20 && sizeof(bbw_grind_event) == 32);
+    CHECK(sizeof(bbw_advice) == 20 && sizeof(bbw_shot_report) == 56 && sizeof(bbw_response) == 548);
+    CHECK(sizeof(bbw_host_api) == 2 * sizeof(uint32_t) + (1 + BBW_HOST_API_SLOTS) * sizeof(void *));
+    CHECK(sizeof(bbw_addon_api) == 2 * sizeof(uint32_t) + (1 + BBW_ADDON_API_SLOTS) * sizeof(void *));
+    CHECK(offsetof(bbw_host_api, abi) == 0 && offsetof(bbw_host_api, size) == 4);
+    CHECK(offsetof(bbw_addon_api, abi) == 0 && offsetof(bbw_addon_api, size) == 4);
+    // The table has a slot for every Host and Addon call of interface 2 (host: 8 older + 7 new).
+    CHECK(BBW_HOST_API_SLOTS == 15 && BBW_ADDON_API_SLOTS == 12);
+    // Each report field of the C++ struct has its place in the C one.
+    addon::ShotReport r;
+    CHECK(sizeof(r.recipeId) == sizeof(bbw_shot_report::recipe_id) && sizeof(r.grindSeq) == sizeof(bbw_shot_report::grind_seq) &&
+          sizeof(r.advice.suggestedSteps) == sizeof(bbw_advice::suggested_steps));
+    CHECK(sizeof(addon::MachineState::shotElapsedMs) == sizeof(bbw_machine_state::shot_elapsed_ms));
+  }
 }
 
 // Five grinds of 23.8 to 24.2 g on one recipe: every shot keeps the recipe's dose and target, so grind
@@ -9634,6 +9798,7 @@ int main() {
   testInflate();
   testNetGate();
   testAddonManager();
+  testAddonGroundwork();
   testGrindsKeepOneHistory();
   testContextGrinderDose();
   testShotDataSet();

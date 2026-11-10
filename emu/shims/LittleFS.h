@@ -35,11 +35,13 @@ class LittleFSClass {
              const char *partitionLabel = "spiffs");
   File open(const char *path, const char *mode = "r");
   bool exists(const char *path);
+  bool mkdir(const char *path);
   bool remove(const char *path);
   bool rename(const char *from, const char *to);  // replaces `to`, as LittleFS does
   size_t totalBytes() { return 3900u * 1024u; }  // the board's partition
   size_t usedBytes();
-  // The emulator's directory listing (the board uses opendir on its mount point).
+  // The emulator's directory listing (the board uses opendir on its mount point): the top level, and
+  // the add-ons' folders one level down ("/addons/<id>/<name>").
   void list(void (*visit)(const char *path, size_t size, void *context), void *context);
 };
 extern LittleFSClass LittleFS;

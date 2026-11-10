@@ -23,7 +23,7 @@ const post = async (u, body) => { posts.push({ u, body }); return { ok: true }; 
 const done = () => true, say = () => {}, ask = async () => true;
 const document = { querySelectorAll: () => [] };
 const api = new Function('$', 'esc', 'f1', 'f2', 'get', 'post', 'done', 'say', 'ask', 'document',
-  page.slice(a, b) + '\nreturn { loadAddons, adEnable, adMap };')($, esc, f1, f2, get, post, done, say, ask, document);
+  page.slice(a, b) + '\nreturn { loadAddons, adEnable, adMap, adSet };')($, esc, f1, f2, get, post, done, say, ask, document);
 
 // No add-ons in this firmware: the card stays hidden.
 answers = { '/api/addons': { compiled: 0, addons: [] }, '/api/library': { recipes: [] } };
@@ -56,6 +56,42 @@ await api.adEnable('test-grinder', false);
 ok('switching off posts on=0', posts.some(p => p.u === '/api/addons/enable?id=test-grinder&on=0'));
 await api.adMap('test-grinder', 3, 1);
 ok('mapping posts the grinder recipe and recipe id', posts.some(p => p.u === '/api/addons/map?id=test-grinder&grinder=3&recipe=1'));
+// No card declared: no steering or comparison sections.
+ok('no card, no steering section', !html.includes('Steering') && !html.includes('/api/addons/file'));
+
+// An add-on that declares a card (interface 2): per-recipe mode, the numbers, the knob, the comparison.
+answers['/api/addons'].addons[0].card = {
+  steer: {
+    title: 'Who steers the grind', note: 'Off until you turn it on <i>',
+    modes: ['Off', 'Shadow', 'Grinder', 'Controller'], capMode: 2, capLabel: 'Cap (s)',
+    recipes: [{ key: '2', label: 'Triple <b>', mode: 2, cap: 3, note: 'gate open' }, { key: '1', label: 'Double', mode: 0 }],
+    finest: { label: 'Finest allowed gap (um)', value: '60' },
+    coarsest: { label: 'Coarsest allowed gap (um)', value: '' },
+    knob: { label: 'Knob press', value: 1, options: ['Arms the grind', 'Starts the shot'] },
+  },
+  compare: {
+    title: 'Advice against the grinder', file: 'compare.csv', columns: ['Method', 'Shots', 'Mean error'],
+    groups: [{ name: 'Coffee <x>', rows: [['Controller', '7', '1.2 s'], ['Grinder', '5', 'not enough shots']] }],
+  },
+};
+await api.loadAddons();
+const card = $('adlist').innerHTML;
+ok('the steering title and note come from the add-on, escaped', card.includes('Who steers the grind') && card.includes('Off until you turn it on &lt;i&gt;') && !card.includes('<i>'));
+ok('one mode switch per recipe with the add-on\'s own labels', (card.match(/data-adm="test-grinder"/g) || []).length === 2 &&
+   card.includes('>Controller</option>') && /<option value="2" selected>Grinder<\/option>/.test(card));
+ok('the cap is shown for the recipe in that mode and disabled for the others', card.includes('Cap (s)') && /value="3"\s+onchange="adSet\('test-grinder','cap','2'/.test(card) &&
+   /value=""\s+disabled onchange="adSet\('test-grinder','cap','1'/.test(card));
+ok('finest and coarsest gap fields', card.includes('Finest allowed gap (um)') && card.includes('value="60"') && card.includes('Coarsest allowed gap (um)'));
+ok('the knob setting', card.includes('Knob press') && /<option value="1" selected>Starts the shot<\/option>/.test(card));
+ok('the comparison table, escaped, with the add-on\'s columns', card.includes('Advice against the grinder') && card.includes('Coffee &lt;x&gt;') && card.includes('<th class="l">Mean error</th>') && card.includes('not enough shots'));
+ok('the CSV download is limited to the add-on\'s own file route', card.includes('href="/api/addons/file?id=test-grinder&name=compare.csv"'));
+posts.length = 0;
+await api.adSet('test-grinder', 'mode', '2', '1');
+ok('a mode change posts the field, the recipe key and the value', posts.some(p => p.u === '/api/addons/do?id=test-grinder&cmd=set&arg=' + encodeURIComponent('mode:2:1')));
+await api.adSet('test-grinder', 'finest', '', '62');
+ok('a number change posts with an empty key', posts.some(p => p.u === '/api/addons/do?id=test-grinder&cmd=set&arg=' + encodeURIComponent('finest::62')));
+delete answers['/api/addons'].addons[0].card;
+
 // Built for another interface: cannot be switched on.
 answers['/api/addons'].addons[0].api_ok = false;
 await api.loadAddons();

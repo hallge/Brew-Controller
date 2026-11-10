@@ -189,6 +189,7 @@ struct PendingGrind {
   uint16_t recipeId = 0;
   uint16_t doseDg = 0;
   float targetG = 0.0f;
+  uint32_t seq = 0;     // GrindEvent::seq
 };
 
 inline bool validRoutePrefix(const char *p) {
@@ -380,7 +381,10 @@ class Manager {
     return pending_.doseDg;
   }
   // After the shot is saved: the grind is used up; add-ons that were asked hear about the shot.
-  void shotSaved(uint16_t recipeId, const ShotReport &report) {
+  // The report's grindSeq is set here: the grind this shot followed (the same rule as doseForShot).
+  void shotSaved(uint16_t recipeId, const ShotReport &given) {
+    ShotReport report = given;
+    report.grindSeq = grindSeqForShot(recipeId);
     if (pending_.active && recipeId == pending_.recipeId) pending_ = PendingGrind{};
     for (size_t i = 0; i < count_; ++i) {
       Slot &s = slots_[i];
@@ -388,6 +392,13 @@ class Manager {
       GrinderDriver *g = s.addon->grinder();
       if (g && (g->caps() & SHOT_FEEDBACK)) g->onShotComplete(report);
     }
+  }
+  // The grind a shot on this recipe followed, 0 none. Before shotSaved uses the grind up.
+  uint32_t grindSeqForShot(uint16_t recipeId) const {
+    if (!pending_.active || recipeId != pending_.recipeId) return 0;
+    const int32_t after = static_cast<int32_t>(shotStartMs_ - pending_.atMs);
+    if (after < 0 || static_cast<uint32_t>(after) > GRIND_WINDOW_MS) return 0;
+    return pending_.seq;
   }
   const PendingGrind &pending() const { return pending_; }
 
@@ -421,6 +432,7 @@ class Manager {
     pending_.recipeId = p.recipeId;
     pending_.doseDg = p.doseDg;
     pending_.targetG = p.shotTargetG;
+    pending_.seq = ev.seq;
     act.setNextShotTarget(p.shotTargetG, p.shotTargetG > 0.0f ? p.recipeId : 0);
     char line[160];
     snprintf(line, sizeof(line), "addon %s: grind for recipe %u: dose %.2f g, target %.2f g, setting %u%s%s",

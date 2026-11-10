@@ -821,7 +821,22 @@ return `<div class="card" style="margin:8px 0"><div class="head"><h3>${esc(x.nam
 ${x.api_ok?'':'<div class="sm">Built for another add-on interface: it cannot be switched on.</div>'}
 <div class="sm mid">${x.enabled?'<span class="pill '+(x.link=='connected'?'ok':'')+'">'+esc(x.link)+'</span> ':''}${esc(x.status||'')}</div>${last}
 <div class="grid">${fields}</div>${opts}
-<div class="row"><button data-save onclick="adSave('${id}')">Save</button>${x.enabled?`<button onclick="adDo('${id}','read')">Read the grinder now</button>`:''}<button onclick="adForget('${id}')">Forget its settings</button></div>${map}${ram}</div>`}).join('')}
+<div class="row"><button data-save onclick="adSave('${id}')">Save</button>${x.enabled?`<button onclick="adDo('${id}','read')">Read the grinder now</button>`:''}<button onclick="adForget('${id}')">Forget its settings</button></div>${map}${adCard(id,x.card)}${ram}</div>`}).join('')}
+/* What the add-on declares for its card (docs/ADDONS.md, The card): the labels and values are its own. */
+function adCard(id,c){if(!c)return'';let h='';const s=c.steer;
+if(s){const modes=s.modes||[];
+h+=`<h3>${esc(s.title||'Steering')}</h3>`+(s.note?`<div class="sm dim">${esc(s.note)}</div>`:'');
+if((s.recipes||[]).length)h+='<div class="scroll"><table><tr><th class="l">Recipe</th><th class="l">Mode</th>'+(s.capLabel?`<th class="l">${esc(s.capLabel)}</th>`:'')+'<th class="l"></th></tr>'+s.recipes.map(r=>`<tr><td class="l">${esc(r.label)}</td><td class="l"><select data-adm="${id}" onchange="adSet('${id}','mode','${esc(r.key)}',this.value)">${modes.map((m,i)=>`<option value="${i}" ${r.mode==i?'selected':''}>${esc(m)}</option>`).join('')}</select></td>`+(s.capLabel?`<td class="l"><input type="number" step="0.5" min="0" style="width:5em" value="${r.cap==null?'':esc(r.cap)}" ${s.capMode!=null&&r.mode!=s.capMode?'disabled':''} onchange="adSet('${id}','cap','${esc(r.key)}',this.value)"></td>`:'')+`<td class="l sm dim">${esc(r.note||'')}</td></tr>`).join('')+'</table></div>';
+const nums=['finest','coarsest'].filter(k=>s[k]).map(k=>`<label>${esc(s[k].label)}<input type="number" step="0.1" style="width:6em" value="${s[k].value==null?'':esc(s[k].value)}" onchange="adSet('${id}','${k}','',this.value)"></label>`).join('');
+const knob=s.knob?`<label>${esc(s.knob.label)}<select onchange="adSet('${id}','knob','',this.value)">${(s.knob.options||[]).map((o,i)=>`<option value="${i}" ${s.knob.value==i?'selected':''}>${esc(o)}</option>`).join('')}</select></label>`:'';
+if(nums||knob)h+=`<div class="grid">${nums}${knob}</div>`}
+const p=c.compare;
+if(p){h+=`<h3>${esc(p.title||'Comparison')}</h3>`;
+(p.groups||[]).forEach(g=>{h+=`<div class="sm mid">${esc(g.name)}</div><div class="scroll"><table><tr>${(p.columns||[]).map(t=>`<th class="l">${esc(t)}</th>`).join('')}</tr>${(g.rows||[]).map(r=>'<tr>'+r.map(v=>`<td class="l">${esc(v)}</td>`).join('')+'</tr>').join('')}</table></div>`});
+if(!(p.groups||[]).length)h+='<div class="sm dim">Nothing to compare yet.</div>';
+if(p.file)h+=`<div class="row"><a class="btn" href="/api/addons/file?id=${encodeURIComponent(id)}&name=${encodeURIComponent(p.file)}" download>Download ${esc(p.file)}</a></div>`}
+return h}
+function adSet(id,field,key,value){post('/api/addons/do?id='+encodeURIComponent(id)+'&cmd=set&arg='+encodeURIComponent(field+':'+key+':'+value)).then(r=>{say(r.reply||(r.ok?'Saved':'Refused'),!!r.ok);loadAddons()})}
 function adEnable(id,on){post('/api/addons/enable?id='+encodeURIComponent(id)+'&on='+(on?1:0)).then(r=>{done(r,on?'Switched on':'Switched off');loadAddons()})}
 function adSave(id){const values={},options={};document.querySelectorAll('[data-ad="'+id+'"]').forEach(e=>{if(e.type=='password'&&!e.value)return;values[e.dataset.k]=e.type=='checkbox'?(e.checked?'1':'0'):e.value.trim()});
 document.querySelectorAll('[data-ado="'+id+'"]').forEach(e=>options[e.dataset.k]=e.checked);post('/api/addons/config',{id,values,options}).then(r=>{done(r,'Saved');loadAddons()})}

@@ -46,6 +46,7 @@
 #include "storage/Backup.h"
 #include "ui/Ui.h"
 #include "addons/AddonHost.h"
+#include "addons/AddonRules.h"
 #include "core/GrinderRegistry.h"
 
 using bbw::State;
@@ -3076,7 +3077,18 @@ bbw::addon::MachineState addonMachineState() {
   const bbw::State s = g_controller.state();
   m.brewing = g_controller.machineMayBeRunning() || s == bbw::State::STARTING_SHOT || s == bbw::State::BREWING ||
               s == bbw::State::BLOOMING || s == bbw::State::STOPPING_SHOT || s == bbw::State::POST_SHOT_DRIP;
-  m.scaleConnected = g_controller.status(millis()).scaleConnected;
+  const bbw::LiveStatus live = g_controller.status(millis());
+  m.scaleConnected = live.scaleConnected;
+  if (s == bbw::State::STARTING_SHOT) {
+    m.shotPhase = bbw::addon::MachineState::PHASE_STARTING;
+  } else if (s == bbw::State::BREWING || s == bbw::State::BLOOMING || s == bbw::State::STOPPING_SHOT) {
+    m.shotPhase = bbw::addon::MachineState::PHASE_POURING;
+  } else if (s == bbw::State::POST_SHOT_DRIP) {
+    m.shotPhase = bbw::addon::MachineState::PHASE_DRIPPING;
+  }
+  if (m.shotPhase != bbw::addon::MachineState::PHASE_NONE && live.shotTimeS > 0.0f) {
+    m.shotElapsedMs = static_cast<uint32_t>(live.shotTimeS * 1000.0f);
+  }
   if (g_controller.hasLastShot()) {
     const bbw::ShotRecord &last = g_controller.lastShot();
     m.lastShotId = last.id;
@@ -3151,6 +3163,27 @@ bool addonAdoptSetting(uint16_t recipeId, uint16_t steps) {
 void addonNextShotTarget(float targetG, uint16_t recipeId) {
   Lock lock;
   g_controller.setNextShotTarget(targetG, recipeId);
+}
+
+const char *addonRequestShotStart(uint16_t recipeId) {
+  bbw::addon::StartContext c;
+  c.webStartEnabled = netConfig().webStartEnabled;
+  c.updateBusy = bbw::updateBusy();
+  c.wantedRecipeId = recipeId;
+  {
+    Lock lock;
+    const bbw::LiveStatus st = g_controller.status(millis());
+    c.ready = st.state == bbw::State::READY || st.state == bbw::State::READY_TO_BREW;
+    c.dripOrResult = st.state == bbw::State::POST_SHOT_DRIP || st.state == bbw::State::SHOT_COMPLETE;
+    c.scaleConnected = st.scaleConnected;
+    c.cupRequired = st.cupRequired;
+    c.cupPresent = st.cupPresent;
+  }
+  c.activeRecipeId = activeRecipe().recipeId;
+  if (const char *why = bbw::addon::startRefusal(c)) return why;
+  noteActivity();
+  start();
+  return nullptr;
 }
 
 void addonSelectRecipe(uint16_t recipeId) {

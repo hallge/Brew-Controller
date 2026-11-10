@@ -102,7 +102,7 @@ void handleStatus() {
   {
     JsonArray caps = doc["capabilities"].to<JsonArray>();
     for (const char *c : {"status_v1", "shots_v1", "shot_data_v1", "shot_csv_v1", "grind_advice_v1",
-                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1", "coffee_taste_v1", "subscriptions_v1", "ambient_v1", "home_assistant_v1", "shot_room_v1", "grind_room_v1", "addons_v1"}) {
+                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1", "coffee_taste_v1", "subscriptions_v1", "ambient_v1", "home_assistant_v1", "shot_room_v1", "grind_room_v1", "addons_v1", "addons_v2"}) {
       caps.add(c);
     }
   }
@@ -3715,6 +3715,33 @@ void begin() {
     doc["ok"] = ok;
     doc["reply"] = reply;
     sendJson(doc, ok ? 200 : 400);
+  });
+  // GET /api/addons/file?id=&name=: one of the add-on's own files (a text file, such as a CSV it keeps
+  // through Host::appendFile). Only /addons/<id>/<name>: the name is checked, never a path.
+  server.on("/api/addons/file", HTTP_GET, []() {
+    if (busyBrewing()) return sendError(409, "not while a shot is running");
+    char path[64];
+    const char *problem = "";
+    const String id = server.arg("id"), name = server.arg("name");
+    if (!addons::filePath(id.c_str(), name.c_str(), path, sizeof(path), problem)) return sendError(400, problem);
+    if (!bbw::fileExists(path)) return sendError(404, "no such file");
+    File file = LittleFS.open(path, "r");
+    if (!file) return sendError(404, "no such file");
+    char disposition[96];
+    snprintf(disposition, sizeof(disposition), "attachment; filename=\"%s\"", name.c_str());
+    server.sendHeader("Content-Disposition", disposition);
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    const size_t nameLen = strlen(name.c_str());
+    const bool csv = nameLen >= 4 && strcmp(name.c_str() + nameLen - 4, ".csv") == 0;
+    server.send(200, csv ? "text/csv" : "text/plain", "");
+    for (;;) {
+      const size_t n = file.read(reinterpret_cast<uint8_t *>(g_logChunk), 1024);
+      if (n == 0) break;
+      g_logChunk[n] = '\0';
+      server.sendContent(g_logChunk);
+    }
+    file.close();
+    server.sendContent("");
   });
   server.on("/api/addons/forget", HTTP_POST, []() {
     if (busyBrewing()) return sendError(409, "not while a shot is running");

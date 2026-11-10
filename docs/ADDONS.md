@@ -42,7 +42,7 @@ starts the add-ons from), and adds the folder's `.cpp` files to the build. With 
 is empty.
 
 ```json
-{"id": "my-grinder", "name": "My grinder", "version": "1.0.0", "api": 1, "kind": "grinder",
+{"id": "my-grinder", "name": "My grinder", "version": "1.0.0", "api": 2, "kind": "grinder",
  "header": "MyGrinder.h", "factory": "bbw::addon::makeMyGrinder", "routes": ["/api/mygrinder/"]}
 ```
 
@@ -131,7 +131,13 @@ One grind is one event, because a grinder knows all of it at once:
 | `grinderRecipe` | the grinder's own recipe number (1-8), 0 if not known |
 | `filter` | the grinder's basket type |
 
-`ShotReport`: shot id, total time (start press to stop, pre-infusion included), yield, settled, aborted.
+`ShotReport`: shot id, total time (start press to stop, pre-infusion included), yield, settled, aborted, and
+(interface 2) the recipe, its target time and time basis, the pour time and first drop, `grindSeq` (the
+`GrindEvent::seq` of the grind the shot followed, 0 if none) and `advice`, a snapshot of the controller's
+grind advice for the shot's recipe worked out with this shot included: its verdict (none, hold, finer,
+coarser), the current and suggested setting in stored steps, microns per step, the sensitivity, whether the
+step was limited and whether the shot counted. `advice.valid` is false when the active recipe is not the
+shot's.
 
 ### What an add-on is handed: `Host`
 
@@ -139,10 +145,40 @@ One grind is one event, because a grinder knows all of it at once:
 | --- | --- |
 | `nowMs`, `epochS`, `log` | |
 | `config(key)` | its own settings only |
-| `machine()` | read only: power belief (on, off, unknown), warming up, a shot in hand, scale connected, the last shot's id, time, yield and age |
+| `machine()` | read only: power belief (on, off, unknown), warming up, a shot in hand, its phase (none, starting, pouring, dripping) and elapsed time, scale connected, the last shot's id, time, yield and age |
 | `grinder()` | the grinder set up here: model, unit, how a setting is read, its range |
 | `allocate(size)` | PSRAM, never freed; take it in `begin()` |
 | `fetchStart(FetchJob&)` | one HTTP(S) request on the network task (§4) |
+| `notice(text)` | one line on the Home and result screens; `""` takes it away, and it goes by itself after 15 minutes |
+| `chipFree()` | chip RAM free now, for work that should wait while it is short |
+| `requestShotStart(recipeId)` | asks the controller to start a shot (§5). Returns why it was refused, or null |
+| `appendFile`, `writeFile`, `fileSize`, `readFile` | its own files (§5) |
+
+### The card
+
+An add-on may describe extra content for its Add-ons card with `cardJson()`: a JSON object of at most 3 kB,
+with every label and value supplied by the add-on. The page draws it as given, and sends edits back through
+`command("set", "<field>:<key>:<value>")`.
+
+```json
+{"steer": {"title": "...", "note": "...",
+           "modes": ["Off", "Shadow", "Grinder", "Controller"],
+           "capMode": 2, "capLabel": "Cap (s)",
+           "recipes": [{"key": "2", "label": "Triple", "mode": 1, "cap": 3, "note": ""}],
+           "finest":   {"label": "Finest allowed gap (um)", "value": "60"},
+           "coarsest": {"label": "Coarsest allowed gap (um)", "value": ""},
+           "knob": {"label": "Knob press", "value": 0, "options": ["Arms the grind", "Starts the shot"]}},
+ "compare": {"title": "...", "file": "compare.csv", "columns": ["Method", "Shots", "Mean error"],
+             "groups": [{"name": "Coffee", "rows": [["Controller", "7", "1.2 s"]]}]}}
+```
+
+- `steer`: a mode switch for each recipe row (`mode` is an index into `modes`; the cap field is enabled only
+  in `capMode`), optional `finest` and `coarsest` number fields and a `knob` choice. Edits come back as
+  `mode:<recipe key>:<index>`, `cap:<recipe key>:<number>`, `finest::<number>`, `coarsest::<number>` and
+  `knob::<index>`.
+- `compare`: a table per group (a coffee, say) and a download of the file `file` from the add-on's own
+  folder (`GET /api/addons/file?id=&name=`, only that folder; text files).
+- The card shows nothing it was not given, and the whole card is hidden when no add-on is compiled in.
 
 ### What the controller does with a grind
 
@@ -206,7 +242,18 @@ meant to use, and the controller keeps to these rules for it:
 - web: only under its declared prefixes, only when switched on;
 - the controller: through the manager, which bounds every value (dose 5-40 g, settings within the grinder's
   range), changes nothing while a shot runs, and leaves the recipe alone;
-- shot feedback: only after the owner turns it on.
+- shot feedback: only after the owner turns it on;
+- starting a shot: `requestShotStart(recipeId)` goes through the controller's own start (the same path as
+  `/api/start`), and only while "Start from the web page" is on (off by default). It is also refused unless the
+  controller is ready with the scale connected, the active recipe is that one (it is never switched), no drip
+  or result screen is up, the cup check (if the recipe uses one) is met, and no firmware update is running.
+  The add-on keeps to one start per grind. An add-on can never stop a shot or press a bot otherwise. Because
+  the web API is unauthenticated, anything on the network that can reach an add-on's route could ask for a
+  start exactly as it could call `/api/start`: it gets no more than that and nothing without the switch;
+- files: only under `/addons/<its id>/`, names `[a-z0-9._-]` of at most 20 characters (no path, no `..`, no
+  other add-on's folder), 256 kB for all of an add-on's files, and never when less than 512 kB of the file
+  system would be free afterwards (the owner's shot curves come first). `fileSize` lets an add-on roll a file
+  over; `writeFile` replaces it. The files survive firmware updates and go into `/api/backup`.
 
 The web API is unauthenticated, add-on routes included: use it on a network you trust (`docs/API.md`).
 
@@ -222,6 +269,9 @@ None is planned yet.
 
 - `src/addons/Addon.h`: the interface.
 - `src/addons/AddonManager.h`: the registry and the grind policy (host-tested).
+- `src/addons/AddonRules.h`: the file-path, file-space and shot-start rules (pure, host-tested).
+- `src/addons/AddonAbi.h`: the plain C tables (`bbw_host_api`, `bbw_addon_api`) for a module boundary, declared
+  to match interface 2. No loader exists yet.
 - `src/addons/AddonHost.cpp`: the firmware's glue (Host, storage, `/api/addons`).
 - `src/addons/HttpWire.h`, `src/addons/NetGate.h`: the request on the wire, the rule between network jobs.
 - `src/platform/AddonNet.cpp` (board) and `emu/src/emu_addonnet.cpp` (emulator): the request itself.

@@ -182,6 +182,31 @@ size_t listFiles() {
     g_sizes[count++] = static_cast<uint32_t>(info.st_size);
   }
   closedir(dir);
+  // The add-ons' own files, /addons/<id>/<name> (Host::appendFile), one folder level down.
+  if (DIR *top = opendir("/littlefs/addons")) {
+    char folder[96];
+    while (struct dirent *d = readdir(top)) {
+      if (d->d_name[0] == '.' || strlen(d->d_name) > 32) continue;
+      snprintf(folder, sizeof(folder), "/littlefs/addons/%s", d->d_name);
+      struct stat dirInfo;
+      if (stat(folder, &dirInfo) != 0 || !S_ISDIR(dirInfo.st_mode)) continue;
+      if (DIR *sub = opendir(folder)) {
+        while (struct dirent *e = readdir(sub)) {
+          if (count >= FILES_MAX || e->d_name[0] == '.') continue;
+          snprintf(full, sizeof(full), "%s/%s", folder, e->d_name);
+          struct stat info;
+          char name[BACKUP_NAME_MAX + 2];
+          const int len = snprintf(name, sizeof(name), "/addons/%s/%s", d->d_name, e->d_name);
+          if (len <= 0 || static_cast<size_t>(len) > BACKUP_NAME_MAX) continue;
+          if (stat(full, &info) != 0 || !S_ISREG(info.st_mode)) continue;
+          memcpy(g_names[count], name, static_cast<size_t>(len) + 1);
+          g_sizes[count++] = static_cast<uint32_t>(info.st_size);
+        }
+        closedir(sub);
+      }
+    }
+    closedir(top);
+  }
 #endif
   return count;
 }
@@ -402,6 +427,14 @@ const char *applyRestore() {
     // A file: written beside the one there and swapped in.
     char tmp[BACKUP_NAME_MAX + 4];
     snprintf(tmp, sizeof(tmp), "%s.rs", name);
+    if (strncmp(name, "/addons/", 8) == 0) {  // an add-on's file: its folder first
+      char folder[BACKUP_NAME_MAX + 1];
+      strncpy(folder, name, sizeof(folder) - 1);
+      folder[sizeof(folder) - 1] = '\0';
+      *strrchr(folder, '/') = '\0';
+      LittleFS.mkdir("/addons");
+      LittleFS.mkdir(folder);
+    }
     File f = LittleFS.open(tmp, "w");
     bool ok = static_cast<bool>(f);
     uint32_t left = length;
