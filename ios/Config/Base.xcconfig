@@ -1,0 +1,6 @@
+// Shared build settings. Secrets.xcconfig (not in git) is written by CI from environment variables
+// (scripts/write-secrets.sh) and fills these in.
+DEVELOPMENT_TEAM =
+CURRENT_PROJECT_VERSION = 1
+
+#include? "Secrets.xcconfig"

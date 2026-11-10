@@ -1,0 +1,142 @@
+name: BrewController
+# XcodeGen project for the iOS Phase 0 spike (research/ios-app-feasibility.md §5.3, §9).
+# Generate with:  cd ios && xcodegen generate
+#
+# The firmware's portable core is compiled from where it lives, by path, never copied:
+#   ../src/core/BrewController.cpp and ../lib/EspressoScaleProtocol/src/*.cpp
+# Swift C++ interop is on for the app and its unit tests only (they import CoreSession.h through a
+# bridging header); the UI tests are plain Swift.
+options:
+  bundleIdPrefix: com.hallge
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+
+configFiles:
+  Debug: Config/Base.xcconfig
+  Release: Config/Base.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1"
+    CODE_SIGN_STYLE: Automatic
+    CLANG_CXX_LANGUAGE_STANDARD: c++17
+    CLANG_CXX_LIBRARY: libc++
+
+targets:
+  BrewController:
+    type: application
+    platform: iOS
+    sources:
+      - path: BrewControllerApp
+      - path: BrewCoreBridge
+      - path: Sim
+        buildPhase: none
+      # The firmware's core, by path (group "FirmwareCore" in Xcode).
+      - path: ../src/core/BrewController.cpp
+        group: FirmwareCore
+      - path: ../lib/EspressoScaleProtocol/src
+        group: FirmwareCore/EspressoScaleProtocol
+        includes:
+          - "*.cpp"
+    info:
+      path: BrewControllerApp/Info.plist
+      properties:
+        CFBundleDisplayName: Brew Controller
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # Standard system cryptography only: nothing to declare on App Store Connect.
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen: {}
+        NSBluetoothAlwaysUsageDescription: Brew Controller talks to your Acaia Lunar scale and your SwitchBot Bot over Bluetooth to pull a shot to its target weight.
+        NSBluetoothPeripheralUsageDescription: Brew Controller talks to your Acaia Lunar scale and your SwitchBot Bot over Bluetooth to pull a shot to its target weight.
+        UIBackgroundModes:
+          - bluetooth-central
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hallge.brewcontroller
+        PRODUCT_NAME: BrewController
+        PRODUCT_MODULE_NAME: BrewController
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ENABLE_PREVIEWS: YES
+        SKIP_INSTALL: NO
+        # Swift C++ interop, for the bridging header only.
+        SWIFT_OBJC_BRIDGING_HEADER: BrewControllerApp/BrewController-Bridging-Header.h
+        SWIFT_OBJC_INTEROP_MODE: objcxx
+        OTHER_SWIFT_FLAGS: "$(inherited) -Xcc -std=c++17"
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)
+          - $(SRCROOT)/BrewCoreBridge
+          - $(SRCROOT)/../src
+          - $(SRCROOT)/../lib/EspressoScaleProtocol/src
+      configs:
+        Release:
+          PROVISIONING_PROFILE_SPECIFIER: $(APP_PROFILE)
+
+  # Hosted in the app: the C++ is compiled once, into the app, and the tests call it there.
+  BrewCoreTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: BrewCoreTests
+      # The constants are compiled into the tests too, so the tests need not import the app module.
+      - path: BrewControllerApp/BridgeConstants.swift
+    dependencies:
+      - target: BrewController
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hallge.brewcontroller.coretests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/BrewController.app/BrewController
+        BUNDLE_LOADER: $(TEST_HOST)
+        SWIFT_OBJC_BRIDGING_HEADER: BrewCoreTests/BrewCoreTests-Bridging-Header.h
+        SWIFT_OBJC_INTEROP_MODE: objcxx
+        OTHER_SWIFT_FLAGS: "$(inherited) -Xcc -std=c++17"
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)
+          - $(SRCROOT)/BrewCoreBridge
+          - $(SRCROOT)/../src
+          - $(SRCROOT)/../lib/EspressoScaleProtocol/src
+
+  BrewControllerUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: BrewControllerUITests
+    dependencies:
+      - target: BrewController
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hallge.brewcontroller.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: BrewController
+
+schemes:
+  BrewController:
+    build:
+      targets:
+        BrewController: all
+        BrewCoreTests: [test]
+        BrewControllerUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - BrewCoreTests
+        - BrewControllerUITests
+    archive:
+      config: Release
+
+  BrewControllerRelease:
+    build:
+      targets:
+        BrewController: all
+    archive:
+      config: Release
