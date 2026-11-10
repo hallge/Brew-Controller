@@ -214,7 +214,15 @@ MQTT, not the controller's API. Matter or HomeKit as a bridge isn't open to thir
 3. Ship only the owner's code: the Lunar and the SwitchBot first, other scales added as they are
    rewritten.
 
-A lawyer should confirm this before Phase 1 ends (⚖, as in the risk register). The tests' golden
+A lawyer should confirm this before Phase 1 ends (⚖, as in the risk register).
+
+Phase 0 work so far (2026-11-10):
+- `research/obbw-provenance.md`: the exact list of what derives from OBBW.
+- `research/obbw-exception-request.md`: the draft request to OBBW's authors.
+- `research/obbw-clean-spec.md`: the spec the clean code was written from.
+- `src/core/StopMath.h` and `lib/ScaleWire` (Acaia): the clean replacements, selected with
+  `BBW_CLEAN=1 test/host/run.sh`, and shown identical to the OBBW code by
+  `test/host/test_clean.inc`. The tests' golden
 records make a clean rewrite safe: the new code must give identical readings.
 
 ### 4.2 Third-party devices, names, hardware the reviewer lacks
