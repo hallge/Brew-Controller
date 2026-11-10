@@ -1,4 +1,5 @@
 // The Brew panel shell: toolbar, tabs, routing, live status, toast (see CONTRACT.md).
+// A summary app: Summary first, then read-only drill-ins. Setup is in the controller's own page.
 // Home Assistant creates <brew-panel> and sets `hass`, `narrow`, `route` and `panel` on it.
 import { BrewApi, firstEntry } from "./lib/api.js";
 import { BrewStore } from "./lib/section.js";
@@ -6,19 +7,15 @@ import { sharedStyles } from "./lib/styles.js";
 import { stateWords, esc } from "./lib/format.js";
 
 const TABS = [
-  { id: "home", title: "Home", icon: "mdi:home" },
+  { id: "summary", title: "Summary", icon: "mdi:view-dashboard" },
   { id: "shots", title: "Shots", icon: "mdi:coffee" },
   { id: "insights", title: "Insights", icon: "mdi:chart-scatter-plot", optional: true },
-  { id: "coffees", title: "Coffees", icon: "mdi:sack" },
-  { id: "recipes", title: "Recipes", icon: "mdi:book-open-variant" },
-  { id: "grinder", title: "Grinder", icon: "mdi:grain" },
-  { id: "machine", title: "Machine", icon: "mdi:coffee-maker" },
-  { id: "subscriptions", title: "Subscriptions", icon: "mdi:truck-delivery", optional: true },
-  { id: "discover", title: "Discover", icon: "mdi:compass", optional: true },
-  { id: "community", title: "Community", icon: "mdi:account-group", optional: true },
-  { id: "settings", title: "Settings", icon: "mdi:cog" },
-  { id: "logs", title: "Logs", icon: "mdi:text-box-search", optional: true },
+  // `file`: the module in sections/ when it is not named after the tab (0.4.0 read-only tabs)
+  { id: "coffees", title: "Coffees", icon: "mdi:sack", file: "shelf" },
+  { id: "subscriptions", title: "Subscriptions", icon: "mdi:truck-delivery", optional: true, file: "deliveries" },
 ];
+// Older links and bookmarks (0.3.x tabs) land on the Summary.
+const OLD_TABS = new Set(["home", "recipes", "grinder", "machine", "discover", "community", "settings", "logs"]);
 const USER_DATA_KEY = "brew_by_weight_hidden_tabs";
 const CONTROLLER_PANEL = "/local_brew_controller";
 
@@ -80,7 +77,8 @@ class BrewPanel extends HTMLElement {
         <span class="menu"></span>
         <div class="title">Brew Controller</div>
         <span class="pill" id="state" title="Machine state"></span>
-        <button class="link ctl" id="ctl" title="Start, stop, power, pairing and firmware are in the controller's own page">Open the controller</button>
+        <button class="link ctl" id="tabsbtn" title="Choose the tabs shown to you" aria-label="Tabs shown"><ha-icon icon="mdi:tune-variant"></ha-icon></button>
+        <button class="link ctl" id="ctl" title="Brewing, setup, pairing and firmware are in the controller's own page">Open the controller</button>
       </div>
       <nav id="tabs"></nav>
       <main id="content"><div class="empty">Loading…</div></main>
@@ -93,6 +91,20 @@ class BrewPanel extends HTMLElement {
     this.shadowRoot.querySelector(".menu").appendChild(menu);
     this._menu = menu;
     this.shadowRoot.getElementById("ctl").onclick = () => this.openController();
+    this.shadowRoot.getElementById("tabsbtn").onclick = () => this._tabsMenu();
+  }
+
+  // The optional tabs, per Home Assistant user (the 0.3 Settings tab did this).
+  _tabsMenu() {
+    const old = this.shadowRoot.getElementById("tabsmenu");
+    if (old) { old.remove(); return; }
+    const m = document.createElement("div");
+    m.id = "tabsmenu";
+    m.innerHTML = `<div class="hint">Tabs shown to you</div>` + this.optionalTabs.map((t) =>
+      `<label class="c"><input type="checkbox" data-id="${t.id}" ${this._hidden.has(t.id) ? "" : "checked"}> ${esc(t.title)}</label>`).join("");
+    m.querySelectorAll("input").forEach((i) => i.onchange = () =>
+      this.setHiddenTabs([...m.querySelectorAll("input")].filter((x) => !x.checked).map((x) => x.dataset.id)));
+    this.shadowRoot.querySelector(".toolbar").appendChild(m);
   }
 
   _visibleTabs() { return TABS.filter((t) => !(t.optional && this._hidden.has(t.id))); }
@@ -110,18 +122,20 @@ class BrewPanel extends HTMLElement {
 
   async _route() {
     if (!this.api) return;
-    const h = (location.hash || "#home").slice(1);
-    const [id, ...rest] = h.split("/");
+    const h = (location.hash || "#summary").slice(1);
+    let [id, ...rest] = h.split("/");
+    if (OLD_TABS.has(id)) { id = "summary"; rest = []; }
     const arg = rest.join("/") || null;
-    const tab = this._visibleTabs().find((t) => t.id === id) ? id : "home";
+    const tab = this._visibleTabs().find((t) => t.id === id) ? id : "summary";
     if (tab === this._tab && arg === this._arg && this._section) { return; }
     this._tab = tab;
     this._arg = arg;
     this._markTab();
+    const file = TABS.find((t) => t.id === tab).file || tab;
     let el;
     try {
-      await import(new URL(`./sections/${tab}.js`, import.meta.url).href);
-      el = document.createElement(`brew-${tab}`);
+      await import(new URL(`./sections/${file}.js`, import.meta.url).href);
+      el = document.createElement(`brew-${file}`);
     } catch (e) {
       el = document.createElement("div");
       el.className = "card";
@@ -177,7 +191,6 @@ class BrewPanel extends HTMLElement {
       try { this._hidden = new Set(JSON.parse(localStorage.getItem(USER_DATA_KEY) || "[]")); } catch (e2) { this._hidden = new Set(); }
     }
   }
-  /** Settings tab calls this. */
   async setHiddenTabs(ids) {
     this._hidden = new Set(ids);
     try { await this._hass.callWS({ type: "frontend/set_user_data", key: USER_DATA_KEY, value: [...this._hidden] }); }
@@ -223,6 +236,10 @@ main { padding: 16px; max-width: 1400px; width: 100%; margin: 0 auto; flex: 1; }
 :host([narrow]) main { padding: 8px; }
 :host([narrow]) nav a span { display: none; }
 :host([narrow]) nav a.on span { display: inline; }
+#tabsmenu { position: absolute; right: 12px; top: calc(var(--header-height, 56px) - 4px); z-index: 5; display: flex; flex-direction: column; gap: 8px;
+  background: var(--card-background-color, #fff); color: var(--primary-text-color); border: 1px solid var(--divider-color); border-radius: 12px;
+  padding: 12px 16px; box-shadow: 0 4px 16px rgba(0,0,0,.25); font-size: 14px; }
+#tabsbtn ha-icon { --mdc-icon-size: 20px; }
 #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(120px); transition: transform .2s;
   background: var(--primary-text-color); color: var(--primary-background-color); padding: 10px 16px; border-radius: 8px; z-index: 10; max-width: 90vw; }
 #toast.on { transform: translateX(-50%) translateY(0); }

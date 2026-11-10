@@ -70,7 +70,19 @@
       "subs_due_soon": {"name": "Subscriptions due soon"},
       "backflush_since": {"name": "Shots since backflush"},
       "descale_since": {"name": "Shots since descale"},
-      "grinder_clean_since": {"name": "Shots since grinder clean"}
+      "grinder_clean_since": {"name": "Shots since grinder clean"},
+      "shots_today": {"name": "Shots today"},
+      "last_shot_stop_target": {"name": "Last shot stop target"},
+      "last_shot_rating": {"name": "Last shot rating"},
+      "room_shift": {"name": "Room effect on brew time"},
+      "scale_battery": {"name": "Scale battery"},
+      "bags_unopened": {"name": "Unopened bags"},
+      "bags_on_the_way": {"name": "Bags on the way"},
+      "supplies_left": {"name": "Supplies left"},
+      "next_delivery": {"name": "Next delivery"},
+      "last_coffee_rating": {"name": "Last coffee rating"},
+      "firmware_version": {"name": "Firmware version"},
+      "subs_monthly_spend": {"name": "Subscriptions per month"}
     },
     "binary_sensor": {
       "scale_connected": {"name": "Scale connected"},
@@ -79,7 +91,11 @@
       "backflush_due": {"name": "Backflush due"},
       "descale_due": {"name": "Descale due"},
       "grinder_clean_due": {"name": "Grinder clean due"},
-      "grind_reminder_due": {"name": "Grind reminder"}
+      "grind_reminder_due": {"name": "Grind reminder"},
+      "machine_power": {"name": "Machine power"},
+      "power_bot_paired": {"name": "Power bot paired"},
+      "scale_resting": {"name": "Scale resting"},
+      "bag_frozen": {"name": "Bag in the freezer"}
     },
     "button": {
       "start_shot": {"name": "Start shot"},

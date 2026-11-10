@@ -141,12 +141,24 @@ There is also a custom integration in `integrations/homeassistant` (copy `custom
 
 ## 6. The Brew Controller panel, and the controller's own page
 
-The custom integration (from 0.3.0) adds a **Brew Controller** panel to Home Assistant's sidebar: the
-controller's interface rebuilt in Home Assistant's style, with every feature that does not operate the
-hardware (shots, insights, coffees, recipes, grinder, upkeep, subscriptions, discover, community,
-settings, logs). It works in the Home Assistant app and away from home. What it may ask the controller
-is an allowlist; hardware actions are refused and stay in the controller's own page. See
-`integrations/homeassistant/README.md`.
+The custom integration adds a **Brew Controller** panel to Home Assistant's sidebar. From 0.4.0 it is
+a summary app:
+- the machine now, the last shot and today's shots;
+- grind advice, with the room-temperature correction and the reminder;
+- machine power and its schedule, the scale and bot links;
+- the bean shelf, subscriptions, maintenance, coffee ratings and the controller's health.
+
+The Shots, Insights, Coffees and Subscriptions tabs go deeper. **Nothing is set up in Home
+Assistant.** The panel offers only the everyday actions:
+- rate a shot;
+- set the advised grind;
+- bag finished, opened or arrived;
+- a delivery arrived or skipped;
+- upkeep done.
+
+Everything else (coffees, recipes, grinder, settings, sharing, pairing, the schedule) is done in the
+controller's own page, which the panel links to. It works in the Home Assistant app and away from
+home. What it may ask the controller is an allowlist. See `integrations/homeassistant/README.md`.
 
 ### The controller's own page as a full-screen panel
 

@@ -13,7 +13,8 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from . import proxy
-from .api import build_extra, build_snapshot, error_message, normalize_host, shot_summary
+from .api import (build_extra, build_snapshot, build_summary, error_message, normalize_host,
+                  room_effect, shot_summary)
 from .client import ControllerClient
 from .const import DOMAIN
 
@@ -21,8 +22,9 @@ _LOGGER = logging.getLogger(__name__)
 
 STATUS_INTERVAL = timedelta(seconds=5)
 SLOW_INTERVAL_S = 60
+UPDATE_INTERVAL_S = 3600   # the firmware version changes only with an update
 SHOT_KEYS = ("last_shot_time_s", "last_shot_weight_g", "last_shot_grind", "ambient_rh_pct", "ambient_temp_c")
-GRIND_KEYS = ("advised_grind", "advised_action", "shot_noise_s", "drift_s_per_day")
+GRIND_KEYS = ("advised_grind", "advised_action", "shot_noise_s", "drift_s_per_day", "room_shift_s", "room_attrs")
 EVENT_SHOT = f"{DOMAIN}_shot"
 
 
@@ -34,6 +36,7 @@ class BrewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.write_lock = asyncio.Lock()
         self.raw: dict[str, Any] = {}       # last good answer per slow endpoint
         self._slow_at = 0.0
+        self._update_at = -UPDATE_INTERVAL_S
         self._force_slow = True
         self._last_shot_id: Any = None
 
@@ -54,6 +57,10 @@ class BrewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data = build_snapshot(status, self.raw.get("shots"), self.raw.get("grind"))
         data.update(build_extra(self.raw.get("library"), self.raw.get("maintenance"),
                                 self.raw.get("subs"), self.raw.get("grind"), _today()))
+        data.update(room_effect(self.raw.get("grind")))
+        data.update(build_summary(self.raw.get("library"), self.raw.get("subs"), self.raw.get("power"),
+                                  self.raw.get("ratings"), self.raw.get("update"), self.raw.get("shots"),
+                                  _today(), int(time.time()), _tz(), self.raw.get("grind")))
         # A failed optional read must not blank the last known values.
         if self.data:
             if self.raw.get("shots") is None:
@@ -69,12 +76,16 @@ class BrewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _refresh_slow(self) -> None:
         reads = {
-            "shots": ("/api/shots", {"limit": 20}),
+            "shots": ("/api/shots", {"limit": 50}),   # enough for a day's count
             "grind": ("/api/grind", None),
             "library": ("/api/library", None),
             "maintenance": ("/api/maintenance", None),
             "subs": ("/api/subscriptions", None),
+            "power": ("/api/power", None),
+            "ratings": ("/api/coffee/ratings", None),
         }
+        if time.monotonic() - self._update_at >= UPDATE_INTERVAL_S:
+            reads["update"] = ("/api/update", None)
         results = await asyncio.gather(*(self._get(p, q) for p, q in reads.values()))
         for key, value in zip(reads, results):
             if value is not None:
@@ -83,11 +94,13 @@ class BrewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # /api/shots answers 409 while a shot runs: keep the last list
                 pass
         self._slow_at = time.monotonic()
+        if "update" in reads:
+            self._update_at = self._slow_at
         self._force_slow = False
 
     async def async_write(self, path: str, body: Any = None, query: dict[str, Any] | None = None) -> Any:
         """A write from an entity or service: checked by the proxy rules, then a refresh."""
-        decision = proxy.check("POST", path, query, body)
+        decision = proxy.check("POST", path, query, body, scope="entity")
         if not decision.allowed:
             raise HomeAssistantError(decision.reason)
         async with self.write_lock:
@@ -105,6 +118,11 @@ class BrewCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if status != 200:
             raise HomeAssistantError(error_message(answer, f"The controller answered {status}"))
         await self.async_request_refresh()
+
+
+def _tz():
+    from homeassistant.util import dt as dt_util
+    return dt_util.get_default_time_zone()
 
 
 def _today() -> tuple[int, int, int]:
