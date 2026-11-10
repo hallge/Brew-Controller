@@ -1,7 +1,8 @@
 // This project's replacement for Open Brew by Weight's protocols/Registry.cpp:
 // only the protocols that have a driver in src/core/ScaleLink.h are listed.
-// The other files in this directory are unmodified copies from
-// Advanced-Shot-Stopper/libraries/EspressoScaleBLE/src (AGPL-3.0-or-later).
+// The other files in this directory are copies from
+// Advanced-Shot-Stopper/libraries/EspressoScaleBLE/src (AGPL-3.0-or-later),
+// unmodified except Acaia.cpp and ScaleFeatures.h (see the notice at their top).
 // To add a scale: copy its protocols/<Name>.cpp here, list it below, and give
 // it a driver in ScaleLink.h.
 #include "ScaleProtocol.h"

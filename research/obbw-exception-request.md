@@ -84,6 +84,5 @@ Brew Controller, github.com/hallge/Brew-Controller
   comment, with it.
 - If only request 1 is granted, use `StopMath.h` and `lib/ScaleWire` (route B in
   `research/obbw-provenance.md` §5) and keep the constants.
-- Either way, first fix the "unmodified" wording and add the AGPL §5(a) notices on the two modified
-  files (`research/obbw-provenance.md` §1). The letter says the files are vendored, so they should
-  be marked as changed.
+- The two modified vendored files now carry AGPL §5(a) notices, and the "unmodified" wording is
+  corrected (`research/obbw-provenance.md` §1).

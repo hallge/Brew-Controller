@@ -32,11 +32,12 @@ Why it matters: an App Store build can't carry third-party AGPL code (`research/
 | `Felicita.cpp`, `Eclair.cpp`, `Decent.cpp`, `Difluid.cpp`, `Myscale.cpp`, `WeighMyBru.cpp`, `Varia.cpp`, `Eureka.cpp` | 71–110 each | Verbatim | One table per scale family |
 | `Registry.cpp` | 43 | **Own** | Its header says it replaces OBBW's `protocols/Registry.cpp` and lists only the families this project drives |
 
-**Action, whatever the route:**
-- README §12 and `RESEARCH.md` §7 call these files "unmodified", but two of them were changed in
+**Done 2026-11-10:**
+- README §12 and `RESEARCH.md` §7 called these files "unmodified", but two of them were changed in
   72f7ee9.
 - AGPL §5(a) asks that a modified file carry a notice saying so, with a date.
-- Add that notice to `ScaleFeatures.h` and `Acaia.cpp`, and correct the two documents.
+- `ScaleFeatures.h` and `Acaia.cpp` now carry that notice, and README §12, `docs/RESEARCH.md`,
+  `CONTRIBUTING.md`, `Registry.cpp` and the risk register say so.
 
 ## 2. Adapted: `src/core/BbwAlgorithms.h`
 
