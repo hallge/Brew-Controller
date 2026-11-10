@@ -92,8 +92,8 @@ anyway.
 | Route | Scale protocol layer | Stop maths | Ideas and numbers |
 | --- | --- | --- | --- |
 | A: the authors grant an app-store permission | Ship as is, with notices | Ship as is | Covered |
-| B: no permission | `lib/ScaleWire` (Acaia today; the other families to follow) | `StopMath.h` | Keep, on the lawyer's advice |
+| B: clean room (**the owner's choice, 2026-11-10**) | `lib/ScaleWire`, all ten tables | `StopMath.h` | Keep, on the lawyer's advice |
 
-Under route B, the eight other scale families are still OBBW's files. Until each has a clean
-replacement, an App Store build supports the Acaia scales only (Lunar 2021+, Pyxis, legacy).
-That is the MVP's scale anyway.
+Under route B, a `BBW_CLEAN` build uses nothing from `lib/EspressoScaleProtocol` and doesn't
+compile the OBBW branch of `BbwAlgorithms.h` (done 2026-11-10; `research/clean-room-record.md`).
+The firmware keeps the OBBW code until the owner switches it.

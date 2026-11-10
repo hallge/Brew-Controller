@@ -76,7 +76,14 @@ inline int acaiaFrame(Rng &r, uint8_t *d, bool legacy) {
   return n;
 }
 
-inline uint64_t acaiaTableDigest(const ScaleProtocol &p, uint64_t seed) {
+using FrameFn = int (*)(Rng &r, uint8_t *d);
+
+inline int acaiaLegacyFrame(Rng &r, uint8_t *d) { return acaiaFrame(r, d, true); }
+inline int acaiaCurrentFrame(Rng &r, uint8_t *d) { return acaiaFrame(r, d, false); }
+
+// Every table field, every command, and 30,000 frames through both parsers.
+inline uint64_t tableDigest(const ScaleProtocol &p, uint64_t seed, FrameFn frame, int &weights,
+                            int &timers) {
   Digest d;
   d.text(p.id); d.text(p.debugLabel); d.text(p.readUuid); d.text(p.writeUuid);
   d.u32(static_cast<uint32_t>(p.namePrefixCount));
@@ -102,24 +109,194 @@ inline uint64_t acaiaTableDigest(const ScaleProtocol &p, uint64_t seed) {
   }
   for (int n = -1; n <= 24; ++n) d.flag(p.supportedPacketLength(n));
   Rng r(seed);
-  const bool legacy = strcmp(p.id, "acaia_legacy") == 0;
-  int weights = 0, timers = 0;
+  weights = 0;
+  timers = 0;
   for (int i = 0; i < 30000; ++i) {
-    uint8_t frame[24];
-    const int n = acaiaFrame(r, frame, legacy);
+    uint8_t buf[24];
+    const int n = frame(r, buf);
     float w = 0.0f;
-    const bool hasWeight = p.parseWeight(frame, n, &w);
+    const bool hasWeight = p.parseWeight(buf, n, &w);
     d.flag(hasWeight);
     if (hasWeight) { d.f32(w); ++weights; }
     uint32_t t = 0;
-    const bool hasTimer = p.parseTimer(frame, n, &t);
+    const bool hasTimer = p.parseTimer != nullptr && p.parseTimer(buf, n, &t);
     d.flag(hasTimer);
     if (hasTimer) { d.u32(t); ++timers; }
   }
+  return d.h;
+}
+
+inline uint64_t acaiaTableDigest(const ScaleProtocol &p, uint64_t seed) {
+  const bool legacy = strcmp(p.id, "acaia_legacy") == 0;
+  int weights = 0, timers = 0;
+  const uint64_t h =
+      tableDigest(p, seed, legacy ? acaiaLegacyFrame : acaiaCurrentFrame, weights, timers);
   // The input set has to reach the interesting paths, or the digest proves little.
   CHECK(weights > 1500);
   CHECK(legacy ? timers == 0 : timers > 1500);
-  return d.h;
+  return h;
+}
+
+// Frames shaped like each other family's, mostly valid, some damaged
+// (research/obbw-clean-spec.md §6 gives the shapes). Parsers only ever see
+// up to SCALE_MAX_PACKET_LENGTH bytes, as from a notification.
+
+inline void fillRandom(Rng &r, uint8_t *d) {
+  for (int i = 0; i < 24; ++i) d[i] = static_cast<uint8_t>(r.next());
+}
+inline int pickLength(Rng &r, int usual) {
+  return r.chance(90) ? usual : static_cast<int>(r.below(SCALE_MAX_PACKET_LENGTH + 1));
+}
+inline uint8_t xorOf(const uint8_t *d, int from, int to) {  // bytes from..to inclusive
+  uint8_t x = 0;
+  for (int i = from; i <= to; ++i) x = static_cast<uint8_t>(x ^ d[i]);
+  return x;
+}
+inline uint8_t digit(Rng &r) { return static_cast<uint8_t>('0' + r.below(r.chance(97) ? 10 : 12)); }
+
+inline int felicitaFrame(Rng &r, uint8_t *d) {
+  fillRandom(r, d);
+  const int n = pickLength(r, 18);
+  if (r.chance(85)) {
+    static const uint8_t signs[] = {'-', '+', ' ', 0x00, '*'};
+    d[2] = signs[r.below(5)];
+    d[3] = static_cast<uint8_t>('0' + r.below(r.chance(90) ? 2 : 10));
+    for (int i = 4; i <= 8; ++i) d[i] = digit(r);
+    if (r.chance(60)) {
+      for (int i = 9; i <= 13; ++i) d[i] = digit(r);
+    } else {
+      d[9] = static_cast<uint8_t>(r.below(r.chance(90) ? 3 : 120));
+      d[10] = static_cast<uint8_t>(r.below(r.chance(90) ? 60 : 70));
+      d[11] = static_cast<uint8_t>(r.below(r.chance(90) ? 10 : 15));
+    }
+  }
+  return n;
+}
+
+inline int eclairFrame(Rng &r, uint8_t *d) {
+  fillRandom(r, d);
+  const int n = pickLength(r, 10);
+  if (r.chance(85)) {
+    d[0] = r.chance(95) ? 'W' : 'w';
+    const int32_t mg = r.chance(95) ? static_cast<int32_t>(r.below(14000000)) - 2000000
+                                    : static_cast<int32_t>(r.next());
+    for (int i = 0; i < 4; ++i) d[1 + i] = static_cast<uint8_t>(static_cast<uint32_t>(mg) >> (8 * i));
+    if (r.chance(90)) d[9] = xorOf(d, 1, 8);
+  }
+  return n;
+}
+
+inline int decentFrame(Rng &r, uint8_t *d) {
+  fillRandom(r, d);
+  const int n = r.chance(90) ? (r.chance(50) ? 7 : 10) : static_cast<int>(r.below(21));
+  if (r.chance(85) && n >= 2) {
+    d[0] = r.chance(95) ? 0x03 : 0x04;
+    const uint32_t kind = r.below(10);
+    d[1] = kind < 5 ? 0xca : kind < 9 ? 0xce : 0xcb;
+    const uint32_t check = r.below(10);
+    if (check < 6) d[n - 1] = xorOf(d, 0, n - 2);
+    else if (check < 9) d[n - 1] = 0;
+  }
+  return n;
+}
+
+inline int difluidFrame(Rng &r, uint8_t *d) {
+  fillRandom(r, d);
+  const int n = r.chance(90) ? (r.chance(50) ? 19 : 20) : static_cast<int>(r.below(21));
+  if (r.chance(85) && n >= 1) {
+    d[0] = 0xdf;
+    d[1] = r.chance(95) ? 0xdf : 0xde;
+    d[2] = r.chance(90) ? 0x03 : 0x01;
+    d[3] = r.chance(90) ? 0x00 : 0x05;
+    d[4] = static_cast<uint8_t>(r.chance(85) ? 13 + r.below(3) : r.below(20));
+    d[5] = r.chance(80) ? 0x00 : (r.chance(50) ? 0xff : static_cast<uint8_t>(r.next()));
+    d[6] = static_cast<uint8_t>(r.chance(80) ? r.below(2) : r.next());
+    if (r.chance(90)) {
+      uint8_t sum = 0;
+      for (int i = 0; i < n - 1; ++i) sum = static_cast<uint8_t>(sum + d[i]);
+      d[n - 1] = sum;
+    }
+  }
+  return n;
+}
+
+inline int myscaleFrame(Rng &r, uint8_t *d) {
+  fillRandom(r, d);
+  const int n = r.chance(90) ? 15 + static_cast<int>(r.below(6)) : static_cast<int>(r.below(21));
+  if (r.chance(85)) {
+    d[3] = static_cast<uint8_t>(r.chance(90) ? r.below(16) * 0x11 & 0xf0 : r.next());
+    d[4] = static_cast<uint8_t>(r.chance(85) ? r.below(0x99) : r.next());
+  }
+  return n;
+}
+
+inline int weighMyBruFrame(Rng &r, uint8_t *d) {
+  fillRandom(r, d);
+  const int n = pickLength(r, 20);
+  if (r.chance(85)) {
+    d[0] = 0x03;
+    d[1] = r.chance(95) ? 0x0b : 0x0a;
+    d[6] = r.chance(30) ? '-' : (r.chance(50) ? '+' : static_cast<uint8_t>(r.next()));
+    d[7] = static_cast<uint8_t>(r.chance(90) ? r.below(0x10) : r.next());
+    if (r.chance(90)) d[19] = xorOf(d, 0, 18);
+  }
+  return n;
+}
+
+inline int variaFrame(Rng &r, uint8_t *d) {
+  fillRandom(r, d);
+  const bool timer = r.chance(35);
+  const int n = r.chance(90) ? (timer ? 6 : 7) : static_cast<int>(r.below(21));
+  if (r.chance(85) && n >= 1) {
+    d[0] = r.chance(95) ? 0xfa : 0xfb;
+    d[1] = timer ? (r.chance(95) ? 0x87 : 0x01) : (r.chance(95) ? 0x01 : 0x87);
+    d[3] = static_cast<uint8_t>(r.chance(70) ? r.below(0x20) : r.next());
+    if (r.chance(90) && n >= 3) d[n - 1] = xorOf(d, 1, n - 2);
+  }
+  return n;
+}
+
+inline int eurekaFrame(Rng &r, uint8_t *d) {
+  fillRandom(r, d);
+  const int n = pickLength(r, 11);
+  if (r.chance(85)) {
+    d[0] = 0xaa;
+    d[1] = r.chance(95) ? 0x09 : 0x08;
+    d[2] = r.chance(95) ? 0x41 : 0x42;
+    d[6] = static_cast<uint8_t>(r.chance(95) ? r.below(2) : r.below(256));
+  }
+  return n;
+}
+
+struct FamilyCase {
+  const char *name;
+  const ScaleProtocol *table;
+  FrameFn frame;
+  uint32_t seed;
+  uint64_t digest;  // recorded from the default build (Open Brew by Weight's tables)
+  bool timer;       // the family reports a timer
+};
+
+inline void familyDigests() {
+  const FamilyCase cases[] = {
+      {"felicita", &kScaleProtocolFelicita, felicitaFrame, 0xfe11c1u, 0x401fc6fb72e6bc20ull, true},
+      {"eclair", &kScaleProtocolEclair, eclairFrame, 0xec1a1u, 0x8d406fee5fb9919dull, true},
+      {"decent", &kScaleProtocolDecent, decentFrame, 0xdece1u, 0x3fcdd4de91f08cd4ull, false},
+      {"difluid", &kScaleProtocolDifluid, difluidFrame, 0xd1f1u, 0x8a93dda06b8efb2dull, false},
+      {"myscale", &kScaleProtocolMyscale, myscaleFrame, 0x3a1eu, 0xc886b0b426da396full, false},
+      {"weighmybru", &kScaleProtocolWeighMyBru, weighMyBruFrame, 0x3b70u, 0xb946819c0e3dbd20ull, false},
+      {"varia", &kScaleProtocolVaria, variaFrame, 0x7a71au, 0x916029a49c730da9ull, true},
+      {"eureka", &kScaleProtocolEureka, eurekaFrame, 0xe07e4au, 0xe8613d2c0e36c70bull, false},
+  };
+  for (const FamilyCase &c : cases) {
+    int weights = 0, timers = 0;
+    const uint64_t h = tableDigest(*c.table, c.seed, c.frame, weights, timers);
+    printf("  %-10s digest %016llx (%d weights, %d timers)\n", c.name,
+           static_cast<unsigned long long>(h), weights, timers);
+    CHECK(h == c.digest);
+    CHECK(weights > 1500);
+    CHECK(c.timer ? timers > 1500 : timers == 0);
+  }
 }
 
 inline uint64_t helperDigest() {
@@ -326,4 +503,5 @@ static void testCleanReplacements() {
   CHECK(legacy == LEGACY_DIGEST);
   CHECK(current == CURRENT_DIGEST);
   CHECK(helpers == HELPER_DIGEST);
+  cleantest::familyDigests();
 }

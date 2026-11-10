@@ -1,5 +1,8 @@
 # Draft: request to Open Brew by Weight's authors
 
+**Optional since 2026-11-10:** the owner chose to replace every OBBW-derived part clean-room
+(`research/clean-room-record.md`). The letter is kept in case the owner wants OBBW's blessing anyway.
+
 Dated 2026-11-10. A draft for the project owner to read, change and send themself, by e-mail or as
 a GitHub issue or discussion on OBBW's repository. Claude has not sent it. A lawyer should look at
 the permission wording (the block below) before it is offered (⚖). It is modelled on the

@@ -5,23 +5,29 @@
 #
 # BBW_CLEAN=1 test/host/run.sh builds with the clean replacements for Open Brew
 # by Weight's code (core/StopMath.h, lib/ScaleWire; research/obbw-provenance.md).
-# The scale families not yet rewritten still come from lib/EspressoScaleProtocol.
+# Each scale family comes from lib/ScaleWire/src once its file is there, and
+# from lib/EspressoScaleProtocol/src until then.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 CXX=${CXX:-g++}
 mkdir -p .pio/host
 OBBW=lib/EspressoScaleProtocol/src
-FAMILIES="$OBBW/Felicita.cpp $OBBW/Decent.cpp $OBBW/Difluid.cpp $OBBW/Eclair.cpp
-  $OBBW/Myscale.cpp $OBBW/WeighMyBru.cpp $OBBW/Varia.cpp $OBBW/Eureka.cpp $OBBW/Registry.cpp"
+CLEAN=lib/ScaleWire/src
+NAMES="Felicita Decent Difluid Eclair Myscale WeighMyBru Varia Eureka Registry"
 if [ "${BBW_CLEAN:-0}" = "1" ]; then
-  FLAGS="-DBBW_CLEAN -Ilib/ScaleWire/src"
-  PROTOCOLS="lib/ScaleWire/src/Acaia.cpp lib/ScaleWire/src/Common.cpp $FAMILIES"
+  FLAGS="-DBBW_CLEAN -I$CLEAN"
+  PROTOCOLS="$CLEAN/Acaia.cpp $CLEAN/Common.cpp"
+  for n in $NAMES; do
+    if [ -f "$CLEAN/$n.cpp" ]; then PROTOCOLS="$PROTOCOLS $CLEAN/$n.cpp"; else PROTOCOLS="$PROTOCOLS $OBBW/$n.cpp"; fi
+  done
   OUT=.pio/host/bbw_tests_clean
 else
   FLAGS="-I$OBBW"
-  PROTOCOLS="$OBBW/Acaia.cpp $OBBW/ScaleProtocolCommon.cpp $FAMILIES"
+  PROTOCOLS="$OBBW/Acaia.cpp $OBBW/ScaleProtocolCommon.cpp"
+  for n in $NAMES; do PROTOCOLS="$PROTOCOLS $OBBW/$n.cpp"; done
   OUT=.pio/host/bbw_tests
 fi
+echo "scale tables: $PROTOCOLS"
 # shellcheck disable=SC2086
 $CXX -std=c++17 -O1 -Wall -Wextra -Isrc $FLAGS \
   test/host/test_main.cpp src/core/BrewController.cpp $PROTOCOLS \

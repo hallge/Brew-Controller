@@ -14,7 +14,8 @@ How it was made (keep this record):
 - **The tests** check that old and new behave the same.
 
 This is a two-party clean-room process in the usual sense, but both parties are AI agents working
-for the same owner. A lawyer decides whether that is enough (⚖).
+for the same owner. A lawyer decides whether that is enough (⚖). Who saw what, for every party, is
+in `research/clean-room-record.md`.
 
 The Acaia byte values are protocol facts. They are also published under MIT by AcaiaArduinoBLE
 (Tate Mazer), `pyacaia` and `aioacaia`, and in `docs/RESEARCH.md` §1.
@@ -32,7 +33,8 @@ The Acaia byte values are protocol facts. They are also published under MIT by A
   Eureka) still compile from `lib/EspressoScaleProtocol/src` in this mode. They reach their own
   headers through their directory, and the helper functions defined in `ScaleWire/src/Common.cpp`
   through the linker. The struct layouts and function signatures below must therefore match
-  exactly. This is transitional; each family gets its own clean file later.
+  exactly. This is transitional: `test/host/run.sh` takes each family from `lib/ScaleWire/src`
+  as soon as its file exists there (§6), and from `lib/EspressoScaleProtocol/src` until then.
 
 ## 2. `src/core/StopMath.h` (namespace `bbw`, header-only, C++17, no STL containers)
 
@@ -350,3 +352,236 @@ Internal helpers go in an unnamed namespace. Only the two tables have external l
     `BBW_CLEAN` build must produce the same constant.
 - **The helpers, by digest:** every function in §3.2 over fixed and random inputs, in the same way.
 - **The whole existing suite runs in both modes.**
+
+## 6. The other eight families (added 2026-11-10)
+
+One file per family in `lib/ScaleWire/src`: `Felicita.cpp`, `Eclair.cpp`, `Decent.cpp`,
+`Difluid.cpp`, `Myscale.cpp`, `WeighMyBru.cpp`, `Varia.cpp`, `Eureka.cpp`. Each:
+
+- includes `"ScaleProtocol.h"` and defines one `const ScaleProtocol` table with external linkage,
+  named as in §3.2;
+- keeps its helpers and byte arrays in an unnamed namespace;
+- copies command bytes out with `scaleCopyPayload`, ignores `arg`, and returns false for any op not
+  listed.
+
+### 6.1 Rules shared by all eight
+
+- **Field order** is the `ScaleProtocol` member order in §3.2. "No timer" means `parseTimer` is
+  `nullptr`. "No init writes" means `initWrites` is `nullptr` and the count is 0.
+- **Arithmetic.** Each weight is made exactly as stated: an integer value, converted to `float`,
+  then divided or multiplied by a `float` constant (the spec says which). Dividing by `100.0f` and
+  multiplying by `0.01f` give different bits, so follow the word used. A negative sign is applied
+  after the scaling, by negating the float, unless the spec says the integer is signed.
+- **Validity.** Every weight parser returns `scaleValidWeight(weight)` as its last step. As with
+  Acaia, a parser need not leave its output alone on a false return.
+- **XOR "over bytes a..b"** means `scaleXorBytes` over those bytes, both ends included.
+- Parsers are called with the notification's bytes and length (at most 20). They must not read
+  beyond `length` bytes, except at the fixed indices this spec gives for a fixed length.
+
+### 6.2 Felicita (`kScaleProtocolFelicita`)
+
+| Field | Value |
+| --- | --- |
+| id, debugLabel | `"felicita"`, `"Felicita Arc detected"` |
+| read, write UUID | `"ffe1"`, `"ffe1"` |
+| prefixes | `"FELIC"` |
+| features | `SCALE_CORE_FEATURES` \| CommandAudibleFeedback; volume 0/0; heartbeat 0; silence 5000; interval 0 |
+| init writes | one: label `"weight_timer_mode"`, bytes `32` |
+| requireAdvertisedName | false |
+
+- **Supported length:** 18 only.
+- **Commands:** Tare `54`, StartTimer `52`, StopTimer `53`, ResetTimer `43` (one byte each).
+- **Weight:**
+  - The length must be 18. Byte 2 is the sign: `'-'`, `'+'`, `' '` or `0x00`; anything else fails.
+  - Bytes 3..8 must all be ASCII digits. Read them as a six-digit decimal integer of hundredths.
+  - weight = (that integer, as float) / `100.0f`, negated when byte 2 is `'-'`.
+- **Timer:**
+  - It fails unless the weight parse of the same frame succeeds (validity check included).
+  - Then, if `scaleFelicitaAsciiTimer` succeeds, that is the time.
+  - Otherwise, if bytes 9, 10, 11 pass `scaleLooksLikeAcaiaTimer`, the time is
+    `scaleAcaiaTimerToMs` of them.
+  - Otherwise false.
+
+### 6.3 AtomHeart Eclair (`kScaleProtocolEclair`)
+
+| Field | Value |
+| --- | --- |
+| id, debugLabel | `"atomheart_eclair"`, `"AtomHeart Eclair detected"` |
+| read UUID | `"AD736C5F-BBC9-1F96-D304-CB5D5F41E160"` |
+| write UUID | `"4F9A45BA-8E1B-4E07-E157-0814D393B968"` |
+| prefixes | `"ECLAI"` |
+| features | `SCALE_CORE_FEATURES`; volume 0/0; heartbeat 0; silence 5000; interval 0 |
+| init writes | none |
+| requireAdvertisedName | false |
+
+- **Supported length:** 10 only.
+- **Commands:** Tare `54 01 01`, StartTimer `53 01 01`, StopTimer `45 01 01`, ResetTimer `52 01 01`.
+- **Weight:** the length must be 10, byte 0 must be `'W'` (0x57), and the XOR over bytes 1..8 must
+  equal byte 9. Bytes 1..4 are a little-endian two's-complement 32-bit integer of milligrams.
+  weight = (that integer, as float) / `1000.0f`.
+- **Timer:** fails unless the weight parse succeeds. Then the time in ms is bytes 5..8 read
+  little-endian, unsigned (`scaleReadUint32LittleEndian`), and the result is true.
+
+### 6.4 Decent (`kScaleProtocolDecent`)
+
+| Field | Value |
+| --- | --- |
+| id, debugLabel | `"decent"`, `"Decent Scale detected"` |
+| read, write UUID | `"fff4"`, `"36f5"` |
+| prefixes | `"Decent Scale"`, `"EspressiScale"` |
+| features | Weight \| Tare \| Heartbeat; volume 0/0; heartbeat 5000; silence 5000; interval 0 |
+| init writes | none |
+| requireAdvertisedName | false |
+| timer | none |
+
+- **Supported length:** 7 or 10.
+- **Commands:** Tare `03 0f 00 00 00 01 0d`, Heartbeat `03 0a 03 ff ff 00 0a`.
+- **Weight:**
+  - The length must be 7 or 10, byte 0 must be `03`, and byte 1 must be `ca` or `ce`.
+  - The last byte is a check byte. When it is not zero, the XOR over bytes 0..length−2 must
+    equal it. A zero check byte is accepted without checking.
+  - Bytes 2, 3 are a big-endian two's-complement 16-bit integer of tenths.
+    weight = (that integer, as float) / `10.0f`.
+
+### 6.5 DiFluid Microbalance (`kScaleProtocolDifluid`)
+
+| Field | Value |
+| --- | --- |
+| id, debugLabel | `"difluid"`, `"DiFluid Microbalance detected"` |
+| read, write UUID | `"aa01"`, `"aa01"` |
+| prefixes | `"Microbalance"` |
+| features | Weight \| Tare \| Heartbeat; volume 0/0; heartbeat 2000; silence 5000; interval 0 |
+| init writes | two, in order: `"unit_gram"` `df df 01 04 01 00 c4`; `"auto_notify"` `df df 01 00 01 01 c1` |
+| requireAdvertisedName | false |
+| timer | none |
+
+- **Supported length:** 19 or 20.
+- **Commands:** Tare `df df 03 02 01 01 c5`, Heartbeat `df df 03 05 00 c6`.
+- **Weight** (checks in this order; any failure returns false):
+  - the length is at least 19, and bytes 0 and 1 are both `df`;
+  - the sum of bytes 0..length−2, modulo 256, equals the last byte;
+  - byte 2 is `03`, byte 3 is `00`, byte 4 (a data length) is at least 13, and the frame length
+    is at least 6 + byte 4;
+  - bytes 5..8 are a big-endian two's-complement 32-bit integer of tenths.
+    weight = (that integer, as float) / `10.0f`.
+
+### 6.6 MyScale (`kScaleProtocolMyscale`)
+
+| Field | Value |
+| --- | --- |
+| id, debugLabel | `"myscale"`, `"MyScale detected"` |
+| read, write UUID | `"ffb2"`, `"ffb1"` |
+| prefixes | `"blackcoffee"`, `"my_scale"`, `"MY_SCALE"` |
+| features | Weight \| Tare; volume 0/0; heartbeat 0; silence 5000; interval 0 |
+| init writes | none |
+| requireAdvertisedName | false |
+| timer | none |
+
+- **Supported length:** 15 to 20 (`SCALE_MAX_PACKET_LENGTH`) inclusive.
+- **Commands:** Tare only, 20 bytes: `ac 40`, then 16 × `00`, then `d2 d2`.
+- **Weight:** the length must be at least 15. There is no header or check byte.
+  - The sign is the high nibble of byte 2: negative when it is `8` or `c`.
+  - The value is unsigned: the low nibble of byte 3, then bytes 4, 5, 6 (a 28-bit big-endian
+    integer of milligrams).
+  - weight = (value, as float) / `1000.0f`, negated when the sign says so.
+
+### 6.7 WeighMyBru (`kScaleProtocolWeighMyBru`)
+
+| Field | Value |
+| --- | --- |
+| id, debugLabel | `"weighmybru"`, `"WeighMyBru detected"` |
+| read UUID | `"6E400002-B5A3-F393-E0A9-E50E24DCCA9E"` |
+| write UUID | `"6E400003-B5A3-F393-E0A9-E50E24DCCA9E"` |
+| prefixes | `"WeighMyBru"` |
+| features | Weight \| Tare; volume 0/0; heartbeat 0; silence 8000; interval 0 |
+| init writes | none |
+| requireAdvertisedName | false |
+| timer | none |
+
+The read and write UUIDs are as given, though they look swapped against the usual Nordic UART
+naming. Keep them.
+
+- **Supported length:** 20 only.
+- **Commands:** Tare `03 0a 01 01 00 09`.
+- **Weight:** the length must be 20, byte 0 `03`, byte 1 `0b`, and the XOR over bytes 0..18 must
+  equal byte 19. Bytes 7, 8, 9 are an unsigned 24-bit big-endian integer of hundredths.
+  weight = (that integer, as float) / `100.0f`, negated when byte 6 is `'-'`.
+
+### 6.8 Varia AKU (`kScaleProtocolVaria`)
+
+| Field | Value |
+| --- | --- |
+| id, debugLabel | `"varia"`, `"Varia AKU detected"` |
+| read, write UUID | `"fff1"`, `"fff2"` |
+| prefixes | `"AKU MINI SCALE"`, `"VARIA AKU"`, `"Varia AKU"`, `"AKU SCALE"` |
+| features | Weight \| Tare \| StartTimer \| StopTimer \| ResetTimer; volume 0/0; heartbeat 0; silence 5000; interval 0 |
+| init writes | none |
+| requireAdvertisedName | **true** |
+
+- **Supported length:** 6 or 7.
+- **Commands:** Tare `fa 82 01 01 82`, StartTimer `fa 88 01 01 88`, StopTimer `fa 89 01 02 8a`,
+  ResetTimer `fa 8a 01 03 88`.
+- **Check rule:** the length is at least 3, and the XOR over bytes 1..length−2 equals the last byte.
+- **Weight:**
+  - The length must be 7, byte 0 `fa`, byte 1 `01`, and the check rule must hold.
+  - The sign is bit 4 (0x10) of byte 3: set means negative.
+  - The value is the low nibble of byte 3, then bytes 4, 5 (a 20-bit big-endian integer of
+    hundredths).
+  - Make the signed integer first (value, or −value), convert it to float, and **multiply** by
+    `0.01f`.
+- **Timer:** the length must be 6, byte 0 `fa`, byte 1 `87`, and the check rule must hold.
+  Bytes 3, 4 are a big-endian unsigned 16-bit count of seconds. ms = seconds × 1000. Return true.
+
+### 6.9 Eureka Precisa (`kScaleProtocolEureka`)
+
+| Field | Value |
+| --- | --- |
+| id, debugLabel | `"eureka"`, `"Eureka Precisa detected"` |
+| read, write UUID | `"fff1"`, `"fff2"` |
+| prefixes | `"CFS-9002"`, `"LSJ-001"` |
+| features | Weight \| Tare \| StartTimer \| StopTimer \| ResetTimer; volume 0/0; heartbeat 0; silence 5000; interval 0 |
+| init writes | none |
+| requireAdvertisedName | **true** |
+| timer | none |
+
+- **Supported length:** 11 only.
+- **Commands:** Tare `aa 02 31 31 00 00`, StartTimer `aa 02 33 33 00 00`, StopTimer
+  `aa 02 34 34 00 00`, ResetTimer `aa 02 35 35 00 00`.
+- **Weight:** the length must be 11, bytes 0..2 `aa 09 41`, and byte 6 (the sign) 0 or 1; any
+  other sign byte fails. Bytes 7, 8 are an unsigned 16-bit **little-endian** integer of tenths.
+  weight = (that integer, as float) × `0.1f` (multiply), negated when byte 6 is 1.
+
+### 6.10 Worked examples (test vectors)
+
+Bytes not shown are `00`. Each must give exactly the result shown.
+
+| Family | Length | Bytes | Weight | Timer |
+| --- | --- | --- | --- | --- |
+| Felicita | 18 | `01 02 2b 30 30 33 36 32 35 30 30 32 35 31` | 36.25 | 25100 ms |
+| Felicita | 18 | `01 02 41 30 30 33 36 32 35` | false (sign byte) | false |
+| Eclair | 10 | `57 9a 8d 00 00 a8 61 00 00 de` | 36.25 | 25000 ms |
+| Eclair | 10 | `57 9a 8d 00 00 a8 61 00 00 df` | false (XOR) | false |
+| Decent | 7 | `03 ca 01 6b 00 00 a3` | 36.3 | none |
+| Decent | 7 | `03 ce ff f6 00 00 00` | −1.0 (check byte 0, so not checked) | none |
+| DiFluid | 19 | `df df 03 00 0d 00 00 01 6b`, then 9 × `00`, then `3a` | 36.3 | none |
+| MyScale | 15 | `00 00 80 00 00 8d 9a` | −36.25 | none |
+| WeighMyBru | 20 | `03 0b 00 00 00 00 2b 00 0e 29`, then 9 × `00`, then `04` | 36.25 | none |
+| Varia | 7 | `fa 01 03 00 0e 29 25` | 36.25 (3625 × 0.01f) | false |
+| Varia | 6 | `fa 87 02 00 19 9c` | false | 25000 ms |
+| Eureka | 11 | `aa 09 41 00 00 00 00 a3 01 00 00` | 41.9 (419 × 0.1f) | none |
+| Eureka | 11 | `aa 09 41 00 00 00 02 a3 01 00 00` | false (sign byte) | none |
+
+### 6.11 Registry
+
+`lib/ScaleWire/src/Registry.cpp` is the project's own `Registry.cpp`, moved by the coordinator
+(not the implementer), so that a clean build uses nothing from `lib/EspressoScaleProtocol`. It
+lists the ten tables in this order: AcaiaLegacy, Acaia, Felicita, Eclair, Decent, Difluid, Myscale,
+WeighMyBru, Varia, Eureka.
+
+### 6.12 Tests
+
+`test/host/test_clean.inc` (`familyDigests`) runs each family table over 30,000 frames shaped like
+that family's, mostly valid and some damaged. It folds every field, command and parser output into
+a 64-bit FNV-1a digest, and checks it against the digest recorded from the default build.
+`BBW_CLEAN=1 test/host/run.sh` must print the same digests. The whole suite must pass in both
+builds, with `testShotRecordGolden` and `testScaleLinkKeepsLunarData` included.

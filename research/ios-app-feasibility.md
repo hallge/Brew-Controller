@@ -23,13 +23,16 @@ points still to be settled on a device are listed in §12 and become Phase 0 of 
   itself, which still needs testing.
 - **Blocker: the licence.** The repository is AGPL-3.0 because it contains Open Brew by Weight code
   (`lib/EspressoScaleProtocol`, and the cut prediction and offset learning in `BbwAlgorithms.h`).
-  GPL-family code from other copyright holders and the App Store's terms don't mix (§4.1). Either
-  OBBW's authors agree to a licence exception, or those parts are rewritten clean before anything
-  ships. Everything else in `src/core` is the owner's own and can be dual-licensed.
+  GPL-family code from other copyright holders and the App Store's terms don't mix (§4.1). The
+  owner's ruling (2026-11-10): every OBBW-derived part is redeveloped clean-room before anything
+  ships, and a licence exception from OBBW's authors is optional. Everything else in `src/core` is
+  the owner's own and can be dual-licensed.
 
-**The recommendation:** build the app as a second controller beside the board, not as its end.
-Both use one C++ core, one data format and one community library, and an owner can move from one
-to the other with a backup file. The board stays the choice for an appliance that runs unattended.
+**The recommendation:** build the app as a standalone controller, an alternative to the board.
+**One setup has one controller, the app or a board, never both on one brew bot.** Both use one
+C++ core, one data format and one community library, and an owner can move from one to the other
+with a backup file. The board stays the primary choice, and the one for an appliance that runs
+unattended.
 The app is the choice for an owner who already has a spare iPhone or iPad and doesn't want to build
 hardware.
 
@@ -89,7 +92,17 @@ remove the board, which is the point of this brief, so it is only mentioned here
    bot lets go. If the app dies, the arm stays down and the pump runs to the machine's limit. The
    firmware already handles "arm down, link lost" (README §10), but there the board doesn't vanish.
    The app should support `hold_button` only after Phase 0 measures the background behaviour, and
-   should tell the owner the risk plainly.
+   should tell the owner the risk plainly. Phase 0 settles it this way (the audit's open risk):
+   - **Measure the backstop, don't assume it.** On each machine profile, time how long the pump
+     runs with nobody stopping it, and record it in the profile. The board's own `TimeLimit::MACHINE`
+     claim is unverified too (audit C10).
+   - **A hold the bot ends by itself.** If the brew bot's firmware can run a timed hold (press,
+     hold for N s, release), the app sends the hold with N set to the shot's hard limit. A killed
+     app then leaves a hold that ends on its own. Whether SwitchBot can do this is a spike item.
+   - **Otherwise `hold_button` stays refused in the app**, with the reason on screen. Momentary
+     (`press_toggle`) machines don't have this failure: the machine's own time-out ends the shot.
+   - **On relaunch,** a shot left open by a killed app is closed as `manual_stop_needed`, and the
+     app shows it first.
 
 This is no worse than the board on its two real failure paths (a flat bot, a lost link). It is
 worse on one new path, the app being killed, so the safety statement needs a line for the app.
@@ -190,7 +203,7 @@ MQTT, not the controller's API. Matter or HomeKit as a bridge isn't open to thir
 ### 4.1 Licence (the blocker)
 
 - The repository is AGPL-3.0-or-later. `LICENSE` names Felipe Urzúa and contributors.
-  `lib/EspressoScaleProtocol` is OBBW code vendored unmodified, and `BbwAlgorithms.h` adapts OBBW's
+  `lib/EspressoScaleProtocol` is OBBW code vendored (two files lightly modified, now marked), and `BbwAlgorithms.h` adapts OBBW's
   cut prediction and offset learning (README §12, `research/license-and-risk-register.md`).
 - The FSF's position is that App Store usage terms conflict with the GPL. VLC was pulled in 2011 on
   one copyright holder's complaint
@@ -201,7 +214,13 @@ MQTT, not the controller's API. Matter or HomeKit as a bridge isn't open to thir
 - The owner can dual-license their own code (most of `src/core`) for the App Store build. OBBW's
   code can't be relicensed without its authors.
 
-**Options, in order:**
+**The route, decided by the owner on 2026-11-10:** replace every OBBW-derived part, clean-room. A
+spec author, who may read OBBW's code, writes only operating requirements and test vectors. A
+separate implementer that is never given OBBW's code or paths builds from them. Who saw what is
+kept in `research/clean-room-record.md`. Asking OBBW's authors for an exception (option 1 below) is
+now optional.
+
+The options as first listed:
 
 1. Ask OBBW's authors for an App Store exception, an "additional permission" under AGPL §7.
 2. Replace the OBBW parts.
@@ -445,8 +464,8 @@ BrewControllerApp (SwiftUI, iOS 18+, iPhone + iPad)
   contributor. A later option: the board signs a "key handover" record so that history follows.
 - **Moving app → board.** The app exports a `.bbwbak` format 1 that the board's `/api/restore`
   accepts. The record limits stay at the board's sizes until the reader handles both (§5.3).
-- **Both owned at once.** Only one controls the devices at a time. The app's Devices screen warns
-  when a bot or the scale is already connected elsewhere, which shows as "not advertising".
+- **One controller per setup** (owner's ruling, 2026-11-10): the app or a board, never both on one
+  brew bot, so there is no shared-bot handling.
 
 ## 9. Test strategy
 
@@ -480,7 +499,8 @@ quote.
 
 ### Phase 0: settle what decides it (3–4 weeks)
 
-- **Licence:** write to OBBW's authors (§4.1), and list exactly which lines derive from OBBW.
+- **Licence:** list exactly which lines derive from OBBW, and replace each clean-room (§4.1). Writing
+  to OBBW's authors is optional.
 - **A bare-bones device spike.** This is the one prototype this plan asks for, to be approved first.
   It connects a Lunar and a SwitchBot and measures:
   - notification-to-press latency and its jitter in the foreground;
@@ -543,15 +563,15 @@ quote.
 
 | Risk | Likelihood | Impact | What is done |
 | --- | --- | --- | --- |
-| OBBW authors decline; clean rewrite of scale tables needed | M | M | Lunar + SwitchBot first (owner's code); tables rewritten one by one against golden tests |
+| Clean-room rewrite judged not clean enough | L | H | Spec author and implementer kept apart, exposure recorded (`research/clean-room-record.md`); identical outputs shown by digests and golden tests; lawyer review |
 | Backgrounded shot not supervised reliably | H | M | Foreground-only start; machine time-out fallback; `hold_button` gated; documented |
+| App killed mid-shot on a `hold_button` machine | M | H | Refused unless the bot can time its own hold; each machine's backstop measured (§3.1) |
 | Stop jitter on iOS worse than measured on the board | M | M | Phase 0 measures; write-without-response; offset learning; go/no-go gate |
 | SwitchBot timers can't be set as hoped / break the power belief | M | L | Shortcuts and notification fallbacks; HA |
 | App Review asks for hardware or rejects background mode | M | M | Demo mode, video, precise notes; background mode justified by shot supervision |
 | Acaia firmware change breaks the protocol | L | H | Same risk as the board; Acaia SDK as fallback; driver tests |
 | C++ interop friction (build times, previews, Xcode updates) | M | L | Interop confined to one bridge module; core stays plain C++ |
 | Core drift between firmware and app | L | M | One source tree, both built on CI |
-| Two controllers on one set of devices | L | M | One central per bot; Devices screen warns |
 | Owner leaves the app in a pocket, not at the machine | M | L | Range warnings; "be present" notice |
 
 ## 12. Still to be measured or confirmed (Phase 0)
