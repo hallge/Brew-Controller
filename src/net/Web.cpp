@@ -3033,7 +3033,6 @@ bool idleForUpdate() {
 }
 
 char g_updateError[96];
-char g_moduleUploadError[96];  // an add-on module upload (POST /api/addons/module)
 bool g_uploadOwnsUpdate = false;  // the Update under way is this upload's, not a GitHub install's
 
 void handleUpdateInfo() {
@@ -3798,12 +3797,14 @@ void begin() {
   });
   // POST /api/addons/module (multipart): a module file from a local build (scripts/build_module.py).
   server.on("/api/addons/module", HTTP_POST, []() {
-    if (g_moduleUploadError[0]) return sendError(400, g_moduleUploadError);
+    if (!bbw::addonloader::uploadStored()) {
+      const char *why = bbw::addonloader::uploadError();
+      return sendError(400, why[0] ? why : "no module file came with the request");
+    }
     sendOk();
   }, []() {
     HTTPUpload &upload = server.upload();
     if (upload.status == UPLOAD_FILE_START) {
-      g_moduleUploadError[0] = '\0';
       bbw::addonloader::uploadBegin(idleForUpdate());
     } else if (upload.status == UPLOAD_FILE_WRITE) {
       bbw::addonloader::uploadWrite(upload.buf, upload.currentSize);
@@ -3811,14 +3812,12 @@ void begin() {
       char id[32];
       const char *problem = "";
       if (!bbw::addonloader::uploadEnd(id, sizeof(id), problem)) {
-        strlcpy(g_moduleUploadError, problem, sizeof(g_moduleUploadError));
         LOGW("addon modules: upload refused: %s", problem);
       } else {
         LOGI("addon modules: %s stored by upload; loads at the next restart", id);
       }
     } else if (upload.status == UPLOAD_FILE_ABORTED) {
       bbw::addonloader::uploadAbort();
-      strlcpy(g_moduleUploadError, "the upload was interrupted", sizeof(g_moduleUploadError));
     }
   });
 #endif

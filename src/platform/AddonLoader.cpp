@@ -47,8 +47,29 @@ constexpr const char *DOWNLOAD_TMP = "/addons/download.tmp";
 constexpr size_t FILE_MAX = mod::HEADER_SIZE + mod::MODULE_MAX_ELF;
 constexpr size_t SUMS_MAX = 4096;
 
-Module g_modules[MAX_MODULES];
 size_t g_count = 0;
+
+// What a job on the network task is asked to do.
+struct Job {
+  enum Kind : uint8_t { CHECK, INSTALL } kind;
+  char id[32];
+  Source source;
+};
+
+// Everything that is not tiny lives in PSRAM, taken the first time it is needed (no module files and
+// nobody asking: nothing is taken): the public firmware's static chip RAM stays what it was.
+struct Heap {
+  Module modules[MAX_MODULES];
+  Delivery delivery;   // what the page sees; guarded by g_mutex
+  Job job;
+  char upError[96];
+  char unresolved[48];
+};
+Heap *g_heap = nullptr;
+Heap &heap() {
+  if (!g_heap) g_heap = bigNew<Heap>();
+  return *g_heap;
+}
 
 // ---------------------------------------------------------------- crash guard store --
 
@@ -116,14 +137,13 @@ const Export EXPORTS[] = {
     {"sqrtf", reinterpret_cast<const void *>(static_cast<float (*)(float)>(&sqrtf))},
 };
 
-char g_unresolved[48];
 
 uintptr_t resolve(const char *name) {
   if (name) {
     for (const Export &e : EXPORTS) {
       if (strcmp(e.name, name) == 0) return reinterpret_cast<uintptr_t>(e.address);
     }
-    if (!g_unresolved[0]) strlcpy(g_unresolved, name, sizeof(g_unresolved));
+    if (!heap().unresolved[0]) strlcpy(heap().unresolved, name, sizeof(heap().unresolved));
   }
   return 0;
 }
@@ -181,13 +201,13 @@ void load(Module &m, const char *path) {
   } else {
     g_guard.loading(m.id, millis());
     Loaded *loaded = static_cast<Loaded *>(bigAlloc(sizeof(Loaded)));
-    g_unresolved[0] = '\0';
+    heap().unresolved[0] = '\0';
     elf_set_symbol_resolver(resolve);
     esp_elf_init(&loaded->elf);
     const int rc = esp_elf_relocate(&loaded->elf, file + mod::HEADER_SIZE, header.elfSize);
     if (rc != 0) {
       char text[sizeof(m.problem)];
-      if (g_unresolved[0]) snprintf(text, sizeof(text), "it needs %s, which a module may not use", g_unresolved);
+      if (heap().unresolved[0]) snprintf(text, sizeof(text), "it needs %s, which a module may not use", heap().unresolved);
       else snprintf(text, sizeof(text), "the loader refused it (%d)", rc);
       setProblem(m, State::REFUSED, text);
       esp_elf_deinit(&loaded->elf);
@@ -221,7 +241,7 @@ void listFiles() {
     if (g_count >= MAX_MODULES) break;
     char id[32];
     if (!mod::idFromAssetName(e->d_name, id, sizeof(id))) continue;
-    Module &m = g_modules[g_count++];
+    Module &m = heap().modules[g_count++];
     m = Module();
     strlcpy(m.id, id, sizeof(m.id));
     char path[64];
@@ -329,21 +349,15 @@ bool finalize(const char *tmp, char *idOut, size_t idSize, const char *&problem)
 
 File g_upFile;
 bool g_upOpen = false;
+bool g_upStored = false;
 size_t g_upSize = 0;
-char g_upError[96];
 
 // ---------------------------------------------------------------- delivery --
 
 SemaphoreHandle_t g_mutex = nullptr;
-Delivery g_delivery;       // what the page sees; guarded by g_mutex
 ReleaseAssets *g_assets;   // PSRAM, from the last check
 char *g_sums;              // SUMS_MAX, PSRAM
 volatile bool g_jobBusy = false;
-struct Job {
-  enum Kind : uint8_t { CHECK, INSTALL } kind;
-  char id[32];
-  Source source;
-} g_job;
 
 void lock() {
   if (!g_mutex) g_mutex = xSemaphoreCreateMutex();
@@ -353,8 +367,8 @@ void unlock() { xSemaphoreGive(g_mutex); }
 
 void setStatus(Phase phase, const char *message) {
   lock();
-  g_delivery.phase = phase;
-  if (message) strlcpy(g_delivery.message, message, sizeof(g_delivery.message));
+  heap().delivery.phase = phase;
+  if (message) strlcpy(heap().delivery.message, message, sizeof(heap().delivery.message));
   unlock();
 }
 
@@ -452,9 +466,9 @@ void runCheck(const Source &src) {
     ++out.offerCount;
   }
   lock();
-  g_delivery.checkedEpoch = out.checkedEpoch;
-  g_delivery.offerCount = out.offerCount;
-  for (size_t i = 0; i < out.offerCount; ++i) g_delivery.offers[i] = out.offers[i];
+  heap().delivery.checkedEpoch = out.checkedEpoch;
+  heap().delivery.offerCount = out.offerCount;
+  for (size_t i = 0; i < out.offerCount; ++i) heap().delivery.offers[i] = out.offers[i];
   unlock();
   char message[112];
   if (out.offerCount == 0) snprintf(message, sizeof(message), "%s has no add-on modules", g_assets->tag);
@@ -516,11 +530,11 @@ void runInstall(const Source &src, const char *id) {
     return;
   }
   lock();
-  g_delivery.restartNeeded = true;
-  for (size_t i = 0; i < g_delivery.offerCount; ++i) {
-    if (strcmp(g_delivery.offers[i].id, stored) == 0) {
-      g_delivery.offers[i].installed = true;
-      g_delivery.offers[i].differs = false;
+  heap().delivery.restartNeeded = true;
+  for (size_t i = 0; i < heap().delivery.offerCount; ++i) {
+    if (strcmp(heap().delivery.offers[i].id, stored) == 0) {
+      heap().delivery.offers[i].installed = true;
+      heap().delivery.offers[i].differs = false;
     }
   }
   unlock();
@@ -531,9 +545,9 @@ void runInstall(const Source &src, const char *id) {
 
 void jobMain(void *) {
   RamJobScope ram(RAM_ADDON);
-  if (g_job.kind == Job::CHECK) runCheck(g_job.source);
-  else runInstall(g_job.source, g_job.id);
-  memset(g_job.source.token, 0, sizeof(g_job.source.token));
+  if (heap().job.kind == Job::CHECK) runCheck(heap().job.source);
+  else runInstall(heap().job.source, heap().job.id);
+  memset(heap().job.source.token, 0, sizeof(heap().job.source.token));
   g_jobBusy = false;
 }
 
@@ -551,9 +565,9 @@ bool submit(Job::Kind kind, const char *id, const char *&problem) {
     g_assets = bigNew<ReleaseAssets>();
     g_sums = bigArray<char>(SUMS_MAX);
   }
-  g_job.kind = kind;
-  strlcpy(g_job.id, id ? id : "", sizeof(g_job.id));
-  g_job.source = src;
+  heap().job.kind = kind;
+  strlcpy(heap().job.id, id ? id : "", sizeof(heap().job.id));
+  heap().job.source = src;
   g_jobBusy = true;
   if (!netSubmit(jobMain, nullptr)) {
     g_jobBusy = false;
@@ -583,10 +597,10 @@ size_t scan(uint32_t nowMs) {
   return g_count;
 }
 size_t count() { return g_count; }
-const Module &module(size_t i) { return g_modules[i < g_count ? i : 0]; }
+const Module &module(size_t i) { return heap().modules[i < g_count ? i : 0]; }
 int find(const char *id) {
   for (size_t i = 0; i < g_count; ++i) {
-    if (id && strcmp(g_modules[i].id, id) == 0) return static_cast<int>(i);
+    if (id && strcmp(heap().modules[i].id, id) == 0) return static_cast<int>(i);
   }
   return -1;
 }
@@ -600,7 +614,7 @@ bool retry(const char *id, const char *&problem) {
   }
   g_guard.retry(id);
   lock();
-  g_delivery.restartNeeded = true;
+  heap().delivery.restartNeeded = true;
   unlock();
   return true;
 }
@@ -619,7 +633,7 @@ bool remove(const char *id, const char *&problem) {
   LittleFS.remove(path);
   g_guard.retry(id);
   lock();
-  g_delivery.restartNeeded = true;
+  heap().delivery.restartNeeded = true;
   unlock();
   return true;
 }
@@ -659,7 +673,7 @@ bool setSource(const char *repo, const char *token, const char *&problem) {
 
 Delivery delivery() {
   lock();
-  Delivery d = g_delivery;
+  Delivery d = heap().delivery;
   unlock();
   return d;
 }
@@ -679,35 +693,36 @@ bool install(const char *id, bool idle, const char *&problem) {
 }
 
 void uploadBegin(bool idle) {
-  g_upError[0] = '\0';
+  heap().upError[0] = '\0';
+  g_upStored = false;
   g_upSize = 0;
   g_upOpen = false;
   if (!idle) {
-    strlcpy(g_upError, "not while a shot is in hand", sizeof(g_upError));
+    strlcpy(heap().upError, "not while a shot is in hand", sizeof(heap().upError));
     return;
   }
   if (g_jobBusy) {
-    strlcpy(g_upError, "a download is under way: try again when it has finished", sizeof(g_upError));
+    strlcpy(heap().upError, "a download is under way: try again when it has finished", sizeof(heap().upError));
     return;
   }
   LittleFS.mkdir("/addons");
   LittleFS.remove(UPLOAD_TMP);
   g_upFile = LittleFS.open(UPLOAD_TMP, "w");
   if (!g_upFile) {
-    strlcpy(g_upError, "the file could not be opened for writing", sizeof(g_upError));
+    strlcpy(heap().upError, "the file could not be opened for writing", sizeof(heap().upError));
     return;
   }
   g_upOpen = true;
 }
 
 void uploadWrite(const uint8_t *data, size_t size) {
-  if (!g_upOpen || g_upError[0]) return;
+  if (!g_upOpen || heap().upError[0]) return;
   if (g_upSize + size > FILE_MAX) {
-    strlcpy(g_upError, "the module is over 256 kB", sizeof(g_upError));
+    strlcpy(heap().upError, "the module is over 256 kB", sizeof(heap().upError));
     return;
   }
   if (g_upFile.write(data, size) != size) {
-    strlcpy(g_upError, "the file could not be written", sizeof(g_upError));
+    strlcpy(heap().upError, "the file could not be written", sizeof(heap().upError));
     return;
   }
   g_upSize += size;
@@ -717,19 +732,26 @@ bool uploadEnd(char *id, size_t idSize, const char *&problem) {
   if (g_upOpen) g_upFile.close();
   const bool wasOpen = g_upOpen;
   g_upOpen = false;
-  if (g_upError[0]) {
+  if (heap().upError[0]) {
     if (wasOpen) LittleFS.remove(UPLOAD_TMP);
-    problem = g_upError;
+    problem = heap().upError;
     return false;
   }
+  bool ok = true;
   if (fsFree() < g_upSize + ADDON_FILE_RESERVE) {
     LittleFS.remove(UPLOAD_TMP);
     problem = "not enough free storage: the owner's shot data comes first";
+    ok = false;
+  } else {
+    ok = finalize(UPLOAD_TMP, id, idSize, problem);
+  }
+  if (!ok) {
+    strlcpy(heap().upError, problem, sizeof(heap().upError));  // for the request's answer
     return false;
   }
-  if (!finalize(UPLOAD_TMP, id, idSize, problem)) return false;
+  g_upStored = true;
   lock();
-  g_delivery.restartNeeded = true;
+  heap().delivery.restartNeeded = true;
   unlock();
   return true;
 }
@@ -738,7 +760,11 @@ void uploadAbort() {
   if (g_upOpen) g_upFile.close();
   if (g_upOpen) LittleFS.remove(UPLOAD_TMP);
   g_upOpen = false;
+  strlcpy(heap().upError, "the upload was interrupted", sizeof(heap().upError));
 }
+
+bool uploadStored() { return g_upStored; }
+const char *uploadError() { return heap().upError; }
 
 }  // namespace addonloader
 }  // namespace bbw

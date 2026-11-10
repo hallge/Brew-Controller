@@ -92,6 +92,9 @@ void uploadWrite(const uint8_t *data, size_t size);
 // After the last chunk. true: stored (id says which). false: refused (problem says why); nothing changed.
 bool uploadEnd(char *id, size_t idSize, const char *&problem);
 void uploadAbort();
+// For the request's answer, after the last chunk: stored, or why not ("" when no file came at all).
+bool uploadStored();
+const char *uploadError();
 
 }  // namespace addonloader
 }  // namespace bbw
