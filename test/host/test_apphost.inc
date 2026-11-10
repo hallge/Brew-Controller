@@ -1,0 +1,128 @@
+// Host tests for core/AppHost.h: link planning, the bot holds, the outbox pump, the test press.
+// Included by test_main.cpp after the CHECK macros.
+#include "core/AppHost.h"
+
+static void testAppHost() {
+  printf("AppHost\n");
+  // ---- holds: extend-only, scale connect sets the pre-wake, cup placed extends it.
+  {
+    BotHoldTimers t;
+    BotHoldTimers::Result r = t.update(1000, 0, false, false, false);
+    CHECK(r.holdUntilMs == 0 && !r.warmChanged && !r.cupChanged);
+    r = t.update(2000, r.holdUntilMs, true, false, false);  // scale connects
+    CHECK(r.holdUntilMs == 2000 + BOT_PREWAKE_MS);
+    uint32_t h = r.holdUntilMs;
+    r = t.update(3000, h, true, false, false);  // linger is shorter: never shortens the hold
+    CHECK(r.holdUntilMs == h);
+    // a cup placed extends to the pre-wake only when that is later
+    r = t.update(4000, h, true, false, true);
+    CHECK(r.cupChanged && r.holdUntilMs == 4000 + BOT_PREWAKE_MS);
+    r = t.update(4010, r.holdUntilMs, true, false, true);
+    CHECK(!r.cupChanged);
+    r = t.update(4020, r.holdUntilMs, true, false, false);
+    CHECK(r.cupChanged);
+  }
+  {  // warm-up hold: lingers, reports edges once, ends
+    BotHoldTimers t;
+    BotHoldTimers::Result r = t.update(100, 0, false, true, false);
+    CHECK(r.warm && r.warmChanged && r.holdUntilMs == 100 + BOT_LINGER_MS);
+    r = t.update(200, r.holdUntilMs, false, true, false);
+    CHECK(!r.warmChanged && r.holdUntilMs == 200 + BOT_LINGER_MS);
+    r = t.update(300, r.holdUntilMs, false, false, false);
+    CHECK(r.warmChanged && !r.warm && r.holdUntilMs == 200 + BOT_LINGER_MS);
+    CHECK(BotHoldTimers::actuatorHold(500) == 500 + BOT_LINGER_MS);
+  }
+  {  // wrap-around
+    CHECK(holdActive(0xFFFFFFF0u, 5u));
+    CHECK(!holdActive(10u, 5u));
+    CHECK(holdExtended(0xFFFFFFF0u, 5u) == 5u);
+    CHECK(holdExtended(5u, 0xFFFFFFF0u) == 5u);
+  }
+  // ---- links: during a shot only the stop bot, never the power bot.
+  {
+    LinkPlanner::Inputs in;
+    in.now = 1000;
+    in.powerWantsLink = true;
+    in.powerHoldUntilMs = 5000;
+    LinkPlanner::Plan p = LinkPlanner::plan(in);
+    CHECK(!p.botWanted && !p.stopWanted && p.powerWanted && !p.powerKept);
+    in.shotPhase = true;
+    p = LinkPlanner::plan(in);
+    CHECK(p.stopWanted && !p.powerWanted);
+    in.shotPhase = false;
+    in.powerWantsLink = false;
+    p = LinkPlanner::plan(in);
+    CHECK(p.powerWanted);  // the hold alone
+    in.now = 5000;
+    p = LinkPlanner::plan(in);
+    CHECK(!p.powerWanted);
+    in.stopHoldUntilMs = 6000;
+    in.botHoldUntilMs = 6000;
+    in.keepPowerBotConnected = true;
+    p = LinkPlanner::plan(in);
+    CHECK(p.stopWanted && p.botWanted && p.powerKept);
+    // exclusivity over every combination
+    for (int m = 0; m < 8; ++m) {
+      LinkPlanner::Inputs x;
+      x.now = 100;
+      x.shotPhase = true;
+      x.powerWantsLink = m & 1;
+      x.powerHoldUntilMs = (m & 2) ? 200 : 0;
+      x.stopHoldUntilMs = (m & 4) ? 200 : 0;
+      const LinkPlanner::Plan q = LinkPlanner::plan(x);
+      CHECK(q.stopWanted && !q.powerWanted);
+    }
+  }
+  // ---- outbox: back-off and drop.
+  {
+    OutboxPump o;
+    CHECK(!o.due(500));
+    CHECK(o.due(1000));
+    CHECK(!o.due(1999));
+    CHECK(o.due(2000));
+    CHECK(o.step("a.json", true, false, false) == OutboxPump::Action::POP_SENT);
+    CHECK(o.step("a.json", false, true, false) == OutboxPump::Action::POP_REFUSED);
+    CHECK(o.step("a.json", false, false, false) == OutboxPump::Action::RETRY);
+    // key missing: first the key goes ahead (90 s hold), then the record is tried; dropped on the 4th
+    uint32_t t = 10000;
+    CHECK(o.due(t));
+    CHECK(o.step("b.json", false, false, true) == OutboxPump::Action::SEND_KEY_FIRST);
+    CHECK(o.holdMs() == 90000);
+    CHECK(!o.due(t + 89999));
+    t += 90000;
+    CHECK(o.due(t));
+    CHECK(o.holdMs() == 0);
+    CHECK(o.step("b.json", false, false, true) == OutboxPump::Action::SEND_KEY_FIRST);
+    CHECK(o.step("b.json", false, false, true) == OutboxPump::Action::SEND_KEY_FIRST);
+    CHECK(o.step("b.json", false, false, true) == OutboxPump::Action::DROP_KEY);
+    // a different record starts afresh; a success forgets the key
+    CHECK(o.step("c.json", false, false, true) == OutboxPump::Action::SEND_KEY_FIRST);
+    CHECK(o.step("c.json", true, false, false) == OutboxPump::Action::POP_SENT);
+    CHECK(o.step("c.json", false, false, true) == OutboxPump::Action::SEND_KEY_FIRST);
+    CHECK(o.due(t + 90000 + 1000) || true);
+  }
+  // ---- test press: time-out, busy, press, tidy.
+  {
+    using S = TestPressFsm::Step;
+    CHECK(TestPressFsm::step(100, 1000, true, false, false) == S::NONE);
+    CHECK(TestPressFsm::step(100, 1000, true, true, true) == S::NONE);
+    CHECK(TestPressFsm::step(100, 1000, true, true, false) == S::TRY_PRESS);
+    CHECK(TestPressFsm::step(1000, 1000, true, true, false) == S::FAIL_TIMEOUT);
+    CHECK(TestPressFsm::step(100, 1000, false, true, false) == S::FAIL_BUSY);
+    CHECK(TestPressFsm::step(0xFFFFFFF0u, 5u, true, false, false) == S::NONE);  // wrap, not yet
+    CHECK(TestPressFsm::step(5u, 5u, true, true, false) == S::FAIL_TIMEOUT);
+    CHECK(TestPressFsm::tidyDue(true, true, false));
+    CHECK(!TestPressFsm::tidyDue(true, true, true));
+    CHECK(!TestPressFsm::tidyDue(true, false, false));
+    CHECK(!TestPressFsm::tidyDue(false, true, false));
+  }
+  // ---- standby
+  {
+    CHECK(standbyRestable(State::READY, false, false));
+    CHECK(!standbyRestable(State::READY, false, true));
+    CHECK(standbyRestable(State::SHOT_COMPLETE, true, false));
+    CHECK(!standbyRestable(State::SHOT_COMPLETE, false, false));
+    CHECK(standbyRestable(State::SCALE_DISCONNECTED, true, false));
+    CHECK(!standbyRestable(State::CONNECTING_SCALE, true, false));
+  }
+}

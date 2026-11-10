@@ -54,6 +54,7 @@ static int g_checks = 0;
     }                                                                      \
   } while (0)
 #define CHECK_NEAR(a, b, tol) CHECK(fabs(static_cast<double>(a) - static_cast<double>(b)) <= (tol))
+#include "test_apphost.inc"  // needs CHECK above
 
 // ------------------------------------------------------------- simulation --
 
@@ -9714,6 +9715,7 @@ int main() {
   testHomeAssistant();
   testSettingFormat();
   testGrinderUnitTidy();
+  testAppHost();
   printf("\n%d checks, %d failed\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

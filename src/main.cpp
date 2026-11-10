@@ -28,6 +28,7 @@
 #include "Log.h"
 #include "Version.h"
 #include "ble/Ble.h"
+#include "core/AppHost.h"
 #include "core/BrewController.h"
 #include "core/SettingsUtil.h"
 #include "net/ShotFormat.h"
@@ -58,14 +59,9 @@ constexpr int BOOT_BUTTON_PIN = 0;
 constexpr uint32_t CONTROL_PERIOD_MS = 10;
 constexpr uint32_t SHOT_IN_PROGRESS_MAGIC = 0xB7E55107;
 constexpr uint32_t SETTINGS_SAVE_DELAY_MS = 1500;
-// The Bot link is dropped this long after the shot no longer needs it.
-constexpr uint32_t BOT_LINGER_MS = 10000;
+using bbw::BOT_LINGER_MS;  // core/AppHost.h: the Bot link is dropped this long after the shot no longer needs it
 constexpr uint32_t BOT_PAIR_CHECK_MS = 20000;
-// Switching the Lunar on is the cue that a shot is coming: the Bot is woken
-// then, so Start does not have to wait for it. Released again if unused.
-constexpr uint32_t BOT_PREWAKE_MS = 120000;
-// The brew bot is held from the machine's power-on until a shot, for at most this long.
-constexpr uint32_t BOT_WARMUP_HOLD_MAX_MS = 4UL * 60UL * 60UL * 1000UL;
+// BOT_PREWAKE_MS and BOT_WARMUP_HOLD_MAX_MS (the pre-wake and the warm-up hold) are in core/AppHost.h.
 constexpr uint32_t LONG_PRESS_MS = 1200;
 
 // Survives a panic / watchdog / software reset, not a power cycle.
@@ -109,8 +105,11 @@ uint32_t g_bootCount = 0;  // starts of this controller, kept in NVS
 // ---- test press (Setup page): which pusher is on which button -------------
 // Asked for by the page, done by the control task once the brew bot's link is
 // up, and only while nothing is brewing or being set up.
-enum : uint8_t { TEST_NONE, TEST_WAITING, TEST_PRESSED, TEST_FAILED };
-constexpr uint32_t TEST_PRESS_PATIENCE_MS = 40000;  // a sleeping SwitchBot advertises only every 10-15 s
+using bbw::TEST_NONE;  // the states and the patience: core/AppHost.h
+using bbw::TEST_WAITING;
+using bbw::TEST_PRESSED;
+using bbw::TEST_FAILED;
+using bbw::TEST_PRESS_PATIENCE_MS;
 std::atomic<uint8_t> g_testPress{TEST_NONE};
 std::atomic<uint32_t> g_testPressUntilMs{0};
 bool g_testPressTidy = false;  // control task: clear the press result once the arm is back
@@ -193,7 +192,6 @@ void configureLibraryLink() {
   bbw::libraryLinkConfigure(g_net.libraryRepo, g_net.libraryToken);
 }
 
-constexpr uint32_t SHARE_SEND_PERIOD_MS = 1000;
 // The largest index file read (index/coffees.json grows with the library): in PSRAM.
 constexpr size_t LIBRARY_TEXT_SIZE = 65536;
 char *g_shareBody;      // SHARE_BODY_MAX
@@ -855,50 +853,49 @@ void shareAfterShot(const bbw::ShotRecord &shot) {
 
 // One record a second, and never while a shot needs the radio.
 void shareSendOne(bool idle) {
-  static uint32_t lastMs = 0, holdMs = 0;
-  static char keySentFor[sizeof(g_sharePath)] = {};  // the record the key was last sent ahead of
-  static uint8_t keyTries = 0;
+  static bbw::OutboxPump pump;
   if (!idle || g_store.outboxWaiting() == 0 || !bbw::libraryLinkReady()) return;
-  if (millis() - lastMs < (holdMs ? holdMs : SHARE_SEND_PERIOD_MS)) return;
-  lastMs = millis();
-  holdMs = 0;
+  if (!pump.due(millis())) return;
   if (!g_store.outboxPeek(g_sharePath, sizeof(g_sharePath), g_shareEnvelope,
                           bbw::SHARE_ENVELOPE_MAX)) {
     return;
   }
-  if (publishRecord(g_sharePath, g_shareEnvelope)) {
-    g_store.outboxPop();
-    keySentFor[0] = '\0';
-    LOGI("share: sent %s", g_sharePath);
-  } else if (bbw::libraryTakeRefused()) {
-    // Refused for good: sending it again would only be refused again, and it would hold up the rest.
-    g_store.outboxPop();
-    LOGW("share: %s refused by the library and dropped", g_sharePath);
-  } else if (bbw::libraryTakeKeyMissing()) {
-    if (strcmp(keySentFor, g_sharePath) == 0 && ++keyTries >= 3) {
+  const bool published = publishRecord(g_sharePath, g_shareEnvelope);
+  const bool refused = !published && bbw::libraryTakeRefused();
+  const bool keyMissing = !published && !refused && bbw::libraryTakeKeyMissing();
+  switch (pump.step(g_sharePath, published, refused, keyMissing)) {
+    case bbw::OutboxPump::Action::POP_SENT:
+      g_store.outboxPop();
+      LOGI("share: sent %s", g_sharePath);
+      break;
+    case bbw::OutboxPump::Action::POP_REFUSED:
+      // Refused for good: sending it again would only be refused again, and it would hold up the rest.
+      g_store.outboxPop();
+      LOGW("share: %s refused by the library and dropped", g_sharePath);
+      break;
+    case bbw::OutboxPump::Action::DROP_KEY:
       // The key went ahead of it three times and it is still not taken: not this record's key.
       g_store.outboxPop();
-      keySentFor[0] = '\0';
       LOGW("share: %s still waits for a key after three tries; dropped", g_sharePath);
-      return;
+      break;
+    case bbw::OutboxPump::Action::SEND_KEY_FIRST: {
+      // The relay has no key for this controller: send it now, ahead of the record, which goes next time
+      // (the pump holds the next try for the time the relay's store of keys needs).
+      bbw::ISigner &signer = bbw::deviceSigner();
+      char kid[bbw::KEY_ID_LEN], keyPath[48];
+      bbw::keyId(signer.publicKey(), kid);
+      snprintf(keyPath, sizeof(keyPath), "keys/%s.json", kid);
+      if (bbw::buildKeyRecord(signer, wallClock(), g_shareBody, bbw::SHARE_BODY_MAX) != 0 &&
+          bbw::sealRecord(signer, g_shareBody, g_shareEnvelope, bbw::SHARE_ENVELOPE_MAX) != 0 &&
+          publishRecord(keyPath, g_shareEnvelope)) {
+        LOGI("share: the relay asked for this controller's key; sent");
+      } else {
+        LOGW("share: the relay asked for this controller's key; not sent");
+      }
+      break;
     }
-    if (strcmp(keySentFor, g_sharePath) != 0) {
-      strlcpy(keySentFor, g_sharePath, sizeof(keySentFor));
-      keyTries = 0;
-    }
-    holdMs = 90000;  // the relay's store of keys takes up to a minute to show a new one everywhere
-    // The relay has no key for this controller: send it now, ahead of the record, which goes next time.
-    bbw::ISigner &signer = bbw::deviceSigner();
-    char kid[bbw::KEY_ID_LEN], keyPath[48];
-    bbw::keyId(signer.publicKey(), kid);
-    snprintf(keyPath, sizeof(keyPath), "keys/%s.json", kid);
-    if (bbw::buildKeyRecord(signer, wallClock(), g_shareBody, bbw::SHARE_BODY_MAX) != 0 &&
-        bbw::sealRecord(signer, g_shareBody, g_shareEnvelope, bbw::SHARE_ENVELOPE_MAX) != 0 &&
-        publishRecord(keyPath, g_shareEnvelope)) {
-      LOGI("share: the relay asked for this controller's key; sent");
-    } else {
-      LOGW("share: the relay asked for this controller's key; not sent");
-    }
+    case bbw::OutboxPump::Action::RETRY:
+      break;
   }
 }
 
@@ -1122,33 +1119,23 @@ void controlTask(void *) {
       g_bot.tick(now);
       g_power.tick(now);
       g_stop.tick(now);
-      static bool scaleWasConnected = false;
+      static bbw::BotHoldTimers botTimers;
       const bool scaleConnected = g_scale.connected();
-      if (scaleConnected && !scaleWasConnected) g_botHoldUntilMs = now + BOT_PREWAKE_MS;
       // The brew bot stays connected for as long as the scale is on (the
       // owner's choice): a sleeping SwitchBot advertises only every 20-30 s,
       // so waking it at Start could keep a shot waiting that long.
-      if (scaleConnected) {
-        const uint32_t until = now + BOT_LINGER_MS;
-        if (static_cast<int32_t>(until - g_botHoldUntilMs.load()) > 0) g_botHoldUntilMs = until;
-      }
-      scaleWasConnected = scaleConnected;
       // The machine was switched on and no shot has run yet: link the brew bot now, so that it is
       // ready when the Lunar comes on (PowerControl::warmingForShot; the owner's choice, 9 Nov 2026).
-      static bool warmHeld = false;
-      const bool warm = g_powerControl.warmingForShot(now, BOT_WARMUP_HOLD_MAX_MS);
-      if (warm) {
-        const uint32_t until = now + BOT_LINGER_MS;
-        if (static_cast<int32_t>(until - g_botHoldUntilMs.load()) > 0) g_botHoldUntilMs = until;
-      }
-      if (warm != warmHeld) {
-        LOGI(warm ? "bot: holding the link from power-on" : "bot: power-on hold ended");
-        warmHeld = warm;
-      }
       // A cup going on the scale means a shot is coming: wake the brew bot
       // now, it takes a sleeping SwitchBot several seconds to answer.
-      static bool cupWasPresent = false;
       const bool cupPresent = g_controller.cupPresent();
+      const bbw::BotHoldTimers::Result hold = botTimers.update(
+          now, g_botHoldUntilMs.load(), scaleConnected,
+          g_powerControl.warmingForShot(now, bbw::BOT_WARMUP_HOLD_MAX_MS), cupPresent);
+      g_botHoldUntilMs = hold.holdUntilMs;
+      if (hold.warmChanged) {
+        LOGI(hold.warm ? "bot: holding the link from power-on" : "bot: power-on hold ended");
+      }
       if (const char *why = g_controller.takeTareReason()) {
         LOGI("scale: tared (%s; reading %.1f g)", why, static_cast<double>(g_controller.status(now).weightG));
       }
@@ -1156,18 +1143,13 @@ void controlTask(void *) {
         LOGI("start refused: no cup seen on the scale (reading %.1f g)",
              static_cast<double>(g_controller.status(now).weightG));
       }
-      if (cupPresent && !cupWasPresent) {
-        const uint32_t until = now + BOT_PREWAKE_MS;
-        if (static_cast<int32_t>(until - g_botHoldUntilMs.load()) > 0) g_botHoldUntilMs = until;
-      }
-      if (cupPresent != cupWasPresent) {
+      if (hold.cupChanged) {
         const bbw::State cupState = g_controller.state();
         const bool inUse = !cupPresent && cupState != State::READY && cupState != State::CONNECTING_SCALE &&
                            cupState != State::SHOT_COMPLETE;
         LOGI("cup: %s (reading %.1f g)", cupPresent ? "on the scale" : inUse ? "in use for the shot" : "taken off",
              static_cast<double>(g_controller.status(now).weightG));
       }
-      cupWasPresent = cupPresent;
       static bool zeroWarned = false;
       if (!zeroWarned && g_controller.scaleZeroesItself()) {
         zeroWarned = true;
@@ -1183,16 +1165,11 @@ void controlTask(void *) {
       g_controller.tick(millis());
       // Bot battery: connected from Start until the shot is confirmed over,
       // asleep the rest of the time.
-      if (g_controller.actuatorNeeded()) g_botHoldUntilMs = now + BOT_LINGER_MS;
-      const bool botWanted = static_cast<int32_t>(now - g_botHoldUntilMs.load()) < 0;
-      g_ble.setBotWanted(botWanted);
-      // Three Bluetooth links at most with Wi-Fi running: the scale, the brew
-      // bot, and one more. On a machine with its own stop button that one is
-      // the stop bot from Start until the shot is known to be over (nothing
-      // is stopped that was not started), and the power bot the rest of the
-      // time (the machine is not switched off under a shot). The stop bot is
-      // taken up at Start, during the tare, so that it is there before the
-      // brew button is pressed.
+      if (g_controller.actuatorNeeded()) g_botHoldUntilMs = bbw::BotHoldTimers::actuatorHold(now);
+      // Three Bluetooth links at most with Wi-Fi running (core/AppHost.h LinkPlanner): the scale, the
+      // brew bot, and one more. On a machine with its own stop button that one is the stop bot from
+      // Start until the shot is known to be over, and the power bot the rest of the time. The stop bot
+      // is taken up at Start, during the tare, so that it is there before the brew button is pressed.
       const bool shotPhase = g_controller.stopActuatorNeeded();
       g_ble.setStopWanted(shotPhase || static_cast<int32_t>(now - g_stopHoldUntilMs.load()) < 0);
       // The power button is only pressed while no shot is running or being set up: on any screen
@@ -1218,22 +1195,41 @@ void controlTask(void *) {
       if (g_powerControl.takeEvent(powerEvent) && g_powerEventsQueued < 4) {
         g_powerEventQueue[g_powerEventsQueued++] = powerEvent;
       }
-      g_ble.setPowerKept(g_settings.keepPowerBotConnected);
-      g_ble.setPowerWanted(!shotPhase &&
-                           (g_powerControl.wantsLink() ||
-                            static_cast<int32_t>(now - g_powerHoldUntilMs.load()) < 0));
+      {
+        bbw::LinkPlanner::Inputs in;
+        in.now = now;
+        in.botHoldUntilMs = g_botHoldUntilMs.load();
+        in.stopHoldUntilMs = g_stopHoldUntilMs.load();
+        in.powerHoldUntilMs = g_powerHoldUntilMs.load();
+        in.shotPhase = shotPhase;
+        in.powerWantsLink = g_powerControl.wantsLink();
+        in.keepPowerBotConnected = g_settings.keepPowerBotConnected;
+        const bbw::LinkPlanner::Plan plan = bbw::LinkPlanner::plan(in);
+        g_ble.setBotWanted(plan.botWanted);
+        g_ble.setStopWanted(plan.stopWanted);
+        g_ble.setPowerKept(plan.powerKept);
+        g_ble.setPowerWanted(plan.powerWanted);
+      }
       g_shotInProgress = g_controller.machineMayBeRunning() ? SHOT_IN_PROGRESS_MAGIC : 0;
       if (g_testPress.load() == TEST_WAITING) {
-        if (!idle || static_cast<int32_t>(now - g_testPressUntilMs.load()) >= 0) {
-          g_testPress = TEST_FAILED;
-          LOGW("bot: test press not made (%s)", idle ? "the bot did not connect" : "a shot is in hand");
-        } else if (g_bot.connected() && !g_bot.busy() && g_bot.beginPress()) {
-          g_testPress = TEST_PRESSED;
-          g_testPressTidy = true;
-          LOGI("bot: test press sent");
+        switch (bbw::TestPressFsm::step(now, g_testPressUntilMs.load(), idle, g_bot.connected(), g_bot.busy())) {
+          case bbw::TestPressFsm::Step::FAIL_BUSY:
+          case bbw::TestPressFsm::Step::FAIL_TIMEOUT:
+            g_testPress = TEST_FAILED;
+            LOGW("bot: test press not made (%s)", idle ? "the bot did not connect" : "a shot is in hand");
+            break;
+          case bbw::TestPressFsm::Step::TRY_PRESS:
+            if (g_bot.beginPress()) {
+              g_testPress = TEST_PRESSED;
+              g_testPressTidy = true;
+              LOGI("bot: test press sent");
+            }
+            break;
+          case bbw::TestPressFsm::Step::NONE:
+            break;
         }
       }
-      if (g_testPressTidy && idle && !g_bot.busy()) {
+      if (bbw::TestPressFsm::tidyDue(g_testPressTidy, idle, g_bot.busy())) {
         g_bot.clearResult();  // the brew logic must not find a result it did not ask for
         g_testPressTidy = false;
       }
@@ -1246,9 +1242,8 @@ void controlTask(void *) {
         // Not while the machine is warming up (switched on in the last 30 minutes): someone is
         // about to brew, and a scale let go switches itself off while they prepare (26 Oct 2026).
         constexpr uint32_t WARM_UP_MS = 30UL * 60UL * 1000UL;
-        const bool restable = (state == State::READY ||
-                               ((state == State::SHOT_COMPLETE || bbw::isFault(state)) && g_controller.idleForPower())) &&
-                              !g_powerControl.switchedOnWithin(now, WARM_UP_MS);
+        const bool restable = bbw::standbyRestable(state, g_controller.idleForPower(),
+                                                   g_powerControl.switchedOnWithin(now, WARM_UP_MS));
         const bool resting = g_scaleRest.update(now, g_settings.scaleRestMin, restable,
                                                 scaleConnected, st.weightG, quietMs);
         if (resting != wasResting) {
