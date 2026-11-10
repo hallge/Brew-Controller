@@ -3672,6 +3672,7 @@ struct RecHost : addon::Host {
   }
   void notice(const char *t) override { notices.push_back(t); }
   uint32_t chipFree() const override { return 31337; }
+  uint16_t recipeForGrinderRecipe(uint8_t g) const override { return g == 2 ? 77 : 0; }
   const char *requestShotStart(uint16_t r) override { return r == 3 ? nullptr : "refused for the test"; }
   const char *appendFile(const char *n, const char *d, size_t len) override {
     files.push_back(std::string(n) + ":" + std::string(d, len));
@@ -3884,7 +3885,8 @@ static void testAddonModules() {
     inner->queue.back().recipeTimeS = 29.0f;
     inner->queue.back().filter = 2;
     addon::GrindEvent ev;
-    CHECK(m.takeGrind(ev) && ev.seq == 9 && ev.atMs == 777 && ev.grinderRecipe == 3 && ev.filter == 2);
+    inner->queue.back().recipeId = 12;
+    CHECK(m.takeGrind(ev) && ev.seq == 9 && ev.atMs == 777 && ev.grinderRecipe == 3 && ev.filter == 2 && ev.recipeId == 12);
     CHECK_NEAR(ev.doseActualG, 18.2, 1e-5);
     CHECK_NEAR(ev.doseTargetG, 18.0, 1e-5);
     CHECK_NEAR(ev.gapUm, 74.5, 1e-5);
@@ -3907,6 +3909,10 @@ static void testAddonModules() {
     r.pourTimeS = 25.5f;
     r.firstDropS = 6.0f;
     r.grindSeq = 9;
+    r.coffeeId = 5;
+    r.bagId = 3;
+    r.roomTempC = 21.5f;
+    strcpy(r.coffee, "Idjwi Island");
     r.advice.valid = true;
     r.advice.action = addon::AdviceSnapshot::COARSER;
     r.advice.hasNumber = true;
@@ -3928,6 +3934,18 @@ static void testAddonModules() {
           g.advice.suggestedSteps == 84 && g.advice.stepLimited && g.advice.counted);
     CHECK_NEAR(g.advice.umPerStep, 1.0, 1e-5);
     CHECK_NEAR(g.advice.umPerS, 2.5, 1e-5);
+    CHECK(g.coffeeId == 5 && g.bagId == 3 && strcmp(g.coffee, "Idjwi Island") == 0);
+    CHECK_NEAR(g.roomTempC, 21.5, 1e-5);
+    // An unknown room temperature (NaN) and a long coffee name cross intact (cut to fit).
+    r.roomTempC = NAN;
+    memset(r.coffee, 'x', sizeof(r.coffee) - 1);
+    r.coffee[sizeof(r.coffee) - 1] = '\0';
+    m.onShotComplete(r);
+    CHECK(std::isnan(inner->lastReport.roomTempC) && strlen(inner->lastReport.coffee) == sizeof(r.coffee) - 1);
+    // The add-on's own request for reports (shadow mode) is forwarded.
+    CHECK(!m.wantsShotReports());
+    inner->shadow = true;
+    CHECK(m.wantsShotReports());
     // Switched off: forwarded.
     m.end();
     CHECK(inner->ended == 1);
@@ -3971,6 +3989,7 @@ static void testAddonModules() {
     void *mem = mh.allocate(32);
     CHECK(mem != nullptr && host.allocated == 1);
     free(mem);
+    CHECK(mh.recipeForGrinderRecipe(2) == 77 && mh.recipeForGrinderRecipe(3) == 0);
     CHECK(mh.requestShotStart(3) == nullptr && strcmp(mh.requestShotStart(4), "refused for the test") == 0);
     CHECK(mh.appendFile("a.csv", "row1\n", 5) == nullptr && host.files.size() == 1 && host.files[0] == "a.csv:row1\n");
     CHECK(strcmp(mh.writeFile("a.csv", "x", 1), "read only") == 0 && mh.fileSize("a.csv") == 42 && mh.fileSize("b.csv") == -1);

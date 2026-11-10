@@ -146,6 +146,9 @@ class ModuleHost : public Host {
 
   void notice(const char *text) override { api_->notice(api_->ctx, text); }
   uint32_t chipFree() const override { return api_->chip_free(api_->ctx); }
+  uint16_t recipeForGrinderRecipe(uint8_t grinderRecipe) const override {
+    return api_->recipe_for_grinder_recipe(api_->ctx, grinderRecipe);
+  }
   const char *requestShotStart(uint16_t recipeId) override { return api_->request_shot_start(api_->ctx, recipeId); }
   const char *appendFile(const char *name, const char *data, size_t len) override {
     return api_->append_file(api_->ctx, name, data, len);
@@ -223,7 +226,12 @@ class ModuleShim {
       out->recipe_time_s = e.recipeTimeS;
       out->grinder_recipe = e.grinderRecipe;
       out->filter = e.filter;
+      out->recipe_id = e.recipeId;
       return 1;
+    };
+    api_.wants_shot_reports = [](void *s) -> uint8_t {
+      GrinderDriver *g = me(s).addon_->grinder();
+      return g && g->wantsShotReports() ? 1 : 0;
     };
     api_.shot_complete = [](void *s, const bbw_shot_report *in) {
       GrinderDriver *g = me(s).addon_->grinder();
@@ -240,6 +248,13 @@ class ModuleShim {
       r.pourTimeS = in->pour_time_s;
       r.firstDropS = in->first_drop_s;
       r.grindSeq = in->grind_seq;
+      r.coffeeId = in->coffee_id;
+      r.bagId = in->bag_id;
+      r.roomTempC = in->room_temp_c;
+      char coffee[sizeof(in->coffee)];
+      memcpy(coffee, in->coffee, sizeof(coffee));
+      coffee[sizeof(coffee) - 1] = '\0';
+      modulelocal::text(r.coffee, sizeof(r.coffee), coffee);
       const bbw_advice &a = in->advice;
       r.advice.valid = a.valid != 0;
       r.advice.action = static_cast<AdviceSnapshot::Action>(a.action <= 3 ? a.action : 0);

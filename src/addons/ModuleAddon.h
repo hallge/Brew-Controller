@@ -91,6 +91,9 @@ class HostBridge {
       if (self(c).host_) self(c).host_->notice(text ? text : "");
     };
     api_.chip_free = [](void *c) -> uint32_t { return self(c).host_ ? self(c).host_->chipFree() : 0; };
+    api_.recipe_for_grinder_recipe = [](void *c, uint8_t grinderRecipe) -> uint16_t {
+      return self(c).host_ ? self(c).host_->recipeForGrinderRecipe(grinderRecipe) : 0;
+    };
     api_.request_shot_start = [](void *c, uint16_t recipe) -> const char * {
       return self(c).host_ ? self(c).host_->requestShotStart(recipe) : "the add-on is not switched on";
     };
@@ -292,7 +295,11 @@ class ModuleAddon : public Addon, public GrinderDriver {
     out.recipeTimeS = e.recipe_time_s;
     out.grinderRecipe = e.grinder_recipe;
     out.filter = e.filter;
+    out.recipeId = e.recipe_id;
     return true;
+  }
+  bool wantsShotReports() const override {
+    return api_ && api_->wants_shot_reports && api_->wants_shot_reports(api_->self) != 0;
   }
   void onShotComplete(const ShotReport &r) override {
     if (!api_ || !api_->shot_complete) return;
@@ -309,6 +316,10 @@ class ModuleAddon : public Addon, public GrinderDriver {
     s.first_drop_s = r.firstDropS;
     s.grind_seq = r.grindSeq;
     s.time_basis = r.timeBasis;
+    s.coffee_id = r.coffeeId;
+    s.bag_id = r.bagId;
+    s.room_temp_c = r.roomTempC;
+    modulecopy::text(s.coffee, sizeof(s.coffee), r.coffee);
     s.advice.valid = r.advice.valid;
     s.advice.action = static_cast<uint8_t>(r.advice.action);
     s.advice.has_number = r.advice.hasNumber;
