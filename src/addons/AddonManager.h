@@ -388,9 +388,11 @@ class Manager {
     if (pending_.active && recipeId == pending_.recipeId) pending_ = PendingGrind{};
     for (size_t i = 0; i < count_; ++i) {
       Slot &s = slots_[i];
-      if (!s.started || !s.options.shotFeedback) continue;
+      if (!s.started) continue;
       GrinderDriver *g = s.addon->grinder();
-      if (g && (g->caps() & SHOT_FEEDBACK)) g->onShotComplete(report);
+      if (!g || !(g->caps() & SHOT_FEEDBACK)) continue;
+      // The owner's switch, or the add-on's own request (a recipe in shadow mode only watches).
+      if (s.options.shotFeedback || g->wantsShotReports()) g->onShotComplete(report);
     }
   }
   // The grind a shot on this recipe followed, 0 none. Before shotSaved uses the grind up.
@@ -401,6 +403,17 @@ class Manager {
     return pending_.seq;
   }
   const PendingGrind &pending() const { return pending_; }
+
+  // The recipe a grinder recipe is linked to for this add-on, 0 none. recipes: the controller's now, so
+  // a link to a deleted recipe answers 0.
+  uint16_t recipeForGrinderRecipe(size_t i, uint8_t grinderRecipe, const RecipeView *recipes, size_t count) const {
+    if (i >= count_ || grinderRecipe == 0 || grinderRecipe > MAX_GRINDER_RECIPES) return 0;
+    const uint16_t id = slots_[i].map[grinderRecipe].recipeId;
+    for (size_t k = 0; id && k < count; ++k) {
+      if (recipes[k].id == id) return id;
+    }
+    return 0;
+  }
 
   // Map a grinder recipe by hand: recipeId 0 takes the mapping away (and lets it be found again).
   bool setMap(size_t i, uint8_t grinderRecipe, uint16_t recipeId) {
@@ -418,6 +431,7 @@ class Manager {
     s.hasGrind = true;
     s.plan = planGrind(ev, recipes, n, s.map, s.options, act.grinder(), act.umPerStep());
     const GrindPlan &p = s.plan;
+    s.grind.recipeId = p.mapped ? p.recipeId : 0;
     if (p.autoMapped) act.changed();
     if (!p.mapped) {
       act.log(p.note);

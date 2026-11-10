@@ -68,7 +68,7 @@ typedef struct bbw_grind_event {
   float recipe_time_s;
   uint8_t grinder_recipe;
   uint8_t filter;
-  uint8_t reserved[2];
+  uint16_t recipe_id;        /* set by the firmware: the controller recipe it maps to, 0 none */
 } bbw_grind_event;
 BBW_ABI_ASSERT(sizeof(bbw_grind_event) == 32, "bbw_grind_event layout");
 
@@ -100,8 +100,13 @@ typedef struct bbw_shot_report {
   uint8_t time_basis;
   uint8_t reserved[3];
   bbw_advice advice;
+  /* appended */
+  uint16_t coffee_id;
+  uint16_t bag_id;
+  float room_temp_c;         /* NaN when not known */
+  char coffee[32];
 } bbw_shot_report;
-BBW_ABI_ASSERT(sizeof(bbw_shot_report) == 56, "bbw_shot_report layout");
+BBW_ABI_ASSERT(sizeof(bbw_shot_report) == 96, "bbw_shot_report layout");
 
 typedef struct bbw_response {
   int32_t status;
@@ -184,8 +189,9 @@ typedef struct bbw_host_api {
   const char *(*write_file)(void *ctx, const char *name, const char *data, size_t len);
   int32_t (*file_size)(void *ctx, const char *name);                     /* -1: none or refused */
   int32_t (*read_file)(void *ctx, const char *name, uint32_t offset, uint8_t *out, size_t cap);
+  uint16_t (*recipe_for_grinder_recipe)(void *ctx, uint8_t grinder_recipe);   /* 0: not mapped */
 } bbw_host_api;
-#define BBW_HOST_API_SLOTS 15
+#define BBW_HOST_API_SLOTS 16
 BBW_ABI_ASSERT(sizeof(bbw_host_api) == 2 * sizeof(uint32_t) + (1 + BBW_HOST_API_SLOTS) * sizeof(void *),
                "bbw_host_api layout");
 
@@ -207,8 +213,9 @@ typedef struct bbw_addon_api {
   uint8_t (*link)(void *self);                                           /* 0 off, 1 waiting, 2 connected, 3 failed */
   int32_t (*take_grind)(void *self, bbw_grind_event *out);               /* 1: a grind was written */
   void (*shot_complete)(void *self, const bbw_shot_report *report);
+  uint8_t (*wants_shot_reports)(void *self);                             /* 1: send reports without the owner's switch */
 } bbw_addon_api;
-#define BBW_ADDON_API_SLOTS 12
+#define BBW_ADDON_API_SLOTS 13
 BBW_ABI_ASSERT(sizeof(bbw_addon_api) == 2 * sizeof(uint32_t) + (1 + BBW_ADDON_API_SLOTS) * sizeof(void *),
                "bbw_addon_api layout");
 

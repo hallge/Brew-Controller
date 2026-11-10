@@ -3150,6 +3150,8 @@ struct TestGrinder : addon::Addon, addon::GrinderDriver {
   int begun = 0, ended = 0, ticks = 0, shots = 0;
   std::vector<addon::GrindEvent> queue;
   addon::ShotReport lastReport;
+  bool shadow = false;   // a recipe in shadow mode: wants reports without the owner's switch
+  bool wantsShotReports() const override { return shadow; }
   const addon::AddonInfo &info() const override { return meta; }
   void begin(addon::Host &) override { ++begun; }
   void end() override { ++ended; }
@@ -3240,6 +3242,7 @@ struct NullHost : addon::Host {
   const char *writeFile(const char *, const char *, size_t) override { return "no"; }
   int32_t fileSize(const char *) const override { return -1; }
   int32_t readFile(const char *, uint32_t, uint8_t *, size_t) const override { return -1; }
+  uint16_t recipeForGrinderRecipe(uint8_t) const override { return 0; }
 };
 
 static void testAddonManager() {
@@ -3442,6 +3445,47 @@ static void testAddonGroundwork() {
     CHECK(m.grindSeqForShot(2) == 0);
     m.shotSaved(2, given);
     CHECK(g_testGrinder->lastReport.grindSeq == 0);
+    // The grind carries the recipe it mapped to (the card and the add-on's own log use it).
+    CHECK(m.slot(0).grind.recipeId == 2 && m.slot(0).grind.seq == 41);
+    // The lookup: by the link, 0 when unmapped, out of range, or the recipe is gone.
+    {
+      const auto list = act.list;
+      CHECK(m.recipeForGrinderRecipe(0, 2, list.data(), list.size()) == 2);   // grinder recipe 2 was mapped on that grind
+      CHECK(m.recipeForGrinderRecipe(0, 3, list.data(), list.size()) == 0);
+      CHECK(m.recipeForGrinderRecipe(0, 0, list.data(), list.size()) == 0);
+      CHECK(m.recipeForGrinderRecipe(0, addon::MAX_GRINDER_RECIPES + 1, list.data(), list.size()) == 0);
+      CHECK(m.recipeForGrinderRecipe(5, 2, list.data(), list.size()) == 0);   // no such add-on
+      CHECK(m.recipeForGrinderRecipe(0, 2, list.data(), 0) == 0);             // its recipe was deleted
+      CHECK(m.setMap(0, 5, 2) && m.recipeForGrinderRecipe(0, 5, list.data(), list.size()) == 2);
+      CHECK(m.setMap(0, 5, 0) && m.recipeForGrinderRecipe(0, 5, list.data(), list.size()) == 0);
+    }
+    // The report's new fields reach the add-on as given, and default to "not known".
+    {
+      addon::ShotReport blank;
+      CHECK(blank.coffeeId == 0 && blank.bagId == 0 && std::isnan(blank.roomTempC) && blank.coffee[0] == '\0');
+      addon::ShotReport full;
+      full.coffeeId = 12;
+      full.bagId = 3;
+      full.roomTempC = 21.5f;
+      snprintf(full.coffee, sizeof(full.coffee), "%s", "Idjwi Island");
+      m.shotSaved(2, full);
+      const addon::ShotReport &g = g_testGrinder->lastReport;
+      CHECK(g.coffeeId == 12 && g.bagId == 3 && g.roomTempC == 21.5f && strcmp(g.coffee, "Idjwi Island") == 0);
+      m.shotSaved(2, blank);
+      CHECK(std::isnan(g_testGrinder->lastReport.roomTempC));
+    }
+    // Shadow mode: reports reach an add-on that asks for them even with the owner's switch off.
+    {
+      m.slot(0).options.shotFeedback = false;
+      const int before = g_testGrinder->shots;
+      m.shotSaved(2, given);
+      CHECK(g_testGrinder->shots == before);          // off, and not asking: nothing
+      g_testGrinder->shadow = true;
+      m.shotSaved(2, given);
+      CHECK(g_testGrinder->shots == before + 1);      // asking: delivered
+      g_testGrinder->shadow = false;
+      m.slot(0).options.shotFeedback = true;
+    }
     // A shot more than 15 minutes after its grind, or before it, followed no grind.
     ev.seq = 42;
     ev.atMs = 100000;
@@ -3531,13 +3575,18 @@ static void testAddonGroundwork() {
   // The C table: sizes are fixed, and match the C++ interface where they carry the same data.
   {
     CHECK(sizeof(bbw_machine_state) == 28 && sizeof(bbw_grinder_info) == 20 && sizeof(bbw_grind_event) == 32);
-    CHECK(sizeof(bbw_advice) == 20 && sizeof(bbw_shot_report) == 56 && sizeof(bbw_response) == 548);
+    CHECK(sizeof(bbw_advice) == 20 && sizeof(bbw_shot_report) == 96 && sizeof(bbw_response) == 548);
     CHECK(sizeof(bbw_host_api) == 2 * sizeof(uint32_t) + (1 + BBW_HOST_API_SLOTS) * sizeof(void *));
     CHECK(sizeof(bbw_addon_api) == 2 * sizeof(uint32_t) + (1 + BBW_ADDON_API_SLOTS) * sizeof(void *));
     CHECK(offsetof(bbw_host_api, abi) == 0 && offsetof(bbw_host_api, size) == 4);
     CHECK(offsetof(bbw_addon_api, abi) == 0 && offsetof(bbw_addon_api, size) == 4);
-    // The table has a slot for every Host and Addon call of interface 2 (host: 8 older + 7 new).
-    CHECK(BBW_HOST_API_SLOTS == 15 && BBW_ADDON_API_SLOTS == 12);
+    // The table has a slot for every Host and Addon call of interface 2 (host: 8 older + 8 new).
+    CHECK(BBW_HOST_API_SLOTS == 16 && BBW_ADDON_API_SLOTS == 13);
+    // Appended only: the first 56 bytes of the report, and every older field of the grind event, stay put.
+    CHECK(offsetof(bbw_shot_report, advice) == 36 && offsetof(bbw_shot_report, coffee_id) == 56 &&
+          offsetof(bbw_shot_report, room_temp_c) == 60 && offsetof(bbw_shot_report, coffee) == 64);
+    CHECK(offsetof(bbw_grind_event, grinder_recipe) == 28 && offsetof(bbw_grind_event, recipe_id) == 30);
+    CHECK(sizeof(addon::ShotReport::coffee) == sizeof(bbw_shot_report::coffee));
     // Each report field of the C++ struct has its place in the C one.
     addon::ShotReport r;
     CHECK(sizeof(r.recipeId) == sizeof(bbw_shot_report::recipe_id) && sizeof(r.grindSeq) == sizeof(bbw_shot_report::grind_seq) &&

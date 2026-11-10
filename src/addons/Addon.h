@@ -149,6 +149,9 @@ struct GrindEvent {
   float recipeTimeS = NAN;       // the grinder recipe's brew time
   uint8_t grinderRecipe = 0;     // the grinder's own recipe number, 1..MAX_GRINDER_RECIPES; 0: none
   uint8_t filter = 0;            // the grinder's basket type, 0: not said
+  // Set by the manager, not the driver (interface 2): the controller recipe grinderRecipe maps to when
+  // the grind was dealt with, 0: not mapped. Host::recipeForGrinderRecipe() answers the same earlier.
+  uint16_t recipeId = 0;
 };
 
 // The controller's grind advice for the shot's recipe, worked out with the shot included. Settings are
@@ -166,7 +169,10 @@ struct AdviceSnapshot {
   bool counted = false;        // this shot counted towards the advice
 };
 
-// One shot, for grind-by-sync style feedback. Sent only when the owner turned shot feedback on.
+constexpr size_t SHOT_COFFEE_LEN = 32;
+
+// One shot, for grind-by-sync style feedback. Sent when the owner turned shot feedback on, or when the
+// add-on asks for reports itself (GrinderDriver::wantsShotReports(), e.g. a recipe is in shadow mode).
 struct ShotReport {
   uint32_t shotId = 0;
   float totalTimeS = 0.0f;   // start press to stop, pre-infusion included
@@ -181,6 +187,11 @@ struct ShotReport {
   float firstDropS = 0.0f;   // when coffee first reached the cup, 0: not known
   uint32_t grindSeq = 0;     // GrindEvent::seq of the grind this shot followed, 0: none
   AdviceSnapshot advice;
+  // Added later in interface 2 (appended).
+  uint16_t coffeeId = 0;     // 0: none or no longer known
+  uint16_t bagId = 0;        // 0: none (made before bags)
+  float roomTempC = NAN;     // the room's slow 12 h temperature at the shot (its context record), NaN: not known
+  char coffee[SHOT_COFFEE_LEN] = {};   // the coffee's name as the shot recorded it (cut to fit)
 };
 
 enum class Link : uint8_t { OFF = 0, WAITING = 1, CONNECTED = 2, FAILED = 3 };
@@ -201,6 +212,9 @@ class GrinderDriver {
   virtual bool takeGrind(GrindEvent &out) = 0;
   // After a shot is saved, only when the owner turned shot feedback on for this add-on.
   virtual void onShotComplete(const ShotReport &) {}
+  // Interface 2: true while the add-on wants every shot report even though the owner left shot
+  // feedback off (shadow mode only watches; it writes nothing to the grinder or the controller).
+  virtual bool wantsShotReports() const { return false; }
   // Reserved (WRITE_SETTING): no driver implements it yet.
   virtual bool requestSetting(uint16_t /*steps*/) { return false; }
 };
@@ -249,6 +263,10 @@ class Host {
   virtual int32_t fileSize(const char *name) const = 0;
   // Reads up to cap bytes from offset. Bytes read (0 at the end), -1 when it is not there or refused.
   virtual int32_t readFile(const char *name, uint32_t offset, uint8_t *out, size_t cap) const = 0;
+  // The controller recipe this add-on's grinder recipe (1..MAX_GRINDER_RECIPES) is linked to, by the
+  // automatic match or by the owner's mapping (the Add-ons card). 0: not mapped, or its recipe is gone.
+  // Lets an add-on ask for the right recipe before any shot exists.
+  virtual uint16_t recipeForGrinderRecipe(uint8_t grinderRecipe) const = 0;
 };
 
 constexpr uint32_t NOTICE_TTL_MS = 15UL * 60UL * 1000UL;

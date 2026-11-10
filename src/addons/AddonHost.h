@@ -40,6 +40,7 @@ bool lastGrind(float &doseG, float &gapUm, uint32_t &ageS);
 // The shot save (main.cpp): the dose of the grind this shot followed (tenths of a gram, 0: none),
 // put into ShotContextInputs; then, once everything is saved, shotSaved().
 uint16_t doseForShot(const bbw::ShotRecord &shot);
-void shotSaved(const bbw::ShotRecord &shot);
+// roomTempC: the room's slow temperature saved in the shot's context, NAN when not known.
+void shotSaved(const bbw::ShotRecord &shot, float roomTempC);
 
 }  // namespace addons
