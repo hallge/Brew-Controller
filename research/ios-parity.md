@@ -23,68 +23,68 @@ line for every item) are in the coordinator's notes, `ios-parity/`.
 
 | Feature | Src | Route / function | Status |
 |---|---|---|---|
-| Recipe card: coffee or recipe name, yield line `in → out 1:r`, grind and advice line, pre-infusion and bloom, brew time | S | `/api/status`, `/api/library`, `/api/grind` | ☐ |
-| Status line: SCALE RESTING / NO SCALE / NO BOT / NO CUP x g / WAKING BOT x g / READY x g | S | `bbw_live` | ☐ |
-| Scale and bot dots (red, amber, grey, green) with battery %, amber at 15 % or less | S+W | `bbw_live` | ☐ |
-| Hint: connecting, switch on the scale, pair the bot, waiting for weight, place cup, tap to brew | S | `bbw_live` | ☐ |
-| Start (device start), Tare, Done / Clear the warning | S+W | `bbw_command` | ☐ |
-| Recipe picker; hidden finished-bag entries except the active one | S+W | `preset_select` | ☐ |
-| Next recipe (the board's long press) | S | `nextRecipe` | ☐ |
-| Edit the active entry: target or ratio, dose, grind, brew time, pre-infusion; tap and hold steps; SET advice | S | `/api/screen/do` (applyPresetEdit) | ☐ |
-| Coffee details: name, roaster, origin, roast level, roast age, and the rest | S | `/api/library` | ☐ |
-| Bag finished, with confirm | S+W | `coffee_finish` / `finishActiveCoffee` | ☐ |
-| Machine power button and state pill (believe on/off) | W | `/api/power` | ☐ |
-| Grinder card: setting, advice pill, reason, age | W | `/api/grind` | ☐ |
-| Previous grinder recommendation | W | `/api/contexts?limit=1` | ☐ |
-| Most recent shot: summary, chart, rate, taste, TDS; to Beanconqueror; share | W | `/api/shot/data`, `/api/shot/rate`, `/api/shot/tds` | ☐ |
-| For you chips (Discover on) | W | `/api/taste/recommend`, `/api/subscriptions/recommend` | ☐ |
-| Community card | W | `/api/community` | ☐ |
-| Alerts: manual stop needed; SwitchBot in Switch mode | W | `bbw_live` | ☐ |
+| Recipe card: coffee or recipe name, yield line `in → out 1:r`, grind and advice line, pre-infusion and bloom, brew time | S | `/api/status`, `/api/library`, `/api/grind` | ◐ `BrewTabUITests.testHomeCardShowsAndTheTabsAreThere` |
+| Status line: SCALE RESTING / NO SCALE / NO BOT / NO CUP x g / WAKING BOT x g / READY x g | S | `bbw_live` | ◐ `BrewTabUITests.testHomeCardShowsAndTheTabsAreThere` (READY) |
+| Scale and bot dots (red, amber, grey, green) with battery %, amber at 15 % or less | S+W | `bbw_live` | ◐ `BrewTabUITests.testHomeCardShowsAndTheTabsAreThere` |
+| Hint: connecting, switch on the scale, pair the bot, waiting for weight, place cup, tap to brew | S | `bbw_live` | ◐ hint text or Start key; no test of each wording |
+| Start (device start), Tare, Done / Clear the warning | S+W | `bbw_command` | ◐ Start, READY: `BrewTabUITests.testFullDemoShotReachesTheResult`; Tare built, untested |
+| Recipe picker; hidden finished-bag entries except the active one | S+W | `preset_select` | ◐ `BrewTabUITests.testRecipePickerOpensAndSelects` |
+| Next recipe (the board's long press) | S | `nextRecipe` | ◐ NEXT RECIPE key built, untested |
+| Edit the active entry: target or ratio, dose, grind, brew time, pre-infusion; tap and hold steps; SET advice | S | `/api/screen/do` (applyPresetEdit) | ◐ `BrewTabUITests.testEditPanelStepsAndCancels` |
+| Coffee details: name, roaster, origin, roast level, roast age, and the rest | S | `/api/library` | ◐ `BrewTabUITests.testCoffeeDetailsOpenAndClose` |
+| Bag finished, with confirm | S+W | `coffee_finish` / `finishActiveCoffee` | ◐ two-tap confirm built; untested (it finishes the demo bag) |
+| Machine power button and state pill (believe on/off) | W | `/api/power` | ◐ built; untested (the demo has no power bot) |
+| Grinder card: setting, advice pill, reason, age | W | `/api/grind` | ◐ the board card wording and `/api/grind` check-prep note; no separate reason or age line |
+| Previous grinder recommendation | W | `/api/contexts?limit=1` | ◐ built, untested |
+| Most recent shot: summary, chart, rate, taste, TDS; to Beanconqueror; share | W | `/api/shot/data`, `/api/shot/rate`, `/api/shot/tds` | ◐ summary, chart, stars, taste, TDS built, untested; to Beanconqueror and share left ☐ (not done) |
+| For you chips (Discover on) | W | `/api/taste/recommend`, `/api/subscriptions/recommend` | ◐ `/api/taste/recommend` only; `/api/subscriptions/recommend` not read; untested |
+| Community card | W | `/api/community` | ◐ built, untested |
+| Alerts: manual stop needed; SwitchBot in Switch mode | W | `bbw_live` | ◐ built (manual stop, Switch mode), untested |
 
 ### Grind prompts (S: GRINDREC; W: Home banners)
 
 | Feature | Src | Route | Status |
 |---|---|---|---|
-| NEW GRIND ADVICE: setting, reason (community, similar coffee, first guess), SET / KEEP / NOT NOW | S+W | `/api/grind/recommendation?use=` | ☐ |
-| SET THE GRIND: starting value; SET opens the editor on GRIND; NOT NOW until the next wake | S+W | `/api/grind/set` | ☐ |
-| GRIND REMINDER, once per wake: current → suggested, reason, play note | S | `/api/screen` | ☐ |
+| NEW GRIND ADVICE: setting, reason (community, similar coffee, first guess), SET / KEEP / NOT NOW | S+W | `/api/grind/recommendation?use=` | ◐ NEW GRIND ADVICE panel built; no test (a prompt is only dismissed by the shared helper) |
+| SET THE GRIND: starting value; SET opens the editor on GRIND; NOT NOW until the next wake | S+W | `/api/grind/set` | ◐ built; SET opens the editor on GRIND; untested |
+| GRIND REMINDER, once per wake: current → suggested, reason, play note | S | `/api/screen` | ◐ built, untested |
 
 ### Live shot (S: BREW)
 
 | Feature | Src | Status |
 |---|---|---|
-| Ring: grey before the pump runs, red while running with an empty cup, green from the first drop, fills to the target | S | ☐ |
-| Centre: target (grey) until coffee is seen, then the live weight (green); time (the scale's timer when valid); `/ target g`; flow g/s | S+W | ☐ |
-| Phase labels: AUTO TARE, PLACE CUP, TOUCH KEY TO BREW / WAKING BOT, PULL THE SHOT, PRE-INFUSION (HOLDING BUTTON), STARTING, BREWING, STOP NOW, BLOOM n s / BLOOM DONE, STOPPING, STOP BY HAND!, CHECKING (PUMP IS OFF), FINALIZING (LEAVE CUP) | S | ☐ |
-| Cancel before the shot, Stop during it (with confirm, as the BOOT double press) | S+W | ☐ |
-| Live Activity and lock screen; haptic on stop and done | iOS | ☐ |
+| Ring: grey before the pump runs, red while running with an empty cup, green from the first drop, fills to the target | S | ◐ `BrewTabUITests.testFullDemoShotReachesTheResult` |
+| Centre: target (grey) until coffee is seen, then the live weight (green); time (the scale's timer when valid); `/ target g`; flow g/s | S+W | ◐ `BrewTabUITests.testFullDemoShotReachesTheResult` |
+| Phase labels: AUTO TARE, PLACE CUP, TOUCH KEY TO BREW / WAKING BOT, PULL THE SHOT, PRE-INFUSION (HOLDING BUTTON), STARTING, BREWING, STOP NOW, BLOOM n s / BLOOM DONE, STOPPING, STOP BY HAND!, CHECKING (PUMP IS OFF), FINALIZING (LEAVE CUP) | S | ◐ words from `/api/screen`; the first labels are seen in `BrewTabUITests.testFullDemoShotReachesTheResult` |
+| Cancel before the shot, Stop during it (with confirm, as the BOOT double press) | S+W | ◐ `BrewTabUITests.testStopAsksForConfirmation` |
+| Live Activity and lock screen; haptic on stop and done | iOS | ◐ haptic on stop and done built; Live Activity ☐ not done (needs a widget extension target) |
 
 ### Result (S: RESULT)
 
 | Feature | Src | Status |
 |---|---|---|
-| OVER / UNDER / ON TARGET, ON TIME / SLOW / FAST, colour by tolerance | S | ☐ |
-| Abnormal endings: ENDED EARLY, TIMED OUT, STOPPED AT THE MACHINE, CUP LIFTED, STOPPED AFTER RESTART | S | ☐ |
-| Weight (`*` if not settled), total and pour time, flow, drip, auto adjust earlier/later | S | ☐ |
-| Grind verdict lines (fast/slow → finer/coarser and the amount, ONE-OFF?, CHECK PREPARATION, VARY, OK, SET THE GRIND, not counted and why) | S | ☐ |
-| READY; READY + GRINDER; IGNORE SHOT / COUNT FOR GRIND | S | ☐ |
-| Auto-acknowledge when a fresh cup goes on the empty scale | S | ☐ |
+| OVER / UNDER / ON TARGET, ON TIME / SLOW / FAST, colour by tolerance | S | ◐ `BrewTabUITests.testFullDemoShotReachesTheResult` |
+| Abnormal endings: ENDED EARLY, TIMED OUT, STOPPED AT THE MACHINE, CUP LIFTED, STOPPED AFTER RESTART | S | ◐ words from `/api/screen`; untested |
+| Weight (`*` if not settled), total and pour time, flow, drip, auto adjust earlier/later | S | ◐ `BrewTabUITests.testFullDemoShotReachesTheResult` |
+| Grind verdict lines (fast/slow → finer/coarser and the amount, ONE-OFF?, CHECK PREPARATION, VARY, OK, SET THE GRIND, not counted and why) | S | ◐ words from `/api/screen`; untested |
+| READY; READY + GRINDER; IGNORE SHOT / COUNT FOR GRIND | S | ◐ READY: `BrewTabUITests.testFullDemoShotReachesTheResult`; GRINDER and the vote keys built, untested |
+| Auto-acknowledge when a fresh cup goes on the empty scale | S | ◐ built (`auto_ack`), untested |
 
 ### Faults (S: FAULT)
 
 | Feature | Src | Status |
 |---|---|---|
-| Titles and messages: SCALE DISCONNECTED, BOT NOT CONNECTED, SCALE WENT SILENT, START NOT CONFIRMED, STOP NOT CONFIRMED, TARE FAILED, SHOT TIMED OUT, WEIGHT NOT VALID, BLUETOOTH ERROR, STOP MACHINE | S | ☐ |
-| PRESS BUTTON (start or stop not confirmed, bot connected); OK | S | ☐ |
+| Titles and messages: SCALE DISCONNECTED, BOT NOT CONNECTED, SCALE WENT SILENT, START NOT CONFIRMED, STOP NOT CONFIRMED, TARE FAILED, SHOT TIMED OUT, WEIGHT NOT VALID, BLUETOOTH ERROR, STOP MACHINE | S | ◐ one fault in `BrewTabUITests.testFaultShowsItsTitleAndMessage`; the other titles are the firmware words |
+| PRESS BUTTON (start or stop not confirmed, bot connected); OK | S | ◐ `BrewTabUITests.testFaultShowsItsTitleAndMessage` (OK; PRESS BUTTON when the bot is connected) |
 
 ### Screen behaviour moved to iOS
 
 | Board | iPhone | Status |
 |---|---|---|
-| Dim after 3 min idle; standby 30 s after the scale goes | Dim overlay; auto-lock allowed 30 s after the scale goes; idle timer off while the scale is connected or a shot is in hand | ☐ |
-| Six colour themes (`uiTheme`) | Same palettes (`src/ui/Palette.h`), plus Dynamic Type | ☐ |
+| Dim after 3 min idle; standby 30 s after the scale goes | Dim overlay; auto-lock allowed 30 s after the scale goes; idle timer off while the scale is connected or a shot is in hand | ◐ overlay and idle-timer rules (`AppLifecycle`, `RootView`); untested |
+| Six colour themes (`uiTheme`) | Same palettes (`src/ui/Palette.h`), plus Dynamic Type | ◐ palettes from `bbw_palette` on every Brew view; system fonts for Dynamic Type; untested |
 | Rotate screen | ✕ the phone rotates | ✕ |
-| Touch key and BOOT button | On-screen keys; Action Button and Shortcuts intent for Start | ☐ |
+| Touch key and BOOT button | On-screen keys; Action Button and Shortcuts intent for Start | ◐ on-screen keys built; Action Button and Shortcuts intent ☐ not done |
 
 ## 2. Shots (W: `#shots`)
 

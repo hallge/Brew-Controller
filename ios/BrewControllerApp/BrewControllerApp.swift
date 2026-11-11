@@ -5,18 +5,33 @@ import SwiftUI
 /// variable, so it starts normally.)
 private let runningUnitTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
 
-/// Starts the in-process controller once. Demo mode (the simulated Lunar, SwitchBot and Breville) until
-/// the real screens can switch it; `-bbwReal` as a launch argument selects the real devices.
+/// Starts the in-process controller once. Demo mode (the simulated Lunar, SwitchBot and Breville) unless
+/// the owner chose real devices at the first run (stored by `Onboarding`) or `-bbwReal` is a launch
+/// argument. `-bbwDemoReady` and `-bbwSkipOnboarding` (UI tests) skip the first-run screens.
 enum Controller {
-    static var demo: Bool { !ProcessInfo.processInfo.arguments.contains("-bbwReal") }
+    static var demo: Bool {
+        if ProcessInfo.processInfo.arguments.contains("-bbwReal") { return false }
+        return UserDefaults.standard.string(forKey: "bbw.onboarding.mode") != "real"
+    }
+
+    static var skipsOnboarding: Bool {
+        let arguments = ProcessInfo.processInfo.arguments
+        return arguments.contains("-bbwDemoReady") || arguments.contains("-bbwSkipOnboarding")
+    }
+
     private static var started = false
 
+    /// Starts the controller, then the live model and the lifecycle rules that read it. Once only; never
+    /// in a unit-test run (those start the controller themselves, on a temporary folder).
+    @MainActor
     static func startOnce() {
-        guard !started else { return }
+        guard !started, !runningUnitTests else { return }
         started = true
         bbw_ios_prepare(demo ? 1 : 0)
         _ = bbw_host_start()
         if demo && ProcessInfo.processInfo.arguments.contains("-bbwDemoReady") { DispatchQueue.global().async(execute: readyTheDemo) }
+        LiveModel.shared.start()
+        AppLifecycle.shared.start()
     }
 
     /// For the UI test: pair the simulated bot, pick the Breville profile and put the cup on the scale,
@@ -34,45 +49,19 @@ enum Controller {
         _ = bbw_demo_set("machine", "cupOnScale", "0")
         Thread.sleep(forTimeInterval: 3)
         _ = bbw_demo_set("machine", "cupOnScale", "1")
+        // `-bbwDemoFault`: the simulated bot ignores every command, so Start ends in a fault (START NOT
+        // CONFIRMED, with PRESS BUTTON) for the UI test.
+        if ProcessInfo.processInfo.arguments.contains("-bbwDemoFault") {
+            _ = bbw_demo_set("bot", "ignoreCommands", "99")
+        }
     }
 }
 
 @main
 struct BrewControllerApp: App {
-    init() {
-        if !runningUnitTests { Controller.startOnce() }
-    }
-
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
         }
-    }
-}
-
-/// Placeholder until the Brew tab exists: state name and weight at 10 Hz, and a Start button.
-struct ContentView: View {
-    @State private var live = BbwLive()
-    private let timer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
-
-    private var stateName: String {
-        withUnsafeBytes(of: live.state_name) { raw in
-            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
-        }
-    }
-
-    var body: some View {
-        VStack(spacing: 24) {
-            Text(stateName).font(.title).accessibilityIdentifier("stateLabel")
-            Text(String(format: "%.1f g", live.weight_g))
-                .font(.system(size: 48, weight: .light, design: .rounded))
-                .accessibilityIdentifier("weightLabel")
-            Button("Start") { _ = bbw_command(Int32(BBW_CMD_START)) }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("startButton")
-        }
-        .padding()
-        .onReceive(timer) { _ in bbw_live(&live) }
-        .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
     }
 }
