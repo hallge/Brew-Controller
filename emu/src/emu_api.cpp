@@ -1,119 +1,14 @@
-// The emulator page's control API (port --emu-port) and the Arduino
-// WebServer stand-in that carries the firmware's own web interface
-// (port --web-port).
+// The emulator page's control API (port --emu-port). The Arduino WebServer
+// stand-in that carries the firmware's own web interface is in host_web.cpp.
 
 #include <ArduinoJson.h>
-#include <WebServer.h>
 
-#include <condition_variable>
-#include <deque>
 #include <fstream>
-#include <memory>
-#include <mutex>
 #include <sstream>
 
 #include "App.h"
 #include "emu.h"
 #include "emu_http.h"
-
-// ============================================================== WebServer ==
-
-namespace {
-
-struct Pending {
-  emu::HttpRequest request;
-  emu::HttpResponse response;
-  bool done = false;
-  std::mutex mutex;
-  std::condition_variable ready;
-};
-
-std::mutex g_pendingMutex;
-std::deque<std::shared_ptr<Pending>> g_pending;
-
-}  // namespace
-
-void WebServer::on(const char *path, HTTPMethod method, Handler handler) {
-  routes_.push_back({path, method, handler});
-}
-
-void WebServer::begin() {
-  const bool ok = emu::httpServe(
-      emu::g_options.webPort, [](const emu::HttpRequest &request, emu::HttpResponse &response) {
-        auto pending = std::make_shared<Pending>();
-        pending->request = request;
-        {
-          std::lock_guard<std::mutex> lock(g_pendingMutex);
-          g_pending.push_back(pending);
-        }
-        std::unique_lock<std::mutex> lock(pending->mutex);
-        if (pending->ready.wait_for(lock, std::chrono::seconds(10),
-                                    [&] { return pending->done; })) {
-          response = pending->response;
-        } else {
-          response.code = 503;
-          response.body = "controller did not answer";
-        }
-      });
-  if (!ok) emu::log("emu", "device web UI: port %d is in use", emu::g_options.webPort);
-}
-
-void WebServer::handleClient() {
-  for (;;) {
-    std::shared_ptr<Pending> pending;
-    {
-      std::lock_guard<std::mutex> lock(g_pendingMutex);
-      if (g_pending.empty()) return;
-      pending = g_pending.front();
-      g_pending.pop_front();
-    }
-    const emu::HttpRequest &request = pending->request;
-    args_ = request.query;
-    args_["plain"] = request.body;
-    code_ = 200;
-    type_ = "text/plain";
-    body_.clear();
-    headers_.clear();
-    const HTTPMethod method = request.method == "POST" ? HTTP_POST : HTTP_GET;
-    uri_ = request.path;
-    method_ = method;
-    const Handler *handler = &notFound_;
-    for (const Route &route : routes_) {
-      if (route.path == request.path && route.method == method) handler = &route.handler;
-    }
-    if (*handler) (*handler)();
-    std::lock_guard<std::mutex> lock(pending->mutex);
-    pending->response.code = code_;
-    pending->response.type = type_;
-    pending->response.body = body_;
-    pending->response.headers = headers_;
-    pending->done = true;
-    pending->ready.notify_all();
-  }
-}
-
-void WebServer::sendHeader(const char *name, const char *value) {
-  headers_.emplace_back(name, value);
-}
-
-void WebServer::send(int code, const char *type, const char *body) {
-  code_ = code;
-  type_ = type;
-  body_ = body;
-}
-
-void WebServer::send_P(int code, const char *type, const char *body, size_t length) {
-  code_ = code;
-  type_ = type;
-  body_.assign(body, length);
-}
-
-String WebServer::arg(const char *name) {
-  const auto it = args_.find(name);
-  return it == args_.end() ? String() : String(it->second);
-}
-
-bool WebServer::hasArg(const char *name) { return args_.count(name) != 0; }
 
 // ============================================================ emulator API ==
 

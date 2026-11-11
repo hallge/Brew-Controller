@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "emu_http.h"
+
 namespace emu {
 
 struct Options {
@@ -55,6 +57,34 @@ extern Board g_board;
 bool pressed(const std::atomic<bool> &down, const std::atomic<uint32_t> &downAtMs);
 
 enum class Reset { POWER_ON, SOFTWARE, PANIC };
+extern Reset g_resetReason;  // why this controller instance started
+// Exit codes the Windows supervisor understands as "restart the controller" (100 + Reset).
+constexpr int EXIT_RESTART_BASE = 100;
+
+// What a host other than the Windows emulator supplies. Every hook is optional: a null one keeps
+// the default (std::chrono clock, files under g_options.dataDir, no RTC memory, no socket
+// listener). Set them before the firmware's setup() runs. The data directory itself is
+// g_options.dataDir, which Preferences and LittleFS read on every call.
+struct HostHooks {
+  // Monotonic milliseconds since the host started; backs millis(). Default: steady_clock.
+  uint32_t (*clockMs)() = nullptr;
+  // The RTC_NOINIT_ATTR variables' memory. Without it nothing survives a restart.
+  void (*rtcRegion)(char *&begin, size_t &size) = nullptr;
+  // RTC persistence across a restart. Defaults: <dataDir>/rtc.bin.
+  void (*rtcSave)(const char *data, size_t size) = nullptr;
+  long (*rtcLoad)(char *data, size_t size) = nullptr;  // bytes read, -1 when nothing was saved
+  void (*rtcClear)() = nullptr;                         // forget the saved image
+  // Called by restart() after the world and RTC are saved. Return to get the default
+  // (fflush + _exit(EXIT_RESTART_BASE + reason)).
+  void (*onRestart)(Reset reason) = nullptr;
+  // WebServer::begin(): start whatever accepts requests for the device web server and feed them
+  // to webDispatch(). Null means in-process only (webEnqueue).
+  bool (*webListen)(int port) = nullptr;
+};
+extern HostHooks g_hooks;
+// Reload the RTC variables after a restart (or discard the saved image after a power-on).
+void rtcRestore(Reset reason);
+
 [[noreturn]] void restart(Reset reason);
 void eraseFlash();
 void serialInject(const std::string &line);
@@ -73,5 +103,24 @@ bool worldSet(const std::string &device, const std::string &key, const std::stri
 
 // Control API + page (emu_api.cpp)
 void apiBegin();
+
+// The device web server's request queue (host_web.cpp). A request is handled by
+// WebServer::handleClient() on the loop task, whichever way it arrived.
+struct WebResponse {
+  int status = 200;
+  std::string contentType = "text/plain";
+  std::vector<std::pair<std::string, std::string>> headers;
+  std::string body;
+};
+// In-process request, no socket. `uri` may carry a query string. A body with contentType
+// application/x-www-form-urlencoded also supplies arguments; `body` is always available to the
+// handler as the "plain" argument. Blocks until the loop task answered, or answers 503 after
+// timeoutMs (the request may still run later, as with the socket server).
+WebResponse webEnqueue(const std::string &method, const std::string &uri, const std::string &body,
+                       const std::string &contentType, int timeoutMs = 10000);
+// The same for a parsed request (what the socket server holds).
+HttpResponse webDispatch(const HttpRequest &request, int timeoutMs = 10000);
+// Windows only (emu_http.cpp): accept loopback connections and feed webDispatch().
+bool webServe(int port);
 
 }  // namespace emu

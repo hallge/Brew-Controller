@@ -17,7 +17,9 @@ extern "C" {
 #endif
 uint32_t millis(void);
 void delay(uint32_t ms);
+#ifndef __APPLE__  // Darwin's libc declares it
 size_t strlcpy(char *dst, const char *src, size_t size);
+#endif
 #ifdef __cplusplus
 }
 
@@ -32,8 +34,13 @@ size_t strlcpy(char *dst, const char *src, size_t size);
 #define LOW 0
 #define HIGH 1
 // Variables marked this way survive an emulated software reset / crash, as
-// RTC memory does on the chip. See emu_core.cpp.
+// RTC memory does on the chip. See emu_core.cpp (Windows: PE section between markers) and the
+// host's rtcRegion hook (Darwin: Mach-O section).
+#ifdef __APPLE__
+#define RTC_NOINIT_ATTR __attribute__((section("__DATA,__bbw_rtc")))
+#else
 #define RTC_NOINIT_ATTR __attribute__((section(".rtcni$m")))
+#endif
 
 void setup();
 void loop();
@@ -42,7 +49,9 @@ void pinMode(int pin, int mode);
 int digitalRead(int pin);
 bool setCpuFrequencyMhz(uint32_t mhz);
 void configTime(long gmtOffset, int daylightOffset, const char *server);
+#ifdef _WIN32  // elsewhere <sys/time.h> declares it (and the host decides what it does)
 int settimeofday(const struct timeval *tv, const void *tz);
+#endif
 // newlib has it, the Windows C runtime spells it differently. Elsewhere (the Linux CI building the
 // storage tests on these shims) the C library has it already.
 #ifdef _WIN32

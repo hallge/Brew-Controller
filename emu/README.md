@@ -20,6 +20,24 @@ Needs the libraries PlatformIO fetched into `.pio/libdeps` (`pio pkg install`)
 and the `ziglang` package in `.venv` as the C++ compiler. Both are already
 there in this checkout.
 
+## Portable host files
+
+The runtime is split so a host other than the Windows emulator (the iPhone app) can reuse it:
+
+- `emu/src/host_runtime.cpp`: Arduino core stand-ins, FreeRTOS on threads, NVS and LittleFS as files
+  under `g_options.dataDir`, Serial, the log ring and the Wi-Fi stubs.
+- `emu/src/host_web.cpp`: the firmware's `WebServer` (route table, request queue). Requests run on
+  the loop task inside `handleClient()`. `emu::webEnqueue(method, uri, body, contentType)` is the
+  in-process entry point (no sockets); `emu_http.cpp` (Windows only) is a thin socket front end on
+  the same queue.
+- `emu/src/http_parse.h`: `urlDecode` and `parseArgs`, free of socket headers.
+- `emu/src/emu_core.cpp`: only the Windows `main`, the `_spawnv` restart supervisor and the PE RTC
+  section.
+
+A host adapts the runtime through `emu::g_hooks` (`emu.h`): clock, RTC region and persistence,
+restart, and the web listener. These files also compile for Darwin
+(`python -m ziglang c++ -std=c++17 -target aarch64-macos -fsyntax-only ...`).
+
 ## What is real and what is emulated
 
 The firmware is not rewritten or mocked. `emu/build.py` compiles the same
