@@ -506,21 +506,24 @@ void namesJson(JsonArray out) {
 
 #ifndef BBW_EMULATOR
 // Where modules come from and how the last check or download went (the card's "Add-ons from").
+// `src` and `d` are copies on this function's stack. ArduinoJson 7 keeps only a pointer to a
+// `const char[N]` (it takes it for a string literal), and the reply is written after this returns:
+// every text goes in as `const char *`, which it copies (v0.1.31 sent garbage for an empty repo).
 static void moduleDeliveryJson(JsonObject out) {
   const bbw::addonloader::Source src = bbw::addonloader::source();
-  out["repo"] = src.repo;
+  out["repo"] = static_cast<const char *>(src.repo);
   out["token_set"] = src.token[0] != '\0';
   const bbw::addonloader::Delivery d = bbw::addonloader::delivery();
   static const char *const phases[] = {"idle", "checking", "downloading", "done", "failed"};
   out["state"] = phases[static_cast<uint8_t>(d.phase) < 5 ? static_cast<uint8_t>(d.phase) : 0];
-  out["message"] = d.message;
+  out["message"] = static_cast<const char *>(d.message);
   if (d.checkedEpoch) out["checked_epoch"] = d.checkedEpoch;
   out["restart_needed"] = d.restartNeeded;
   JsonArray offers = out["offers"].to<JsonArray>();
   for (size_t i = 0; i < d.offerCount; ++i) {
     JsonObject o = offers.add<JsonObject>();
-    o["id"] = d.offers[i].id;
-    o["tag"] = d.offers[i].tag;
+    o["id"] = static_cast<const char *>(d.offers[i].id);
+    o["tag"] = static_cast<const char *>(d.offers[i].tag);
     o["bytes"] = d.offers[i].bytes;
     o["installed"] = d.offers[i].installed;
     o["differs"] = d.offers[i].differs;
