@@ -133,27 +133,27 @@ line for every item) are in the coordinator's notes, `ios-parity/`.
 
 | Feature | Route | Status |
 |---|---|---|
-| Setting now and measured by the add-on; I moved it to | `/api/grind`, `/api/grind/set` | ☐ |
-| Advice pill, why, age, rate; apply suggested | `/api/grind` | ☐ |
-| Brew time against grind (scatter, all coffees) | `/api/shots` | ☐ |
-| Grind shot by shot: a line per coffee, dots by time, rings for 4-5 stars, new-bag lines; tap opens the shot | `/api/shots` | ☐ |
-| Advice settings: tolerance, window, rated target, confidence, room, µm/s guess, max step, time basis | `/api/settings` | ☐ |
-| Upkeep: clean; zeroed today | `/api/maintenance`, `/api/grinder` | ☐ |
-| My grinder: model by maker (built-in, own, shared), name, adjusts by, divisor, unit, range, covers, zeroed date, micro ring | `/api/grinder` | ☐ |
-| Second grinder: add, use instead, remove; send to the library | `grinder_switch`, `grinder_remove_other`, `/api/share/grinder` | ☐ |
-| Shared grinder list | `/api/community/grinders` | ☐ |
+| Setting now and measured by the add-on; I moved it to | `/api/grind`, `/api/grind/set` | ◐ `testSetTheGrinderSetting` |
+| Advice pill, why, age, rate; apply suggested | `/api/grind` | ◐ testSetTheGrinderSetting (pill); apply: testOpenEachScreen |
+| Brew time against grind (scatter, all coffees) | `/api/shots` | ◐ `testOpenEachScreen` |
+| Grind shot by shot: a line per coffee, dots by time, rings for 4-5 stars, new-bag lines; tap opens the shot | `/api/shots` | ◐ testOpenEachScreen (tap shows the shot's summary under the chart; opening the shot is the Shots thread's screen) |
+| Advice settings: tolerance, window, rated target, confidence, room, µm/s guess, max step, time basis | `/api/settings` | ◐ `testOpenEachScreen` |
+| Upkeep: clean; zeroed today | `/api/maintenance`, `/api/grinder` | ◐ `testOpenEachScreen` |
+| My grinder: model by maker (built-in, own, shared), name, adjusts by, divisor, unit, range, covers, zeroed date, micro ring | `/api/grinder` | ◐ `testOpenEachScreen` |
+| Second grinder: add, use instead, remove; send to the library | `grinder_switch`, `grinder_remove_other`, `/api/share/grinder` | ◐ `testOpenEachScreen` |
+| Shared grinder list | `/api/community/grinders` | ◐ `testOpenEachScreen` |
 
 ## 6. Machine (W: `#machine`)
 
 | Feature | Route | Status |
 |---|---|---|
-| Power: state, last press, switch on/off, not right? on/off, press anyway | `/api/power` | ☐ |
-| Schedule: 6 rows (in use, on/off, time, weekdays); time zone | `/api/power` schedule | ☐ |
-| Options: keep power bot connected, off with the scale, scale sleeps after 0-60 min | `/api/settings` | ☐ |
-| Upkeep: backflush and descale, remind after, done today | `/api/maintenance` | ☐ |
-| Make and model: built-in, shared, typed; maker, model, control, style (5), manual start, pre-infusion flags, power toggle, self-stop, auto-off | `/api/machine` | ☐ |
-| Send to the shared library | `/api/share/machine` | ☐ |
-| Power events log | `/api/power/events` | ☐ |
+| Power: state, last press, switch on/off, not right? on/off, press anyway | `/api/power` | ◐ testToggleAMachineOption (screen); press: testOpenEachScreen |
+| Schedule: 6 rows (in use, on/off, time, weekdays); time zone | `/api/power` schedule | ◐ testOpenEachScreen (time zone: the schedule saves the phone's offset and keeps the controller's rule) |
+| Options: keep power bot connected, off with the scale, scale sleeps after 0-60 min | `/api/settings` | ◐ `testToggleAMachineOption` |
+| Upkeep: backflush and descale, remind after, done today | `/api/maintenance` | ◐ `testOpenEachScreen` |
+| Make and model: built-in, shared, typed; maker, model, control, style (5), manual start, pre-infusion flags, power toggle, self-stop, auto-off | `/api/machine` | ◐ `testOpenEachScreen` |
+| Send to the shared library | `/api/share/machine` | ◐ `testOpenEachScreen` |
+| Power events log | `/api/power/events` | ◐ `testOpenEachScreen` |
 
 ## 7. Insights (W: `#insights`)
 
@@ -196,28 +196,28 @@ line for every item) are in the coordinator's notes, `ios-parity/`.
 
 | Feature | Route | Status |
 |---|---|---|
-| Summary: scale, brew, power and stop bot (signal, battery, firmware, problems); scale link stats | `/api/devices` | ☐ |
-| Seen list with role buttons (Use, Brew, Power, Stop); refresh | `/api/pair`, `/api/devices` | ☐ |
-| Pair the nearest bot; forget the scale | S | `/api/screen/do` | ☐ |
-| Test press brew or power; swap brew and power; forget any | `/api/bot/test`, `/api/pair` | ☐ |
-| Pusher keys: role; Tuya uuid, id, local key, model; MicroBot token; SwitchBot password | `/api/pusher`, `/api/net` | ☐ |
+| Summary: scale, brew, power and stop bot (signal, battery, firmware, problems); scale link stats | `/api/devices` | ◐ `testDevicesShowThePairedScaleAndBot` |
+| Seen list with role buttons (Use, Brew, Power, Stop); refresh | `/api/pair`, `/api/devices` | ◐ `testDevicesShowThePairedScaleAndBot` |
+| Pair the nearest bot; forget the scale | S | `/api/screen/do` | ◐ `testOpenEachScreen` |
+| Test press brew or power; swap brew and power; forget any | `/api/bot/test`, `/api/pair` | ◐ `testOpenEachScreen` |
+| Pusher keys: role; Tuya uuid, id, local key, model; MicroBot token; SwitchBot password | `/api/pusher`, `/api/net` | ◐ `testOpenEachScreen` |
 | AccessorySetupKit pairing sheet | iOS | ☐ |
 
 ## 11. Setup (W: `#setup`; S: Settings)
 
 | Feature | Route | Status |
 |---|---|---|
-| Appearance: 6 themes | `/api/settings uiTheme` | ☐ |
-| Drinkers: named on/off, 8 names | `/api/settings`, `/api/drinkers` | ☐ |
-| Brew: cup workflow, cup required, after tare, minimum cup; learning on/off, factor, fixed/adaptive, scale timer; details (min weight, timeouts, drip watch, no-stop-before, no-flow, press style, durations, bot hold) | `/api/settings` | ☐ |
-| Offset learning toggle (the board's OFFSET: LEARNING/FIXED) | S+W | `/api/settings` | ☐ |
-| Home Assistant: address, token, entities, webhook, MQTT; test the reading; says what can't work on iPhone | `/api/homeassistant`, `/api/ambient/test` | ☐ |
-| Backup (history, secrets) to Files; restore from Files, summary, apply, tap to restart | `/api/backup`, `/api/restore`, `/restore/apply` | ☐ |
-| Shared library: state, key id, link, own repo and token, share on, what it shares, queue, send again | `/api/share*` | ☐ |
-| Diagnostics: on/off, status, last crash, preview, send now; report a problem; relay address | `/api/diagnostics*`, `/api/crash` | ☐ |
+| Appearance: 6 themes | `/api/settings uiTheme` | ◐ `testChangeTheme` |
+| Drinkers: named on/off, 8 names | `/api/settings`, `/api/drinkers` | ◐ `testOpenEachScreen` |
+| Brew: cup workflow, cup required, after tare, minimum cup; learning on/off, factor, fixed/adaptive, scale timer; details (min weight, timeouts, drip watch, no-stop-before, no-flow, press style, durations, bot hold) | `/api/settings` | ◐ `testOpenEachScreen` |
+| Offset learning toggle (the board's OFFSET: LEARNING/FIXED) | S+W | `/api/settings` | ◐ `testOpenEachScreen` |
+| Home Assistant: address, token, entities, webhook, MQTT; test the reading; says what can't work on iPhone | `/api/homeassistant`, `/api/ambient/test` | ◐ testOpenEachScreen (the screen says plainly that Home Assistant cannot poll the phone) |
+| Backup (history, secrets) to Files; restore from Files, summary, apply, tap to restart | `/api/backup`, `/api/restore`, `/restore/apply` | ◐ testOpenEachScreen (backup through the share sheet, restore through Files; restore ends on "Restored, tap to restart") |
+| Shared library: state, key id, link, own repo and token, share on, what it shares, queue, send again | `/api/share*` | ◐ `testOpenEachScreen` |
+| Diagnostics: on/off, status, last crash, preview, send now; report a problem; relay address | `/api/diagnostics*`, `/api/crash` | ◐ `testOpenEachScreen` |
 | Add-ons: on, fields, map, read now, forget (only when built in) | `/api/addons/*` | ☐ |
-| Getting started: 8 steps and "when you want more" | `/api/start` | ☐ |
-| Web page panels (which sections show) | `webPanels` | ☐ (as "show in More") |
+| Getting started: 8 steps and "when you want more" | `/api/start` | ◐ testOpenEachScreen (7 steps: the Wi-Fi step is the board's) |
+| Web page panels (which sections show) | `webPanels` | ◐ testOpenEachScreen ("Show in More" toggles; the shell has to read `webPanels`) |
 | Wi-Fi, access point, network restart | ✕ the board's Wi-Fi | ✕ |
 | Firmware update, slots, rollback | ✕ App Store updates | ✕ |
 | Controller screen upside down | ✕ | ✕ |
@@ -226,9 +226,9 @@ line for every item) are in the coordinator's notes, `ios-parity/`.
 
 | Feature | Route | Status |
 |---|---|---|
-| Level 0-3, keep on flash | `/api/log/config` | ☐ |
-| Live tail: follow, filter, clear view | `/api/log?from=` | ☐ |
-| Download through the share sheet; clear | `/log.txt`, `/api/log/clear` | ☐ |
+| Level 0-3, keep on flash | `/api/log/config` | ◐ `testChangeTheLogLevel` |
+| Live tail: follow, filter, clear view | `/api/log?from=` | ◐ `testOpenEachScreen` |
+| Download through the share sheet; clear | `/log.txt`, `/api/log/clear` | ◐ `testOpenEachScreen` |
 
 ## 13. App-level
 
