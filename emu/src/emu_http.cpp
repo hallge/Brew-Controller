@@ -1,3 +1,7 @@
+// The Windows socket front end. Other hosts (the iPhone app) have no sockets and call webEnqueue()
+// (host_web.cpp) directly.
+#ifdef _WIN32
+
 #include "emu_http.h"
 
 #include <winsock2.h>
@@ -7,39 +11,12 @@
 #include <cstdio>
 #include <thread>
 
+#include "emu.h"
+#include "http_parse.h"
+
 namespace emu {
 
 namespace {
-
-std::string urlDecode(const std::string &in) {
-  std::string out;
-  for (size_t i = 0; i < in.size(); ++i) {
-    if (in[i] == '+') {
-      out += ' ';
-    } else if (in[i] == '%' && i + 2 < in.size() && isxdigit(static_cast<unsigned char>(in[i + 1])) &&
-               isxdigit(static_cast<unsigned char>(in[i + 2]))) {
-      out += static_cast<char>(strtol(in.substr(i + 1, 2).c_str(), nullptr, 16));
-      i += 2;
-    } else {
-      out += in[i];
-    }
-  }
-  return out;
-}
-
-void parseArgs(const std::string &text, std::map<std::string, std::string> &out) {
-  size_t start = 0;
-  while (start < text.size()) {
-    size_t end = text.find('&', start);
-    if (end == std::string::npos) end = text.size();
-    const std::string pair = text.substr(start, end - start);
-    const size_t eq = pair.find('=');
-    if (!pair.empty()) {
-      out[urlDecode(pair.substr(0, eq))] = eq == std::string::npos ? "" : urlDecode(pair.substr(eq + 1));
-    }
-    start = end + 1;
-  }
-}
 
 const char *reason(int code) {
   switch (code) {
@@ -164,3 +141,16 @@ bool httpServe(int port, std::function<void(const HttpRequest &, HttpResponse &)
 }
 
 }  // namespace emu
+
+namespace emu {
+
+// The device web server's listener: every connection feeds the shared queue (host_web.cpp).
+bool webServe(int port) {
+  return httpServe(port, [](const HttpRequest &request, HttpResponse &response) {
+    response = webDispatch(request);
+  });
+}
+
+}  // namespace emu
+
+#endif  // _WIN32
