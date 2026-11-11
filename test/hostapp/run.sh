@@ -65,13 +65,14 @@ export CXXCMD_STR="${CXXCMD[*]}"
 # xargs cannot pass arrays: rebuild them inside the shell.
 FLAGS_STR="${FLAGS[*]}"
 export FLAGS_STR
-printf '%s\n' "${SOURCES[@]}" | xargs -P "${JOBS:-8}" -I{} bash -c '
-  src={}; obj=$OUT/obj/$(echo "$src" | tr "/" "_" | sed "s/\.cpp$/.o/")
+# The file goes in as $1, not through -I{}: macOS xargs limits an -I command to 255 bytes.
+printf '%s\n' "${SOURCES[@]}" | xargs -P "${JOBS:-8}" -n 1 bash -c '
+  src=$1; obj=$OUT/obj/$(echo "$src" | tr "/" "_" | sed "s/\.cpp$/.o/")
   if [ -f "$obj" ] && [ -z "$(find "$src" src emu ios lib -newer "$obj" \( -name "*.h" -o -name "*.cpp" \) 2>/dev/null | head -1)" ]; then exit 0; fi
   $CXXCMD_STR $FLAGS_STR -MMD -MF "${obj%.o}.d" -c "$src" -o "$obj" 2>"${obj%.o}.err" \
     || { echo "--- $src"; cat "${obj%.o}.err"; exit 1; }
   [ -s "${obj%.o}.err" ] && { echo "--- $src (warnings)"; head -20 "${obj%.o}.err"; }
-  exit 0' || { echo "build failed"; exit 1; }
+  exit 0' _ || { echo "build failed"; exit 1; }
 
 if grep -l "EspressoScaleProtocol" "$OUT"/obj/*.d >/dev/null 2>&1; then
   echo "an OBBW header (EspressoScaleProtocol) was included by:"
