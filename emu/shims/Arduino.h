@@ -43,10 +43,13 @@ int digitalRead(int pin);
 bool setCpuFrequencyMhz(uint32_t mhz);
 void configTime(long gmtOffset, int daylightOffset, const char *server);
 int settimeofday(const struct timeval *tv, const void *tz);
-// newlib has it, the Windows C runtime spells it differently.
+// newlib has it, the Windows C runtime spells it differently. Elsewhere (the Linux CI building the
+// storage tests on these shims) the C library has it already.
+#ifdef _WIN32
 inline struct tm *gmtime_r(const time_t *t, struct tm *out) {
   return gmtime_s(out, t) == 0 ? out : nullptr;
 }
+#endif
 
 typedef enum {
   ESP_RST_UNKNOWN,
