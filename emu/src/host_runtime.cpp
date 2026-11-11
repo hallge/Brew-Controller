@@ -393,6 +393,11 @@ bool LittleFSClass::exists(const char *path) {
   return fs::exists(emu::g_options.dataDir + "/fs" + path, error);
 }
 
+bool LittleFSClass::mkdir(const char *path) {
+  std::error_code error;
+  return fs::create_directories(emu::g_options.dataDir + "/fs" + path, error);
+}
+
 bool LittleFSClass::remove(const char *path) {
   std::error_code error;
   return fs::remove(emu::g_options.dataDir + "/fs" + path, error);
@@ -411,6 +416,15 @@ void LittleFSClass::list(void (*visit)(const char *path, size_t size, void *cont
     const std::string path = "/" + entry.path().filename().string();
     visit(path.c_str(), static_cast<size_t>(entry.file_size(error)), context);
   }
+  // The add-ons' files, "/addons/<id>/<name>".
+  for (const auto &folder : fs::directory_iterator(emu::g_options.dataDir + "/fs/addons", error)) {
+    if (!folder.is_directory(error)) continue;
+    for (const auto &entry : fs::directory_iterator(folder.path(), error)) {
+      if (!entry.is_regular_file(error)) continue;
+      const std::string path = "/addons/" + folder.path().filename().string() + "/" + entry.path().filename().string();
+      visit(path.c_str(), static_cast<size_t>(entry.file_size(error)), context);
+    }
+  }
 }
 
 size_t LittleFSClass::usedBytes() {
@@ -418,6 +432,9 @@ size_t LittleFSClass::usedBytes() {
   size_t used = 0;
   for (const auto &entry : fs::directory_iterator(emu::g_options.dataDir + "/fs", error)) {
     // A file takes whole 4 kB blocks on the real partition.
+    if (entry.is_regular_file(error)) used += (entry.file_size(error) + 4095) / 4096 * 4096;
+  }
+  for (const auto &entry : fs::recursive_directory_iterator(emu::g_options.dataDir + "/fs/addons", error)) {
     if (entry.is_regular_file(error)) used += (entry.file_size(error) + 4095) / 4096 * 4096;
   }
   return used;

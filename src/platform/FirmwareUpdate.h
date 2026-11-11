@@ -90,4 +90,23 @@ size_t updateSlots(SlotInfo *out, size_t max);
 // or "previous" (the other update slot, if it holds a firmware that ran).
 bool updateBootSlot(const char *which, char *why, size_t whySize);
 
+// ---- release files from another repository (add-on modules, platform/AddonLoader.cpp) ----
+// The same GitHub fetch the firmware update uses (roots, redirect to the download host, token only for
+// the API), for a repository and token of their own. Network task only (netSubmit); board only.
+struct ReleaseAssetInfo {
+  char name[48] = {};
+  uint32_t id = 0;
+  uint32_t bytes = 0;
+};
+struct ReleaseAssets {
+  char tag[32] = {};
+  ReleaseAssetInfo asset[8];
+  size_t count = 0;
+};
+// The newest release of "owner/name": its tag and its first assets. false: why says it.
+bool releaseListLatest(const char *repo, const char *token, ReleaseAssets &out, char *why, size_t whySize);
+// A release file, streamed to sink(data, length, context) (false stops it). At most maxBytes. false: why.
+bool releaseStreamAsset(const char *repo, const char *token, uint32_t assetId, size_t maxBytes,
+                        bool (*sink)(const uint8_t *, size_t, void *), void *context, char *why, size_t whySize);
+
 }  // namespace bbw

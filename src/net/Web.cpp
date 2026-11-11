@@ -33,6 +33,9 @@
 #include "platform/FirmwareUpdate.h"
 #include "platform/FsUtil.h"
 #include "platform/LibraryLink.h"
+#ifndef BBW_EMULATOR
+#include "platform/AddonLoader.h"
+#endif
 #include "storage/Backup.h"
 #include "ui/Ui.h"
 
@@ -107,7 +110,7 @@ void handleStatus() {
   {
     JsonArray caps = doc["capabilities"].to<JsonArray>();
     for (const char *c : {"status_v1", "shots_v1", "shot_data_v1", "shot_csv_v1", "grind_advice_v1",
-                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1", "coffee_taste_v1", "subscriptions_v1", "ambient_v1", "home_assistant_v1", "shot_room_v1", "grind_room_v1", "addons_v1"}) {
+                          "library_v1", "bags_v1", "maintenance_v1", "ratings_refinement_v1", "tds_v1", "shot_context_v1", "shot_prep_v1", "learn_grinder_v1", "diagnostics_v1", "update_v1", "power_events_v1", "coffee_taste_v1", "subscriptions_v1", "ambient_v1", "home_assistant_v1", "shot_room_v1", "grind_room_v1", "addons_v1", "addons_v2"}) {
       caps.add(c);
     }
   }
@@ -3064,6 +3067,9 @@ void handleUpdateInfo() {
   doc["repo"] = config.repo;
   // The add-ons compiled into this image: a release from another repository may not have them.
   addons::namesJson(doc["addons"].to<JsonArray>());
+  // Add-on modules are files on the file system: a firmware update leaves them alone. One built for
+  // another add-on interface is listed but not started until a matching module is installed.
+  addons::moduleNamesJson(doc["modules"].to<JsonArray>());
   doc["token_set"] = config.token[0] != '\0';
   doc["auto_check"] = config.autoCheck;
   // The update from GitHub: what the last check found, and how it is going.
@@ -3747,11 +3753,105 @@ void begin() {
     doc["reply"] = reply;
     sendJson(doc, ok ? 200 : 400);
   });
+  // GET /api/addons/file?id=&name=: one of the add-on's own files (a text file, such as a CSV it keeps
+  // through Host::appendFile). Only /addons/<id>/<name>: the name is checked, never a path.
+  server.on("/api/addons/file", HTTP_GET, []() {
+    if (busyBrewing()) return sendError(409, "not while a shot is running");
+    char path[64];
+    const char *problem = "";
+    const String id = server.arg("id"), name = server.arg("name");
+    if (!addons::filePath(id.c_str(), name.c_str(), path, sizeof(path), problem)) return sendError(400, problem);
+    if (!bbw::fileExists(path)) return sendError(404, "no such file");
+    File file = LittleFS.open(path, "r");
+    if (!file) return sendError(404, "no such file");
+    char disposition[96];
+    snprintf(disposition, sizeof(disposition), "attachment; filename=\"%s\"", name.c_str());
+    server.sendHeader("Content-Disposition", disposition);
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    const size_t nameLen = strlen(name.c_str());
+    const bool csv = nameLen >= 4 && strcmp(name.c_str() + nameLen - 4, ".csv") == 0;
+    server.send(200, csv ? "text/csv" : "text/plain", "");
+    for (;;) {
+      const size_t n = file.read(reinterpret_cast<uint8_t *>(g_logChunk), 1024);
+      if (n == 0) break;
+      g_logChunk[n] = '\0';
+      server.sendContent(g_logChunk);
+    }
+    file.close();
+    server.sendContent("");
+  });
   server.on("/api/addons/forget", HTTP_POST, []() {
     if (busyBrewing()) return sendError(409, "not while a shot is running");
     if (!addons::forget(server.arg("id").c_str())) return sendError(404, "no such add-on");
     sendOk();
   });
+#ifndef BBW_EMULATOR
+  // Add-on modules (docs/ADDONS.md, "Add-ons as modules"). Delivery is separate from the firmware: a
+  // repository of the owner's own ("Add-ons from"), or a file from the browser. A module loads at the
+  // next restart. None of this runs while a shot is in hand.
+  // POST /api/addons/source {"repo": "owner/name", "token": "..."} ("" keeps the token, "-" forgets it).
+  server.on("/api/addons/source", HTTP_POST, []() {
+    JsonDocument body;
+    if (deserializeJson(body, server.arg("plain"))) return sendError(400, "invalid JSON");
+    const char *problem = "";
+    const char *repo = body["repo"].is<const char *>() ? body["repo"].as<const char *>() : nullptr;
+    const char *token = body["token"].is<const char *>() ? body["token"].as<const char *>() : nullptr;
+    if (!bbw::addonloader::setSource(repo, token, problem)) return sendError(400, problem);
+    sendOk();
+  });
+  server.on("/api/addons/module/check", HTTP_POST, []() {
+    const char *problem = "";
+    if (!bbw::addonloader::check(problem)) return sendError(409, problem);
+    sendOk();
+  });
+  server.on("/api/addons/module/install", HTTP_POST, []() {
+    const char *problem = "";
+    if (!bbw::addonloader::install(server.arg("id").c_str(), idleForUpdate(), problem)) return sendError(409, problem);
+    sendOk();
+  });
+  server.on("/api/addons/module/retry", HTTP_POST, []() {
+    const char *problem = "";
+    if (!bbw::addonloader::retry(server.arg("id").c_str(), problem)) return sendError(409, problem);
+    sendOk();
+  });
+  server.on("/api/addons/module/remove", HTTP_POST, []() {
+    if (busyBrewing()) return sendError(409, "not while a shot is running");
+    const char *problem = "";
+    if (!bbw::addonloader::remove(server.arg("id").c_str(), problem)) return sendError(404, problem);
+    sendOk();
+  });
+  server.on("/api/addons/module/restart", HTTP_POST, []() {
+    if (busyBrewing()) return sendError(409, "not while a shot is running");
+    sendOk();
+    restartPending = true;
+    restartAtMs = millis() + 1500;
+  });
+  // POST /api/addons/module (multipart): a module file from a local build (scripts/build_module.py).
+  server.on("/api/addons/module", HTTP_POST, []() {
+    if (!bbw::addonloader::uploadStored()) {
+      const char *why = bbw::addonloader::uploadError();
+      return sendError(400, why[0] ? why : "no module file came with the request");
+    }
+    sendOk();
+  }, []() {
+    HTTPUpload &upload = server.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+      bbw::addonloader::uploadBegin(idleForUpdate());
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+      bbw::addonloader::uploadWrite(upload.buf, upload.currentSize);
+    } else if (upload.status == UPLOAD_FILE_END) {
+      char id[32];
+      const char *problem = "";
+      if (!bbw::addonloader::uploadEnd(id, sizeof(id), problem)) {
+        LOGW("addon modules: upload refused: %s", problem);
+      } else {
+        LOGI("addon modules: %s stored by upload; loads at the next restart", id);
+      }
+    } else if (upload.status == UPLOAD_FILE_ABORTED) {
+      bbw::addonloader::uploadAbort();
+    }
+  });
+#endif
   // A path no route above answers: an add-on switched on may answer it, under the prefixes it
   // declared in addon.json (a device that calls the controller). Otherwise 404.
   server.onNotFound([]() {

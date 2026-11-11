@@ -6,6 +6,7 @@
 #include <lvgl.h>
 
 #include "App.h"
+#include "addons/AddonHost.h"
 #include "core/SettingFormat.h"
 #include "core/SettingsUtil.h"
 #include "Log.h"
@@ -565,6 +566,23 @@ void placeLayout(bool flipped) {
 // The hint that names the touch key points at it, at whichever end it is.
 const char *touchHint() {
   return flippedShown ? "TOUCH KEY TO BREW  " LV_SYMBOL_RIGHT : LV_SYMBOL_LEFT "  TOUCH KEY TO BREW";
+}
+
+// The line under the card where the start key is: the touch-key hint, or an add-on's notice when it
+// has one ("Grinder: ready, press Brew"), 20 pt, then 18, then 16 when it is long.
+void homeStartText() {
+  const char *note = addons::notice();
+  if (note[0]) {
+    fitText(homeHint, note, CARD_BOX_W - 16, 3, &lv_font_montserrat_20, &lv_font_montserrat_18,
+            &lv_font_montserrat_16);
+    scrollIfLong(homeHint, note, CARD_BOX_W - 16);
+  } else {
+    if (lv_obj_get_style_text_font(homeHint, LV_PART_MAIN) != &lv_font_montserrat_20) {
+      lv_obj_set_style_text_font(homeHint, &lv_font_montserrat_20, 0);
+    }
+    setText(homeHint, touchHint());
+    scrollIfLong(homeHint, touchHint(), CARD_BOX_W - 16);
+  }
 }
 
 void applyRotation(bool flipped) {
@@ -1336,7 +1354,8 @@ void refreshHome(const bbw::LiveStatus &st) {
 
   // An idle scale is let go so that it can switch itself off (core/ScaleRest.h). While it rests, or
   // is on its way back, Start takes it back and brews as soon as it is there.
-  if (ht.hintIsTouch) setText(homeHint, touchHint());
+  // Where the touch-key hint goes, an add-on's notice takes its place while it stands.
+  if (ht.hintIsTouch) homeStartText();
   else setText(homeHint, ht.hint);
   setColor(homeHint, toneColor(ht.hintTone));
   // A key only while it offers the start; plain text, as before, otherwise.
@@ -1436,6 +1455,14 @@ void refreshResult(State state) {
       line2 = rt.line2[i + 1];
     }
     fitDetail(resLine2, "%s", line2);
+    // An add-on's notice ("Reported 31.2 s ...") takes the flow line while it stands.
+    const char *note = addons::notice();
+    if (note[0]) {
+      fitDetail(resLine2, "%s", note);
+      setColor(resLine2, COLOR_ACCENT);
+    } else {
+      setColor(resLine2, COLOR_DIM);
+    }
   }
 
   auto showIf = [](lv_obj_t *obj, bool visible) {

@@ -56,12 +56,17 @@ def build_snapshot(status: Any, shots: Any, grind: Any) -> dict[str, Any]:
         "cup_present": flag(status.get("cup_present")),
         "bot_connected": flag(status.get("bot_connected")),
         "bot_battery_pct": number(status.get("bot_battery")),
+        "scale_battery_pct": number(status.get("scale_battery")),
+        "scale_resting": flag(status.get("scale_resting")),
         "maintenance_due": number(status.get("maintenance_due")),
         "target_weight_g": positive(status.get("target_weight_g")),
         "recipe": text(status.get("recipe")),
         "last_shot_time_s": number(shot.get("shot_time_s")),
         "last_shot_weight_g": number(shot.get("final_weight_g")),
         "last_shot_grind": positive(shot.get("grind_um")),
+        # What the shot stopped for; older firmware has only the recipe's target.
+        "last_shot_stop_target_g": positive(shot.get("stop_target_g", shot.get("target_weight_g"))),
+        "last_shot_rating": positive(shot.get("rating")),
         "advised_grind": positive(grind.get("suggested_um")) if has_number else None,
         "advised_action": text(grind.get("action")),
         "shot_noise_s": number(grind.get("shot_noise_s")),
@@ -206,6 +211,171 @@ def build_extra(library: Any, maintenance: Any, subs: Any, grind: Any,
     nxt = sorted((s for s in active if number(s.get("days_until")) is not None), key=lambda s: s["days_until"])
     out["subs_next"] = ({"name": text(nxt[0].get("name")), "date": nxt[0].get("next_date"),
                          "days_until": nxt[0].get("days_until")} if nxt else None)
+    return out
+
+
+# --- 0.4.0: the summary's figures as entities ---------------------------------------------------
+
+def shot_local_date(shot: Any, tzinfo) -> tuple[int, int, int] | None:
+    """The shot's date in `tzinfo` (its `timestamp` is ISO UTC, "2026-11-07T08:12:00Z"), or None."""
+    from datetime import datetime, timezone
+    stamp = text(shot.get("timestamp")) if isinstance(shot, dict) else None
+    if not stamp:
+        return None
+    try:
+        t = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    d = t.astimezone(tzinfo).date() if tzinfo else t.date()
+    return d.year, d.month, d.day
+
+
+ON_TIME_S = 3  # the grind advice's default tolerance, when /api/grind gives none
+
+
+def shots_today(shots: Any, today: tuple[int, int, int], tzinfo=None, tolerance_s: Any = None) -> dict[str, Any]:
+    """{count, average_time_s, on_time} of today's shots (local date); None without a shot list.
+    On time: within the grind tolerance of the recipe's target time (lib/charts.js dialIn)."""
+    tol = number(tolerance_s) or ON_TIME_S
+    if not isinstance(shots, list):
+        return {"count": None, "average_time_s": None, "on_time": None}
+    todays = [s for s in shots if isinstance(s, dict) and shot_local_date(s, tzinfo) == today]
+    times = [t for t in (number(s.get("shot_time_s")) for s in todays) if t is not None]
+    on_time = sum(1 for s in todays
+                  if number(s.get("target_time_s")) and number(s.get("shot_time_s")) is not None
+                  and abs(s["shot_time_s"] - s["target_time_s"]) <= tol)
+    return {"count": len(todays), "average_time_s": round(sum(times) / len(times), 1) if times else None,
+            "on_time": on_time}
+
+
+def room_effect(grind: Any) -> dict[str, Any]:
+    """/api/grind `room` (v0.1.30): seconds the room moved the newest shot's time (0 when not
+    applied), with its figures; None when the firmware has no room block or it is switched off."""
+    room = grind.get("room") if isinstance(grind, dict) and isinstance(grind.get("room"), dict) else None
+    if not room or room.get("on") is False:
+        return {"room_shift_s": None, "room_attrs": None}
+    shift = number(room.get("shift_s")) if room.get("applied") else 0
+    return {
+        "room_shift_s": shift,
+        "room_attrs": {"learned": flag(room.get("learned")), "applied": flag(room.get("applied")),
+                       "s_per_c": number(room.get("s_per_c")), "now_c": number(room.get("now_c")),
+                       "shots": number(room.get("shots")), "span_c": number(room.get("span_c"))},
+    }
+
+
+def next_power_events(power: Any, now_epoch: int) -> dict[str, int | None]:
+    """Epoch seconds of the next scheduled switch-on and switch-off, or None.
+
+    `/api/power` `schedule[]` is {enabled, on, minute (local, 0..1439), days (bit 0 Sunday)}; the
+    controller's local time is UTC + `utc_offset_min_now` (src/core/PowerControl.h). The offset of
+    now is used for the week ahead, so a daylight-saving change in between moves it by an hour.
+    The panel's lib/schedule.js is the same rule.
+    """
+    out: dict[str, int | None] = {"next_on": None, "next_off": None}
+    if not isinstance(power, dict) or not isinstance(power.get("schedule"), list) or power.get("clock_set") is False:
+        return out
+    offset_s = int(number(power.get("utc_offset_min_now", power.get("utc_offset_min"))) or 0) * 60
+    local_now = int(now_epoch) + offset_s
+    day_start = local_now - local_now % 86400
+    for e in power["schedule"]:
+        if not isinstance(e, dict) or not e.get("enabled"):
+            continue
+        minute, days = number(e.get("minute")), number(e.get("days"))
+        if minute is None or days is None:
+            continue
+        key = "next_on" if e.get("on", True) else "next_off"
+        for k in range(8):
+            start = day_start + k * 86400
+            weekday_sun0 = (start // 86400 + 4) % 7   # 1 Jan 1970 was a Thursday
+            t = start + int(minute) * 60
+            if t > local_now and int(days) & (1 << weekday_sun0):
+                at = t - offset_s
+                if out[key] is None or at < out[key]:
+                    out[key] = at
+                break
+    return out
+
+
+def _ymd_date(ymd: Any):
+    from datetime import date
+    n = number(ymd)
+    if not n or n < 19000101:
+        return None
+    n = int(n)
+    try:
+        return date(n // 10000, (n // 100) % 100, n % 100)
+    except ValueError:
+        return None
+
+
+def drinker_name(ratings: dict[str, Any], drinker: Any) -> str:
+    d = int(number(drinker) or 0)
+    names = ratings.get("drinkers") or []
+    if d == 0:
+        return "household"
+    if ratings.get("named") and 0 < d <= len(names) and names[d - 1]:
+        return str(names[d - 1])
+    return f"drinker {d}"
+
+
+def build_summary(library: Any, subs: Any, power: Any, ratings: Any, update: Any, shots: Any,
+                  today: tuple[int, int, int], now_epoch: int, tzinfo=None, grind: Any = None) -> dict[str, Any]:
+    """Values for the 0.4.0 entities; anything absent is None."""
+    library = library if isinstance(library, dict) else {}
+    subs = subs if isinstance(subs, dict) else {}
+    out: dict[str, Any] = {}
+
+    day = shots_today(shots, today, tzinfo, grind.get("tolerance_s") if isinstance(grind, dict) else None)
+    out["shots_today"] = day["count"]
+    out["shots_today_attrs"] = {"average_time_s": day["average_time_s"], "on_time": day["on_time"]}
+
+    if isinstance(power, dict) and power:
+        belief = power.get("belief")
+        out["machine_power"] = True if belief == "on" else False if belief == "off" else None
+        out["power_bot_paired"] = flag(power.get("paired"))
+        out["machine_power_attrs"] = {"last": text(power.get("last")), **next_power_events(power, now_epoch)}
+    else:
+        out["machine_power"] = out["power_bot_paired"] = out["machine_power_attrs"] = None
+
+    has_bags = isinstance(library.get("bags"), list)
+    bags = [b for b in library.get("bags") or [] if isinstance(b, dict)]
+    out["bags_unopened"] = sum(1 for b in bags if b.get("unopened")) if has_bags else None
+    out["bags_on_the_way"] = sum(1 for b in bags if b.get("onTheWay")) if has_bags else None
+    src = bag_in_use(library) or coffee_in_use(library)
+    out["bag_frozen"] = bool(src.get("frozenDate") and not src.get("thawDate")) if src else None
+
+    if isinstance(subs.get("subscriptions"), list):
+        cents = number(subs.get("monthly_cents"))
+        out["subs_monthly_spend"] = round(cents / 100, 2) if cents is not None else None
+        active = [x for x in subs["subscriptions"] if isinstance(x, dict) and x.get("status", "active") == "active"]
+        supplies = [x for x in active if x.get("kind") == "supplies" and number(x.get("stock")) is not None]
+        out["supplies_left"] = min((x["stock"] for x in supplies), default=None)
+        out["supplies_attrs"] = {"supplies": [
+            {"name": text(x.get("name")), "item": text(x.get("item")), "stock": x.get("stock"),
+             "days_left": number(x.get("stock_days_left")), "short": bool(x.get("stock_short"))} for x in supplies]}
+        nxt = sorted((x for x in active if number(x.get("days_until")) is not None), key=lambda x: x["days_until"])
+        out["next_delivery"] = _ymd_date(nxt[0].get("next_date")) if nxt else None
+        out["next_delivery_attrs"] = ({"name": text(nxt[0].get("name")), "days_until": nxt[0]["days_until"],
+                                       "due_soon": bool(nxt[0].get("due_soon"))} if nxt else None)
+    else:
+        out["subs_monthly_spend"] = out["supplies_left"] = out["next_delivery"] = None
+        out["supplies_attrs"] = out["next_delivery_attrs"] = None
+
+    rows = [r for r in ratings.get("ratings") or [] if isinstance(r, dict)] if isinstance(ratings, dict) else []
+    newest = max(rows, key=lambda r: number(r.get("t")) or 0) if rows else None
+    if newest:
+        coffee = next((c for c in library.get("coffees") or []
+                       if isinstance(c, dict) and c.get("id") == newest.get("coffee")), {})
+        out["last_coffee_rating"] = number(newest.get("stars"))
+        out["last_coffee_rating_attrs"] = {"coffee": text(coffee.get("name")),
+                                           "drinker": drinker_name(ratings, newest.get("drinker")),
+                                           "t": number(newest.get("t"))}
+    else:
+        out["last_coffee_rating"] = out["last_coffee_rating_attrs"] = None
+
+    out["firmware_version"] = text(update.get("version")) if isinstance(update, dict) else None
     return out
 
 

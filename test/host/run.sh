@@ -29,8 +29,8 @@ else
 fi
 echo "scale tables: $PROTOCOLS"
 # shellcheck disable=SC2086
-$CXX -std=c++17 -O1 -Wall -Wextra -Isrc $FLAGS \
-  test/host/test_main.cpp src/core/BrewController.cpp $PROTOCOLS \
+$CXX -std=c++17 -O1 -Wall -Wextra -Isrc -Itest/module/hello $FLAGS \
+  test/host/test_main.cpp test/module/hello/Hello.cpp src/core/BrewController.cpp $PROTOCOLS \
   -o $OUT
 $OUT
 # The flash storage (Store.cpp, Backup.cpp) on the emulator's shims: a program of its own, because the

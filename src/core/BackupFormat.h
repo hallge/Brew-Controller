@@ -68,12 +68,20 @@ inline bool backupNameOk(uint8_t type, const char *name) {
     return true;
   }
   if (type != BACKUP_ENTRY_FILE || n < 2 || n > BACKUP_NAME_MAX || name[0] != '/') return false;
+  // One folder level is allowed, for an add-on's own files: "/addons/<id>/<name>".
+  size_t slashes = 0;
   for (size_t i = 1; i < n; ++i) {
     const char c = name[i];
+    if (c == '/') {
+      ++slashes;
+      if (name[i - 1] == '/' || i + 1 == n) return false;  // an empty folder or file name
+      continue;
+    }
     const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
                     c == '.' || c == '_' || c == '-';
     if (!ok) return false;
   }
+  if (slashes != 0 && !(slashes == 2 && strncmp(name, "/addons/", 8) == 0)) return false;
   return strstr(name, "..") == nullptr;
 }
 

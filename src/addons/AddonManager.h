@@ -189,6 +189,7 @@ struct PendingGrind {
   uint16_t recipeId = 0;
   uint16_t doseDg = 0;
   float targetG = 0.0f;
+  uint32_t seq = 0;     // GrindEvent::seq
 };
 
 inline bool validRoutePrefix(const char *p) {
@@ -380,16 +381,39 @@ class Manager {
     return pending_.doseDg;
   }
   // After the shot is saved: the grind is used up; add-ons that were asked hear about the shot.
-  void shotSaved(uint16_t recipeId, const ShotReport &report) {
+  // The report's grindSeq is set here: the grind this shot followed (the same rule as doseForShot).
+  void shotSaved(uint16_t recipeId, const ShotReport &given) {
+    ShotReport report = given;
+    report.grindSeq = grindSeqForShot(recipeId);
     if (pending_.active && recipeId == pending_.recipeId) pending_ = PendingGrind{};
     for (size_t i = 0; i < count_; ++i) {
       Slot &s = slots_[i];
-      if (!s.started || !s.options.shotFeedback) continue;
+      if (!s.started) continue;
       GrinderDriver *g = s.addon->grinder();
-      if (g && (g->caps() & SHOT_FEEDBACK)) g->onShotComplete(report);
+      if (!g || !(g->caps() & SHOT_FEEDBACK)) continue;
+      // The owner's switch, or the add-on's own request (a recipe in shadow mode only watches).
+      if (s.options.shotFeedback || g->wantsShotReports()) g->onShotComplete(report);
     }
   }
+  // The grind a shot on this recipe followed, 0 none. Before shotSaved uses the grind up.
+  uint32_t grindSeqForShot(uint16_t recipeId) const {
+    if (!pending_.active || recipeId != pending_.recipeId) return 0;
+    const int32_t after = static_cast<int32_t>(shotStartMs_ - pending_.atMs);
+    if (after < 0 || static_cast<uint32_t>(after) > GRIND_WINDOW_MS) return 0;
+    return pending_.seq;
+  }
   const PendingGrind &pending() const { return pending_; }
+
+  // The recipe a grinder recipe is linked to for this add-on, 0 none. recipes: the controller's now, so
+  // a link to a deleted recipe answers 0.
+  uint16_t recipeForGrinderRecipe(size_t i, uint8_t grinderRecipe, const RecipeView *recipes, size_t count) const {
+    if (i >= count_ || grinderRecipe == 0 || grinderRecipe > MAX_GRINDER_RECIPES) return 0;
+    const uint16_t id = slots_[i].map[grinderRecipe].recipeId;
+    for (size_t k = 0; id && k < count; ++k) {
+      if (recipes[k].id == id) return id;
+    }
+    return 0;
+  }
 
   // Map a grinder recipe by hand: recipeId 0 takes the mapping away (and lets it be found again).
   bool setMap(size_t i, uint8_t grinderRecipe, uint16_t recipeId) {
@@ -407,6 +431,7 @@ class Manager {
     s.hasGrind = true;
     s.plan = planGrind(ev, recipes, n, s.map, s.options, act.grinder(), act.umPerStep());
     const GrindPlan &p = s.plan;
+    s.grind.recipeId = p.mapped ? p.recipeId : 0;
     if (p.autoMapped) act.changed();
     if (!p.mapped) {
       act.log(p.note);
@@ -421,6 +446,7 @@ class Manager {
     pending_.recipeId = p.recipeId;
     pending_.doseDg = p.doseDg;
     pending_.targetG = p.shotTargetG;
+    pending_.seq = ev.seq;
     act.setNextShotTarget(p.shotTargetG, p.shotTargetG > 0.0f ? p.recipeId : 0);
     char line[160];
     snprintf(line, sizeof(line), "addon %s: grind for recipe %u: dose %.2f g, target %.2f g, setting %u%s%s",
