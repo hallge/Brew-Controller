@@ -18,13 +18,24 @@ struct DiscoverRecipeDraft: Identifiable, Equatable {
     var timeS: Double
     var holdS: Double = 0
     var bloomS: Double = 0
+    /// The yield is set by a ratio (1:ratio) instead of a target weight.
+    var useRatio = false
+    var ratio: Double = 0
+    /// 0 the machine's own time-out, 1 the bot stops after `maxShotTimeS`.
+    var timeLimit = 0
+    var maxShotTimeS: Double = 50
+    /// The stop offset to start from until the recipe has learned one.
+    var baselineOffsetG: Double = 1.5
     var id = UUID()
 
     /// The body for POST /api/recipe: a new recipe (id 0) by weight, holding the pre-infusion when it has a hold.
     var json: [String: BrewJSON] {
         var body: [String: BrewJSON] = [
             "id": .int(0), "name": .string(String(name.prefix(23))), "doseG": .double(doseG),
-            "useRatio": .bool(false), "targetWeightG": .double(yieldG),
+            "useRatio": .bool(useRatio), "targetWeightG": .double(yieldG),
+            "ratio": .double(ratio > 0 ? ratio : (doseG > 0 ? yieldG / doseG : 2)),
+            "timeLimit": .int(timeLimit), "maxShotTimeS": .double(maxShotTimeS),
+            "baselineOffsetG": .double(baselineOffsetG),
         ]
         if timeS > 0 { body["targetTimeS"] = .double(timeS) }
         if holdS > 0 {

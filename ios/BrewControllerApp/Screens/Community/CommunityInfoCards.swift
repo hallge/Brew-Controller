@@ -50,38 +50,12 @@ struct CommunityNowCard: View {
     var body: some View {
         let palette = BrewTheme.shared.palette
         let coffee = store.activeCoffee
-        let dial = store.library.grinder.dial
         CommunityCard(title: "For what you are brewing", subtitle: coffee?.name ?? "", identifier: "communityNow") {
             if let coffee {
-                if coffee.libraryId.isEmpty {
-                    CommunityEmptyNote(
-                        text: "\(coffee.name) is not in the shared library yet. Once it is published, where other owners settle shows here.",
-                        identifier: "communityNowEmpty")
+                if store.brewingEntry == nil {
+                    CommunityEmptyNote(text: noEntryText(coffee), identifier: "communityNowEmpty")
                 } else if let now = store.now {
-                    if !now.found {
-                        CommunityEmptyNote(text: notFoundText(coffee: coffee, now: now), identifier: "communityNowEmpty")
-                    } else {
-                        let setting = now.start.setting
-                        HStack(spacing: 8) {
-                            tile("Start your grinder at",
-                                 setting != 0 ? "\(dial.setting(setting)) ± \(dial.delta(now.start.range)) \(dial.deltaUnit)" : "not known",
-                                 CommunityText.startWhy(now))
-                            tile("What a good shot looked like", BrewFormat.decimal(now.timeS, 1) + " s",
-                                 store.activeRecipe.map { "\(BrewFormat.decimal($0.doseG, 0)) g in, \(BrewFormat.decimal($0.targetWeightG, 0)) g out (\($0.name))" } ?? "")
-                            tile("Based on", "\(now.contributors) \(now.contributors == 1 ? "person" : "people")",
-                                 "\(now.dialins) settled dial-in\(now.dialins == 1 ? "" : "s"), within ± \(BrewFormat.decimal(now.spreadUm, 1)) µm of each other")
-                        }
-                        if setting != 0 {
-                            Button("Use \(dial.setting(setting)) as my starting grind") {
-                                let current = store.library.activePresetEntry?.grindUm ?? 0
-                                if current != 0 && current != setting { confirmStart = setting } else { Task { await store.useStart(setting) } }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .accessibilityIdentifier("communityUseStart")
-                            Text(currentSettingText(dial: dial))
-                                .font(.footnote).foregroundStyle(palette.dim)
-                        }
-                    }
+                    answer(coffee: coffee, now: now)
                 } else {
                     CommunityEmptyNote(text: "What other owners settled on cannot be read from the controller right now.",
                                        identifier: "communityNowEmpty")
@@ -98,8 +72,81 @@ struct CommunityNowCard: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Replace your setting of \(dial.setting(store.library.activePresetEntry?.grindUm ?? 0)) with \(dial.setting(confirmStart ?? 0))?")
+            let dial = store.library.grinder.dial
+            Text("Replace your setting of \(dial.setting(store.brewingEntry?.preset.grindUm ?? 0)) with \(dial.setting(confirmStart ?? 0))?")
         }
+        .tint(palette.accent)
+    }
+
+    // MARK: Answers
+
+    @ViewBuilder
+    private func answer(coffee: CoffeeModel, now: CommunityNow) -> some View {
+        let dial = store.library.grinder.dial
+        if coffee.libraryId.isEmpty {
+            CommunityEmptyNote(
+                text: "\(coffee.name) is not in the shared library yet. Once it is published, where other owners settle shows here.",
+                identifier: "communityNowEmpty")
+        } else if !now.found {
+            CommunityEmptyNote(text: notFoundText(coffee: coffee, now: now), identifier: "communityNowEmpty")
+        } else {
+            let setting = now.start.setting
+            tile("Start your grinder at",
+                 setting != 0 ? "\(dial.setting(setting)) ± \(dial.delta(now.start.range)) \(dial.deltaUnit)" : "not known",
+                 CommunityText.startWhy(now, dial: dial))
+            tile("What a good shot looked like", BrewFormat.decimal(now.timeS, 1) + " s", goodShotDetail)
+            tile("Based on", "\(now.contributors) \(now.contributors == 1 ? "person" : "people")", basedOnDetail(now))
+            if setting != 0 { useButton(setting) }
+        }
+        similar(now.similar, dial: dial)
+        if !now.similar.found, !(now.found && now.start.setting != 0), let guess = now.rangeGuess, guess.setting != 0 {
+            tile("A first guess from your grinder's range", "\(dial.setting(guess.setting)) ± \(dial.delta(guess.range)) \(dial.deltaUnit)",
+                 "Nothing else is known for this coffee yet. Grind advice takes over from your first shot.")
+                .accessibilityIdentifier("communityRangeGuess")
+        }
+    }
+
+    @ViewBuilder
+    private func similar(_ guess: CommunitySimilar, dial: BrewFormat.Dial) -> some View {
+        if guess.found {
+            tile("A guess from your own coffees", "\(dial.setting(guess.setting)) ± \(dial.delta(guess.range)) \(dial.deltaUnit)",
+                 "From \(guess.fromCoffee) (\(dial.settingUnit(guess.fromSetting))), your nearest coffee"
+                    + (guess.nearRecipe ? " on a close recipe" : "") + ". Grind advice takes over from your first shot.")
+                .accessibilityIdentifier("communitySimilar")
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(CommunityText.similarLines(guess, dial: dial), id: \.self) { line in
+                        Text("• " + line).font(.footnote).foregroundStyle(BrewTheme.shared.palette.dim)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } label: {
+                Text("How this guess is made").font(.footnote).foregroundStyle(BrewTheme.shared.palette.dim)
+            }
+            if guess.setting != 0 { useButton(guess.setting) }
+        }
+    }
+
+    private func useButton(_ setting: Int) -> some View {
+        let dial = store.library.grinder.dial
+        return VStack(alignment: .leading, spacing: 4) {
+            Button("Use \(dial.setting(setting)) as my starting grind") {
+                let current = store.brewingEntry?.preset.grindUm ?? 0
+                if current != 0 && current != setting { confirmStart = setting } else { Task { await store.useStart(setting) } }
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("communityUseStart")
+            Text(currentSettingText(dial: dial))
+                .font(.footnote).foregroundStyle(BrewTheme.shared.palette.dim)
+        }
+    }
+
+    // MARK: Words
+
+    private func noEntryText(_ coffee: CoffeeModel) -> String {
+        coffee.libraryId.isEmpty
+            ? "\(coffee.name) is not in the shared library yet. Once it is published, where other owners settle shows here."
+            : "Tick a recipe for this coffee to see what others settled on for it."
     }
 
     private func notFoundText(coffee: CoffeeModel, now: CommunityNow) -> String {
@@ -112,8 +159,17 @@ struct CommunityNowCard: View {
         return text
     }
 
+    private var goodShotDetail: String {
+        guard let recipe = store.activeRecipe else { return "" }
+        return "\(BrewFormat.decimal(recipe.doseG, 0)) g in, \(BrewFormat.decimal(recipe.targetWeightG, 0)) g out (\(recipe.name))"
+    }
+
+    private func basedOnDetail(_ now: CommunityNow) -> String {
+        "\(now.dialins) settled dial-in\(now.dialins == 1 ? "" : "s"), within ± \(BrewFormat.decimal(now.spreadUm, 1)) µm of each other"
+    }
+
     private func currentSettingText(dial: BrewFormat.Dial) -> String {
-        let current = store.library.activePresetEntry?.grindUm ?? 0
+        let current = store.brewingEntry?.preset.grindUm ?? 0
         let tail = " A start only: grind advice takes it from there."
         if current != 0 { return "Your setting for it now: " + dial.settingUnit(current) + "." + tail }
         return "No setting entered for it yet." + tail
@@ -141,6 +197,8 @@ struct CommunityGrindersCard: View {
                     .font(.footnote).foregroundStyle(palette.dim)
                     .accessibilityIdentifier("communityGrinderList")
             }
+            NavigationLink("Your grinder") { GrinderTab() }
+                .accessibilityIdentifier("communityLinkGrinder")
         }
     }
 }
@@ -174,6 +232,13 @@ struct CommunityShareCard: View {
             } else {
                 CommunityEmptyNote(text: "What you share cannot be read from the controller.", identifier: "communityShareEmpty")
             }
+            HStack(spacing: 16) {
+                NavigationLink("Setup › Shared library") { SetupScreen() }
+                    .accessibilityIdentifier("communityLinkSetup")
+                NavigationLink("Coffees") { CoffeesTab() }
+                    .accessibilityIdentifier("communityLinkCoffees")
+            }
+            .font(.subheadline)
         }
     }
 }

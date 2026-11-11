@@ -4,12 +4,20 @@
 import SwiftUI
 
 struct CommunityScreen: View {
+    /// A shot to share to Reddit: the screen scrolls to that card with this shot chosen.
+    let redditShotID: Int?
+
     @State private var store = CommunityStore()
     @State private var showSuggest = false
     @State private var recipeDraft: DiscoverRecipeDraft?
 
+    init(redditShotID: Int? = nil) {
+        self.redditShotID = redditShotID
+    }
+
     var body: some View {
         let palette = BrewTheme.shared.palette
+        ScrollViewReader { reader in
         ScrollView {
             VStack(spacing: 14) {
                 if let notice = store.notice {
@@ -27,12 +35,15 @@ struct CommunityScreen: View {
                         .accessibilityIdentifier("communityLoading")
                 } else {
                     CommunityFeedCard(store: store) { showSuggest = true }
-                    CommunityRedditCard(store: store)
+                    CommunityRedditCard(store: store, initialShotID: redditShotID)
+                        .id("communityRedditCard")
                     CommunityTrendingCard(store: store) { draft in recipeDraft = draft }
                     CommunityNowCard(store: store)
                     CommunityCard(title: "Coffees and recipes in the shared library", identifier: "communityLibraryPointer") {
                         Text("Browse them, add them, and review what other owners sent on Discover.")
                             .font(.subheadline).foregroundStyle(palette.dim)
+                        NavigationLink("Discover") { DiscoverScreen() }
+                            .accessibilityIdentifier("communityLinkDiscover")
                     }
                     CommunityGrindersCard(store: store)
                     CommunityShareCard(store: store)
@@ -40,6 +51,13 @@ struct CommunityScreen: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
+        }
+        .task(id: store.phase) {
+            // Opened to share a shot: bring the Reddit card up once the cards are there.
+            guard redditShotID != nil, store.phase == .loaded else { return }
+            try? await Task.sleep(for: .milliseconds(300))
+            withAnimation { reader.scrollTo("communityRedditCard", anchor: .top) }
+        }
         }
         .background(palette.bg)
         .navigationTitle("Community")

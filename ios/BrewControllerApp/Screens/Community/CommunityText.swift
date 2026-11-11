@@ -65,7 +65,7 @@ enum CommunityText {
     // MARK: "For what you are brewing"
 
     /// Why the start setting is what it is (the web page's `why` text).
-    static func startWhy(_ now: CommunityNow) -> String {
+    static func startWhy(_ now: CommunityNow, dial: BrewFormat.Dial = .microns) -> String {
         let start = now.start
         var text: String
         switch start.basis {
@@ -80,10 +80,57 @@ enum CommunityText {
         default:
             text = "cannot be translated to your grinder yet"
         }
+        if start.ageShift != 0 {
+            text += "; includes " + dial.delta(start.ageShift) + " " + dial.deltaUnit
+                + (start.ageShift < 0 ? " finer" : " coarser")
+                + " because your bag is \(now.myAgeDays) days off roast and theirs were about \(now.theirAgeDays)"
+        } else if now.theirAgeDays >= 0, now.myAgeDays >= 0, abs(now.myAgeDays - now.theirAgeDays) >= 7,
+                  !now.ageRateKnown {
+            text += "; your bag is \(now.myAgeDays) days off roast, theirs were about \(now.theirAgeDays), and the library has not yet measured what that difference is worth"
+        }
+        if start.flowShift != 0 {
+            text += "; includes " + dial.delta(start.flowShift) + " " + dial.deltaUnit
+                + (start.flowShift < 0 ? " finer" : " coarser")
+                + " because your recipe aims for a " + (start.flowShift < 0 ? "slower" : "faster") + " flow than theirs"
+        }
         if now.recipeMatch == "near" {
             text += "; nobody has settled this exact recipe, so this comes from \(BrewFormat.decimal(now.theirDoseG, 1)) g in, \(BrewFormat.decimal(now.theirYieldG, 1)) g out, with a wider range"
         }
         return text
+    }
+
+    /// How the guess from the owner's own coffees was made (the web page's "How this guess is made").
+    static func similarLines(_ guess: CommunitySimilar, dial: BrewFormat.Dial) -> [String] {
+        var lines: [String] = []
+        var factors: [String] = []
+        if guess.applied & 1 != 0 { factors.append("roast level") }
+        if guess.applied & 2 != 0 { factors.append("altitude") }
+        if guess.applied & 4 != 0 { factors.append("process") }
+        if guess.basis == "fitted" {
+            lines.append("Moved " + dial.delta(guess.shift) + " " + dial.deltaUnit + (guess.shift < 0 ? " finer" : " coarser")
+                         + " from it because your own \(guess.samples) coffees show that " + factors.joined(separator: ", ")
+                         + " changes your setting.")
+        } else {
+            lines.append("Not moved: no published figure says how far to move for roast, altitude or process, and your own coffees do not show it yet.")
+            var hints: [String] = []
+            if guess.hintRoast != 0 {
+                hints.append("roasted " + (guess.hintRoast > 0 ? "darker" : "lighter") + " than it ("
+                             + (guess.hintRoast > 0 ? "usually ground coarser" : "usually ground finer") + ")")
+            }
+            if guess.hintAltitude != 0 {
+                hints.append("grown " + (guess.hintAltitude < 0 ? "higher" : "lower") + " ("
+                             + (guess.hintAltitude < 0 ? "denser, usually ground finer" : "usually ground coarser") + ")")
+            }
+            if guess.hintProcess != 0 {
+                hints.append("processed " + (guess.hintProcess > 0 ? "more like a natural" : "more like a washed")
+                             + " (advice differs and nothing measured supports it)")
+            }
+            if !hints.isEmpty { lines.append("This coffee is " + hints.joined(separator: " and ") + ".") }
+        }
+        lines.append(guess.samples >= 2
+                     ? "The range comes from how far your own settings are spread (\(guess.samples) coffees)."
+                     : "With one coffee to go on the range is wide on purpose.")
+        return lines
     }
 
     // MARK: The Reddit post

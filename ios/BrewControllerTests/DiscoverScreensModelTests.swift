@@ -329,6 +329,15 @@ final class DiscoverScreensModelTests: XCTestCase {
         XCTAssertEqual(draft.json["targetWeightG"], .double(36))
         XCTAssertEqual(draft.json["id"], .int(0))
         XCTAssertNil(draft.json["bloomPauseS"])
+        XCTAssertEqual(draft.json["ratio"], .double(2))
+        XCTAssertEqual(draft.json["timeLimit"], .int(0))
+        XCTAssertEqual(draft.json["maxShotTimeS"], .double(50))
+        var byRatio = draft
+        byRatio.useRatio = true
+        byRatio.ratio = 2.5
+        byRatio.timeLimit = 1
+        XCTAssertEqual(byRatio.json["useRatio"], .bool(true))
+        XCTAssertEqual(byRatio.json["ratio"], .double(2.5))
     }
 
     func testPendingReview() throws {
@@ -408,7 +417,25 @@ final class DiscoverScreensModelTests: XCTestCase {
         XCTAssertEqual(found.start.basis, "fitted")
         let why = CommunityText.startWhy(found)
         XCTAssertTrue(why.hasPrefix("translated to your grinder through 2 coffees you have in common with others"), why)
+        XCTAssertTrue(why.contains("; includes 3 um finer because your bag is 14 days off roast and theirs were about 10"), why)
         XCTAssertTrue(why.contains("nobody has settled this exact recipe"), why)
+
+        // Nobody in the library, but the owner's own coffees give a guess, and the grinder's range another.
+        let own = try decode(CommunityNow.self, "community_now_similar")
+        XCTAssertFalse(own.found)
+        XCTAssertEqual(own.rangeGuess?.setting, 250)
+        XCTAssertTrue(own.similar.found)
+        XCTAssertEqual(own.similar.fromCoffee, "Guji Natural")
+        XCTAssertEqual(own.similar.shift, -8)
+        XCTAssertTrue(own.similar.nearRecipe)
+        let lines = CommunityText.similarLines(own.similar, dial: .microns)
+        XCTAssertEqual(lines[0], "Moved 8 um finer from it because your own 3 coffees show that roast level, process changes your setting.")
+        XCTAssertEqual(lines.last, "The range comes from how far your own settings are spread (3 coffees).")
+        var plain = own.similar
+        plain.basis = "nearest"
+        let notMoved = CommunityText.similarLines(plain, dial: .microns)
+        XCTAssertTrue(notMoved[0].hasPrefix("Not moved:"))
+        XCTAssertEqual(notMoved[1], "This coffee is grown higher (denser, usually ground finer) and processed more like a natural (advice differs and nothing measured supports it).")
     }
 
     func testRedditText() {

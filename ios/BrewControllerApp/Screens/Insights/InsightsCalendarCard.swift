@@ -13,6 +13,11 @@ struct InsightsCalendarCard: View {
     @State private var mode: InsightsMath.CalendarMode = .shots
     @State private var daySpan = 14
     @State private var detail = ""
+    /// The day or shot a first tap picked; a second tap on it opens the shot.
+    @State private var selectedDay: Date?
+    @State private var selectedShot: Int?
+    /// Opens a shot (a second tap).
+    var onOpen: (Int) -> Void = { _ in }
 
     var body: some View {
         let palette = BrewTheme.shared.palette
@@ -28,18 +33,19 @@ struct InsightsCalendarCard: View {
                 }
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("insightsCalendarMode")
-                .onChange(of: mode) { _, _ in detail = "" }
+                .onChange(of: mode) { _, _ in
+                    detail = ""
+                    selectedDay = nil
+                    selectedShot = nil
+                }
                 if mode == .hours {
                     hoursChart(shots: dated, palette: palette)
                 } else {
                     gridChart(shots: dated, palette: palette)
                 }
-                if !detail.isEmpty {
-                    Text(detail)
-                        .font(.footnote)
-                        .foregroundStyle(palette.text)
-                        .accessibilityIdentifier("insightsCalendarDetail")
-                }
+                InsightsTooltip(text: detail,
+                                hint: (selectedDay != nil || selectedShot != nil) ? "Tap again to open the shot." : "",
+                                identifier: "insightsCalendarDetail")
             }
         }
     }
@@ -118,8 +124,14 @@ struct InsightsCalendarCard: View {
                                 let week = Int(x.rounded(.down))
                                 let weekday = 6 - Int(y.rounded(.down))
                                 if let day = days.first(where: { $0.week == week && $0.weekday == weekday }) {
+                                    if selectedDay == day.date, let last = day.shots.last {
+                                        onOpen(last.id)
+                                        return
+                                    }
+                                    selectedDay = day.count > 0 ? day.date : nil
                                     detail = describe(day)
                                 } else {
+                                    selectedDay = nil
                                     detail = ""
                                 }
                             }
@@ -275,6 +287,28 @@ struct InsightsCalendarCard: View {
                         }
                     }
                 }
+            }
+            .insightsTap { location, proxy in
+                let candidates = points.compactMap { point -> (id: Int, position: CGPoint)? in
+                    guard let x = proxy.position(forX: point.hour),
+                          let y = proxy.position(forY: Double(span - 1 - point.row)) else { return nil }
+                    return (id: point.id, position: CGPoint(x: x, y: y))
+                }
+                guard let id = InsightsTap.nearest(candidates, to: location, within: 24),
+                      let point = points.first(where: { $0.id == id }) else {
+                    selectedShot = nil
+                    detail = ""
+                    return
+                }
+                if selectedShot == id {
+                    onOpen(id)
+                    return
+                }
+                selectedShot = id
+                let time = point.date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
+                detail = time + " · " + (point.coffee.isEmpty ? "no coffee" : point.coffee) + " · "
+                    + (point.recipe.isEmpty ? "no recipe" : point.recipe)
+                    + (point.weightG > 0 ? ", " + BrewFormat.grams(point.weightG) + " g" : "")
             }
             .frame(height: CGFloat(span) * rowHeight + 40)
             .accessibilityIdentifier("insightsCalendarChart")

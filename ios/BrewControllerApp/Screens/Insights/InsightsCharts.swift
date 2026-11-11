@@ -11,6 +11,11 @@ struct InsightsRoastGrindCard: View {
     let calibration: Int
     let dial: BrewFormat.Dial
     let tolerance: Double
+    /// Opens a shot (a second tap on a dot).
+    var onOpen: (Int) -> Void = { _ in }
+
+    @State private var selected: Int?
+    @State private var tip = ""
 
     var body: some View {
         let palette = BrewTheme.shared.palette
@@ -41,11 +46,21 @@ struct InsightsRoastGrindCard: View {
                             .foregroundStyle(InsightsColors.age(point.ageDays, maximum: maxAge).opacity(0.85))
                             .symbolSize(30 + 70 * min(1, point.flowGS / maxFlow))
                     }
+                    if let selected, let chosen = points.first(where: { $0.id == selected }) {
+                        PointMark(x: .value("Setting", chosen.setting),
+                                  y: .value("Roast", InsightsMath.roastLevels[chosen.level]))
+                            .symbol(.circle.strokeBorder(lineWidth: 2))
+                            .symbolSize(180)
+                            .foregroundStyle(palette.text)
+                    }
                 }
                 .chartYScale(domain: levels)
                 .chartXScale(domain: .automatic(includesZero: false))
+                .insightsTap { location, proxy in tap(location, proxy, points: points) }
                 .frame(height: 60 + CGFloat(levels.count) * 36)
                 .accessibilityIdentifier("insightsRoastGrindChart")
+                InsightsTooltip(text: tip, hint: selected == nil ? "" : "Tap the dot again to open the shot.",
+                                identifier: "insightsRoastGrindTip")
                 HStack(spacing: 6) {
                     Text("Days off roast:").font(.caption).foregroundStyle(palette.dim)
                     ForEach([0.0, 0.5, 1.0], id: \.self) { t in
@@ -65,6 +80,34 @@ struct InsightsRoastGrindCard: View {
                     ])
             }
         }
+    }
+
+    private func tap(_ location: CGPoint, _ proxy: ChartProxy, points: [InsightsMath.RoastPoint]) {
+        let candidates = points.compactMap { point -> (id: Int, position: CGPoint)? in
+            guard let x = proxy.position(forX: point.setting),
+                  let y = proxy.position(forY: InsightsMath.roastLevels[point.level]) else { return nil }
+            return (id: point.id, position: CGPoint(x: x, y: y))
+        }
+        guard let id = InsightsTap.nearest(candidates, to: location) else {
+            selected = nil
+            tip = ""
+            return
+        }
+        if selected == id {
+            onOpen(id)
+            return
+        }
+        selected = id
+        if let point = points.first(where: { $0.id == id }) { tip = describe(point) }
+    }
+
+    private func describe(_ point: InsightsMath.RoastPoint) -> String {
+        var parts = [point.coffee.isEmpty ? "no coffee" : point.coffee]
+        if let age = point.ageDays { parts.append("\(age) days off roast") }
+        parts.append(InsightsMath.roastLevels[point.level])
+        parts.append(dial.settingUnit(stored(point.setting)))
+        if point.timeS > 0 { parts.append(BrewFormat.seconds(point.timeS) + " s") }
+        return parts.joined(separator: " · ")
     }
 
     private func bandsText(_ bands: [InsightsMath.OnTimeBand]) -> String {
@@ -89,6 +132,8 @@ struct InsightsRoastGrindCard: View {
 struct InsightsAgeCard: View {
     let shots: [ShotModel]
     let tolerance: Double
+
+    @State private var tip = ""
 
     var body: some View {
         let palette = BrewTheme.shared.palette
@@ -137,8 +182,22 @@ struct InsightsAgeCard: View {
                         }
                     }
                 }
+                .insightsTap { location, proxy in
+                    guard let x = proxy.value(atX: location.x, as: Double.self),
+                          let y = proxy.value(atY: location.y, as: Double.self) else { return }
+                    let week = Int((x / 7).rounded(.down))
+                    let row = Int(y.rounded(.down))
+                    guard week >= 0, week < heat.weeks, row >= 0, row < heat.rows else {
+                        tip = ""
+                        return
+                    }
+                    let count = heat.counts[week][row]
+                    tip = "\(count) shot\(count == 1 ? "" : "s"), \(week * 7) to \(week * 7 + 6) days off roast, brew time "
+                        + InsightsMath.rowLabel(row).replacingOccurrences(of: " s", with: "") + " s from target"
+                }
                 .frame(height: 280)
                 .accessibilityIdentifier("insightsAgeChart")
+                InsightsTooltip(text: tip, identifier: "insightsAgeTip")
                 Text("Rows above the outlined band ran slow, rows below ran fast. Darker squares hold more shots.")
                     .font(.footnote).foregroundStyle(palette.dim)
             } else {
@@ -172,6 +231,8 @@ struct InsightsDialInCard: View {
     let shots: [ShotModel]
     let tolerance: Double
 
+    @State private var tip = ""
+
     private struct Segment: Identifiable {
         var id: String
         var bag: String
@@ -200,8 +261,17 @@ struct InsightsDialInCard: View {
                                            range: [InsightsColors.dialIn, Color.gray, InsightsColors.onTime,
                                                    InsightsColors.fast, InsightsColors.slow])
                 .chartLegend(position: .bottom)
+                .insightsTap { location, proxy in
+                    guard let label = proxy.value(atY: location.y, as: String.self),
+                          let index = bags.indices.first(where: { "\($0 + 1). \(bags[$0].name)" == label }) else {
+                        tip = ""
+                        return
+                    }
+                    tip = describe(bags[index])
+                }
                 .frame(height: max(160, CGFloat(bags.count) * 34 + 70))
                 .accessibilityIdentifier("insightsDialInChart")
+                InsightsTooltip(text: tip, identifier: "insightsDialInTip")
                 InsightsExplainer(
                     summary: "Per bag: shots to the first on-time shot, then how the rest ran.",
                     lines: [
@@ -214,6 +284,22 @@ struct InsightsDialInCard: View {
                 }
             }
         }
+    }
+
+    private func describe(_ bag: InsightsMath.DialInBag) -> String {
+        var text = bag.name
+        if bag.roastDate != 0 { text += ", roasted " + SubscriptionWording.date(bag.roastDate) }
+        if let dial = bag.dial {
+            text += ": \(dial) shot\(dial == 1 ? "" : "s") to the first on time"
+            let after = [bag.onTimeAfter > 0 ? "\(bag.onTimeAfter) on time" : "",
+                         bag.fastAfter > 0 ? "\(bag.fastAfter) fast" : "",
+                         bag.slowAfter > 0 ? "\(bag.slowAfter) slow" : ""].filter { !$0.isEmpty }
+            if !after.isEmpty { text += "; after it: " + after.joined(separator: ", ") }
+        } else {
+            text += ": no shot on time yet, \(bag.total) shot\(bag.total == 1 ? "" : "s")"
+        }
+        return text + ". Latest shot: " + (bag.lastPace == .onTime ? "on time" : bag.lastPace.rawValue)
+            + " (" + signed(bag.lastError) + " s)"
     }
 
     private func segments(_ bags: [InsightsMath.DialInBag]) -> [Segment] {
@@ -244,6 +330,8 @@ struct InsightsGrindCard: View {
     let dial: BrewFormat.Dial
     let coffeeName: (Int) -> String?
 
+    @State private var tip = ""
+
     var body: some View {
         let palette = BrewTheme.shared.palette
         let tolerance = accuracy?.toleranceS ?? 2
@@ -263,6 +351,7 @@ struct InsightsGrindCard: View {
                                  detail: percent >= 60 ? "high: bigger steps allowed" : percent >= 35 ? "medium" : "low: smaller steps")
                 }
                 accuracyChart(points: points, tolerance: tolerance, palette: palette)
+                InsightsTooltip(text: tip, identifier: "insightsGrindTip")
                 HStack(spacing: 8) {
                     InsightsSwatch(color: InsightsColors.onTime, text: "landed on time")
                     InsightsSwatch(color: InsightsColors.fast, text: "still fast")
@@ -327,6 +416,18 @@ struct InsightsGrindCard: View {
                 }
             }
         }
+        .insightsTap { location, proxy in
+            let candidates = points.compactMap { point -> (id: Int, position: CGPoint)? in
+                guard let x = proxy.position(forX: Double(point.index)),
+                      let y = proxy.position(forY: point.error) else { return nil }
+                return (id: point.index, position: CGPoint(x: x, y: y))
+            }
+            if let index = InsightsTap.nearest(candidates, to: location), points.indices.contains(index) {
+                tip = detail(points[index])
+            } else {
+                tip = ""
+            }
+        }
         .frame(height: 220)
         .accessibilityIdentifier("insightsGrindChart")
     }
@@ -334,7 +435,7 @@ struct InsightsGrindCard: View {
     private func detail(_ point: InsightsMath.AccuracyPoint) -> String {
         let event = point.event
         let name = coffeeName(event.coffeeId) ?? "a coffee"
-        var text = "Latest: \(name), advised \(dial.setting(event.from)) → \(dial.setting(event.advised))"
+        var text = "\(name), advised \(dial.setting(event.from)) → \(dial.setting(event.advised))"
         if !event.followed { text += ", pulled at \(dial.setting(event.next))" }
         text += "; next shot \(BrewFormat.seconds(event.timeS)) s against \(BrewFormat.seconds(event.targetS)) s"
         return text
