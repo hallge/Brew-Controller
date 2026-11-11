@@ -21,6 +21,10 @@
   __attribute__((swift_attr("retain:" #retain)))    \
   __attribute__((swift_attr("release:" #release)))
 #define BB_RETURNS_RETAINED __attribute__((swift_attr("returns_retained")))
+// <swift/bridging>'s SWIFT_RETURNS_INDEPENDENT_VALUE: the returned value does not point into the
+// session. Without it Swift hides a method whose result holds a pointer (LiveView::stateName, which
+// points at static text) as `__liveUnsafe`.
+#define BB_INDEPENDENT_VALUE __attribute__((swift_attr("import_unsafe")))
 
 struct CoreSessionImpl;
 class CoreSession;
@@ -46,7 +50,7 @@ class BB_SWIFT_REF(bbCoreSessionRetain, bbCoreSessionRelease) CoreSession {
   void requestTare();
   void acknowledge();
 
-  LiveView live(uint32_t nowMs) const;
+  LiveView live(uint32_t nowMs) const BB_INDEPENDENT_VALUE;
   ShotSummary lastShot() const;
   // The active recipe's target and dose. Takes effect with the next shot.
   void setRecipe(float targetG, float doseG);
