@@ -58,9 +58,7 @@ struct DevicesScreen: View {
             DevicesSummaryRow(title: "Brew bot" + (d.botLabel.isEmpty ? "" : " (\(d.botLabel))"), id: "devicesBot",
                               state: d.botConnected ? "connected" : (d.pairing.bot.isEmpty ? "not paired" : "asleep until Start"),
                               address: d.pairing.bot.isEmpty ? "pick one below" : d.pairing.bot,
-                              extra: signalText(d.pairing.bot)
-                                  + (!d.botFirmware.isEmpty && d.botFirmware != "0.0" ? ", firmware \(d.botFirmware)" : "")
-                                  + (d.botBattery.map { ", battery \($0)%" } ?? ""),
+                              extra: botExtraText,
                               problem: x.botProblem)
             if !d.botCaps.isEmpty && !d.botCaps.contains("down_up") {
                 Text("This pusher cannot hold the button: held pre-infusion and bloom restarts become plain presses.")
@@ -81,6 +79,33 @@ struct DevicesScreen: View {
         }
     }
 
+    /// Built step by step: as one `+` chain the compiler gives up type-checking it.
+    private var scaleLinkText: String {
+        let d = store.devices
+        let q = d.scaleData
+        var text: String = "\(q.weightFrames) readings since it connected"
+        if d.scaleCaps.contains("timer") {
+            text += ", \(q.timerFrames) with the scale's timer"
+        }
+        text += ", \(q.splitFrames) frames arrived in two parts, \(q.badFrames) failed their checksum"
+        if let battery = q.battery {
+            text += ", scale battery \(battery)%"
+        }
+        return text + "."
+    }
+
+    private var botExtraText: String {
+        let d = store.devices
+        var text: String = signalText(d.pairing.bot)
+        if !d.botFirmware.isEmpty && d.botFirmware != "0.0" {
+            text += ", firmware \(d.botFirmware)"
+        }
+        if let battery = d.botBattery {
+            text += ", battery \(battery)%"
+        }
+        return text
+    }
+
     private var scaleLinkSection: some View {
         let d = store.devices
         let q = d.scaleData
@@ -89,10 +114,7 @@ struct DevicesScreen: View {
         return Group {
             if d.scaleConnected {
                 Section("Scale link") {
-                    Text("\(q.weightFrames) readings since it connected"
-                         + (d.scaleCaps.contains("timer") ? ", \(q.timerFrames) with the scale's timer" : "")
-                         + ", \(q.splitFrames) frames arrived in two parts, \(q.badFrames) failed their checksum"
-                         + (q.battery.map { ", scale battery \($0)%" } ?? "") + ".")
+                    Text(scaleLinkText)
                         .font(.footnote)
                         .accessibilityIdentifier("devicesScaleLink")
                     if q.zeroesItself {
