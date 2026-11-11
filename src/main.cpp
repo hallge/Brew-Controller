@@ -40,6 +40,7 @@
 #include "platform/HomeAssistantLink.h"
 #include "platform/FirmwareUpdate.h"
 #include "platform/LibraryLink.h"
+#include "platform/NetWorker.h"
 #include "platform/PagePreview.h"
 #include "platform/TelemetryLink.h"
 #include "core/Telemetry.h"
@@ -1311,12 +1312,17 @@ const char *resetReasonName(esp_reset_reason_t reason) {
 const char *resetReasonText() { return resetReasonName(esp_reset_reason()); }
 
 // A new firmware is on trial until it has run for a while: if it crashes or
-// hangs before then, the bootloader goes back to the one before it.
+// hangs before then, the bootloader goes back to the one before it. With a home
+// network set, it must also have joined that network (audit C3/G3, 10 Nov 2026):
+// a firmware that cannot be reached over Wi-Fi stays on trial, so switching the
+// controller off and on again brings back the one before it. A board with no
+// USB is never stuck with a firmware it cannot be updated from.
 void confirmFirmware() {
 #ifndef BBW_EMULATOR
   constexpr uint32_t TRIAL_MS = 45000;
   static bool done = false;
   if (done || millis() < TRIAL_MS) return;
+  if (g_net.staSsid[0] && WiFi.status() != WL_CONNECTED) return;
   done = true;
   const esp_partition_t *running = esp_ota_get_running_partition();
   esp_ota_img_states_t state;
@@ -4747,6 +4753,30 @@ void configureHomeAssistant() {
   g_mqttStatePending = true;
 }
 
+// A Home Assistant request on the network task's stack (platform/NetWorker.h), never the loop
+// task's: an HTTPS handshake needs kilobytes the loop does not have (audit C7/G8, 10 Nov 2026).
+// The network task busy: -1 with the reason, like an unreachable host, and tried again later.
+int haRequestOffLoop(const char *url, const char *token, const char *body, char *out, size_t outSize,
+                     char *problem, size_t problemSize, uint16_t timeoutMs) {
+  struct Job {
+    const char *url, *token, *body;
+    char *out;
+    size_t outSize;
+    char *problem;
+    size_t problemSize;
+    uint16_t timeoutMs;
+    int code;
+  } job{url, token, body, out, outSize, problem, problemSize, timeoutMs, -1};
+  if (!bbw::netRun([](void *c) {
+        Job &j = *static_cast<Job *>(c);
+        j.code = bbw::haRequest(j.url, j.token, j.body, j.out, j.outSize, j.problem, j.problemSize, j.timeoutMs);
+      }, &job)) {
+    snprintf(problem, problemSize, "the network is busy; tried again shortly");
+    return -1;
+  }
+  return job.code;
+}
+
 // One entity's state, as a humidity or a temperature. false: not read, why in problem.
 // unreachable: no answer at all (then the other entity is not tried: the loop must not wait twice).
 bool haReadEntity(const char *entity, bool humidity, float &value, char *problem, size_t size,
@@ -4760,7 +4790,7 @@ bool haReadEntity(const char *entity, bool humidity, float &value, char *problem
     snprintf(problem, size, "the address or the entity id %s cannot be used", entity);
     return false;
   }
-  const int code = bbw::haRequest(url, g_net.haToken, nullptr, body, BODY_SIZE, problem, size, 2000);
+  const int code = haRequestOffLoop(url, g_net.haToken, nullptr, body, BODY_SIZE, problem, size, 2000);
   if (code < 0 && unreachable) *unreachable = true;
   if (code != 200) return false;
   static JsonDocument doc;
@@ -4907,6 +4937,8 @@ const char *setHomeAssistant(const HaSettings &s) {
     strlcpy(net.haToken, s.token, sizeof(net.haToken));
   }
   if (s.clearToken) net.haToken[0] = '\0';
+  // A token is never sent to an address other than the one it was entered for.
+  if (!(s.token && s.token[0]) && !bbw::credentialFollowsUrl(g_net.haUrl, net.haUrl)) net.haToken[0] = '\0';
   if (s.webhookId && s.webhookId[0]) {
     if (!bbw::haWebhookIdOk(s.webhookId)) return "a webhook id has only letters, digits, - and _";
     strlcpy(net.haWebhookId, s.webhookId, sizeof(net.haWebhookId));
@@ -4924,6 +4956,9 @@ const char *setHomeAssistant(const HaSettings &s) {
     strlcpy(net.mqttPassword, s.mqttPassword, sizeof(net.mqttPassword));
   }
   if (s.clearMqttPassword) net.mqttPassword[0] = '\0';
+  if (!(s.mqttPassword && s.mqttPassword[0]) && !bbw::credentialFollowsUrl(g_net.mqttUrl, net.mqttUrl)) {
+    net.mqttPassword[0] = '\0';
+  }
   g_net = net;
   g_store.saveNet(g_net);
   // Never a token or password: only what is set.
@@ -5053,7 +5088,7 @@ void homeAssistantService(bool idle) {
       doc["event"] = "shot";
       if (serializeJson(doc, body, BODY_SIZE) < BODY_SIZE - 1) {
         char problem[80];
-        g_haWebhookCode = bbw::haRequest(url, nullptr, body, nullptr, 0, problem, sizeof(problem), 3000);
+        g_haWebhookCode = haRequestOffLoop(url, nullptr, body, nullptr, 0, problem, sizeof(problem), 3000);
         haSetProblem(problem);
         LOGI("home assistant: shot %u posted to the webhook (%d)", static_cast<unsigned>(id), g_haWebhookCode);
       }
@@ -5134,8 +5169,8 @@ void loop() {
     }
     g_grindAdviceStale = true;
     subscriptionsShotTaken();
-    // What surrounded the shot, kept for the learning work (core/ShotContext.h). Recorded only: nothing
-    // reads it back to steer a shot.
+    // What surrounded the shot, kept for the learning work (core/ShotContext.h). Nothing reads it back
+    // to steer a shot; the grind advice reads the room, the aim and the uneven mark.
     {
       static bbw::ShotContextInputs in;
       in = bbw::ShotContextInputs();

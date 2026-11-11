@@ -7,8 +7,8 @@
 
 Firmware and a web page for an ESP32-S3 board that watches a Bluetooth scale and has a Bluetooth button pusher press a button on an espresso
 machine to stop a shot at a target weight. **It is a hobby project, not a certified or plug-and-play appliance.** It has not been
-tested by any safety body, it comes without warranty (see `LICENSE`), and **it has not yet been run on real hardware**
-(`README.md`, "Status").
+tested by any safety body, it comes without warranty (see `LICENSE`), and it has been run on real hardware only on the author's own setup (a Breville Dual Boiler, an Acaia Lunar and
+a SwitchBot Bot, in daily use since October 2026; `README.md`, "Status").
 
 ## How it is built to fail safe
 

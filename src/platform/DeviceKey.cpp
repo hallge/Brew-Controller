@@ -1,5 +1,5 @@
 // ECDSA P-256 with the mbedTLS that comes with the ESP32 core. Not built for
-// the emulator (see DeviceKey.h). Not yet run on a real board.
+// the emulator (see DeviceKey.h). Runs on the author's board since October 2026.
 #ifndef BBW_EMULATOR
 
 #include "DeviceKey.h"

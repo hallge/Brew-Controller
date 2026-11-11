@@ -29,7 +29,7 @@ No controlled study ties room humidity to espresso shot time. Published advice e
 
 The controller reads both entities every 5 minutes while it is not brewing (`GET /api/states/<entity_id>`, with the token as a bearer header). A shot records the latest reading if it is less than 30 minutes old. Temperatures in °F or K are converted to °C. A sensor that is `unavailable` or `unknown`, out of range, or in another unit is not recorded, and the card says why.
 
-- **The token never leaves the controller.** It is not sent back to the web page or the API, and goes into a backup only when you tick "include the passwords" when you download it. Use a Home Assistant user with as few rights as you like: reading states needs no admin.
+- **The token never leaves the controller.** It is not sent back to the web page or the API, and goes into a backup only when you tick "include the passwords" when you download it. It is sent only to the address it was entered for: change the address to another host, or clear it, and the stored token (and the MQTT password, for the broker) is removed, so enter it again. Use a Home Assistant user with as few rights as you like: reading states needs no admin.
 - **`.local` names** are looked up over mDNS. If that does not work on your network, use Home Assistant's IP address.
 - **HTTPS** works when Home Assistant has a certificate from a public authority (for example through Nabu Casa). A self-signed certificate is refused: on your own network, use `http://`.
 
@@ -169,6 +169,6 @@ of shot time, weight and grind setting, and a tile that opens the full panel.
 | Endpoint | Method | What |
 | --- | --- | --- |
 | `/api/homeassistant` | GET | The settings without the secrets (`token_set`, `webhook_set`, `mqtt_password_set`), `mqtt_connected`, the last `problem`, `last_webhook_code`, and the latest `ambient` reading |
-| `/api/homeassistant` | POST | `url`, `token`, `rh_entity`, `temp_entity`, `webhook_id`, `mqtt_url`, `mqtt_user`, `mqtt_password`. Empty secrets keep the stored ones; `clear_token`, `clear_webhook` and `clear_mqtt_password` remove them. No restart |
+| `/api/homeassistant` | POST | `url`, `token`, `rh_entity`, `temp_entity`, `webhook_id`, `mqtt_url`, `mqtt_user`, `mqtt_password`. Empty secrets keep the stored ones while the host stays the same (a new host, or none, clears the token or MQTT password); `clear_token`, `clear_webhook` and `clear_mqtt_password` remove them. No restart |
 | `/api/ambient` | GET / POST | The latest room reading / push one |
 | `/api/ambient/test` | GET | One read from Home Assistant now: `ok`, `problem`, `reading` |

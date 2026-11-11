@@ -545,21 +545,19 @@ bool netRun(void (*fn)(void *), void *context) {
   // An add-on's job holds the task: skip this turn (NetWorker.h). Called from that job itself (the
   // network task), it runs here.
   if (g_addonRunning && xTaskGetCurrentTaskHandle() != g_task) return false;
-  // Here, as before: no task yet, called from it, or it is busy with a firmware (a download takes
-  // minutes, and the caller must not wait that long).
-  if (!g_task || !g_jobLock || xTaskGetCurrentTaskHandle() == g_task || g_working || g_want != WANT_NONE) {
+  // Here, as before: no task yet, or called from it.
+  if (!g_task || !g_jobLock || xTaskGetCurrentTaskHandle() == g_task) {
     fn(context);
     return true;
   }
+  // Busy with a firmware (a download takes minutes, and the caller must not wait that long): not run,
+  // the caller tries again later. Never run in place instead: a TLS handshake on the loop task's
+  // stack is what this file exists to avoid (audit G8, 10 Nov 2026).
+  if (g_working || g_want != WANT_NONE) return false;
   xSemaphoreTake(g_jobLock, portMAX_DELAY);
-  if (g_addonRunning) {  // an add-on's job was handed over meanwhile
+  if (g_addonRunning || g_working || g_want != WANT_NONE) {  // an add-on's job or a check came meanwhile
     xSemaphoreGive(g_jobLock);
     return false;
-  }
-  if (g_working || g_want != WANT_NONE) {  // a check was asked for meanwhile
-    xSemaphoreGive(g_jobLock);
-    fn(context);
-    return true;
   }
   g_job.fn = fn;
   g_job.context = context;

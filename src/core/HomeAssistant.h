@@ -140,6 +140,32 @@ inline bool haBaseUrl(const char *in, char *out, size_t size) {
   return true;
 }
 
+// The host of a scheme://[user@]host[:port][/...] address, lower case. false: no host.
+inline bool urlHostOf(const char *url, char *out, size_t size) {
+  if (!url || size == 0) return false;
+  const char *h = strstr(url, "://");
+  if (!h) return false;
+  h += 3;
+  const char *end = h + strcspn(h, "/?#");
+  const char *at = static_cast<const char *>(memchr(h, '@', static_cast<size_t>(end - h)));
+  if (at) h = at + 1;
+  const char *colon = static_cast<const char *>(memchr(h, ':', static_cast<size_t>(end - h)));
+  if (colon) end = colon;
+  const size_t n = static_cast<size_t>(end - h);
+  if (n == 0 || n >= size) return false;
+  for (size_t i = 0; i < n; ++i) out[i] = (h[i] >= 'A' && h[i] <= 'Z') ? static_cast<char>(h[i] + 32) : h[i];
+  out[n] = '\0';
+  return true;
+}
+
+// A stored token or password may stay only while its address keeps the same host: one that moves
+// to another host (or is switched off) must be entered again, so a changed address never receives
+// the old credential (audit G2, 10 Nov 2026).
+inline bool credentialFollowsUrl(const char *oldUrl, const char *newUrl) {
+  char a[96], b[96];
+  return urlHostOf(oldUrl, a, sizeof(a)) && urlHostOf(newUrl, b, sizeof(b)) && strcmp(a, b) == 0;
+}
+
 // <base>/api/states/<entity>. false: either is not usable.
 inline bool haStateUrl(const char *base, const char *entity, char *out, size_t size) {
   char b[HA_URL_LEN];

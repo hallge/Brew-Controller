@@ -13,7 +13,7 @@ ingress_port: 8099
 ingress_stream: true
 panel_icon: mdi:chip
 panel_title: Controller Page
-panel_admin: false
+panel_admin: true
 options:
   controller: "192.168.0.242"
 schema:

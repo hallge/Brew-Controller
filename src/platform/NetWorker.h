@@ -7,15 +7,15 @@
 // idle almost always, so it runs them: netRun() hands it the job and waits, as long as the job would
 // have taken where it was called. The caller's code and its flow do not change.
 //
-// When the update task is busy (checking for or installing a firmware), when it does not exist yet,
-// when called from that task itself, and in the PC emulator, the job runs where it is called, as
-// before.
+// When the update task is busy (checking for or installing a firmware), the job is not run and
+// netRun() returns false: the caller tries again later. When the task does not exist yet, when called
+// from that task itself, and in the PC emulator, the job runs where it is called, as before.
 
 namespace bbw {
 
 // Runs fn(context) on the network task and returns when it has finished. false: not run at all,
-// because an add-on's job (netSubmit) holds the network task: the caller tries again on a later
-// turn, as after any network failure. It never runs such a job where it is called instead: the loop
+// because an add-on's job (netSubmit) or a firmware check or install holds the network task: the
+// caller tries again on a later turn, as after any network failure. It never runs such a job where it is called instead: the loop
 // task has about 2.6 kB of stack to spare, not the kilobytes a TLS handshake takes.
 bool netRun(void (*fn)(void *), void *context);
 

@@ -7,9 +7,10 @@
 //            the Setup page.
 //   ota_0/1  updates are written to whichever of the two is not running, so
 //            the version before stays where it was.
-// A new firmware is on trial for its first 45 seconds (confirmFirmware() in
-// main.cpp): if it crashes or hangs before then, the bootloader starts the one
-// before it again.
+// A new firmware is on trial for its first 45 seconds and, with a home network
+// set, until it has joined it (confirmFirmware() in main.cpp): if it crashes or
+// hangs before then, or is restarted before it reached the network, the
+// bootloader starts the one before it again.
 //
 // What is installed is what a release published: the release's firmware.bin
 // is downloaded over HTTPS (only GitHub's roots are trusted: GithubRoots.h,

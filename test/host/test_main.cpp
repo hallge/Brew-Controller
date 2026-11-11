@@ -8686,6 +8686,14 @@ static void testGrindAdjustment() {
 static void testHomeAssistant() {
   printf("home assistant: addresses, states, MQTT payloads, the room on a shot\n");
   char out[256];
+  // Audit G2: a stored token follows its address only while the host stays the same.
+  CHECK(urlHostOf("https://User@HA.Local:8123/x", out, sizeof(out)) && strcmp(out, "ha.local") == 0);
+  CHECK(credentialFollowsUrl("http://ha.local:8123", "https://HA.local"));
+  CHECK(credentialFollowsUrl("mqtt://broker:1883", "mqtt://broker:1884"));
+  CHECK(!credentialFollowsUrl("http://ha.local:8123", "http://other.example:8123"));
+  CHECK(!credentialFollowsUrl("http://ha.local:8123", "http://ha.local.evil.example"));
+  CHECK(!credentialFollowsUrl("http://ha.local:8123", "") && !credentialFollowsUrl("", "http://ha.local"));
+  CHECK(!urlHostOf("ha.local", out, sizeof(out)) && !urlHostOf("http://", out, sizeof(out)));
   CHECK(haEntityIdOk("sensor.kitchen_humidity") && haEntityIdOk("sensor.t2"));
   CHECK(!haEntityIdOk("sensor") && !haEntityIdOk(".x") && !haEntityIdOk("sensor.") && !haEntityIdOk("Sensor.x") &&
         !haEntityIdOk("sensor.a.b") && !haEntityIdOk("sensor.a b") && !haEntityIdOk("") && !haEntityIdOk(nullptr));

@@ -3,9 +3,10 @@
 // record does not hold. Kept apart from the history record on purpose: the record is a
 // fixed layout that is also the on-flash history (changing it means a migration), while this
 // is an experiment in what to capture and has to be free to grow. Contexts are kept in one
-// versioned ring file beside the history (Store: /contexts.bin, one 64-byte slot per shot, the
-// slot reused when the shot leaves the history). Nothing here is read by the grind advice; it
-// only records.
+// versioned ring file beside the history (Store: /contexts.bin, one slot per shot at the
+// shot's own place in the history ring, reused when the shot leaves the history). The grind advice reads a few fields back: the
+// room's slow temperature (the room term), the aim it used (confidence), and the uneven mark;
+// the rest only records.
 //
 // Why each group exists (research/dial-in-engine.md section 5):
 //   bean state    the shot record keeps the roast date, but a bag can be edited, frozen or thawed
@@ -109,7 +110,7 @@ struct ShotContext {
   // Entered by the owner afterwards, on the shot's page (applyShotPrep).
   uint16_t doseActualDg = 0;     // dose actually weighed, tenths of a gram; 0 unknown
   uint16_t prepFlags = 0;        // CTX_PREP_*
-  // Version 2: the room at the shot (core/HomeAssistant.h), recorded only. AMBIENT_NONE_X10: not known.
+  // Version 2: the room at the shot (core/HomeAssistant.h), recorded. AMBIENT_NONE_X10: not known.
   int16_t ambientRhX10 = AMBIENT_NONE_X10;    // relative humidity, tenths of a percent
   int16_t ambientTempX10 = AMBIENT_NONE_X10;  // tenths of a degree C
   uint8_t ambientSource = 0;                  // AmbientSource

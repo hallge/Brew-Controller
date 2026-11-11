@@ -3,11 +3,15 @@
 Firmware for a LILYGO T-Display S3 AMOLED Plus that pulls an espresso shot to
 a target weight. It reads an Acaia Lunar over BLE and stops the shot by having
 one SwitchBot Bot press the machine's MANUAL button. No relay, no wiring into
-the machine, no hub, no cloud.
+the machine, no hub, and no cloud service needed. Anonymous diagnostics reports
+go to the project's relay unless switched off (section "Diagnostics reports").
 
-Status: compiles; the brew logic passes its host test suite against a
-simulated machine. The workflow and screens follow the Yield Target Pro guide. **It has not been run on real hardware.** Section 7 lists
-what to check on the first shots.
+Status: in daily use since October 2026 on the author's board, with a Breville
+Dual Boiler, an Acaia Lunar and a SwitchBot Bot. The brew logic also passes its
+host test suite against a simulated machine. The workflow and screens follow
+the Yield Target Pro guide. The other scales, pushers and machines in sections
+8-10 are supported in code and tested against simulations; most have not been
+run on real hardware yet. Section 7 lists what to check on the first shots.
 
 ## 1. How a shot goes
 
@@ -448,11 +452,15 @@ again.
 | Stopped at the machine (its time-out, or its button by hand) | coffee had been flowing and has been still for 5 s; or the cup is lifted after the flow had already stopped | does not press | STOPPED AT THE MACHINE, with IGNORE / COUNT |
 | Recipe's own time limit reached | elapsed time | stops | SHOT TIMED OUT, with IGNORE / COUNT |
 | Cup lifted after the stop, before the weight settled | final reading well below the stop weight | already stopped | result with `*`, "weight did not settle" |
-| Stop had to be pressed again | espresso still flowing 2.5 s after the stop | presses again, twice at most | result, "stop had to be repeated" |
+| Stop had to be pressed again | espresso still flowing 4 s after the stop press, 3 g more in the cup, at a flow a pump makes (a knock on the cup is not taken for it) | presses again, twice at most | result, "stop had to be repeated" |
 | Nothing reached the cup | no weight after the no-flow timeout | does not press | START NOT CONFIRMED |
 | Scale lost or silent | link down, or no reading for the scale timeout | stops | SCALE DISCONNECTED / SCALE WENT SILENT |
 | Readings make no sense | five implausible readings in a row that are not a lifted cup | stops | WEIGHT NOT VALID |
 | Controller restarted mid-shot | flow seen after an unexpected restart | stops | STOPPED AFTER RESTART |
+| Bot holding the button went quiet (hold-button machines) | the bot stops answering mid-shot | lets go as soon as it can be reached | STOP BY HAND, then the result (`bot_lost`) |
+| A bloom press could not be made or confirmed | a press of the bloom sequence fails | keeps trying to stop, warns if it cannot | result (`bloom_failed`), or START NOT CONFIRMED if the pump never started |
+| The stop press started the pump | coffee arrives after a stop that went out before any flow | pressed again | result, or START NOT CONFIRMED with the pump off |
+| Stop could not be delivered | no press reached the button in 30 s, or the retries ran out | gives up | STOP BY HAND (`STOP_COMMAND_FAILED`), with PRESS BUTTON |
 
 The scale cannot tell the machine's own time-out from someone pressing its
 button: both are a pour that stops with nothing pressed here, so both are
@@ -499,8 +507,11 @@ The flash holds three firmware slots of 3.5 MB each (`partitions.csv`):
 | `factory` | the firmware flashed over USB. Updates never write here: it is the safe version to fall back on |
 | `app0`, `app1` | updates go into whichever is not running, so the version before stays in the other |
 
-A new firmware is on trial for its first 45 seconds. If it crashes or hangs in
-that time, the bootloader starts the previous one again and the log says so.
+A new firmware is on trial until it has run for 45 seconds and, when a home
+network is set, has joined it. If it crashes or hangs in that time, the
+bootloader starts the previous one again and the log says so. If it never
+reaches the network, switching the controller off and on brings back the
+previous one.
 Setup, **Firmware** can also go back on purpose: **Go back to the previous
 version**, or **Start the safe (factory) version**.
 
@@ -606,14 +617,14 @@ unnecessary second press starts it again.
 | Target never reached, recipe set to "Machine's own time-out" (default) | Nothing is pressed. The machine ends the shot; the controller sees the pour stop and shows the summary under MACHINE ENDED THE SHOT | `SHOT_TIMEOUT` |
 | Target never reached, recipe set to "Bot stops the shot after N s" | Stop is pressed at N s; summary under SHOT TIMED OUT. If the machine stopped first, nothing is pressed | `SHOT_TIMEOUT` |
 | Bot link down when the stop is due | "STOP BY HAND" after 1.5 s; the press goes out the instant the Bot reconnects; gives up after 30 s | `SHOT_COMPLETE` or `STOP_COMMAND_FAILED` |
-| Stop pressed but espresso keeps flowing 2.5 s later and 3 g more has landed | Press again, at most twice | `SHOT_COMPLETE`, or `STOP_COMMAND_FAILED` |
-| Stop sent, acknowledgement lost | No blind retry. If flow stops, it worked. If flow continues, press again | as above |
+| Stop pressed but espresso keeps flowing 4 s later and 3 g more has landed | Press again, at most twice. The wait outlasts the 1.7 s of flow a Breville gives after a real press, so a retry never lands on that tail and restarts the pump | `SHOT_COMPLETE`, or `STOP_COMMAND_FAILED` |
+| Stop sent, acknowledgement lost, or a pusher that cannot confirm (MicroBot) | No blind retry. If flow stops, it worked. If flow continues by the rule above, press again | as above |
 | Start pressed, nothing in the cup after the no-flow timeout | No second press, because it could start the pump | `START_COMMAND_FAILED` |
 | STOP tapped before any coffee has been seen | The press is sent (the machine is normally pre-infusing), then the scale is watched for the no-flow timeout. If coffee arrives, that press started the pump because the start had never reached the button; it is pressed again | `SHOT_COMPLETE`, or `START_COMMAND_FAILED` with the pump off |
 | ...and coffee appears later anyway | The shot is taken back under control and stopped on target | `SHOT_COMPLETE` |
 | Tare not confirmed after three tries | Nothing is pressed | `TARE_FAILED` |
 | Bot does not connect within 15 s of Start | Nothing is pressed | `SWITCHBOT_DISCONNECTED` |
-| Controller crashes or the watchdog fires mid-shot | After restart, if the scale shows espresso flowing, stop is pressed once | `SHOT_TIMEOUT` |
+| Controller crashes or the watchdog fires mid-shot | For the shot ceiling after restart (a sleeping bot can take 40 s to connect), if the scale shows espresso flowing, stop is pressed once. The cup is not zeroed meanwhile | `SHOT_TIMEOUT` |
 | Lunar asleep while idle | Not a fault: "waiting for Lunar" | |
 
 What this cannot cover: if the controller loses power, or both the scale and
