@@ -6,7 +6,7 @@ Dated 2026-10-12. **Not legal advice.** Items flagged ⚖ need qualified counsel
 
 | Component | License (evidence) | Reuse mode we'd use | Obligation that matters | Compatible with AGPL-3.0-or-later firmware? |
 | --- | --- | --- | --- | --- |
-| OBBW firmware + EspressoScaleBLE | AGPL-3.0-or-later (LICENSE; HA integration `pyproject`) | already vendored unmodified (`lib/EspressoScaleProtocol`), algorithm headers cited | AGPL §13 network clause if modified and offered over a network; source offer for distributed devices | Yes (same license) |
+| OBBW firmware + EspressoScaleBLE | AGPL-3.0-or-later (LICENSE; HA integration `pyproject`) | already vendored (`lib/EspressoScaleProtocol`; two files modified 2026-11-02, marked per AGPL §5(a)), algorithm headers cited | AGPL §13 network clause if modified and offered over a network; source offer for distributed devices | Yes (same license) |
 | AcaiaArduinoBLE | MIT (LICENSE via API) | via OBBW; notices preserved | keep copyright notice | Yes |
 | Beanconqueror | GPL-3.0 (LICENSE) | **interop via URL-scheme only**; reading its docs | none triggered by sending data to it; copying its TS code would make our derivative GPL-3 (AGPL §13 / GPLv3 §13 permits combination) | n/a (no code reuse) |
 | Visualizer.coffee code | MIT (LICENSE) | call API; optional upstream contribution | none for API use; MIT notice if code copied | Yes |
@@ -28,7 +28,7 @@ Dated 2026-10-12. **Not legal advice.** Items flagged ⚖ need qualified counsel
 
 ## 2. Licensing strategy recommendation (provisional)
 
-The existing repository is **AGPL-3.0-or-later** because unmodified OBBW files are vendored — that fixes firmware and anything linked with it. Different components can still choose different licenses:
+The existing repository is **AGPL-3.0-or-later** because OBBW files are vendored — that fixes firmware and anything linked with it. Different components can still choose different licenses:
 
 | Component | Recommendation | Why | Constraint |
 | --- | --- | --- | --- |

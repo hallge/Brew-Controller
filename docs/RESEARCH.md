@@ -28,12 +28,13 @@ Open Brew by Weight's `EspressoScaleBLE` (`protocols/Acaia.cpp`,
 | Scale state | Weight, timer, keys pressed on the scale (tare, start, stop, reset) and, in the settings frame, battery and whether the timer is running. There is no "tare done" notification, so a tare is confirmed by watching the weight return to zero. |
 
 Reused here: the Acaia protocol table, discovery, checksum, command encoder
-and the legacy parser are the unmodified Open Brew files in
-`lib/EspressoScaleProtocol`. The transport is new (NimBLE-Arduino instead of
+and the legacy parser are the Open Brew files in `lib/EspressoScaleProtocol`,
+unmodified apart from one feature flag (`ScaleFeatureReinitWhileSilent`, 2 Nov
+2026, marked in `Acaia.cpp` and `ScaleFeatures.h`). The transport is new (NimBLE-Arduino instead of
 ESP-IDF NimBLE), and so is the decoder for the current protocol's event
 stream, for the reason below. Since the scale abstraction (README, "Supported
 scales") the Felicita, Decent, DiFluid, Eclair, Eureka, MyScale, Varia and
-WeighMyBru tables from the same source are vendored too, also unmodified.
+WeighMyBru tables from the same source are vendored too, unmodified.
 
 ### The 17-byte weight frame (Lunar 2021, firmware 1.0.019)
 
@@ -72,7 +73,8 @@ Two things follow that the vendored Open Brew parser does not allow for:
 frames across notifications, verifies the checksum, and walks the record
 chain. It is tested in `test/host` against those captures, including a check
 that pins down the vendored parser's wrong answer. The vendored files are
-left unmodified and still handle discovery, commands and legacy scales.
+left as they were (apart from that flag) and still handle discovery, commands
+and legacy scales.
 
 Not decoded: bit 0 of the weight flag byte. Neither library interprets it
 (it may be a "stable" flag). The raw flag byte is stored with every reading
@@ -247,7 +249,7 @@ has a SwitchBot.
 
 | Concept | Open Brew source | Here |
 | --- | --- | --- |
-| Acaia protocol | `EspressoScaleBLE/src/protocols/Acaia.cpp` etc. | vendored unmodified |
+| Acaia protocol | `EspressoScaleBLE/src/protocols/Acaia.cpp` etc. | vendored; one feature flag added (marked) |
 | Stop at target minus offset | `ShotStopperBbwCutoff.h` | `BrewController::acceptBrewSample` |
 | Two fresh samples to confirm | `DIRECT_STOP_CONFIRMATION_SAMPLES` | same constant |
 | Linear prediction of the cut time | `bbwEwma::predict` | `predictStopTimeS`, same maths and constants |

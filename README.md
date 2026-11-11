@@ -934,8 +934,11 @@ emu/              PC emulator of the board, scale, Bot and machine
 
 ## 12. Licence
 
-AGPL-3.0-or-later. `lib/EspressoScaleProtocol` contains unmodified files from
-Open Brew by Weight (Felipe Urzua and contributors, AGPL-3.0), and the cut
+AGPL-3.0-or-later. `lib/EspressoScaleProtocol` contains files from Open
+Brew by Weight (Felipe Urzua and contributors, AGPL-3.0), unmodified except
+`Acaia.cpp` and `ScaleFeatures.h` (one flag, marked at the top of each), and the cut
 prediction and offset learning in `src/core/BbwAlgorithms.h` are adapted from
 it. That project derives from Tate Mazer's AcaiaArduinoBLE. If you distribute
 this firmware, or a device running it, the AGPL's source-sharing terms apply.
+`research/obbw-provenance.md` lists everything that comes from Open Brew by
+Weight.

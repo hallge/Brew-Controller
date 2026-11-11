@@ -1,3 +1,8 @@
+// Modified by the Brew Controller project, 2026-11-02 (commit 72f7ee9): the ScaleFeatureReinitWhileSilent
+// flag added.
+// Otherwise as copied from Open Brew by Weight, Advanced-Shot-Stopper/libraries/
+// EspressoScaleBLE/src (Felipe Urzua and contributors, AGPL-3.0-or-later).
+
 #ifndef ScaleFeatures_h
 #define ScaleFeatures_h
 

@@ -9635,6 +9635,7 @@ static void testServiceSharing() {
 }
 
 #include "test_safety.inc"  // needs Rig above
+#include "test_clean.inc"
 
 int main() {
   setvbuf(stdout, nullptr, _IONBF, 0);  // keep the output if a test crashes
@@ -9748,6 +9749,7 @@ int main() {
   testGrinderUnitTidy();
   testAppHost();
   testSafety();
+  testCleanReplacements();
   printf("\n%d checks, %d failed\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

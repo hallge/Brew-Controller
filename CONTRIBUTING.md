@@ -6,8 +6,8 @@
 
 ## What this project is licensed under
 
-The firmware, the web page, the drivers and the library tools are **AGPL-3.0-or-later** (`LICENSE`). They include unmodified files
-from Open Brew by Weight (AGPL-3.0) and, through it, Tate Mazer's AcaiaArduinoBLE (MIT); see `README.md` section 12. A contribution to
+The firmware, the web page, the drivers and the library tools are **AGPL-3.0-or-later** (`LICENSE`). They include files
+from Open Brew by Weight (unmodified except two, marked at their top) (AGPL-3.0) and, through it, Tate Mazer's AcaiaArduinoBLE (MIT); see `README.md` section 12. A contribution to
 the code is made under the same licence.
 
 ## Sign-off (Developer Certificate of Origin)

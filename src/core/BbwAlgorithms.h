@@ -5,17 +5,39 @@
 //   * learnStopOffset   == bbwEwma::learn    (EWMA between shots; alpha = 1.0
 //                          reproduces the original shotStopper full correction)
 //   * AlphaEvidence     == bbwEwma::Evidence (adaptive learning-factor selector)
+//
+// Built with -DBBW_CLEAN, those three come instead from core/StopMath.h, an
+// independent implementation written from research/obbw-clean-spec.md (see
+// research/obbw-provenance.md). FlowEstimator below is this project's own and
+// is used in both builds.
 
 #include <cmath>
 #include <stddef.h>
 
+#include "StopMath.h"
 #include "Types.h"
 
 namespace bbw {
 
-constexpr size_t TREND_POINT_COUNT = 10;
-constexpr float TREND_MIN_LAST_SAMPLE_G = 10.0f;
-constexpr float TREND_MIN_HORIZON_S = 0.25f;
+#ifdef BBW_CLEAN
+
+using AlphaEvidence = AlphaSelector;
+inline constexpr const uint8_t (&ALPHA_CANDIDATES)[4] = kGainChoices;
+inline bool validAlpha(uint8_t alpha) { return gainValid(alpha); }
+inline float clampOffset(float value) { return limitOffset(value); }
+inline float predictStopTimeS(const float *timeS, const float *weightG,
+                              size_t count, float targetG, float fallbackS) {
+  return predictCrossingS(timeS, weightG, count, targetG, fallbackS);
+}
+inline bool learnStopOffset(float offsetG, float finalWeightG, float targetG,
+                            float alpha, float &updatedOffsetG) {
+  return nextOffset(offsetG, finalWeightG, targetG, alpha, updatedOffsetG);
+}
+
+#else  // the Open Brew by Weight adaptation (AGPL-3.0-or-later)
+
+// TREND_POINT_COUNT, TREND_MIN_LAST_SAMPLE_G and TREND_MIN_HORIZON_S are
+// defined in StopMath.h for both builds.
 
 inline float clampOffset(float value) {
   return fmaxf(0.0f, fminf(MAX_OFFSET_G, value));
@@ -151,6 +173,8 @@ struct AlphaEvidence {
     return ALPHA_CANDIDATES[best];
   }
 };
+
+#endif  // BBW_CLEAN
 
 // Flow rate from real sample timestamps: least-squares slope over the samples
 // received in the trailing window. No sample-rate assumption anywhere.
