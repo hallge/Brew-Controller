@@ -105,7 +105,13 @@ struct SetupSharingView: View {
             "shareShots": .bool(shots), "shareRatings": .bool(ratings),
         ], done: nil)
         guard store.error == nil else { return }
-        await saveLink()
+        // The link is posted only when the repository or the token was changed.
+        let shown = status.viaRelay ? "" : status.repository
+        if repository.trimmingCharacters(in: .whitespaces) != shown || !token.isEmpty {
+            await saveLink()
+        } else {
+            store.notice = "Saved"
+        }
     }
 
     private func saveLink() async {

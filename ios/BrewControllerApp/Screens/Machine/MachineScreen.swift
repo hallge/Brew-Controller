@@ -34,7 +34,8 @@ struct MachineScreen: View {
         .accessibilityIdentifier("machineScreen")
         .task {
             await store.refresh()
-            if !scheduleLoaded {
+            await store.syncClock()
+            if !scheduleLoaded && store.powerLoaded {
                 schedule = store.power.schedule
                 let lastUsed = schedule.enumerated().reduce(0) { $1.element.enabled ? $1.offset + 1 : $0 }
                 visibleRows = max(1, lastUsed)
@@ -105,6 +106,15 @@ struct MachineScreen: View {
 
     // MARK: Schedule
 
+    /// The time zone the controller works the schedule in (it is given this phone's).
+    private var zoneNote: String {
+        let p = store.power
+        let minutes = p.utcOffsetMinNow
+        let a = abs(minutes)
+        let offset = "UTC" + (minutes < 0 ? "-" : "+") + String(a / 60) + (a % 60 != 0 ? ":" + (a % 60 < 10 ? "0" : "") + String(a % 60) : "")
+        return "Times are in the controller's time zone, taken from this phone: \(offset) now" + (p.tzRule.isEmpty ? "" : " (\(p.tzRule))") + "."
+    }
+
     private var scheduleSection: some View {
         Section {
             ForEach(0..<min(visibleRows, schedule.count), id: \.self) { index in
@@ -119,7 +129,7 @@ struct MachineScreen: View {
         } header: {
             Text("Schedule")
         } footer: {
-            Text("A time is skipped if the machine is already that way, or a shot is running. Times are this phone's local time; save again after a daylight-saving change.")
+            Text("A time is skipped if the machine is already that way, or a shot is running. " + zoneNote)
         }
     }
 

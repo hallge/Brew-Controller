@@ -13,6 +13,8 @@ final class MachineStore {
     var reviewNote = ""
     var events: [MachinePowerEvent] = []
     var loaded = false
+    /// The last GET /api/power worked (the schedule on screen is the controller's, not the empty default).
+    var powerLoaded = false
     var error: String?
     var notice: String?
 
@@ -31,7 +33,10 @@ final class MachineStore {
         async let rn = capture { try await self.api.get("/api/machine", as: MachineReviewNote.self) }
         async let ev = capture { try await self.api.get("/api/power/events", query: ["days": "30"], as: [MachinePowerEvent].self) }
         let (power, settings, maintenance, machine, shared, review, events) = await (p, s, m, mc, sh, rn, ev)
-        if let power { self.power = power }
+        if let power {
+            self.power = power
+            powerLoaded = true
+        }
         if let settings { self.settings = settings }
         if let maintenance { self.maintenance = maintenance }
         if let machine { self.machine = machine }
@@ -39,6 +44,21 @@ final class MachineStore {
         if let review { reviewNote = review.note }
         if let events { self.events = events }
         loaded = true
+    }
+
+    /// Nothing else on the phone calls POST /api/time, so a visit gives the controller the phone's clock (it
+    /// keeps one that is already set) and its time zone as a POSIX rule: the schedule follows daylight saving
+    /// with it. Only when the controller's rule differs from the phone's or its clock is not set.
+    func syncClock() async {
+        guard powerLoaded else { return }
+        let rule = MachineTimeZone.posix()
+        if power.tzRule == rule && power.clockSet { return }
+        do {
+            try await api.post("/api/time", query: ["epoch": String(Int(Date().timeIntervalSince1970)), "tz": rule])
+            if let fresh = try? await api.power() { power = fresh }
+        } catch {
+            // The schedule note says what the controller has; nothing more to show here.
+        }
     }
 
     private func capture<T: Sendable>(_ work: @Sendable () async throws -> T) async -> T? {

@@ -254,4 +254,59 @@ final class HardwareModelTests: XCTestCase {
         XCTAssertEqual(config.memoryBytes, 49_152)
         XCTAssertEqual(LogsLevel.names.count, 4)
     }
+
+    // MARK: Gaps found in the build-3 audit
+
+    func testGrinderMakerGroupsLikeTheWebPage() {
+        XCTAssertEqual(GrinderMaker.of("Barista Express (built in)"), "Breville")
+        XCTAssertEqual(GrinderMaker.of("DF64 Gen 2"), "Turin (DF)")
+        XCTAssertEqual(GrinderMaker.of("Mahlkonig EK43"), "Mahlkönig")
+        XCTAssertEqual(GrinderMaker.of("Rancilio Silvia"), "Rancilio")
+        XCTAssertEqual(GrinderMaker.of(""), "Other")
+    }
+
+    func testPickingAModelFillsTheFormButLoadingDoesNot() {
+        var g = GrinderModel()
+        g.model = "My Grinder"
+        g.unit = "click"
+        g.min = 5
+        g.max = 40
+        let loaded = GrinderFormDraft(grinder: g)
+        XCTAssertEqual(loaded.minText, "5")
+        XCTAssertEqual(loaded.maxText, "40")
+        XCTAssertEqual(loaded.unit, "click", "the saved unit stays: only picking a model fills from the catalogue")
+    }
+
+    func testAddonListDecodesFieldsMapAndLastGrind() throws {
+        let json = """
+        {"compiled":1,"addons":[{"id":"x","name":"X","version":"1.0","kind":"grinder","api_ok":true,"enabled":true,
+        "link":"connected","status":"ok","shot_feedback_possible":true,
+        "fields":[{"key":"host","label":"Host","type":"text","help":"","value":"a"},
+                  {"key":"on","label":"On","type":"bool","value":"1"},
+                  {"key":"pw","label":"Password","type":"secret","set":true}],
+        "options":{"dose_sets_target":true},"map":[{"grinder_recipe":2,"recipe_id":7,"source":"auto"}],
+        "last_grind":{"age_s":120,"grinder_recipe":2,"dose_g":18.1,"mapped":true,"recipe_id":7,"setting":210}}]}
+        """
+        let list = try BrewAPI.decode(SetupAddonList.self, from: Data(json.utf8))
+        XCTAssertEqual(list.addons.count, 1)
+        let a = list.addons[0]
+        XCTAssertEqual(a.fields.map(\.type), ["text", "bool", "secret"])
+        XCTAssertEqual(a.fields[1].value, "1")
+        XCTAssertTrue(a.fields[2].set)
+        XCTAssertTrue(a.options.doseSetsTarget)
+        XCTAssertEqual(a.map.first?.recipeId, 7)
+        XCTAssertEqual(a.lastGrind?.setting, "210")
+        XCTAssertEqual(try BrewAPI.decode(SetupAddonList.self, from: Data("{}".utf8)).addons.count, 0)
+    }
+
+    func testTimeZoneRuleMatchesThePosixFormOfTheWebPage() {
+        let berlin = MachineTimeZone.posix(zone: TimeZone(identifier: "Europe/Berlin")!, year: 2026)
+        XCTAssertEqual(berlin, "<+01>-1<+02>,M3.5.0,M10.5.0/3")
+        let newYork = MachineTimeZone.posix(zone: TimeZone(identifier: "America/New_York")!, year: 2026)
+        XCTAssertEqual(newYork, "<-05>5<-04>,M3.2.0,M11.1.0")
+        let tokyo = MachineTimeZone.posix(zone: TimeZone(identifier: "Asia/Tokyo")!, year: 2026)
+        XCTAssertEqual(tokyo, "<+09>-9")
+        let india = MachineTimeZone.posix(zone: TimeZone(identifier: "Asia/Kolkata")!, year: 2026)
+        XCTAssertEqual(india, "<+0530>-5:30")
+    }
 }

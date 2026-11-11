@@ -143,4 +143,41 @@ final class HardwareScreensUITests: XCTestCase {
         let normal = app.buttons["Normal: every event"]
         if normal.waitForExistence(timeout: 10) { normal.tap() }
     }
+
+    func testGettingStartedStepsOpenTheirScreens() {
+        let app = launch()
+        open(app, "Setup", root: "setupScreen")
+        let link = element(app, "setupStartedLink")
+        XCTAssertTrue(link.waitForExistence(timeout: 15))
+        link.tap()
+        let step = element(app, "setupStartedStep1")
+        XCTAssertTrue(step.waitForExistence(timeout: 15), "no first step")
+        step.tap()
+        XCTAssertTrue(element(app, "devicesScreen").waitForExistence(timeout: 15), "step 1 did not open Devices")
+        screenshot(app, "started-step1-devices")
+    }
+
+    func testGrinderModelPickerIsASearchableList() {
+        let app = launch()
+        open(app, "Grinder", root: "grinderScreen")
+        let mine = element(app, "grinderMyGrinderLink")
+        for _ in 0..<6 where !mine.exists { app.swipeUp() }
+        XCTAssertTrue(mine.waitForExistence(timeout: 15))
+        mine.tap()
+        let picker = element(app, "grinderModelPicker")
+        XCTAssertTrue(picker.waitForExistence(timeout: 15))
+        picker.tap()
+        XCTAssertTrue(element(app, "grinderModelList").waitForExistence(timeout: 15), "the model list did not open")
+        screenshot(app, "grinder-model-list")
+    }
+
+    func testSetupShowsTheVersionsAndFirstRunRow() {
+        let app = launch()
+        open(app, "Setup", root: "setupScreen")
+        let version = element(app, "setupAppVersion")
+        for _ in 0..<8 where !version.exists { app.swipeUp() }
+        XCTAssertTrue(version.waitForExistence(timeout: 15))
+        XCTAssertTrue(element(app, "setupFirstRun").exists)
+        XCTAssertTrue(element(app, "setupSafetyLink").exists)
+    }
 }

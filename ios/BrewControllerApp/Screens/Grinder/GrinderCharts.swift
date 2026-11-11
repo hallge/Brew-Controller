@@ -34,6 +34,25 @@ enum GrinderChartData {
         return result
     }
 
+    /// The colours, one per coffee, the same in both charts (the web's coffeeColours): the current coffee first
+    /// and in the accent colour, the others in fixed order.
+    static func coffeeStyle(_ points: [GrinderPoint], current: String) -> (domain: [String], range: [Color]) {
+        let palette: [Color] = [.blue, .purple, .pink, .teal, .brown, .indigo, .mint, .cyan, .gray]
+        var names: [String] = []
+        for point in points where !names.contains(point.coffee) { names.append(point.coffee) }
+        names.sort { a, b in
+            if (a == current) != (b == current) { return a == current }
+            return a.localizedCaseInsensitiveCompare(b) == .orderedAscending
+        }
+        var others = 0
+        let colors: [Color] = names.map { name in
+            if name == current { return .orange }
+            defer { others += 1 }
+            return palette[others % palette.count]
+        }
+        return (names, colors)
+    }
+
     /// The nearest point to a position on the chart, by the given distance.
     static func nearest(_ points: [GrinderPoint], to value: Double, by key: (GrinderPoint) -> Double) -> GrinderPoint? {
         points.min { abs(key($0) - value) < abs(key($1) - value) }
@@ -43,6 +62,26 @@ enum GrinderChartData {
 private func chartSummary(_ p: GrinderPoint, dial: BrewFormat.Dial) -> String {
     "\(p.coffee): \(dial.settingUnit(p.setting)), \(BrewFormat.seconds(p.time)) s"
         + (p.rating > 0 ? ", \(p.rating) star\(p.rating == 1 ? "" : "s")" : "")
+}
+
+/// The shot a dot stands for: its summary, and a link that opens it.
+struct GrinderPickedShot: View {
+    var point: GrinderPoint
+    var dial: BrewFormat.Dial
+    var id: String
+
+    var body: some View {
+        NavigationLink {
+            ShotsDetailScreen(shotID: point.id)
+        } label: {
+            HStack {
+                Text(chartSummary(point, dial: dial)).font(.footnote)
+                Spacer()
+                Text("Open the shot").font(.footnote).foregroundStyle(.tint)
+            }
+        }
+        .accessibilityIdentifier(id)
+    }
 }
 
 /// Brew time against grind setting, every coffee.
@@ -59,6 +98,8 @@ struct GrinderScatterChart: View {
         return GrinderChartData.nearest(points, to: picked) { Double($0.setting) }
     }
 
+    private var style: (domain: [String], range: [Color]) { GrinderChartData.coffeeStyle(points, current: currentCoffee) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Chart {
@@ -69,9 +110,18 @@ struct GrinderScatterChart: View {
                 ForEach(points) { point in
                     PointMark(x: .value("Setting", Double(point.setting)), y: .value("Seconds", point.time))
                         .foregroundStyle(by: .value("Coffee", point.coffee))
-                        .symbolSize(point.rating >= 4 ? 90 : 40)
+                        .symbolSize((point.rating >= 4 ? 90 : 40) * (point.coffee == currentCoffee ? 1.5 : 1))
+                        .opacity(point.coffee == currentCoffee ? 1 : 0.8)
+                }
+                if let selection {
+                    PointMark(x: .value("Setting", Double(selection.setting)), y: .value("Seconds", selection.time))
+                        .symbol(.circle.strokeBorder(lineWidth: 2))
+                        .foregroundStyle(.primary)
+                        .symbolSize(160)
                 }
             }
+            .chartForegroundStyleScale(domain: style.domain, range: style.range)
+            .chartLegend(position: .bottom, alignment: .leading, spacing: 8)
             .chartXAxis {
                 AxisMarks { value in
                     AxisGridLine()
@@ -85,8 +135,7 @@ struct GrinderScatterChart: View {
             .frame(height: 220)
             .accessibilityIdentifier("grinderScatterChart")
             if let selection {
-                Text(chartSummary(selection, dial: dial)).font(.footnote).foregroundStyle(.secondary)
-                    .accessibilityIdentifier("grinderScatterPicked")
+                GrinderPickedShot(point: selection, dial: dial, id: "grinderScatterPicked")
             }
         }
     }
@@ -99,12 +148,15 @@ struct GrinderShotsChart: View {
     var dial: BrewFormat.Dial
     var targetS: Double
     var toleranceS: Double
+    var currentCoffee = ""
     @State private var picked: Double?
 
     private var selection: GrinderPoint? {
         guard let picked else { return nil }
         return GrinderChartData.nearest(points, to: picked) { Double($0.order) }
     }
+
+    private var style: (domain: [String], range: [Color]) { GrinderChartData.coffeeStyle(points, current: currentCoffee) }
 
     private func color(_ time: Double) -> Color {
         guard targetS > 0 else { return .secondary }
@@ -145,6 +197,8 @@ struct GrinderShotsChart: View {
                     }
                 }
             }
+            .chartForegroundStyleScale(domain: style.domain, range: style.range)
+            .chartLegend(position: .bottom, alignment: .leading, spacing: 8)
             .chartYAxis {
                 AxisMarks { value in
                     AxisGridLine()
@@ -158,8 +212,7 @@ struct GrinderShotsChart: View {
             .frame(height: 220)
             .accessibilityIdentifier("grinderShotsChart")
             if let selection {
-                Text(chartSummary(selection, dial: dial)).font(.footnote).foregroundStyle(.secondary)
-                    .accessibilityIdentifier("grinderShotsPicked")
+                GrinderPickedShot(point: selection, dial: dial, id: "grinderShotsPicked")
             }
             Text("Dots: green on time, orange fast, red slow. Rings: 4 and 5 stars. Dashed: a new bag.")
                 .font(.caption2).foregroundStyle(.secondary)

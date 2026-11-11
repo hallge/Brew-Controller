@@ -136,10 +136,10 @@ line for every item) are in the coordinator's notes, `ios-parity/`.
 | Setting now and measured by the add-on; I moved it to | `/api/grind`, `/api/grind/set` | ◐ `testSetTheGrinderSetting` |
 | Advice pill, why, age, rate; apply suggested | `/api/grind` | ◐ testSetTheGrinderSetting (pill); apply: testOpenEachScreen |
 | Brew time against grind (scatter, all coffees) | `/api/shots` | ◐ `testOpenEachScreen` |
-| Grind shot by shot: a line per coffee, dots by time, rings for 4-5 stars, new-bag lines; tap opens the shot | `/api/shots` | ◐ testOpenEachScreen (tap shows the shot's summary under the chart; opening the shot is the Shots thread's screen) |
+| Grind shot by shot: a line per coffee, dots by time, rings for 4-5 stars, new-bag lines; tap opens the shot; legend per coffee, current coffee larger | `/api/shots` | ◐ testOpenEachScreen (a tap shows the shot's summary with an "Open the shot" link to `ShotsDetailScreen(shotID:)`) |
 | Advice settings: tolerance, window, rated target, confidence, room, µm/s guess, max step, time basis | `/api/settings` | ◐ `testOpenEachScreen` |
 | Upkeep: clean; zeroed today | `/api/maintenance`, `/api/grinder` | ◐ `testOpenEachScreen` |
-| My grinder: model by maker (built-in, own, shared), name, adjusts by, divisor, unit, range, covers, zeroed date, micro ring | `/api/grinder` | ◐ `testOpenEachScreen` |
+| My grinder: model by maker (built-in, own, shared) in a searchable list, name, adjusts by, divisor, unit, range, covers, zeroed date, micro ring | `/api/grinder` | ◐ `testGrinderModelPickerIsASearchableList` |
 | Second grinder: add, use instead, remove; send to the library | `grinder_switch`, `grinder_remove_other`, `/api/share/grinder` | ◐ `testOpenEachScreen` |
 | Shared grinder list | `/api/community/grinders` | ◐ `testOpenEachScreen` |
 
@@ -148,7 +148,7 @@ line for every item) are in the coordinator's notes, `ios-parity/`.
 | Feature | Route | Status |
 |---|---|---|
 | Power: state, last press, switch on/off, not right? on/off, press anyway | `/api/power` | ◐ testToggleAMachineOption (screen); press: testOpenEachScreen |
-| Schedule: 6 rows (in use, on/off, time, weekdays); time zone | `/api/power` schedule | ◐ testOpenEachScreen (time zone: the schedule saves the phone's offset and keeps the controller's rule) |
+| Schedule: 6 rows (in use, on/off, time, weekdays); time zone | `/api/power` schedule | ◐ testOpenEachScreen (the phone's clock and time-zone rule are sent with `POST /api/time` when the controller's differ; a note says the zone in use; the schedule loads only once `/api/power` answered) |
 | Options: keep power bot connected, off with the scale, scale sleeps after 0-60 min | `/api/settings` | ◐ `testToggleAMachineOption` |
 | Upkeep: backflush and descale, remind after, done today | `/api/maintenance` | ◐ `testOpenEachScreen` |
 | Make and model: built-in, shared, typed; maker, model, control, style (5), manual start, pre-infusion flags, power toggle, self-stop, auto-off | `/api/machine` | ◐ `testOpenEachScreen` |
@@ -215,9 +215,10 @@ line for every item) are in the coordinator's notes, `ios-parity/`.
 | Backup (history, secrets) to Files; restore from Files, summary, apply, tap to restart | `/api/backup`, `/api/restore`, `/restore/apply` | ◐ testOpenEachScreen (backup through the share sheet, restore through Files; restore ends on "Restored, tap to restart") |
 | Shared library: state, key id, link, own repo and token, share on, what it shares, queue, send again | `/api/share*` | ◐ `testOpenEachScreen` |
 | Diagnostics: on/off, status, last crash, preview, send now; report a problem; relay address | `/api/diagnostics*`, `/api/crash` | ◐ `testOpenEachScreen` |
-| Add-ons: on, fields, map, read now, forget (only when built in) | `/api/addons/*` | ☐ |
-| Getting started: 8 steps and "when you want more" | `/api/start` | ◐ testOpenEachScreen (7 steps: the Wi-Fi step is the board's) |
+| Add-ons: on, fields, map, read now, forget (only when the controller lists any) | `/api/addons/*` | ◐ testOpenEachScreen (Setup › Add-ons appears only with add-ons; the add-on's own steering/comparison card, charts and module delivery are not drawn) |
+| Getting started: 8 steps and "when you want more"; each step and card opens its screen | `/api/start` | ◐ `testGettingStartedStepsOpenTheirScreens` (7 steps: the Wi-Fi step is the board's; `SetupStartedScreen()` is the entry for Brew and More) |
 | Web page panels (which sections show) | `webPanels` | ◐ testOpenEachScreen ("Show in More" toggles; the shell has to read `webPanels`) |
+| App and controller firmware versions; show the first run again; read the safety notice again | `/api/update`, `Onboarding.reset()` | ◐ `testSetupShowsTheVersionsAndFirstRunRow` |
 | Wi-Fi, access point, network restart | ✕ the board's Wi-Fi | ✕ |
 | Firmware update, slots, rollback | ✕ App Store updates | ✕ |
 | Controller screen upside down | ✕ | ✕ |
