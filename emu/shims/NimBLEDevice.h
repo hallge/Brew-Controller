@@ -1,7 +1,9 @@
 #pragma once
-// PC emulator stand-in for NimBLE-Arduino 1.4 (central role only). The
-// firmware's BLE code runs unchanged against this; behind it is a virtual
-// radio with emulated peripherals (emu/src/emu_radio.h).
+// Stand-in for NimBLE-Arduino 1.4 (central role only). The firmware's BLE code
+// runs unchanged against this. The classes hold generic data and forward to a
+// BleBackend (emu/src/ble_backend.h): the virtual radio with emulated
+// peripherals in the emulator, CoreBluetooth on iOS. The glue is in
+// emu/src/ble_facade.cpp.
 
 #include <Arduino.h>
 
@@ -11,10 +13,7 @@
 
 #define ESP_PWR_LVL_P9 9
 
-namespace emu {
-class Peripheral;
-class Radio;
-}  // namespace emu
+struct BleFacade;  // ble_facade.cpp: the only code that touches the internals below
 
 class NimBLEUUID {
  public:
@@ -58,9 +57,12 @@ class NimBLERemoteCharacteristic {
 
  private:
   friend class NimBLEClient;
-  friend class emu::Radio;
+  friend struct BleFacade;
   NimBLEClient *client_ = nullptr;
   NimBLEUUID uuid_;
+  NimBLEUUID serviceUuid_;
+  uintptr_t handle_ = 0;     // opaque backend reference
+  uint32_t generation_ = 0;  // connection generation this object belongs to
   bool notify_ = false, indicate_ = false, write_ = false, writeNoResponse_ = false;
   bool subscribed_ = false;
   notify_callback callback_;
@@ -76,8 +78,9 @@ class NimBLERemoteService {
 
  private:
   friend class NimBLEClient;
-  friend class emu::Radio;
+  friend struct BleFacade;
   NimBLEUUID uuid_;
+  uintptr_t handle_ = 0;
   std::vector<NimBLERemoteCharacteristic *> characteristics_;
 };
 
@@ -97,7 +100,7 @@ class NimBLEClient {
     callbacks_ = callbacks;
   }
   bool connect(const NimBLEAddress &address, bool deleteAttributes = true);
-  int getLastError() const { return 0; }  // the emulator's failures are all timeouts
+  int getLastError() const { return lastError_; }
   bool isConnected() const;
   int disconnect(uint8_t reason = 0x13);
   std::vector<NimBLERemoteService *> *getServices(bool refresh = false);
@@ -106,10 +109,12 @@ class NimBLEClient {
 
  private:
   friend class NimBLERemoteCharacteristic;
-  friend class emu::Radio;
+  friend struct BleFacade;
   uint8_t connectTimeoutS_ = 30;
   NimBLEClientCallbacks *callbacks_ = nullptr;
-  emu::Peripheral *peer_ = nullptr;
+  uint64_t link_ = 0;        // backend link, 0 = none
+  uint32_t generation_ = 0;  // bumped on every connect
+  int lastError_ = 0;
   std::vector<NimBLERemoteService *> services_;
 };
 
@@ -125,7 +130,7 @@ class NimBLEAdvertisedDevice {
   std::string getManufacturerData(uint8_t = 0) const { return manufacturerData_; }
 
  private:
-  friend class emu::Radio;
+  friend struct BleFacade;
   NimBLEAddress address_;
   std::string manufacturerData_;
   std::string name_;
