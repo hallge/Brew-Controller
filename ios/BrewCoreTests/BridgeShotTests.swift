@@ -95,10 +95,25 @@ final class BridgeShotTests: XCTestCase {
         XCTAssertTrue(sawResume)
     }
 
-    func testSilentScaleLeavesReady() {
+    // Idle, a silent scale is not a fault (as on the board): the core stays READY and only reports the
+    // weight as not fresh. Mid-shot it presses stop within 1.5 s and ends as SCALE_DATA_STALE.
+    // (Behaviour checked against the same core on the PC, 11 Nov 2026.)
+    func testSilentScaleIdleStaysReadyButNotFresh() {
         reachReady()
         core.setFault(Fault.scaleSilent, true)
-        XCTAssertTrue(run(maxMs: 10_000) { self.stateName() != "READY" }, "still \(stateName())")
+        XCTAssertTrue(run(maxMs: 10_000) { !self.core.live(self.now).weightFresh }, "weight still fresh")
+        XCTAssertEqual(stateName(), "READY")
+    }
+
+    func testSilentScaleMidShotStopsTheShot() {
+        reachReady()
+        core.requestStart()
+        XCTAssertTrue(run(maxMs: 30_000) { self.stateName() == "BREWING" && self.core.live(self.now).weightG > 5 },
+                      "no pour, state \(stateName())")
+        core.setFault(Fault.scaleSilent, true)
+        XCTAssertTrue(run(maxMs: 3_000) { self.stateName() == "STOPPING_SHOT" || self.stateName() == "POST_SHOT_DRIP" },
+                      "no stop, state \(stateName())")
+        XCTAssertTrue(run(maxMs: 10_000) { self.stateName() == "SCALE_DATA_STALE" }, "state \(stateName())")
     }
 
     func testProbeLogCountsTicksSamplesAndCommands() {
