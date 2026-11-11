@@ -89,6 +89,13 @@ void dumpAll(const char *suffix) {
       {"settings", "/api/settings"}, {"shots", "/api/shots?limit=2"}, {"grind", "/api/grind"},
       {"devices", "/api/devices"},   {"power", "/api/power"},     {"maintenance", "/api/maintenance"},
       {"machine", "/api/machine"},
+      // The hardware screens' models (Grinder, Machine, Devices, Setup, Logs).
+      {"grinder_community", "/api/community/grinders"}, {"machine_community", "/api/community/machines"},
+      {"machine_events", "/api/power/events?days=30"},  {"devices_pusher_brew", "/api/pusher?role=brew"},
+      {"devices_pusher_power", "/api/pusher?role=power"}, {"devices_bot_test", "/api/bot/test"},
+      {"setup_start", "/api/start"},                    {"setup_homeassistant", "/api/homeassistant"},
+      {"setup_share", "/api/share"},                    {"setup_diag_report", "/api/diagnostics/report"},
+      {"setup_crash", "/api/crash"},                    {"logs_config", "/api/log/config"},
   };
   for (const auto &rt : routes) dump(std::string(rt.name) + suffix, rt.path);
 }
