@@ -9,6 +9,7 @@ struct BrewHomePanel: View {
     var onRecipes: () -> Void
     var onEdit: () -> Void
     var onCoffee: () -> Void
+    var onSettings: () -> Void
 
     private var live: BrewLive { LiveModel.shared.live }
     private var model: BrewModel { BrewModel.shared }
@@ -17,6 +18,7 @@ struct BrewHomePanel: View {
         let home = screen.home
         ScrollView {
             VStack(spacing: 14) {
+                BrewStartedCard()
                 statusLine(home)
                 card(home.card)
                 startArea(home)
@@ -102,8 +104,10 @@ struct BrewHomePanel: View {
 
     private func startArea(_ home: ScreenHome) -> some View {
         VStack(spacing: 8) {
-            if !home.hint.isEmpty {
-                Text(home.hint)
+            // The board's hint for a ready start names its touch key: on the phone that is the Start key below.
+            let hint = home.hintIsTouch && home.hint.isEmpty ? BrewPhoneWords.touchHint : BrewPhoneWords.phone(home.hint)
+            if !hint.isEmpty {
+                Text(hint)
                     .font(.headline)
                     .foregroundStyle(brewPal.color(forTone: home.hintTone))
                     .multilineTextAlignment(.center)
@@ -138,6 +142,9 @@ struct BrewHomePanel: View {
                     .buttonStyle(BrewKeyStyle(kind: .panel))
                     .accessibilityIdentifier("coffeeButton")
             }
+            Button("SETTINGS", action: onSettings)
+                .buttonStyle(BrewKeyStyle(kind: .panel))
+                .accessibilityIdentifier("settingsButton")
         }
     }
 

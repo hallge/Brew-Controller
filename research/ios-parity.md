@@ -26,19 +26,19 @@ line for every item) are in the coordinator's notes, `ios-parity/`.
 | Recipe card: coffee or recipe name, yield line `in → out 1:r`, grind and advice line, pre-infusion and bloom, brew time | S | `/api/status`, `/api/library`, `/api/grind` | ◐ `BrewTabUITests.testHomeCardShowsAndTheTabsAreThere` |
 | Status line: SCALE RESTING / NO SCALE / NO BOT / NO CUP x g / WAKING BOT x g / READY x g | S | `bbw_live` | ◐ `BrewTabUITests.testHomeCardShowsAndTheTabsAreThere` (READY) |
 | Scale and bot dots (red, amber, grey, green) with battery %, amber at 15 % or less | S+W | `bbw_live` | ◐ `BrewTabUITests.testHomeCardShowsAndTheTabsAreThere` |
-| Hint: connecting, switch on the scale, pair the bot, waiting for weight, place cup, tap to brew | S | `bbw_live` | ◐ hint text or Start key; no test of each wording |
-| Start (device start), Tare, Done / Clear the warning | S+W | `bbw_command` | ◐ Start, READY: `BrewTabUITests.testFullDemoShotReachesTheResult`; Tare built, untested |
+| Hint: connecting, switch on the scale, pair the bot, waiting for weight, place cup, tap to brew | S | `bbw_live` | ◐ hint text or Start key, the board's key wording said for the phone (TAP START); no test of each wording |
+| Start (device start), Tare, Done / Clear the warning | S+W | `bbw_command` | ◐ Start, READY: `BrewTabUITests.testFullDemoShotReachesTheResult`; manual-style Start: `BrewGapsUITests.testManualMachineStartsFromTheApp`; Tare built, untested |
 | Recipe picker; hidden finished-bag entries except the active one | S+W | `preset_select` | ◐ `BrewTabUITests.testRecipePickerOpensAndSelects` |
 | Next recipe (the board's long press) | S | `nextRecipe` | ◐ NEXT RECIPE key built, untested |
-| Edit the active entry: target or ratio, dose, grind, brew time, pre-infusion; tap and hold steps; SET advice | S | `/api/screen/do` (applyPresetEdit) | ◐ `BrewTabUITests.testEditPanelStepsAndCancels` |
+| Edit the active entry: target or ratio, dose, grind, brew time, pre-infusion; tap and hold steps; SET advice | S | `/api/screen/do` (applyPresetEdit) | ◐ `BrewTabUITests.testEditPanelStepsAndCancels`; hold to repeat: `BrewGapsUITests.testEditKeyRepeatsWhenHeld`; Brew data is reloaded on appear and before the sheet opens |
 | Coffee details: name, roaster, origin, roast level, roast age, and the rest | S | `/api/library` | ◐ `BrewTabUITests.testCoffeeDetailsOpenAndClose` |
 | Bag finished, with confirm | S+W | `coffee_finish` / `finishActiveCoffee` | ◐ two-tap confirm built; untested (it finishes the demo bag) |
-| Machine power button and state pill (believe on/off) | W | `/api/power` | ◐ built; untested (the demo has no power bot) |
-| Grinder card: setting, advice pill, reason, age | W | `/api/grind` | ◐ the board card wording and `/api/grind` check-prep note; no separate reason or age line |
-| Previous grinder recommendation | W | `/api/contexts?limit=1` | ◐ built, untested |
-| Most recent shot: summary, chart, rate, taste, TDS; to Beanconqueror; share | W | `/api/shot/data`, `/api/shot/rate`, `/api/shot/tds` | ◐ summary, chart, stars, taste, TDS built, untested; to Beanconqueror and share left ☐ (not done) |
-| For you chips (Discover on) | W | `/api/taste/recommend`, `/api/subscriptions/recommend` | ◐ `/api/taste/recommend` only; `/api/subscriptions/recommend` not read; untested |
-| Community card | W | `/api/community` | ◐ built, untested |
+| Machine power button and state pill (believe on/off) | W | `/api/power` | ◐ built, polled every 5 s while Brew is on show; untested (the demo has no power bot) |
+| Grinder card: setting, advice pill, reason, age | W | `/api/grind` | ◐ setting with unit, advice pill, reason, bean age, Details to the Grinder tab; card exists in `BrewGapsUITests.testLastShotCardIsThereWithAnEmptyStateOrASummary` |
+| Previous grinder recommendation | W | `/api/contexts?limit=1` | ◐ full web sentence, pill, All shots link; card exists in `BrewGapsUITests.testLastShotCardIsThereWithAnEmptyStateOrASummary` |
+| Most recent shot: summary, chart, rate, taste, TDS; to Beanconqueror; share | W | `/api/shot/data`, `/api/shot/rate`, `/api/shot/tds` | ◐ `BrewGapsUITests.testLastShotCardAfterAFullShotHasEveryControl`: empty state, summary against targets, weight/flow/best-rated curves, stars, taste, TDS, vote, preparation, Beanconqueror, Share to Reddit, link to the shot |
+| For you chips (Discover on) | W | `/api/taste/recommend`, `/api/subscriptions/recommend` | ◐ taste, subscriptions and next-grind chips that lead on (Discover, Coffees, Grinder); untested |
+| Community card | W | `/api/community` | ◐ every state, start tile with why (age and flow shift), good-shot tile, similar-coffee block, Use as starting grind with confirm; follows the Community panel; untested |
 | Alerts: manual stop needed; SwitchBot in Switch mode | W | `bbw_live` | ◐ built (manual stop, Switch mode), untested |
 
 ### Grind prompts (S: GRINDREC; W: Home banners)

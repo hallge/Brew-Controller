@@ -34,8 +34,11 @@ struct BrewRootView: View {
                 BrewRestartView()
             }
             if lifecycle.isDimmed {
-                // The board dims an idle screen; any touch brings it back (`brewTracksActivity`).
-                Color.black.opacity(0.75).ignoresSafeArea().allowsHitTesting(false)
+                // The board dims an idle screen and the first touch only wakes it: the overlay takes that touch
+                // (the window recognizer of `brewTracksActivity` clears the dimming as it begins, and the
+                // controls underneath never see the touch).
+                Color.black.opacity(0.75).ignoresSafeArea()
+                    .contentShape(Rectangle())
                     .accessibilityIdentifier("dimOverlay")
             }
         }
@@ -45,6 +48,10 @@ struct BrewRootView: View {
         .onChange(of: controllerWanted, initial: true) { _, wanted in
             if wanted { Controller.startOnce() }
         }
+        .onChange(of: onboarding.isComplete) { was, now in
+            // A new owner's first run ends on Getting started, as the web page opens its guide for a new controller.
+            if !was && now && !Controller.skipsOnboarding { BrewNavigator.shared.open(.started) }
+        }
         .brewTracksActivity(lifecycle)
     }
 }
@@ -53,19 +60,25 @@ struct BrewRootView: View {
 /// the others are placeholders that later work replaces, each in its own folder (Screens/<Name>/).
 struct BrewMainTabs: View {
     @State private var theme = BrewTheme.shared
+    @State private var nav = BrewNavigator.shared
 
     var body: some View {
-        TabView {
+        TabView(selection: $nav.tab) {
             NavigationStack { BrewTab().toolbar(.hidden, for: .navigationBar) }
                 .tabItem { Label("Brew", systemImage: "cup.and.saucer.fill") }
+                .tag(BrewTabID.brew)
             NavigationStack { ShotsTab() }
                 .tabItem { Label("Shots", systemImage: "list.bullet.rectangle") }
+                .tag(BrewTabID.shots)
             NavigationStack { CoffeesTab() }
                 .tabItem { Label("Coffees", systemImage: "leaf.fill") }
+                .tag(BrewTabID.coffees)
             NavigationStack { GrinderTab() }
                 .tabItem { Label("Grinder", systemImage: "gearshape.2.fill") }
+                .tag(BrewTabID.grinder)
             NavigationStack { BrewMoreTab() }
                 .tabItem { Label("More", systemImage: "ellipsis.circle") }
+                .tag(BrewTabID.more)
         }
         .tint(theme.palette.accent)
         .accessibilityIdentifier("mainTabs")

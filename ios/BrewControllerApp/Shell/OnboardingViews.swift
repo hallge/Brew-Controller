@@ -37,20 +37,55 @@ private struct BrewOnboardingPage<Content: View>: View {
     }
 }
 
+/// The three paragraphs of the notice, for the first run and for reading it again later.
+struct BrewSafetyText: View {
+    var body: some View {
+        Group {
+            Text("Brew Controller is a hobby project, not a certified appliance. It presses a button on your espresso machine to stop a shot at a target weight. It has not been tested by any safety body and comes without warranty.")
+            Text("It is an aid to stopping at a weight, not a safety device. Be present while a shot runs: if the scale or the button pusher is lost, a machine that was started keeps running until you stop it by hand.")
+            Text("Check the first shots by hand before leaving it to itself.")
+        }
+        .foregroundStyle(brewPal.text)
+    }
+}
+
 struct BrewSafetyNoticeView: View {
     var body: some View {
         BrewOnboardingPage(title: "Before you brew") {
-            Group {
-                Text("Brew Controller is a hobby project, not a certified appliance. It presses a button on your espresso machine to stop a shot at a target weight. It has not been tested by any safety body and comes without warranty.")
-                Text("It is an aid to stopping at a weight, not a safety device. Be present while a shot runs: if the scale or the button pusher is lost, a machine that was started keeps running until you stop it by hand.")
-                Text("Check the first shots by hand before leaving it to itself.")
-            }
-            .foregroundStyle(brewPal.text)
+            BrewSafetyText()
             Button("I understand") { Onboarding.shared.acceptSafetyNotice() }
                 .buttonStyle(BrewKeyStyle(kind: .ok))
                 .accessibilityIdentifier("acceptSafetyButton")
         }
         .accessibilityIdentifier("safetyNotice")
+    }
+}
+
+/// The notice read again from More: no button to accept, just Done.
+struct BrewSafetyNoticeSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                brewPal.bg.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        BrewSafetyText()
+                    }
+                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .navigationTitle("Before you brew")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }.accessibilityIdentifier("safetyDone")
+                }
+            }
+        }
+        .accessibilityIdentifier("safetySheet")
     }
 }
 

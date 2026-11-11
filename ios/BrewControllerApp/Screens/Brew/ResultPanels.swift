@@ -121,7 +121,7 @@ struct BrewFaultPanel: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(fault.title).font(.title2.weight(.bold)).foregroundStyle(brewPal.bad)
                             .accessibilityIdentifier("faultTitle")
-                        Text(fault.message).foregroundStyle(brewPal.text)
+                        Text(BrewPhoneWords.phone(fault.message)).foregroundStyle(brewPal.text)
                             .accessibilityIdentifier("faultMessage")
                     }
                 }

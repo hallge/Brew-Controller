@@ -219,7 +219,7 @@ struct BrewEditRecipeView: View {
         }
     }
 
-    /// A - or + key: a tap steps by the small amount, a long press by the large one (the board's hold).
+    /// A - or + key: a tap steps by the small amount; held down it goes on stepping by the large one.
     private func stepKey(_ name: String, _ direction: Int) -> some View {
         Image(systemName: name)
             .font(.title.weight(.bold))
@@ -227,8 +227,9 @@ struct BrewEditRecipeView: View {
             .frame(maxWidth: .infinity, minHeight: 72)
             .background(brewPal.panel, in: RoundedRectangle(cornerRadius: 14))
             .contentShape(RoundedRectangle(cornerRadius: 14))
-            .onTapGesture { draft.step(field: field, direction: direction, held: false) }
-            .onLongPressGesture(minimumDuration: 0.5) { draft.step(field: field, direction: direction, held: true) }
+            .modifier(BrewRepeatingKey(
+                tap: { draft.step(field: field, direction: direction, held: false) },
+                hold: { draft.step(field: field, direction: direction, held: true) }))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(direction < 0 ? "Less" : "More")
             .accessibilityAddTraits(.isButton)
@@ -249,5 +250,37 @@ private struct BrewFieldKeyStyle: ButtonStyle {
             .frame(maxWidth: .infinity, minHeight: 44)
             .background(selected ? p.select : p.panel, in: RoundedRectangle(cornerRadius: 10))
             .opacity(configuration.isPressed ? 0.7 : 1)
+    }
+}
+
+/// A key that acts on touch-down and, held for half a second, repeats (the board's held - and +).
+private struct BrewRepeatingKey: ViewModifier {
+    var tap: () -> Void
+    var hold: () -> Void
+    @State private var repeater: Task<Void, Never>?
+
+    func body(content: Content) -> some View {
+        content
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard repeater == nil else { return }
+                        tap()
+                        repeater = Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(500))
+                            while !Task.isCancelled {
+                                hold()
+                                try? await Task.sleep(for: .milliseconds(150))
+                            }
+                        }
+                    }
+                    .onEnded { _ in
+                        repeater?.cancel()
+                        repeater = nil
+                    })
+            .onDisappear {
+                repeater?.cancel()
+                repeater = nil
+            }
     }
 }

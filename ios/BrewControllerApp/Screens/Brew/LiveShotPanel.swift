@@ -11,6 +11,9 @@ struct BrewLiveShotPanel: View {
 
     private var live: BrewLive { LiveModel.shared.live }
 
+    /// `MachineStyle::MANUAL` (core/MachineProfile.h).
+    private static let manualStyle = 2
+
     /// The machine has been started (the firmware says so; the state decides until the first answer).
     private var running: Bool {
         if let brew = screen.brew { return brew.running }
@@ -45,19 +48,24 @@ struct BrewLiveShotPanel: View {
     private var needsConfirm: Bool { stopLabel == "STOP" }
 
     var body: some View {
-        let phase = screen.brew?.phase ?? ""
+        let phase = BrewPhoneWords.phone(screen.brew?.phase ?? "")
         ScrollView {
             VStack(spacing: 20) {
                 ZStack {
                     BrewShotRing(progress: running && live.firstDropSeen ? progress : (running ? 1 : 0),
                              color: ringColor, track: brewPal.track)
                         .accessibilityIdentifier("shotRing")
-                    Text(showsWeight ? BrewFormat.grams(live.weightG) : BrewFormat.grams(live.targetWeightG))
-                        .font(.system(size: 64, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(showsWeight ? brewPal.ok : brewPal.dim)
-                        .minimumScaleFactor(0.5)
-                        .accessibilityIdentifier("weightLabel")
+                    VStack(spacing: 0) {
+                        Text(showsWeight ? BrewFormat.grams(live.weightG) : BrewFormat.grams(live.targetWeightG))
+                            .font(.system(size: 64, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(showsWeight ? brewPal.ok : brewPal.dim)
+                            .minimumScaleFactor(0.5)
+                            .accessibilityIdentifier("weightLabel")
+                        Text(showsWeight ? "g" : "g target")
+                            .font(.subheadline).foregroundStyle(brewPal.dim)
+                            .accessibilityIdentifier("weightUnit")
+                    }
                 }
                 .frame(width: 270, height: 270)
 
@@ -79,7 +87,9 @@ struct BrewLiveShotPanel: View {
                         .accessibilityIdentifier("flowLabel")
                 }
 
-                if live.state == .readyToBrew && live.botConnected {
+                // The bot starts the machine; a hand-worked machine (manual style) is started by the controller
+                // too, from this key, with nothing pressed.
+                if live.state == .readyToBrew && (live.botConnected || live.machineStyle == Self.manualStyle) {
                     Button("START") { LiveModel.shared.send(.start) }
                         .buttonStyle(BrewKeyStyle(kind: .ok))
                         .accessibilityIdentifier("startButton")
