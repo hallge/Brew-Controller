@@ -4,24 +4,24 @@
 import Charts
 import SwiftUI
 
-struct HomeExtras: View {
+struct BrewHomeExtras: View {
     private var model: BrewModel { BrewModel.shared }
 
     var body: some View {
         VStack(spacing: 14) {
-            if let power = model.power, power.paired { PowerCard(power: power) }
-            GrinderCard()
-            PreviousAdviceCard()
-            if let shot = model.lastShot { LastShotCard(data: shot) }
-            if let reco = model.forYou { ForYouCard(reco: reco) }
-            if let community = model.community, community.found == true { CommunityCard(info: community) }
+            if let power = model.power, power.paired { BrewPowerCard(power: power) }
+            BrewGrinderCard()
+            BrewPreviousAdviceCard()
+            if let shot = model.lastShot { BrewLastShotCard(data: shot) }
+            if let reco = model.forYou { BrewForYouCard(reco: reco) }
+            if let community = model.community, community.found == true { BrewCommunityCard(info: community) }
         }
     }
 }
 
 // MARK: - Machine power
 
-private struct PowerCard: View {
+private struct BrewPowerCard: View {
     var power: PowerModel
     private var model: BrewModel { BrewModel.shared }
 
@@ -33,7 +33,7 @@ private struct PowerCard: View {
         BrewCard {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("MACHINE").font(.subheadline).foregroundStyle(pal.dim)
+                    Text("MACHINE").font(.subheadline).foregroundStyle(brewPal.dim)
                     Spacer()
                     // The pill says whether the machine is on; tapping it only changes what the app believes.
                     Button {
@@ -42,8 +42,8 @@ private struct PowerCard: View {
                         Text(belief)
                             .font(.subheadline.weight(.semibold))
                             .padding(.horizontal, 12).padding(.vertical, 6)
-                            .background(power.belief == "on" ? pal.ok : pal.track, in: Capsule())
-                            .foregroundStyle(power.belief == "on" ? pal.bg : pal.text)
+                            .background(power.belief == "on" ? brewPal.ok : brewPal.track, in: Capsule())
+                            .foregroundStyle(power.belief == "on" ? brewPal.bg : brewPal.text)
                     }
                     .accessibilityIdentifier("machineStatePill")
                 }
@@ -53,7 +53,7 @@ private struct PowerCard: View {
                     .accessibilityIdentifier("powerButton")
                 if !power.last.isEmpty {
                     Text("Last: \(power.last)\(power.lastBySchedule ? " (schedule)" : "")")
-                        .font(.footnote).foregroundStyle(pal.dim)
+                        .font(.footnote).foregroundStyle(brewPal.dim)
                 }
             }
         }
@@ -63,23 +63,23 @@ private struct PowerCard: View {
 
 // MARK: - Grinder
 
-private struct GrinderCard: View {
+private struct BrewGrinderCard: View {
     private var model: BrewModel { BrewModel.shared }
 
     var body: some View {
         let card = LiveModel.shared.screen?.home.card
         BrewCard {
             VStack(alignment: .leading, spacing: 6) {
-                Text("GRINDER").font(.subheadline).foregroundStyle(pal.dim)
-                Text(card?.grind ?? "").font(.title3.weight(.semibold)).foregroundStyle(pal.text)
+                Text("GRINDER").font(.subheadline).foregroundStyle(brewPal.dim)
+                Text(card?.grind ?? "").font(.title3.weight(.semibold)).foregroundStyle(brewPal.text)
                 if let advice = card?.advice, !advice.isEmpty {
-                    Text(advice).foregroundStyle(pal.color(forTone: card?.adviceTone))
+                    Text(advice).foregroundStyle(brewPal.color(forTone: card?.adviceTone))
                 }
                 if let grind = model.grind, grind.checkPrep, !grind.checkPrepWhy.isEmpty {
-                    Text(grind.checkPrepWhy).font(.footnote).foregroundStyle(pal.dim)
+                    Text(grind.checkPrepWhy).font(.footnote).foregroundStyle(brewPal.dim)
                 }
                 if let age = card?.roastAge, !age.isEmpty {
-                    Text(age).font(.footnote).foregroundStyle(pal.dim)
+                    Text(age).font(.footnote).foregroundStyle(brewPal.dim)
                 }
             }
         }
@@ -88,7 +88,7 @@ private struct GrinderCard: View {
 }
 
 /// What the grinder advice was right after the most recent shot, as the web page words it.
-private struct PreviousAdviceCard: View {
+private struct BrewPreviousAdviceCard: View {
     private var model: BrewModel { BrewModel.shared }
 
     private var title: String? {
@@ -112,9 +112,9 @@ private struct PreviousAdviceCard: View {
         if model.lastShot != nil {
             BrewCard {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("PREVIOUS ADVICE").font(.subheadline).foregroundStyle(pal.dim)
+                    Text("PREVIOUS ADVICE").font(.subheadline).foregroundStyle(brewPal.dim)
                     Text(title ?? "No grinder recommendation was recorded for the most recent shot.")
-                        .foregroundStyle(title == nil ? pal.dim : pal.text)
+                        .foregroundStyle(title == nil ? brewPal.dim : brewPal.text)
                 }
             }
             .accessibilityIdentifier("previousAdviceCard")
@@ -124,7 +124,7 @@ private struct PreviousAdviceCard: View {
 
 // MARK: - Most recent shot
 
-private struct LastShotCard: View {
+private struct BrewLastShotCard: View {
     var data: ShotDataModel
     private var model: BrewModel { BrewModel.shared }
     @State private var tdsText = ""
@@ -136,20 +136,20 @@ private struct LastShotCard: View {
         let shot = data.shot
         BrewCard {
             VStack(alignment: .leading, spacing: 10) {
-                Text("MOST RECENT SHOT").font(.subheadline).foregroundStyle(pal.dim)
-                Text(summary(shot)).foregroundStyle(pal.text).accessibilityIdentifier("lastShotSummary")
+                Text("MOST RECENT SHOT").font(.subheadline).foregroundStyle(brewPal.dim)
+                Text(summary(shot)).foregroundStyle(brewPal.text).accessibilityIdentifier("lastShotSummary")
                 if data.points.count > 1 {
                     Chart {
                         ForEach(Array(data.points.enumerated()), id: \.offset) { _, point in
                             LineMark(x: .value("s", point.time), y: .value("g", point.weight))
-                                .foregroundStyle(pal.ok)
+                                .foregroundStyle(brewPal.ok)
                         }
                     }
                     .frame(height: 120)
                     .accessibilityIdentifier("lastShotChart")
                 }
                 Text("Average flow \(BrewFormat.flowUnit(shot.averageFlowGS))")
-                    .font(.footnote).foregroundStyle(pal.dim)
+                    .font(.footnote).foregroundStyle(brewPal.dim)
                 stars(shot)
                 Picker("Taste", selection: Binding(
                     get: { Self.tastes.firstIndex(of: shot.taste) ?? 0 },
@@ -170,7 +170,7 @@ private struct LastShotCard: View {
                     .accessibilityIdentifier("tdsSave")
                 }
                 if let tds = shot.tdsPct {
-                    Text(tdsLine(tds, shot.extractionPct)).font(.footnote).foregroundStyle(pal.dim)
+                    Text(tdsLine(tds, shot.extractionPct)).font(.footnote).foregroundStyle(brewPal.dim)
                 }
             }
         }
@@ -198,44 +198,44 @@ private struct LastShotCard: View {
                     Task { await model.rate(shotId: shot.id, rating: shot.rating == n ? 0 : n, taste: Self.tastes.firstIndex(of: shot.taste) ?? 0) }
                 } label: {
                     Image(systemName: n <= shot.rating ? "star.fill" : "star")
-                        .font(.title2).foregroundStyle(pal.accent)
+                        .font(.title2).foregroundStyle(brewPal.accent)
                 }
                 .accessibilityLabel("\(n) star\(n > 1 ? "s" : "")")
                 .accessibilityIdentifier("star-\(n)")
             }
-            if shot.rating == 0 { Text("tap to rate").font(.footnote).foregroundStyle(pal.dim) }
+            if shot.rating == 0 { Text("tap to rate").font(.footnote).foregroundStyle(brewPal.dim) }
         }
     }
 }
 
 // MARK: - For you, Community
 
-private struct ForYouCard: View {
-    var reco: TasteRecommendation
+private struct BrewForYouCard: View {
+    var reco: BrewTasteRecommendation
 
     var body: some View {
         BrewCard {
             VStack(alignment: .leading, spacing: 8) {
-                Text("FOR YOU").font(.subheadline).foregroundStyle(pal.dim)
+                Text("FOR YOU").font(.subheadline).foregroundStyle(brewPal.dim)
                 if reco.shown != true {
                     Text("Rate \(max(1, 3 - (reco.coffees ?? 0))) more coffee\(max(1, 3 - (reco.coffees ?? 0)) == 1 ? "" : "s") on the Coffees tab and recommendations appear here.")
-                        .font(.footnote).foregroundStyle(pal.dim)
+                        .font(.footnote).foregroundStyle(brewPal.dim)
                 } else if let items = reco.items, !items.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.name ?? "").font(.subheadline.weight(.semibold)).foregroundStyle(pal.text)
+                                    Text(item.name ?? "").font(.subheadline.weight(.semibold)).foregroundStyle(brewPal.text)
                                     Text([item.roaster, item.origin].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
-                                        .font(.caption).foregroundStyle(pal.dim)
+                                        .font(.caption).foregroundStyle(brewPal.dim)
                                 }
                                 .padding(10)
-                                .background(pal.track, in: RoundedRectangle(cornerRadius: 10))
+                                .background(brewPal.track, in: RoundedRectangle(cornerRadius: 10))
                             }
                         }
                     }
                 } else {
-                    Text("Nothing new to recommend yet.").font(.footnote).foregroundStyle(pal.dim)
+                    Text("Nothing new to recommend yet.").font(.footnote).foregroundStyle(brewPal.dim)
                 }
             }
         }
@@ -243,25 +243,25 @@ private struct ForYouCard: View {
     }
 }
 
-private struct CommunityCard: View {
-    var info: CommunityInfo
+private struct BrewCommunityCard: View {
+    var info: BrewCommunityInfo
     private var model: BrewModel { BrewModel.shared }
 
     var body: some View {
         BrewCard {
             VStack(alignment: .leading, spacing: 6) {
-                Text("COMMUNITY").font(.subheadline).foregroundStyle(pal.dim)
+                Text("COMMUNITY").font(.subheadline).foregroundStyle(brewPal.dim)
                 Text("\(info.contributors ?? 0) people, \(info.dialins ?? 0) dial-ins")
-                    .foregroundStyle(pal.text)
+                    .foregroundStyle(brewPal.text)
                 if let time = info.timeS, time > 0 {
-                    Text("Usual brew time \(BrewFormat.secondsUnit(time))").foregroundStyle(pal.text)
+                    Text("Usual brew time \(BrewFormat.secondsUnit(time))").foregroundStyle(brewPal.text)
                 }
                 if let dose = info.theirDoseG, let out = info.theirYieldG, dose > 0 {
                     Text("Their recipe \(BrewFormat.decimal(dose, 1)) g in, \(BrewFormat.decimal(out, 1)) g out")
-                        .foregroundStyle(pal.text)
+                        .foregroundStyle(brewPal.text)
                 }
                 if let setting = info.start?.setting, setting > 0 {
-                    Text("Start at \(model.dial.settingUnit(setting))").foregroundStyle(pal.accent)
+                    Text("Start at \(model.dial.settingUnit(setting))").foregroundStyle(brewPal.accent)
                 }
             }
             .font(.subheadline)

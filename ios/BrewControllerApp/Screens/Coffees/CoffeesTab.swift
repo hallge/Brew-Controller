@@ -1,8 +1,9 @@
-// Placeholder tab; the real screen replaces this file's body (see ios/BrewControllerApp/Screens/Coffees/).
+// Placeholder: the real screen replaces this file (same path, same type name). The shell wraps it in a
+// NavigationStack, so do not create one here.
 import SwiftUI
 
 struct CoffeesTab: View {
     var body: some View {
-        ComingSoonView(title: "Coffees")
+        Text("Coming soon")
     }
 }

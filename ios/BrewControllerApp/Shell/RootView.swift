@@ -26,12 +26,12 @@ struct RootView: View {
         ZStack {
             theme.palette.bg.ignoresSafeArea()
             if showsTabs {
-                MainTabs()
+                BrewMainTabs()
             } else {
-                OnboardingFlow()
+                BrewOnboardingFlow()
             }
             if lifecycle.restartPending {
-                RestartView()
+                BrewRestartView()
             }
             if lifecycle.isDimmed {
                 // The board dims an idle screen; any touch brings it back (`brewTracksActivity`).
@@ -49,22 +49,22 @@ struct RootView: View {
     }
 }
 
-/// Brew · Shots · Coffees · Grinder · More. Only Brew is built; the others are placeholders that later
-/// work replaces, each in its own folder (Screens/<Name>/).
-struct MainTabs: View {
+/// Brew · Shots · Coffees · Grinder · More, each root in its own NavigationStack. Only Brew is built;
+/// the others are placeholders that later work replaces, each in its own folder (Screens/<Name>/).
+struct BrewMainTabs: View {
     @State private var theme = BrewTheme.shared
 
     var body: some View {
         TabView {
-            BrewTab()
+            NavigationStack { BrewTab().toolbar(.hidden, for: .navigationBar) }
                 .tabItem { Label("Brew", systemImage: "cup.and.saucer.fill") }
-            ShotsTab()
+            NavigationStack { ShotsTab() }
                 .tabItem { Label("Shots", systemImage: "list.bullet.rectangle") }
-            CoffeesTab()
+            NavigationStack { CoffeesTab() }
                 .tabItem { Label("Coffees", systemImage: "leaf.fill") }
-            GrinderTab()
+            NavigationStack { GrinderTab() }
                 .tabItem { Label("Grinder", systemImage: "gearshape.2.fill") }
-            MoreTab()
+            NavigationStack { BrewMoreTab() }
                 .tabItem { Label("More", systemImage: "ellipsis.circle") }
         }
         .tint(theme.palette.accent)
@@ -74,12 +74,12 @@ struct MainTabs: View {
 
 /// "Restored, tap to restart": the firmware cannot run its set-up twice, so the app ends itself and a
 /// notification offers the way back (AppLifecycle.confirmRestart).
-struct RestartView: View {
+struct BrewRestartView: View {
     @State private var lifecycle = AppLifecycle.shared
 
     var body: some View {
         ZStack {
-            pal.bg.ignoresSafeArea()
+            brewPal.bg.ignoresSafeArea()
             Button {
                 Task { await lifecycle.confirmRestart() }
             } label: {
@@ -87,8 +87,8 @@ struct RestartView: View {
                     .font(.title2.weight(.semibold))
                     .padding(24)
                     .frame(maxWidth: .infinity)
-                    .background(pal.accent, in: RoundedRectangle(cornerRadius: 16))
-                    .foregroundStyle(pal.bg)
+                    .background(brewPal.accent, in: RoundedRectangle(cornerRadius: 16))
+                    .foregroundStyle(brewPal.bg)
                     .padding(24)
             }
             .accessibilityIdentifier("restartButton")

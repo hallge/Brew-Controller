@@ -4,7 +4,7 @@ import SwiftUI
 
 // MARK: - Recipes
 
-struct RecipePickerView: View {
+struct BrewRecipePickerView: View {
     @Environment(\.dismiss) private var dismiss
     private var model: BrewModel { BrewModel.shared }
 
@@ -39,7 +39,7 @@ struct RecipePickerView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                pal.bg.ignoresSafeArea()
+                brewPal.bg.ignoresSafeArea()
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(entries) { entry in
@@ -54,16 +54,16 @@ struct RecipePickerView: View {
                                     Text(entry.first).font(.headline)
                                     Text(entry.second).font(.subheadline)
                                 }
-                                .foregroundStyle(active ? pal.accent : pal.text)
+                                .foregroundStyle(active ? brewPal.accent : brewPal.text)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(12)
-                                .background(active ? pal.select : pal.panel, in: RoundedRectangle(cornerRadius: 10))
+                                .background(active ? brewPal.select : brewPal.panel, in: RoundedRectangle(cornerRadius: 10))
                             }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("recipeRow-\(entry.index)")
                         }
                         if entries.isEmpty {
-                            Text("No recipes yet.").foregroundStyle(pal.dim).padding()
+                            Text("No recipes yet.").foregroundStyle(brewPal.dim).padding()
                         }
                     }
                     .padding(16)
@@ -88,7 +88,7 @@ struct RecipePickerView: View {
 
 // MARK: - Coffee details
 
-struct CoffeeDetailsView: View {
+struct BrewCoffeeDetailsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var asking = false
     private var model: BrewModel { BrewModel.shared }
@@ -127,14 +127,14 @@ struct CoffeeDetailsView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                pal.bg.ignoresSafeArea()
+                brewPal.bg.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(title).font(.title2.weight(.semibold)).foregroundStyle(pal.accent)
+                            Text(title).font(.title2.weight(.semibold)).foregroundStyle(brewPal.accent)
                                 .accessibilityIdentifier("coffeeTitle")
                             if !subtitle.isEmpty {
-                                Text(subtitle).foregroundStyle(pal.text)
+                                Text(subtitle).foregroundStyle(brewPal.text)
                             }
                         }
                         BrewCard {
@@ -143,12 +143,12 @@ struct CoffeeDetailsView: View {
                                     Text(model.activeCoffee == nil
                                          ? "No coffee is attached to this recipe.\nAdd one on the Coffees tab."
                                          : "Nothing more is known about this coffee.\nAdd details on the Coffees tab.")
-                                        .foregroundStyle(pal.dim)
+                                        .foregroundStyle(brewPal.dim)
                                 }
                                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                                     HStack(alignment: .top) {
-                                        Text(row.0).foregroundStyle(pal.dim).frame(width: 100, alignment: .leading)
-                                        Text(row.1).foregroundStyle(pal.text)
+                                        Text(row.0).foregroundStyle(brewPal.dim).frame(width: 100, alignment: .leading)
+                                        Text(row.1).foregroundStyle(brewPal.text)
                                         Spacer(minLength: 0)
                                     }
                                 }

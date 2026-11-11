@@ -5,7 +5,7 @@
 // STOP is `bbw_command`, straight away, never behind a request.
 import SwiftUI
 
-struct LiveShotPanel: View {
+struct BrewLiveShotPanel: View {
     var screen: ScreenSnapshot
     @State private var confirmStop = false
 
@@ -31,8 +31,8 @@ struct LiveShotPanel: View {
     }
 
     private var ringColor: Color {
-        if !running { return pal.track }
-        return live.firstDropSeen ? pal.ok : pal.bad
+        if !running { return brewPal.track }
+        return live.firstDropSeen ? brewPal.ok : brewPal.bad
     }
 
     /// The scale's own timer when it is valid, so the two displays agree.
@@ -49,13 +49,13 @@ struct LiveShotPanel: View {
         ScrollView {
             VStack(spacing: 20) {
                 ZStack {
-                    ShotRing(progress: running && live.firstDropSeen ? progress : (running ? 1 : 0),
-                             color: ringColor, track: pal.track)
+                    BrewShotRing(progress: running && live.firstDropSeen ? progress : (running ? 1 : 0),
+                             color: ringColor, track: brewPal.track)
                         .accessibilityIdentifier("shotRing")
                     Text(showsWeight ? BrewFormat.grams(live.weightG) : BrewFormat.grams(live.targetWeightG))
                         .font(.system(size: 64, weight: .semibold, design: .rounded))
                         .monospacedDigit()
-                        .foregroundStyle(showsWeight ? pal.ok : pal.dim)
+                        .foregroundStyle(showsWeight ? brewPal.ok : brewPal.dim)
                         .minimumScaleFactor(0.5)
                         .accessibilityIdentifier("weightLabel")
                 }
@@ -65,17 +65,17 @@ struct LiveShotPanel: View {
                     Text(phase)
                         .font(.headline)
                         .multilineTextAlignment(.center)
-                        .foregroundStyle(pal.color(forTone: screen.brew?.phaseTone))
+                        .foregroundStyle(brewPal.color(forTone: screen.brew?.phaseTone))
                         .accessibilityIdentifier("phaseLabel")
                     Text(BrewFormat.clock(clock) + " s")
                         .font(.system(size: 40, weight: .semibold, design: .rounded)).monospacedDigit()
-                        .foregroundStyle(pal.text)
+                        .foregroundStyle(brewPal.text)
                         .accessibilityIdentifier("timeLabel")
                     Text("/ \(BrewFormat.grams(live.targetWeightG)) g")
-                        .font(.title3).foregroundStyle(pal.dim)
+                        .font(.title3).foregroundStyle(brewPal.dim)
                         .accessibilityIdentifier("targetLabel")
                     Text(BrewFormat.flowUnit(live.flowGS))
-                        .font(.title3).foregroundStyle(pal.text)
+                        .font(.title3).foregroundStyle(brewPal.text)
                         .accessibilityIdentifier("flowLabel")
                 }
 

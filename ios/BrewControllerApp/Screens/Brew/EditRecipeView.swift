@@ -5,7 +5,7 @@
 import SwiftUI
 
 /// The values on the edit screen. Works on a copy; SAVE sends it.
-struct RecipeDraft: Equatable, Sendable {
+struct BrewRecipeDraft: Equatable, Sendable {
     var useRatio = false
     var ratio: Double = 2
     var targetG: Double = 36
@@ -137,15 +137,15 @@ struct RecipeDraft: Equatable, Sendable {
     }
 }
 
-struct EditRecipeView: View {
+struct BrewEditRecipeView: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var draft: RecipeDraft
+    @State private var draft: BrewRecipeDraft
     @State private var field: Int
     @State private var saving = false
     private let index: Int
     private var model: BrewModel { BrewModel.shared }
 
-    init(index: Int, draft: RecipeDraft, field: Int = RecipeDraft.grindField) {
+    init(index: Int, draft: BrewRecipeDraft, field: Int = BrewRecipeDraft.grindField) {
         self.index = index
         _draft = State(initialValue: draft)
         _field = State(initialValue: field)
@@ -153,34 +153,34 @@ struct EditRecipeView: View {
 
     var body: some View {
         let text = draft.describe(field: field, dial: model.dial, advice: model.grind)
-        let advised = RecipeDraft.advisedSetting(model.grind)
+        let advised = BrewRecipeDraft.advisedSetting(model.grind)
         ZStack {
-            pal.bg.ignoresSafeArea()
+            brewPal.bg.ignoresSafeArea()
             ScrollView {
                 VStack(spacing: 14) {
                     HStack(spacing: 8) {
-                        ForEach(0..<RecipeDraft.fieldTitles.count, id: \.self) { i in
+                        ForEach(0..<BrewRecipeDraft.fieldTitles.count, id: \.self) { i in
                             Button {
                                 field = i
                             } label: {
-                                Text(i == 0 && draft.useRatio ? "RATIO" : RecipeDraft.fieldTitles[i])
+                                Text(i == 0 && draft.useRatio ? "RATIO" : BrewRecipeDraft.fieldTitles[i])
                                     .font(.caption.weight(.semibold))
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.6)
                             }
-                            .buttonStyle(FieldKeyStyle(selected: i == field))
+                            .buttonStyle(BrewFieldKeyStyle(selected: i == field))
                             .accessibilityIdentifier("editField-\(i)")
                         }
                     }
                     BrewCard {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(text.title).font(.subheadline).foregroundStyle(pal.dim)
+                            Text(text.title).font(.subheadline).foregroundStyle(brewPal.dim)
                                 .accessibilityIdentifier("editTitle")
                             Text(text.value).font(.system(size: 40, weight: .semibold, design: .rounded))
-                                .foregroundStyle(pal.text)
+                                .foregroundStyle(brewPal.text)
                                 .minimumScaleFactor(0.5).lineLimit(2)
                                 .accessibilityIdentifier("editValue")
-                            Text(text.hint).font(.subheadline).foregroundStyle(pal.dim)
+                            Text(text.hint).font(.subheadline).foregroundStyle(brewPal.dim)
                                 .accessibilityIdentifier("editHint")
                         }
                     }
@@ -188,7 +188,7 @@ struct EditRecipeView: View {
                         stepKey("minus", -1)
                         stepKey("plus", +1)
                     }
-                    if field == RecipeDraft.grindField, let advised, advised != draft.grindUm {
+                    if field == BrewRecipeDraft.grindField, let advised, advised != draft.grindUm {
                         Button("SET \(model.dial.settingUnit(advised))") { draft.grindUm = advised }
                             .buttonStyle(BrewKeyStyle(kind: .accent))
                             .accessibilityIdentifier("editSetAdvice")
@@ -223,9 +223,9 @@ struct EditRecipeView: View {
     private func stepKey(_ name: String, _ direction: Int) -> some View {
         Image(systemName: name)
             .font(.title.weight(.bold))
-            .foregroundStyle(pal.text)
+            .foregroundStyle(brewPal.text)
             .frame(maxWidth: .infinity, minHeight: 72)
-            .background(pal.panel, in: RoundedRectangle(cornerRadius: 14))
+            .background(brewPal.panel, in: RoundedRectangle(cornerRadius: 14))
             .contentShape(RoundedRectangle(cornerRadius: 14))
             .onTapGesture { draft.step(field: field, direction: direction, held: false) }
             .onLongPressGesture(minimumDuration: 0.5) { draft.step(field: field, direction: direction, held: true) }
@@ -238,7 +238,7 @@ struct EditRecipeView: View {
 }
 
 /// One of the field keys across the top of the edit panel; the open one is highlighted.
-private struct FieldKeyStyle: ButtonStyle {
+private struct BrewFieldKeyStyle: ButtonStyle {
     var selected: Bool
 
     @MainActor

@@ -6,65 +6,6 @@
 import Foundation
 import Observation
 
-// MARK: - Small answers the Brew tab reads (decoded leniently: every field optional)
-
-/// One entry of GET /api/contexts?limit=1: the grind advice recorded with a shot.
-struct PreviousAdvice: Decodable, Sendable, Equatable {
-    var shotId: Int?
-    var adviceAction: String?
-    var adviceUm: Int?
-    var adviceDeltaUm: Int?
-    var adviceRefined: Bool?
-    var adviceShots: Int?
-
-    enum CodingKeys: String, CodingKey {
-        case shotId = "shot_id", adviceAction = "advice_action", adviceUm = "advice_um"
-        case adviceDeltaUm = "advice_delta_um", adviceRefined = "advice_refined", adviceShots = "advice_shots"
-    }
-}
-
-/// GET /api/community?coffee=&recipe= (Web.cpp handleCommunity).
-struct CommunityInfo: Decodable, Sendable, Equatable {
-    struct Start: Decodable, Sendable, Equatable {
-        var basis: String?
-        var setting: Int?
-        var range: Int?
-    }
-
-    var reachable: Bool?
-    var found: Bool?
-    var contributors: Int?
-    var dialins: Int?
-    var timeS: Double?
-    var finenessUm: Double?
-    var axisRelative: Bool?
-    var recipeMatch: String?
-    var theirDoseG: Double?
-    var theirYieldG: Double?
-    var start: Start?
-
-    enum CodingKeys: String, CodingKey {
-        case reachable, found, contributors, dialins, start
-        case timeS = "time_s", finenessUm = "fineness_um", axisRelative = "axis_relative"
-        case recipeMatch = "recipe_match", theirDoseG = "their_dose_g", theirYieldG = "their_yield_g"
-    }
-}
-
-/// GET /api/taste/recommend (the web page's "For you").
-struct TasteRecommendation: Decodable, Sendable, Equatable {
-    struct Item: Decodable, Sendable, Equatable {
-        var name: String?
-        var roaster: String?
-        var origin: String?
-        var from: String?
-        var why: [String]?
-    }
-
-    var shown: Bool?
-    var coffees: Int?
-    var items: [Item]?
-}
-
 // MARK: - Model
 
 @MainActor
@@ -79,9 +20,9 @@ final class BrewModel {
     private(set) var status: StatusModel?
     /// The most recent shot with its curve.
     private(set) var lastShot: ShotDataModel?
-    private(set) var previous: PreviousAdvice?
-    private(set) var community: CommunityInfo?
-    private(set) var forYou: TasteRecommendation?
+    private(set) var previous: BrewPreviousAdvice?
+    private(set) var community: BrewCommunityInfo?
+    private(set) var forYou: BrewTasteRecommendation?
     /// A message for an alert (an action the controller refused).
     var errorMessage: String?
 
@@ -138,7 +79,7 @@ final class BrewModel {
         let live = LiveModel.shared.live
         guard !live.isShotInHand, live.lastShotID != 0 else { return }
         if let data = try? await api.shotData(id: Int(live.lastShotID)) { lastShot = data }
-        if let list: [PreviousAdvice] = try? await api.get("/api/contexts", query: ["limit": "1"]) {
+        if let list: [BrewPreviousAdvice] = try? await api.get("/api/contexts", query: ["limit": "1"]) {
             previous = list.first
         }
     }
@@ -148,12 +89,12 @@ final class BrewModel {
         if let preset = activePreset, preset.coffeeId != 0, preset.recipeId != 0 {
             community = try? await api.get("/api/community",
                                            query: ["coffee": String(preset.coffeeId), "recipe": String(preset.recipeId)],
-                                           as: CommunityInfo.self)
+                                           as: BrewCommunityInfo.self)
         } else {
             community = nil
         }
         if discoverOn {
-            forYou = try? await api.get("/api/taste/recommend", as: TasteRecommendation.self)
+            forYou = try? await api.get("/api/taste/recommend", as: BrewTasteRecommendation.self)
         } else {
             forYou = nil
         }
@@ -189,7 +130,7 @@ final class BrewModel {
     }
 
     /// The edit screen's SAVE.
-    func saveEdit(_ draft: RecipeDraft, index: Int) async -> Bool {
+    func saveEdit(_ draft: BrewRecipeDraft, index: Int) async -> Bool {
         let api = self.api
         let args = draft.arguments(index: index)
         return await perform { _ = try await api.screenAction("apply_preset_edit", args) }
@@ -206,7 +147,7 @@ final class BrewModel {
     func answerGrind(use: Bool) async -> Int? {
         let api = self.api
         var editUm: Int?
-        let box = ResultBox()
+        let box = BrewResultBox()
         let ok = await perform {
             let response = try await api.screenAction("answer_grind_reco", ["use": use ? "true" : "false"])
             if let object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
@@ -279,6 +220,6 @@ final class BrewModel {
 }
 
 /// Carries a value out of a @Sendable closure.
-private final class ResultBox: @unchecked Sendable {
+private final class BrewResultBox: @unchecked Sendable {
     var value: Int?
 }

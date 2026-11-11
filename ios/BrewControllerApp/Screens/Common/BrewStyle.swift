@@ -4,7 +4,7 @@ import SwiftUI
 
 extension View {
     /// The colours in effect (the controller's scheme, or the iPhone's appearance).
-    @MainActor var pal: BrewPalette { BrewTheme.shared.palette }
+    @MainActor var brewPal: BrewPalette { BrewTheme.shared.palette }
 }
 
 /// A key as the board draws it: a filled, rounded block with one label.
@@ -60,7 +60,7 @@ struct BrewDot: View {
 
 /// The arc that fills to the target: grey before the pump runs, red while it runs into an empty
 /// cup, green from the first drop.
-struct ShotRing: View {
+struct BrewShotRing: View {
     var progress: Double
     var color: Color
     var track: Color

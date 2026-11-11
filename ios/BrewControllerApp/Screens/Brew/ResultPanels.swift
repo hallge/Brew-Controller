@@ -5,7 +5,7 @@ import SwiftUI
 
 // MARK: - Result
 
-struct ResultPanel: View {
+struct BrewResultPanel: View {
     var screen: ScreenSnapshot
     var onGrinder: () -> Void
     @State private var acked = false
@@ -20,21 +20,21 @@ struct ResultPanel: View {
                     VStack(alignment: .leading, spacing: 8) {
                         if let top = result.top {
                             Text(top).font(.title2.weight(.semibold))
-                                .foregroundStyle(pal.color(forTone: result.topTone))
+                                .foregroundStyle(brewPal.color(forTone: result.topTone))
                                 .accessibilityIdentifier("resultTop")
                         }
                         if let weight = result.weight {
                             Text(weight).font(.system(size: 52, weight: .semibold, design: .rounded))
-                                .foregroundStyle(pal.text).minimumScaleFactor(0.5)
+                                .foregroundStyle(brewPal.text).minimumScaleFactor(0.5)
                                 .accessibilityIdentifier("resultWeight")
                         }
                         if let line1 = result.line1 {
-                            Text(line1).font(.body).foregroundStyle(pal.text)
+                            Text(line1).font(.body).foregroundStyle(brewPal.text)
                                 .accessibilityIdentifier("resultTimes")
                         }
                         if let detail = result.line2.first {
                             // The firmware gives the wordings longest first; the phone has room for the longest.
-                            Text(detail).font(.body).foregroundStyle(pal.dim)
+                            Text(detail).font(.body).foregroundStyle(brewPal.dim)
                                 .accessibilityIdentifier("resultDetail")
                         }
                     }
@@ -42,17 +42,17 @@ struct ResultPanel: View {
                 if result.review {
                     BrewCard {
                         Text(result.reviewText ?? result.reviewTextShort ?? "")
-                            .foregroundStyle(pal.accent)
+                            .foregroundStyle(brewPal.accent)
                             .accessibilityIdentifier("resultReview")
                     }
                 } else if let grind = result.grind {
                     BrewCard {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(grind).font(.title3.weight(.semibold))
-                                .foregroundStyle(pal.color(forTone: result.grindTone))
+                                .foregroundStyle(brewPal.color(forTone: result.grindTone))
                                 .accessibilityIdentifier("resultGrind")
                             if let sub = result.grindSub, !sub.isEmpty {
-                                Text(sub).foregroundStyle(pal.dim)
+                                Text(sub).foregroundStyle(brewPal.dim)
                             }
                         }
                     }
@@ -110,7 +110,7 @@ struct ResultPanel: View {
 
 // MARK: - Fault
 
-struct FaultPanel: View {
+struct BrewFaultPanel: View {
     var screen: ScreenSnapshot
 
     var body: some View {
@@ -119,9 +119,9 @@ struct FaultPanel: View {
             VStack(alignment: .leading, spacing: 16) {
                 BrewCard {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text(fault.title).font(.title2.weight(.bold)).foregroundStyle(pal.bad)
+                        Text(fault.title).font(.title2.weight(.bold)).foregroundStyle(brewPal.bad)
                             .accessibilityIdentifier("faultTitle")
-                        Text(fault.message).foregroundStyle(pal.text)
+                        Text(fault.message).foregroundStyle(brewPal.text)
                             .accessibilityIdentifier("faultMessage")
                     }
                 }
@@ -144,7 +144,7 @@ struct FaultPanel: View {
 // MARK: - Grind prompt
 
 /// NEW GRIND ADVICE, SET THE GRIND and GRIND REMINDER: one panel, three kinds.
-struct GrindPromptPanel: View {
+struct BrewGrindPromptPanel: View {
     var screen: ScreenSnapshot
     /// SET on the no-grind question opens the editor on the grind, at this setting.
     var onEditGrind: (Int) -> Void
@@ -155,12 +155,12 @@ struct GrindPromptPanel: View {
             VStack(alignment: .leading, spacing: 16) {
                 BrewCard {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text(prompt.title).font(.headline).foregroundStyle(pal.dim)
+                        Text(prompt.title).font(.headline).foregroundStyle(brewPal.dim)
                             .accessibilityIdentifier("grindPromptTitle")
                         Text(prompt.setting).font(.system(size: 40, weight: .semibold, design: .rounded))
-                            .foregroundStyle(pal.accent).minimumScaleFactor(0.5)
+                            .foregroundStyle(brewPal.accent).minimumScaleFactor(0.5)
                             .accessibilityIdentifier("grindPromptSetting")
-                        Text(prompt.why).foregroundStyle(pal.text)
+                        Text(prompt.why).foregroundStyle(brewPal.text)
                             .accessibilityIdentifier("grindPromptWhy")
                     }
                 }

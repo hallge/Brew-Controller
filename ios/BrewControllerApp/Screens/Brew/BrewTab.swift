@@ -5,7 +5,7 @@ import SwiftUI
 import UIKit
 
 /// Where the edit sheet opens: which field, and a grind setting to start from (the no-grind question's SET).
-struct EditRoute: Identifiable {
+struct BrewEditRoute: Identifiable {
     let id = UUID()
     var field: Int
     var grindUm: Int?
@@ -14,7 +14,7 @@ struct EditRoute: Identifiable {
 struct BrewTab: View {
     @State private var showRecipes = false
     @State private var showCoffee = false
-    @State private var edit: EditRoute?
+    @State private var edit: BrewEditRoute?
 
     private var live: LiveModel { LiveModel.shared }
     private var model: BrewModel { BrewModel.shared }
@@ -28,21 +28,21 @@ struct BrewTab: View {
 
     var body: some View {
         ZStack {
-            pal.bg.ignoresSafeArea()
+            brewPal.bg.ignoresSafeArea()
             if let screen = live.screen {
                 panel(screen)
             } else {
                 VStack(spacing: 12) {
-                    ProgressView().tint(pal.accent)
+                    ProgressView().tint(brewPal.accent)
                     Text(live.screenError?.message ?? "Starting the controller…")
-                        .foregroundStyle(pal.dim)
+                        .foregroundStyle(brewPal.dim)
                         .accessibilityIdentifier("brewStarting")
                 }
             }
         }
         .task(id: refreshKey) { await model.refreshAll() }
-        .sheet(isPresented: $showRecipes) { RecipePickerView() }
-        .sheet(isPresented: $showCoffee) { CoffeeDetailsView() }
+        .sheet(isPresented: $showRecipes) { BrewRecipePickerView() }
+        .sheet(isPresented: $showCoffee) { BrewCoffeeDetailsView() }
         .sheet(item: $edit) { route in editSheet(route) }
         .onChange(of: live.live.stateNumber) { _, new in
             // The haptics of the phone: a firm tap when the shot is stopped, a success buzz when it is done.
@@ -64,26 +64,26 @@ struct BrewTab: View {
     @ViewBuilder private func panel(_ screen: ScreenSnapshot) -> some View {
         switch screen.panelKind {
         case .home:
-            HomePanel(screen: screen, onRecipes: { showRecipes = true }, onEdit: { openEdit(field: RecipeDraft.grindField) },
+            BrewHomePanel(screen: screen, onRecipes: { showRecipes = true }, onEdit: { openEdit(field: BrewRecipeDraft.grindField) },
                       onCoffee: { showCoffee = true })
         case .brew:
-            LiveShotPanel(screen: screen)
+            BrewLiveShotPanel(screen: screen)
         case .result:
-            ResultPanel(screen: screen, onGrinder: { openEdit(field: RecipeDraft.grindField) })
+            BrewResultPanel(screen: screen, onGrinder: { openEdit(field: BrewRecipeDraft.grindField) })
         case .fault:
-            FaultPanel(screen: screen)
+            BrewFaultPanel(screen: screen)
         case .grindPrompt:
-            GrindPromptPanel(screen: screen, onEditGrind: { um in openEdit(field: RecipeDraft.grindField, grindUm: um) })
+            BrewGrindPromptPanel(screen: screen, onEditGrind: { um in openEdit(field: BrewRecipeDraft.grindField, grindUm: um) })
         }
     }
 
     private func openEdit(field: Int, grindUm: Int? = nil) {
-        edit = EditRoute(field: field, grindUm: grindUm)
+        edit = BrewEditRoute(field: field, grindUm: grindUm)
     }
 
-    @ViewBuilder private func editSheet(_ route: EditRoute) -> some View {
+    @ViewBuilder private func editSheet(_ route: BrewEditRoute) -> some View {
         if let library = model.library, let preset = library.activePresetEntry, let recipe = library.recipe(id: preset.recipeId) {
-            EditRecipeView(index: library.activePreset, draft: draft(route, preset, recipe, library.grinder), field: route.field)
+            BrewEditRecipeView(index: library.activePreset, draft: draft(route, preset, recipe, library.grinder), field: route.field)
         } else {
             VStack(spacing: 12) {
                 ProgressView()
@@ -93,8 +93,8 @@ struct BrewTab: View {
         }
     }
 
-    private func draft(_ route: EditRoute, _ preset: PresetModel, _ recipe: RecipeDefModel, _ grinder: GrinderModel) -> RecipeDraft {
-        var draft = RecipeDraft(preset: preset, recipe: recipe, grinder: grinder)
+    private func draft(_ route: BrewEditRoute, _ preset: PresetModel, _ recipe: RecipeDefModel, _ grinder: GrinderModel) -> BrewRecipeDraft {
+        var draft = BrewRecipeDraft(preset: preset, recipe: recipe, grinder: grinder)
         if let um = route.grindUm, um > 0 { draft.grindUm = um }
         return draft
     }

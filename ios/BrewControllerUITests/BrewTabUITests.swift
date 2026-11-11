@@ -17,7 +17,7 @@ final class BrewTabUITests: DemoUITestCase {
             XCTAssertTrue(app.tabBars.buttons[name].exists, "tab \(name)")
         }
         app.tabBars.buttons["Shots"].tap()
-        XCTAssertTrue(element("comingSoon-Shots").waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Coming soon"].waitForExistence(timeout: 5))
         app.tabBars.buttons["More"].tap()
         for name in ["Recipes", "Machine", "Insights", "Subscriptions", "Discover", "Community", "Devices", "Setup", "Logs"] {
             XCTAssertTrue(element("moreRow-\(name)").exists, "More row \(name)")

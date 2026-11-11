@@ -4,31 +4,31 @@
 import SwiftUI
 import UIKit
 
-struct OnboardingFlow: View {
+struct BrewOnboardingFlow: View {
     @State private var onboarding = Onboarding.shared
 
     var body: some View {
         ZStack {
-            pal.bg.ignoresSafeArea()
+            brewPal.bg.ignoresSafeArea()
             switch onboarding.step {
-            case .safetyNotice: SafetyNoticeView()
-            case .chooseMode: ChooseModeView()
-            case .bluetooth: BluetoothStepView()
-            case .diagnostics, .done: DiagnosticsStepView()
+            case .safetyNotice: BrewSafetyNoticeView()
+            case .chooseMode: BrewChooseModeView()
+            case .bluetooth: BrewBluetoothStepView()
+            case .diagnostics, .done: BrewDiagnosticsStepView()
             }
         }
         .accessibilityIdentifier("onboarding")
     }
 }
 
-private struct OnboardingPage<Content: View>: View {
+private struct BrewOnboardingPage<Content: View>: View {
     var title: String
     @ViewBuilder var content: Content
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text(title).font(.largeTitle.weight(.bold)).foregroundStyle(pal.text)
+                Text(title).font(.largeTitle.weight(.bold)).foregroundStyle(brewPal.text)
                 content
             }
             .padding(24)
@@ -37,15 +37,15 @@ private struct OnboardingPage<Content: View>: View {
     }
 }
 
-struct SafetyNoticeView: View {
+struct BrewSafetyNoticeView: View {
     var body: some View {
-        OnboardingPage(title: "Before you brew") {
+        BrewOnboardingPage(title: "Before you brew") {
             Group {
                 Text("Brew Controller is a hobby project, not a certified appliance. It presses a button on your espresso machine to stop a shot at a target weight. It has not been tested by any safety body and comes without warranty.")
                 Text("It is an aid to stopping at a weight, not a safety device. Be present while a shot runs: if the scale or the button pusher is lost, a machine that was started keeps running until you stop it by hand.")
                 Text("Check the first shots by hand before leaving it to itself.")
             }
-            .foregroundStyle(pal.text)
+            .foregroundStyle(brewPal.text)
             Button("I understand") { Onboarding.shared.acceptSafetyNotice() }
                 .buttonStyle(BrewKeyStyle(kind: .ok))
                 .accessibilityIdentifier("acceptSafetyButton")
@@ -54,11 +54,11 @@ struct SafetyNoticeView: View {
     }
 }
 
-struct ChooseModeView: View {
+struct BrewChooseModeView: View {
     var body: some View {
-        OnboardingPage(title: "Which devices?") {
+        BrewOnboardingPage(title: "Which devices?") {
             Text("Try the app with a simulated scale, button pusher and machine, or use your own devices.")
-                .foregroundStyle(pal.text)
+                .foregroundStyle(brewPal.text)
             Button("TRY THE DEMO") { Onboarding.shared.chooseMode(.demo) }
                 .buttonStyle(BrewKeyStyle(kind: .accent))
                 .accessibilityIdentifier("modeDemoButton")
@@ -70,16 +70,16 @@ struct ChooseModeView: View {
     }
 }
 
-struct BluetoothStepView: View {
+struct BrewBluetoothStepView: View {
     @State private var onboarding = Onboarding.shared
 
     var body: some View {
-        OnboardingPage(title: "Bluetooth") {
+        BrewOnboardingPage(title: "Bluetooth") {
             Text("The app talks to your scale and button pusher over Bluetooth. iOS asks for permission the first time.")
-                .foregroundStyle(pal.text)
+                .foregroundStyle(brewPal.text)
             if onboarding.bluetooth.needsSettings {
                 Text("Bluetooth is turned off for this app. Turn it on in Settings.")
-                    .foregroundStyle(pal.bad)
+                    .foregroundStyle(brewPal.bad)
                 Button("OPEN SETTINGS") {
                     if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
                 }
@@ -94,16 +94,16 @@ struct BluetoothStepView: View {
     }
 }
 
-struct DiagnosticsStepView: View {
+struct BrewDiagnosticsStepView: View {
     @State private var onboarding = Onboarding.shared
     @State private var sending = false
 
     var body: some View {
-        OnboardingPage(title: "Diagnostics") {
+        BrewOnboardingPage(title: "Diagnostics") {
             Text("Share anonymous diagnostic reports to help find problems? You can change this later.")
-                .foregroundStyle(pal.text)
+                .foregroundStyle(brewPal.text)
             if let error = onboarding.consentError {
-                Text(error.message).foregroundStyle(pal.bad)
+                Text(error.message).foregroundStyle(brewPal.bad)
             }
             Button("SHARE") { answer(true) }
                 .buttonStyle(BrewKeyStyle(kind: .accent))

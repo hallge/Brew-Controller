@@ -1,10 +1,10 @@
 // The board's HOME panel and the web page's Home: status line with the scale and bot dots, the recipe
 // card (tap for the recipe list), the hint or Start, Tare, Next recipe, Edit recipe and Coffee keys,
-// the alerts, and (HomeExtras.swift) machine power, grinder card, most recent shot, For you and
+// the alerts, and (BrewHomeExtras.swift) machine power, grinder card, most recent shot, For you and
 // Community. All words come from /api/screen.
 import SwiftUI
 
-struct HomePanel: View {
+struct BrewHomePanel: View {
     var screen: ScreenSnapshot
     var onRecipes: () -> Void
     var onEdit: () -> Void
@@ -22,7 +22,7 @@ struct HomePanel: View {
                 startArea(home)
                 keys
                 alerts
-                HomeExtras()
+                BrewHomeExtras()
             }
             .padding(16)
         }
@@ -35,7 +35,7 @@ struct HomePanel: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(home.status)
                 .font(.title3.weight(.semibold))
-                .foregroundStyle(pal.text)
+                .foregroundStyle(brewPal.text)
                 .accessibilityIdentifier("statusLine")
             HStack(spacing: 18) {
                 link("SCALE", dot: home.scaleDot, battery: home.scaleBattery, tone: home.scaleBatteryTone)
@@ -50,10 +50,10 @@ struct HomePanel: View {
 
     private func link(_ name: String, dot: String, battery: Int?, tone: String?) -> some View {
         HStack(spacing: 6) {
-            Text(name).font(.subheadline).foregroundStyle(pal.dim)
+            Text(name).font(.subheadline).foregroundStyle(brewPal.dim)
             BrewDot(tone: dot)
             if let battery {
-                Text("\(battery)%").font(.subheadline).foregroundStyle(pal.color(forTone: tone))
+                Text("\(battery)%").font(.subheadline).foregroundStyle(brewPal.color(forTone: tone))
             }
         }
         .accessibilityElement(children: .combine)
@@ -66,30 +66,30 @@ struct HomePanel: View {
             BrewCard {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .firstTextBaseline) {
-                        Text(card.name).font(.title2.weight(.semibold)).foregroundStyle(pal.accent)
+                        Text(card.name).font(.title2.weight(.semibold)).foregroundStyle(brewPal.accent)
                             .accessibilityIdentifier("cardName")
                         Spacer(minLength: 8)
-                        Image(systemName: "chevron.down").foregroundStyle(pal.dim)
+                        Image(systemName: "chevron.down").foregroundStyle(brewPal.dim)
                     }
                     Text(card.useRatio ? card.yieldRatio : card.yieldLine)
-                        .font(.title3).foregroundStyle(pal.text)
+                        .font(.title3).foregroundStyle(brewPal.text)
                         .accessibilityIdentifier("cardYield")
                     HStack(alignment: .top, spacing: 16) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(card.grind).foregroundStyle(pal.text)
+                            Text(card.grind).foregroundStyle(brewPal.text)
                             if !card.advice.isEmpty {
-                                Text(card.advice).foregroundStyle(pal.color(forTone: card.adviceTone))
+                                Text(card.advice).foregroundStyle(brewPal.color(forTone: card.adviceTone))
                             }
                         }
                         Spacer(minLength: 0)
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(card.pre).foregroundStyle(pal.text)
-                            Text(card.foot).foregroundStyle(pal.text)
+                            Text(card.pre).foregroundStyle(brewPal.text)
+                            Text(card.foot).foregroundStyle(brewPal.text)
                         }
                     }
                     .font(.body)
                     if !card.roastAge.isEmpty {
-                        Text(card.roastAge).font(.subheadline).foregroundStyle(pal.dim)
+                        Text(card.roastAge).font(.subheadline).foregroundStyle(brewPal.dim)
                     }
                 }
             }
@@ -105,7 +105,7 @@ struct HomePanel: View {
             if !home.hint.isEmpty {
                 Text(home.hint)
                     .font(.headline)
-                    .foregroundStyle(pal.color(forTone: home.hintTone))
+                    .foregroundStyle(brewPal.color(forTone: home.hintTone))
                     .multilineTextAlignment(.center)
                     .accessibilityIdentifier("hintLabel")
             }
@@ -155,10 +155,10 @@ struct HomePanel: View {
     private func alert(_ text: String, id: String) -> some View {
         Text(text)
             .font(.subheadline.weight(.semibold))
-            .foregroundStyle(pal.bg)
+            .foregroundStyle(brewPal.bg)
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(pal.bad, in: RoundedRectangle(cornerRadius: 12))
+            .background(brewPal.bad, in: RoundedRectangle(cornerRadius: 12))
             .accessibilityIdentifier(id)
     }
 }
