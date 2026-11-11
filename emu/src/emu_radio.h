@@ -7,8 +7,6 @@
 #include <string>
 #include <vector>
 
-class NimBLEClient;
-
 namespace emu {
 
 struct GattCharacteristic {
@@ -48,12 +46,11 @@ class Peripheral {
   void notify(const std::string &characteristic, const std::vector<uint8_t> &data,
               bool periodic = false);
   void dropLink(const char *why);  // peripheral side ends the connection
-  bool linked() const { return central_ != nullptr; }
+  bool linked() const { return link_ != 0; }
 
  private:
-  friend class Radio;
-  friend class ::NimBLEClient;
-  NimBLEClient *central_ = nullptr;
+  friend class VirtualRadio;
+  uint64_t link_ = 0;  // virtual-radio link id, 0 = not connected
 };
 
 void radioAdd(Peripheral *peripheral);
