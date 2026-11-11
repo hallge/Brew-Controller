@@ -3526,6 +3526,10 @@ static void testAddonGroundwork() {
     char p[64];
     CHECK(addon::addonFilePath("mill", "compare.csv", p, sizeof(p)) && strcmp(p, "/addons/mill/compare.csv") == 0);
     CHECK(addon::addonFilePath("mill", "compare_summary.csv", p, sizeof(p)));
+    CHECK(addon::addonFilePath("mill", "grinds.csv", p, sizeof(p)) && strcmp(p, "/addons/mill/grinds.csv") == 0);   // chart files
+    CHECK(addon::addonFilePath("mill", "grinds_old.csv", p, sizeof(p)));
+    CHECK(addon::addonFilePath("mill", "12345678901234567890", p, sizeof(p)));    // 20 characters
+    CHECK(!addon::addonFilePath("mill", "123456789012345678901", p, sizeof(p)));  // 21
     CHECK(!addon::addonFilePath("mill", "../x", p, sizeof(p)));
     CHECK(!addon::addonFilePath("mill", "..", p, sizeof(p)));
     CHECK(!addon::addonFilePath("mill", "a..b", p, sizeof(p)));
@@ -3556,6 +3560,9 @@ static void testAddonGroundwork() {
   // The limit and the reserve.
   {
     using addon::fileWriteRefusal;
+    CHECK(addon::ADDON_FILE_LIMIT == 1024u * 1024u);           // 1 MB for all of an add-on's files
+    CHECK(addon::ADDON_FILE_RESERVE == 512u * 1024u);          // and 512 kB of the file system left over
+    CHECK(fileWriteRefusal(300u * 1024u, 0, 300u * 1024u, 100u * 1024u * 1024u) == nullptr);   // more than the old 256 kB
     const uint32_t big = 100u * 1024u * 1024u;
     CHECK(fileWriteRefusal(0, 0, 300, big) == nullptr);
     CHECK(fileWriteRefusal(addon::ADDON_FILE_LIMIT - 300, 0, 300, big) == nullptr);        // exactly at the limit

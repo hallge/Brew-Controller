@@ -23,7 +23,7 @@ const post = async (u, body) => { posts.push({ u, body }); return { ok: true }; 
 const done = () => true, say = () => {}, ask = async () => true;
 const document = { querySelectorAll: () => [] };
 const api = new Function('$', 'esc', 'f1', 'f2', 'get', 'post', 'done', 'say', 'ask', 'document',
-  page.slice(a, b) + '\nreturn { loadAddons, adEnable, adMap, adSet, adSource, adModuleDo, adModuleUpload };')($, esc, f1, f2, get, post, done, say, ask, document);
+  page.slice(a, b) + '\nreturn { adChartData, adCsv, loadAddons, adEnable, adMap, adSet, adSource, adModuleDo, adModuleUpload };')($, esc, f1, f2, get, post, done, say, ask, document);
 
 // No add-ons in this firmware: the card stays hidden.
 answers = { '/api/addons': { compiled: 0, addons: [] }, '/api/library': { recipes: [] } };
@@ -90,6 +90,34 @@ await api.adSet('test-grinder', 'mode', '2', '1');
 ok('a mode change posts the field, the recipe key and the value', posts.some(p => p.u === '/api/addons/do?id=test-grinder&cmd=set&arg=' + encodeURIComponent('mode:2:1')));
 await api.adSet('test-grinder', 'finest', '', '62');
 ok('a number change posts with an empty key', posts.some(p => p.u === '/api/addons/do?id=test-grinder&cmd=set&arg=' + encodeURIComponent('finest::62')));
+// Charts and several downloads.
+answers['/api/addons'].addons[0].card = {
+  compare: { title: 'Cmp', files: ['compare.csv', 'grinds_old.csv'], columns: ['A'], groups: [] },
+  charts: [
+    { title: 'Ground <b>', file: 'grinds.csv', x: 'shot_id', series: [{ col: 'gap_um', label: 'Ground' }] },
+    { title: 'Second', file: 'grinds.csv', x: 'shot_id', series: [] },
+    { title: 'Third', file: 'grinds.csv', x: 'shot_id', series: [] },
+  ],
+};
+await api.loadAddons();
+const cc = $('adlist').innerHTML;
+ok('one download link per file', cc.includes('name=compare.csv') && cc.includes('name=grinds_old.csv') && cc.includes('Download grinds_old.csv'));
+ok('a chart has its escaped title and a canvas', cc.includes('Ground &lt;b&gt;') && !cc.includes('Ground <b>') && cc.includes('<canvas id="adc-test-grinder-0"'));
+ok('at most two charts are drawn', cc.includes('adc-test-grinder-1') && !cc.includes('adc-test-grinder-2'));
+const spec = { x: 'shot_id', xLabel: 'Shot', yLabel: 'um', series: [{ col: 'gap_um', label: 'Ground' }, { col: 'advice_um', label: 'Advice' }, { col: 'nope', label: 'Missing' }] };
+let d = api.adChartData('shot_id,gap_um,advice_um\r\n1,60.5,61\r\n2,,62\r\n3,abc,\r\n4,64,63\r\n', spec);
+ok('columns by name, in file order', JSON.stringify(d.x) === '[1,2,3,4]' && d.xLabel === 'Shot' && d.yLabel === 'um');
+ok('a missing column leaves that series out', d.series.length === 2 && d.series[0].label === 'Ground' && d.series[1].label === 'Advice');
+ok('empty and non-numeric cells are gaps', d.series[0].y[0] === 60.5 && isNaN(d.series[0].y[1]) && isNaN(d.series[0].y[2]) && d.series[0].y[3] === 64 && isNaN(d.series[1].y[2]));
+d = api.adChartData('id,"gap, um",x\n1,"5",9\n2,"6.5",9\n3,"",9\n', { x: 'id', series: [{ col: 'gap, um' }] });
+ok('quoted cells with commas', d.series.length === 1 && d.series[0].y[1] === 6.5 && isNaN(d.series[0].y[2]) && d.series[0].label === 'gap, um');
+const big = 'n,v\n' + Array.from({ length: 700 }, (_, i) => (i + 1) + ',' + (i * 2)).join('\n');
+d = api.adChartData(big, { x: 'n', series: [{ col: 'v' }], last: 5 });
+ok('only the newest N rows', JSON.stringify(d.x) === '[696,697,698,699,700]' && d.series[0].y[4] === 1398);
+ok('the default is 60 rows', api.adChartData(big, { x: 'n', series: [{ col: 'v' }] }).x.length === 60);
+ok('the most is 500 rows', api.adChartData(big, { x: 'n', series: [{ col: 'v' }], last: 9999 }).x.length === 500);
+ok('at most four series', api.adChartData('a,b\n1,2\n', { x: 'a', series: [1, 2, 3, 4, 5, 6].map(() => ({ col: 'b' })) }).series.length === 4);
+ok('an empty file gives nothing', api.adChartData('', spec).x.length === 0);
 delete answers['/api/addons'].addons[0].card;
 
 // Built for another interface: cannot be switched on.

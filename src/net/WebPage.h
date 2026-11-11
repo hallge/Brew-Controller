@@ -822,7 +822,7 @@ return `<div class="card" style="margin:8px 0"><div class="head"><h3>${esc(x.nam
 ${x.module?adModuleLine(id,x.module):x.api_ok?'':'<div class="sm">Built for another add-on interface: it cannot be switched on.</div>'}
 <div class="sm mid">${x.enabled?'<span class="pill '+(x.link=='connected'?'ok':'')+'">'+esc(x.link)+'</span> ':''}${esc(x.status||'')}</div>${last}
 <div class="grid">${fields}</div>${opts}
-<div class="row"><button data-save onclick="adSave('${id}')">Save</button>${x.enabled?`<button onclick="adDo('${id}','read')">Read the grinder now</button>`:''}<button onclick="adForget('${id}')">Forget its settings</button></div>${map}${adCard(id,x.card)}${ram}</div>`}).join('')}
+<div class="row"><button data-save onclick="adSave('${id}')">Save</button>${x.enabled?`<button onclick="adDo('${id}','read')">Read the grinder now</button>`:''}<button onclick="adForget('${id}')">Forget its settings</button></div>${map}${adCard(id,x.card)}${ram}</div>`}).join('');adCharts(a.addons||[])}
 /* Add-on modules (docs/ADDONS.md, Add-ons as modules): files on the controller, delivered from a repository of your own or uploaded. */
 function adModuleLine(id,m){const bad=!m.loaded;
 return `<div class="sm ${bad?'':'dim'}">Module ${esc(m.version||'')}: ${esc(m.state)}${m.problem?' ('+esc(m.problem)+')':''}${m.loaded?', loaded in '+m.load_ms+' ms, '+m.chip_used+' bytes of chip RAM':''}.
@@ -858,8 +858,34 @@ const p=c.compare;
 if(p){h+=`<h3>${esc(p.title||'Comparison')}</h3>`;
 (p.groups||[]).forEach(g=>{h+=`<div class="sm mid">${esc(g.name)}</div><div class="scroll"><table><tr>${(p.columns||[]).map(t=>`<th class="l">${esc(t)}</th>`).join('')}</tr>${(g.rows||[]).map(r=>'<tr>'+r.map(v=>`<td class="l">${esc(v)}</td>`).join('')+'</tr>').join('')}</table></div>`});
 if(!(p.groups||[]).length)h+='<div class="sm dim">Nothing to compare yet.</div>';
-if(p.file)h+=`<div class="row"><a class="btn" href="/api/addons/file?id=${encodeURIComponent(id)}&name=${encodeURIComponent(p.file)}" download>Download ${esc(p.file)}</a></div>`}
+const fl=Array.isArray(p.files)?p.files.slice(0,4):p.file?[p.file]:[];
+if(fl.length)h+='<div class="row">'+fl.map(n=>`<a class="btn" href="/api/addons/file?id=${encodeURIComponent(id)}&name=${encodeURIComponent(n)}" download>Download ${esc(n)}</a>`).join('')+'</div>'}
+(c.charts||[]).slice(0,2).forEach((g,i)=>{h+=`<h3>${esc(g.title||'Chart')}</h3><canvas id="adc-${id}-${i}" width="640" height="240" style="width:100%;max-width:640px"></canvas><div class="sm dim" id="adn-${id}-${i}"></div>`});
 return h}
+/* Charts (docs/ADDONS.md, The card): rows of a CSV in the add-on's own folder, plotted in file order. */
+function adCsv(t){const R=[];let r=[],c='',q=false;for(let i=0;i<t.length;i++){const h=t[i];if(q){if(h=='"'){if(t[i+1]=='"'){c+='"';i++}else q=false}else c+=h}else if(h=='"')q=true;else if(h==',')r.push(c),c='';else if(h=='\n'||h=='\r'){if(h=='\r'&&t[i+1]=='\n')i++;r.push(c);c='';if(r.length>1||r[0]!=='')R.push(r);r=[]}else c+=h}
+if(c!==''||r.length){r.push(c);R.push(r)}return R}
+function adChartData(t,s){const R=adCsv(String(t||'')),H=(R.shift()||[]).map(v=>v.trim()),xi=H.indexOf(s.x),n=Math.max(1,Math.min(500,+s.last||60));
+const num=v=>{v=v==null?'':String(v).trim();return v!==''&&isFinite(+v)?+v:NaN};
+const rows=R.map((r,k)=>({x:xi>=0?num(r[xi]):k+1,r})).filter(o=>!isNaN(o.x)).slice(-n);
+const ser=(s.series||[]).slice(0,4).map(e=>({label:e.label||e.col,i:H.indexOf(e.col)})).filter(e=>e.i>=0).map(e=>({label:e.label,y:rows.map(o=>num(o.r[e.i]))}));
+return {x:rows.map(o=>o.x),series:ser,xLabel:s.xLabel||'',yLabel:s.yLabel||''}}
+function adChart(c,d){if(!c||!c.getContext)return;const x=c.getContext('2d');if(!x)return;const W=c.width,H=c.height,L=52,R=12,T=34,B=34,col=['#f59e0b','#38bdf8','#a78bfa','#34d399'],all=[].concat(...d.series.map(s=>s.y)).filter(v=>!isNaN(v));
+x.clearRect(0,0,W,H);x.font='12px sans-serif';if(!all.length||!d.x.length){x.fillStyle=TC.dim;x.fillText('Nothing to plot yet',L,H/2);return}
+let y0=Math.min(...all),y1=Math.max(...all),x0=Math.min(...d.x),x1=Math.max(...d.x);if(y1==y0){y0-=1;y1+=1}const pd=(y1-y0)*0.08;y0-=pd;y1+=pd;if(x1==x0){x0-=1;x1+=1}
+const X=v=>L+(v-x0)/(x1-x0)*(W-L-R),Y=v=>H-B-(v-y0)/(y1-y0)*(H-T-B),dots=[];
+x.lineWidth=1;niceTicks(y0,y1,4,0).forEach(v=>{const y=Math.round(Y(v))+0.5;x.strokeStyle=TC.grid;x.beginPath();x.moveTo(L,y);x.lineTo(W-R,y);x.stroke();x.fillStyle=TC.dim;x.textAlign='right';x.fillText(String(v),L-6,y+4)});
+x.textAlign='center';niceTicks(x0,x1,6,1).forEach(v=>{x.fillStyle=TC.dim;x.fillText(String(v),X(v),H-B+15)});x.fillText(d.xLabel,(L+W-R)/2,H-4);x.textAlign='left';if(d.yLabel)x.fillText(d.yLabel,6,T-18);
+d.series.forEach((s,k)=>{const cl=col[k];x.strokeStyle=cl;x.fillStyle=cl;x.lineWidth=2;let pen=false;x.beginPath();s.y.forEach((v,i)=>{if(isNaN(v)){pen=false;return}const px=X(d.x[i]),py=Y(v);if(pen)x.lineTo(px,py);else x.moveTo(px,py);pen=true});x.stroke();
+s.y.forEach((v,i)=>{if(isNaN(v))return;x.beginPath();x.arc(X(d.x[i]),Y(v),3,0,7);x.fill()});x.fillRect(L+k*130,6,10,10);x.fillStyle=TC.fg;x.fillText(s.label,L+k*130+14,15)});
+c._d=d;c._X=X;if(c._wired)return;c._wired=true;const tip=$('ctip');
+c.addEventListener('pointermove',e=>{const r=c.getBoundingClientRect(),px=(e.clientX-r.left)*c.width/r.width,q=c._d;let b=-1,bd=1e9;q.x.forEach((v,i)=>{const dd=Math.abs(c._X(v)-px);if(dd<bd){bd=dd;b=i}});
+if(b<0||bd>30){tip.style.display='none';return}tip.innerHTML='<b>'+esc(q.xLabel||'x')+' '+esc(q.x[b])+'</b>'+q.series.map(s=>'<br>'+esc(s.label)+': '+(isNaN(s.y[b])?'-':esc(+s.y[b].toFixed(2)))).join('');
+tip.style.display='block';tip.style.left=Math.max(8,Math.min(innerWidth-tip.offsetWidth-8,e.clientX+12))+'px';tip.style.top=Math.min(innerHeight-tip.offsetHeight-8,e.clientY+14)+'px'});
+c.addEventListener('pointerleave',()=>tip.style.display='none')}
+async function adCharts(list){const got={};for(const a of list)((a.card||{}).charts||[]).slice(0,2).forEach(async(g,i)=>{const c=$('adc-'+a.id+'-'+i);if(!c||!c.getContext)return;const k=a.id+'/'+g.file;
+try{got[k]=got[k]||fetch('/api/addons/file?id='+encodeURIComponent(a.id)+'&name='+encodeURIComponent(g.file)).then(r=>{if(!r.ok)throw 0;return r.text()});adChart(c,adChartData(await got[k],g));$('adn-'+a.id+'-'+i).textContent=''}
+catch(e){c.style.display='none';$('adn-'+a.id+'-'+i).textContent='Chart not available now.'}})}
 function adSet(id,field,key,value){post('/api/addons/do?id='+encodeURIComponent(id)+'&cmd=set&arg='+encodeURIComponent(field+':'+key+':'+value)).then(r=>{say(r.reply||(r.ok?'Saved':'Refused'),!!r.ok);loadAddons()})}
 function adEnable(id,on){post('/api/addons/enable?id='+encodeURIComponent(id)+'&on='+(on?1:0)).then(r=>{done(r,on?'Switched on':'Switched off');loadAddons()})}
 function adSave(id){const values={},options={};document.querySelectorAll('[data-ad="'+id+'"]').forEach(e=>{if(e.type=='password'&&!e.value)return;values[e.dataset.k]=e.type=='checkbox'?(e.checked?'1':'0'):e.value.trim()});

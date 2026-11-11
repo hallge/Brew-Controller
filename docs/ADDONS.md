@@ -179,7 +179,9 @@ with every label and value supplied by the add-on. The page draws it as given, a
            "coarsest": {"label": "Coarsest allowed gap (um)", "value": ""},
            "knob": {"label": "Knob press", "value": 0, "options": ["Arms the grind", "Starts the shot"]}},
  "compare": {"title": "...", "file": "compare.csv", "columns": ["Method", "Shots", "Mean error"],
-             "groups": [{"name": "Coffee", "rows": [["Controller", "7", "1.2 s"]]}]}}
+             "groups": [{"name": "Coffee", "rows": [["Controller", "7", "1.2 s"]]}]},
+ "charts": [{"title": "Ground and advised", "file": "grinds.csv", "x": "shot_id", "xLabel": "Shot", "yLabel": "um",
+             "last": 60, "series": [{"col": "gap_um", "label": "Ground"}, {"col": "advice_um", "label": "Advice"}]}]}
 ```
 
 - `steer`: a mode switch for each recipe row (`mode` is an index into `modes`; the cap field is enabled only
@@ -187,7 +189,17 @@ with every label and value supplied by the add-on. The page draws it as given, a
   `mode:<recipe key>:<index>`, `cap:<recipe key>:<number>`, `finest::<number>`, `coarsest::<number>` and
   `knob::<index>`.
 - `compare`: a table per group (a coffee, say) and a download of the file `file` from the add-on's own
-  folder (`GET /api/addons/file?id=&name=`, only that folder; text files).
+  folder (`GET /api/addons/file?id=&name=`, only that folder; text files). `"files": ["compare.csv", "grinds.csv"]`
+  gives one download link per file (up to 4) instead of the single `file`.
+- `charts`: up to 2 line charts under the comparison, each with up to 4 series (extras are ignored). `file` is a
+  CSV in the add-on's own folder with a header line; `x` and every series `col` are looked up by header name,
+  commas inside double quotes are kept, `\r\n` is fine. `x` is numeric (a shot id, say) and the points are drawn
+  in file order, the newest `last` rows only (default 60, at most 500). An empty or non-numeric cell is a gap
+  in that line; a column the file does not have leaves that series out. `title`, `xLabel`, `yLabel` and the
+  series `label` are the add-on's own text. Hovering a point shows its x and the series values. The page
+  fetches each file itself through the file route above, so the chart is not drawn (it says "Chart not
+  available now") while a shot is running, when the file is missing or when the controller does not answer.
+  Keep the file small (the add-on's files may total 1 MB): write a rolling file rather than an ever-growing one.
 - The card shows nothing it was not given, and the whole card is hidden when no add-on is compiled in.
 
 ### What the controller does with a grind
@@ -261,7 +273,7 @@ meant to use, and the controller keeps to these rules for it:
   the web API is unauthenticated, anything on the network that can reach an add-on's route could ask for a
   start exactly as it could call `/api/start`: it gets no more than that and nothing without the switch;
 - files: only under `/addons/<its id>/`, names `[a-z0-9._-]` of at most 20 characters (no path, no `..`, no
-  other add-on's folder), 256 kB for all of an add-on's files, and never when less than 512 kB of the file
+  other add-on's folder), 1 MB for all of an add-on's files, and never when less than 512 kB of the file
   system would be free afterwards (the owner's shot curves come first). `fileSize` lets an add-on roll a file
   over; `writeFile` replaces it. The files survive firmware updates and go into `/api/backup`.
 
