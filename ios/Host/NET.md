@@ -36,7 +36,7 @@ Off Apple (the Windows runner) `net_portable.cpp` provides stand-ins for the two
   handling, 30 s keep-alive, reconnect at most once a minute and only when idle.
 - **Page preview**: browser-style agent, `Accept-Language`, redirects followed by the system, reads up
   to `</head` or 192 KB, tried twice, board's wording for 403/429/503.
-- **Add-on fetch**: GET/POST, Cookie in, first Set-Cookie out, no redirects, 3 s... as the job asks;
+- **Add-on fetch**: GET/POST, Cookie in, first Set-Cookie out, no redirects, the job's own time-out;
   https only with the job's SHA-256 pin: the leaf certificate's SHA-256 is compared in the URLSession
   challenge (no host name check, like the board); a mismatch is status -3.
 - **Device key**: P-256 by `SecKeyCreateRandomKey` (in memory, not permanent), signed with
