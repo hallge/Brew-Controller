@@ -36,12 +36,25 @@ struct BrewRecipePickerView: View {
         return result
     }
 
+    /// "N entries on the controller (M more wait for a new bag), room for K." as the web page says it.
+    private var infoLine: String {
+        guard let library = model.library else { return "" }
+        let shown = library.presets.filter { !$0.hidden }.count
+        let waiting = library.presets.count - shown
+        return "\(shown) entries on the controller" + (waiting > 0 ? " (\(waiting) more wait for a new bag)" : "")
+            + ", room for \(library.maxPresets)."
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
                 brewPal.bg.ignoresSafeArea()
                 ScrollView {
                     LazyVStack(spacing: 8) {
+                        Text(infoLine)
+                            .font(.footnote).foregroundStyle(brewPal.dim)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("recipesInfo")
                         ForEach(entries) { entry in
                             let active = entry.index == model.library?.activePreset
                             Button {
@@ -101,9 +114,16 @@ struct BrewCoffeeDetailsView: View {
 
     /// Rows with a name and a value; what was never entered is left out.
     private var rows: [(String, String)] {
-        guard let coffee = model.activeCoffee else { return [] }
+        // No coffee on the shelf: the recipe still remembers a region and a varietal (the board's rows).
+        guard let coffee = model.activeCoffee else {
+            guard let recipe = recipeEntry else { return [] }
+            return [("Region", recipe.region), ("Varietal", recipe.varietal)].filter { !$0.1.isEmpty }
+        }
         var list: [(String, String)] = [("Roaster", coffee.roaster)]
-        if !coffee.name.isEmpty { list.append(("Coffee", coffee.name)) }
+        // The coffee's name is the title; it is a row only when the recipe was named for something else.
+        if !coffee.name.isEmpty, let recipe = recipeEntry, !recipe.coffee.isEmpty, recipe.coffee != coffee.name {
+            list.append(("Coffee", coffee.name))
+        }
         list.append(("Country", coffee.origin))
         list.append(("Region", coffee.region))
         list.append(("Producer", coffee.producer))
@@ -113,6 +133,12 @@ struct BrewCoffeeDetailsView: View {
         if coffee.roastDate > 0 { list.append(("Roasted", date(coffee.roastDate))) }
         list.append(("Notes", coffee.notes))
         return list.filter { !$0.1.isEmpty }
+    }
+
+    /// The recipe entry in use as the settings list it (it carries the region and varietal noted for it).
+    private var recipeEntry: SettingsRecipe? {
+        guard let settings = model.settings else { return nil }
+        return settings.recipes.first { $0.slot == settings.activeRecipe }
     }
 
     private var title: String { model.activeCoffee?.name ?? "No coffee" }

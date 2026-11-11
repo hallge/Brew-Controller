@@ -53,6 +53,18 @@ class DemoUITestCase: XCTestCase {
         XCTAssertTrue(ready, "the home panel never said READY (last: \(last))", file: file, line: line)
     }
 
+    /// Swipes the open screen up until the element can be touched (a card far down the home panel).
+    @discardableResult
+    func scrollTo(_ id: String, maxSwipes: Int = 10) -> XCUIElement {
+        let target = element(id)
+        var swipes = 0
+        while !(target.exists && target.isHittable) && swipes < maxSwipes {
+            app.swipeUp()
+            swipes += 1
+        }
+        return target
+    }
+
     /// Starts a shot from the ready home panel and waits for the brew panel.
     func startShot(file: StaticString = #filePath, line: UInt = #line) {
         let start = element("startButton")

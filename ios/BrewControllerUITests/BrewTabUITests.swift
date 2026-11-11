@@ -17,7 +17,8 @@ final class BrewTabUITests: DemoUITestCase {
             XCTAssertTrue(app.tabBars.buttons[name].exists, "tab \(name)")
         }
         app.tabBars.buttons["Shots"].tap()
-        XCTAssertTrue(app.staticTexts["Coming soon"].waitForExistence(timeout: 5))
+        XCTAssertTrue(poll(5) { self.app.tabBars.buttons["Shots"].isSelected }, "the Shots tab opened")
+        XCTAssertFalse(element("homeCard").isHittable, "Brew is not on top while Shots is")
         app.tabBars.buttons["More"].tap()
         for name in ["Recipes", "Machine", "Insights", "Subscriptions", "Discover", "Community", "Devices", "Setup", "Logs"] {
             XCTAssertTrue(element("moreRow-\(name)").exists, "More row \(name)")

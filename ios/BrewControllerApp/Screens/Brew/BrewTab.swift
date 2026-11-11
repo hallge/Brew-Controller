@@ -1,6 +1,8 @@
 // The Brew tab: shows the panel the controller says the board would show (/api/screen "panel"):
-// home, brew, result, fault or a grind question. The recipe list, the edit panel and the coffee
-// details open as sheets. A haptic on stop and on done.
+// home, brew, result, fault or a grind question. The recipe list, the edit panel, the coffee details and
+// the board's Settings open as sheets; an open shot, Getting started, Share to Reddit, Discover and
+// Community are pushed (BrewNavigator.route). A haptic on stop and on done. What the tab shows is
+// reloaded whenever it appears, so a change made on another tab is never shown (or saved back) old.
 import SwiftUI
 import UIKit
 
@@ -14,17 +16,20 @@ struct BrewEditRoute: Identifiable {
 struct BrewTab: View {
     @State private var showRecipes = false
     @State private var showCoffee = false
+    @State private var showSettings = false
     @State private var edit: BrewEditRoute?
+    @State private var appearances = 0
+    @State private var nav = BrewNavigator.shared
 
     private var live: LiveModel { LiveModel.shared }
     private var model: BrewModel { BrewModel.shared }
 
-    /// Reload what the tab shows besides the live status when one of these changes.
+    /// Reload what the tab shows besides the live status when one of these changes (or the tab appears).
     private var refreshKey: String {
-        "\(live.screen?.panel ?? "")|\(live.live.lastShotID)|\(live.live.activeRecipe)"
+        "\(live.screen?.panel ?? "")|\(live.live.lastShotID)|\(live.live.activeRecipe)|\(appearances)"
     }
 
-    private var anySheet: Bool { showRecipes || showCoffee || edit != nil }
+    private var anySheet: Bool { showRecipes || showCoffee || showSettings || edit != nil }
 
     var body: some View {
         ZStack {
@@ -40,10 +45,20 @@ struct BrewTab: View {
                 }
             }
         }
+        .onAppear { appearances += 1 }
         .task(id: refreshKey) { await model.refreshAll() }
+        .task {
+            // The machine's state is polled every 5 s while Brew is on show (the web page does the same).
+            while !Task.isCancelled {
+                if !live.live.isShotInHand { await model.refreshPower() }
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
         .sheet(isPresented: $showRecipes) { BrewRecipePickerView() }
         .sheet(isPresented: $showCoffee) { BrewCoffeeDetailsView() }
+        .sheet(isPresented: $showSettings) { BrewSettingsView() }
         .sheet(item: $edit) { route in editSheet(route) }
+        .navigationDestination(item: $nav.route) { route in destination(route) }
         .onChange(of: live.live.stateNumber) { _, new in
             // The haptics of the phone: a firm tap when the shot is stopped, a success buzz when it is done.
             switch BrewState(rawValue: new) {
@@ -58,14 +73,21 @@ struct BrewTab: View {
         } message: {
             Text(model.errorMessage ?? "")
         }
+        .alert("Saved", isPresented: Binding(get: { model.noticeMessage != nil },
+                                             set: { if !$0 { model.noticeMessage = nil } })) {
+            Button("OK") { model.noticeMessage = nil }
+        } message: {
+            Text(model.noticeMessage ?? "")
+        }
         .accessibilityIdentifier("brewTab")
     }
 
     @ViewBuilder private func panel(_ screen: ScreenSnapshot) -> some View {
         switch screen.panelKind {
         case .home:
-            BrewHomePanel(screen: screen, onRecipes: { showRecipes = true }, onEdit: { openEdit(field: BrewRecipeDraft.grindField) },
-                      onCoffee: { showCoffee = true })
+            BrewHomePanel(screen: screen, onRecipes: { showRecipes = true },
+                          onEdit: { openEdit(field: BrewRecipeDraft.grindField) },
+                          onCoffee: { showCoffee = true }, onSettings: { showSettings = true })
         case .brew:
             BrewLiveShotPanel(screen: screen)
         case .result:
@@ -77,8 +99,31 @@ struct BrewTab: View {
         }
     }
 
+    // MARK: Pushed screens
+
+    @ViewBuilder private func destination(_ route: BrewRoute) -> some View {
+        switch route {
+        case .shot(let id): ShotsDetailScreen(shotID: id)
+        case .started: SetupStartedScreen()
+        case .reddit(let id): CommunityScreen(redditShotID: id)
+        case .community: CommunityScreen()
+        case .discover: DiscoverScreen()
+        }
+    }
+
+    // MARK: Edit
+
+    /// The library is read again first: the edit sheet must not open on old values and save them back.
+    /// While a shot is in hand the controller does not answer for the library, so the last one is used then.
     private func openEdit(field: Int, grindUm: Int? = nil) {
-        edit = BrewEditRoute(field: field, grindUm: grindUm)
+        Task {
+            let fresh = await model.refreshLibrary()
+            if fresh || (live.live.isShotInHand && model.library != nil) {
+                edit = BrewEditRoute(field: field, grindUm: grindUm)
+            } else {
+                model.errorMessage = "The recipe could not be read from the controller. Try again."
+            }
+        }
     }
 
     @ViewBuilder private func editSheet(_ route: BrewEditRoute) -> some View {

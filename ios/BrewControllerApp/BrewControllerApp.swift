@@ -43,9 +43,15 @@ enum Controller {
             let rc = bytes.withUnsafeBytes { bbw_request("POST", path, $0.baseAddress, bytes.count, "application/json", 60000, &response) }
             if rc == 0 { bbw_response_free(&response) }
         }
-        post("/api/pair", #"{"kind":"bot","address":"e5:8a:3c:11:9d:40","type":1}"#)
+        // `-bbwDemoManual`: a lever machine worked by hand (builtin 4) and no bot: the controller starts it
+        // from the app, with nothing pressed.
+        let manual = ProcessInfo.processInfo.arguments.contains("-bbwDemoManual")
+        if !manual { post("/api/pair", #"{"kind":"bot","address":"e5:8a:3c:11:9d:40","type":1}"#) }
         Thread.sleep(forTimeInterval: 1)  // the first request after start-up can answer 409
-        post("/api/machine", #"{"builtin":1}"#)
+        post("/api/machine", manual ? #"{"builtin":4}"# : #"{"builtin":1}"#)
+        // Every panel of the web page on, so the UI tests can reach More's screens (a new controller hides
+        // the ones that are not in use).
+        post("/api/settings", #"{"webPanels":31}"#)
         _ = bbw_demo_set("machine", "cupOnScale", "0")
         Thread.sleep(forTimeInterval: 3)
         _ = bbw_demo_set("machine", "cupOnScale", "1")
