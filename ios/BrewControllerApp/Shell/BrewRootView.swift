@@ -3,7 +3,7 @@
 // dim overlay (the board's dimming) and the "Restored, tap to restart" screen.
 import SwiftUI
 
-struct RootView: View {
+struct BrewRootView: View {
     @State private var onboarding = Onboarding.shared
     @State private var theme = BrewTheme.shared
     @State private var lifecycle = AppLifecycle.shared

@@ -61,7 +61,7 @@ enum Controller {
 struct BrewControllerApp: App {
     var body: some Scene {
         WindowGroup {
-            RootView()
+            BrewRootView()
         }
     }
 }
