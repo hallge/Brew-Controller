@@ -30,19 +30,27 @@ struct ShotsDetailView: View {
 
     private var shot: ShotModel? { store.shot(id: shotID) }
 
+    /// What the screen says while there is no such shot.
+    private var missingText: String {
+        if store.busy { return "A shot is running. The history comes back when it ends." }
+        return store.loadedOnce ? "Shot not found. It is no longer in the history." : "Loading..."
+    }
+
     var body: some View {
         Group {
             if let shot {
                 content(shot)
             } else {
-                Text(store.loadedOnce ? "This shot is no longer in the history." : "Loading...")
+                Text(missingText)
                     .foregroundStyle(.secondary)
+                    .padding()
+                    .accessibilityIdentifier("shotNotFound")
             }
         }
         .navigationTitle(shot.map { ShotsText.when($0) } ?? "Shot")
         .navigationBarTitleDisplayMode(.inline)
         .shotsThemed()
-        .task(id: shotID) { await loadCurves() }
+        .task(id: "\(shotID)-\(shot != nil)") { await loadCurves() }
         .onAppear { sync() }
         .onChange(of: shot) { _, _ in sync() }
         .shotsShareSheet($shareFile)
@@ -104,9 +112,22 @@ struct ShotsDetailView: View {
                     .accessibilityIdentifier("shotCSV")
                 Button("Send to Beanconqueror") { sendToBeanconqueror(shot) }
                     .accessibilityIdentifier("shotBeanconqueror")
+                NavigationLink {
+                    CommunityScreen(redditShotID: shot.id)
+                } label: {
+                    Text("Share to Reddit")
+                }
+                .accessibilityIdentifier("shotReddit")
             }
         }
         .accessibilityIdentifier("shotDetail")
+        .onDisappear {
+            // Number pads have no Return key: keep what was typed when the owner leaves the screen.
+            Task {
+                await commitTDS()
+                await commitPrep()
+            }
+        }
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()

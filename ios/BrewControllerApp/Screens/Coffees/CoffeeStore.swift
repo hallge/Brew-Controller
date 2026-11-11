@@ -10,6 +10,8 @@ final class CoffeeStore {
     private(set) var library: LibraryModel?
     private(set) var ratings: CoffeeRatingsModel?
     private(set) var share: CoffeeShareModel?
+    /// The ratings were asked for (they may still be nil: the screen then says they are unavailable).
+    private(set) var ratingsTried = false
     /// Setup: sharing is switched on.
     private(set) var shareEnabled = false
     /// The coffees published in the shared library (GET /api/community/coffees).
@@ -145,7 +147,7 @@ final class CoffeeStore {
 
     /// Ratings, sharing and the shared library: each is optional, the shelf shows without them.
     func loadExtras() async {
-        ratings = try? await api.get("/api/coffee/ratings", as: CoffeeRatingsModel.self)
+        await loadRatings()
         share = try? await api.get("/api/share", as: CoffeeShareModel.self)
         if let settings = try? await api.settings() { shareEnabled = settings.shareEnabled }
         if let shared = try? await api.get("/api/community/coffees", as: CoffeeSharedLibraryModel.self) {
@@ -155,6 +157,7 @@ final class CoffeeStore {
 
     func loadRatings() async {
         ratings = try? await api.get("/api/coffee/ratings", as: CoffeeRatingsModel.self)
+        ratingsTried = true
     }
 
     // MARK: Coffee and bags

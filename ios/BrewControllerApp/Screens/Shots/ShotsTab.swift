@@ -21,6 +21,22 @@ struct ShotsTab: View {
                 }
             }
 
+            if let latest = store.shots.first {
+                Section {
+                    NavigationLink {
+                        ShotsDetailView(store: store, shotID: latest.id)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Latest shot").font(.headline)
+                            Text(latestLine(latest))
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityIdentifier("shotsLatest")
+                }
+            }
+
             Section {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                     ForEach(store.summary) { tile in
@@ -85,6 +101,12 @@ struct ShotsTab: View {
         }
         .shotsShareSheet($shareFile)
         .shotsNotices(store)
+    }
+
+    private func latestLine(_ shot: ShotModel) -> String {
+        var text = ShotsText.when(shot) + " · " + (shot.coffee.isEmpty ? shot.recipe : shot.coffee)
+        text += " · " + BrewFormat.grams(shot.finalWeightG) + " g in " + BrewFormat.seconds(shot.shotTimeS) + " s"
+        return text
     }
 
     // MARK: Filters

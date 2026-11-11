@@ -26,6 +26,21 @@ struct CoffeeRatingSection: View {
     private var ratings: CoffeeRatingsModel? { store.ratings }
 
     var body: some View {
+        if ratings == nil {
+            Section {
+                if store.ratingsTried {
+                    Text("Ratings are unavailable: the controller did not answer.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("coffeeRatingsUnavailable")
+                    Button("Retry") { Task { await store.loadRatings() } }
+                        .accessibilityIdentifier("coffeeRatingsRetry")
+                } else {
+                    HStack { ProgressView(); Text("Loading ratings...").foregroundStyle(.secondary) }
+                }
+            } header: {
+                Text("How you liked it")
+            }
+        }
         if let ratings {
             Group {
               Section {
