@@ -8,6 +8,12 @@ import UIKit
 struct CommunityRedditCard: View {
     let store: CommunityStore
 
+    /// `initialShotID`: the shot to preselect (the Brew tab and the shot page push the Community screen with one).
+    init(store: CommunityStore, initialShotID: Int? = nil) {
+        self.store = store
+        _shotId = State(initialValue: initialShotID ?? 0)
+    }
+
     @Environment(\.openURL) private var openURL
     @State private var shotId = 0
     @State private var photoItem: PhotosPickerItem?

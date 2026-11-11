@@ -248,6 +248,68 @@ extension CommunityStart {
     }
 }
 
+/// The owner's own nearest coffee, as a guess to start from (core/SimilarCoffee.h).
+struct CommunitySimilar: Codable, Sendable, Equatable {
+    var found = false
+    var setting = 0
+    var range = 0
+    var fromCoffee = ""
+    var fromSetting = 0
+    var shift = 0
+    /// "fitted" (moved by the owner's own coffees) or "nearest".
+    var basis = ""
+    /// Coffees the fit or the range rests on.
+    var samples = 0
+    /// Factors that moved it: 1 roast, 2 altitude, 4 process.
+    var applied = 0
+    /// -1 finer, +1 coarser than the nearest, by convention; 0 none.
+    var hintRoast = 0
+    var hintAltitude = 0
+    var hintProcess = 0
+    var nearRecipe = false
+
+    enum CodingKeys: String, CodingKey {
+        case found, setting, range, shift, basis, samples, applied
+        case fromCoffee = "from_coffee", fromSetting = "from_setting", hintRoast = "hint_roast"
+        case hintAltitude = "hint_altitude", hintProcess = "hint_process", nearRecipe = "near_recipe"
+    }
+}
+
+extension CommunitySimilar {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        found = c.lenient(.found, false)
+        setting = c.lenient(.setting, 0)
+        range = c.lenient(.range, 0)
+        fromCoffee = c.lenient(.fromCoffee, "")
+        fromSetting = c.lenient(.fromSetting, 0)
+        shift = c.lenient(.shift, 0)
+        basis = c.lenient(.basis, "")
+        samples = c.lenient(.samples, 0)
+        applied = c.lenient(.applied, 0)
+        hintRoast = c.lenient(.hintRoast, 0)
+        hintAltitude = c.lenient(.hintAltitude, 0)
+        hintProcess = c.lenient(.hintProcess, 0)
+        nearRecipe = c.lenient(.nearRecipe, false)
+    }
+}
+
+/// A first guess from the grinder's range alone.
+struct CommunityRangeGuess: Codable, Sendable, Equatable {
+    var setting = 0
+    var range = 0
+
+    enum CodingKeys: String, CodingKey { case setting, range }
+}
+
+extension CommunityRangeGuess {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        setting = c.lenient(.setting, 0)
+        range = c.lenient(.range, 0)
+    }
+}
+
 /// GET /api/community?coffee=&recipe=
 struct CommunityNow: Codable, Sendable, Equatable {
     /// The shared library could be reached.
@@ -264,10 +326,14 @@ struct CommunityNow: Codable, Sendable, Equatable {
     var recipeMatch = ""
     var theirDoseG: Double = 0
     var theirYieldG: Double = 0
+    var ageRateKnown = false
     var start = CommunityStart()
+    var similar = CommunitySimilar()
+    var rangeGuess: CommunityRangeGuess?
 
     enum CodingKeys: String, CodingKey {
-        case reachable, found, contributors, dialins, start
+        case reachable, found, contributors, dialins, start, similar
+        case ageRateKnown = "age_rate_known", rangeGuess = "range_guess"
         case timeS = "time_s", spreadUm = "spread_um", sameModel = "same_model"
         case coffeesInCommon = "coffees_in_common", myAgeDays = "my_age_days", theirAgeDays = "their_age_days"
         case recipeMatch = "recipe_match", theirDoseG = "their_dose_g", theirYieldG = "their_yield_g"
@@ -290,6 +356,9 @@ extension CommunityNow {
         recipeMatch = c.lenient(.recipeMatch, "")
         theirDoseG = c.lenient(.theirDoseG, 0)
         theirYieldG = c.lenient(.theirYieldG, 0)
+        ageRateKnown = c.lenient(.ageRateKnown, false)
         start = c.lenient(.start, CommunityStart())
+        similar = c.lenient(.similar, CommunitySimilar())
+        rangeGuess = c.lenient(.rangeGuess)
     }
 }

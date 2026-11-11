@@ -8,7 +8,6 @@ struct SubscriptionArrivalView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var choice: SubscriptionsStore.ArrivalChoice
-    @State private var hasRoast = false
     @State private var roast = Date()
     @State private var weightText = ""
     @State private var newName = ""
@@ -64,12 +63,8 @@ struct SubscriptionArrivalView: View {
                     }
                 }
                 Section {
-                    Toggle("I have the roast date", isOn: $hasRoast)
-                        .accessibilityIdentifier("subscriptionArrivalHasRoast")
-                    if hasRoast {
-                        DatePicker("Roast date printed on the bag", selection: $roast, in: ...Date(), displayedComponents: .date)
-                            .accessibilityIdentifier("subscriptionArrivalRoast")
-                    }
+                    DatePicker("Roast date printed on the bag", selection: $roast, in: ...Date(), displayedComponents: .date)
+                        .accessibilityIdentifier("subscriptionArrivalRoast")
                     HStack {
                         Text("Weight (g, optional)")
                         Spacer()
@@ -106,7 +101,7 @@ struct SubscriptionArrivalView: View {
     private func save() async {
         saving = true
         defer { saving = false }
-        let ok = await store.arrive(item, choice: choice, roastDate: hasRoast ? SubscriptionWording.ymd(roast) : 0,
+        let ok = await store.arrive(item, choice: choice, roastDate: SubscriptionWording.ymd(roast),
                                     weightG: max(0, Int(weightText) ?? 0), newName: newName,
                                     newRoaster: newRoaster, newNotes: newNotes)
         if ok { dismiss() } else { problem = store.notice?.text ?? "Could not save." }

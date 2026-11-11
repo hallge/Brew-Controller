@@ -1,5 +1,6 @@
 // Small pieces the Insights cards share: the card, the empty note, the colours of the charts and the
 // radar chart (Swift Charts has no radar, so it is drawn with paths).
+import Charts
 import SwiftUI
 
 /// The colours of the charts. "On time", "fast" and "slow" follow the board's ok, warning and bad colours.
@@ -213,5 +214,65 @@ struct InsightsRadar: View {
             let value = index < values.count ? Int((values[index] * 100).rounded()) : 50
             return "\(labels[index]) \(value) percent"
         }.joined(separator: ", ")
+    }
+}
+
+// MARK: - Tap tooltips
+
+/// Where a shot opens from the charts (pushed by InsightsScreen).
+struct InsightsShotTarget: Identifiable, Hashable {
+    let id: Int
+}
+
+extension View {
+    /// Calls `handler` with the tapped point, relative to the chart's plot area, and the chart's proxy.
+    func insightsTap(_ handler: @escaping (_ point: CGPoint, _ proxy: ChartProxy) -> Void) -> some View {
+        chartOverlay { proxy in
+            GeometryReader { geometry in
+                Rectangle().fill(Color.clear).contentShape(Rectangle())
+                    .onTapGesture { location in
+                        guard let frame = proxy.plotFrame else { return }
+                        let origin = geometry[frame].origin
+                        handler(CGPoint(x: location.x - origin.x, y: location.y - origin.y), proxy)
+                    }
+            }
+        }
+    }
+}
+
+enum InsightsTap {
+    /// The id of the nearest candidate within `distance` points of `point` (nil when none is close).
+    static func nearest(_ candidates: [(id: Int, position: CGPoint)], to point: CGPoint,
+                        within distance: CGFloat = 30) -> Int? {
+        var best: (id: Int, distance: CGFloat)?
+        for candidate in candidates {
+            let dx = candidate.position.x - point.x
+            let dy = candidate.position.y - point.y
+            let d = (dx * dx + dy * dy).squareRoot()
+            if d <= distance && (best == nil || d < (best?.distance ?? .infinity)) { best = (candidate.id, d) }
+        }
+        return best?.id
+    }
+}
+
+/// The line a tapped chart shows under it, with a hint when a second tap opens something.
+struct InsightsTooltip: View {
+    let text: String
+    var hint = ""
+    let identifier: String
+
+    var body: some View {
+        if !text.isEmpty {
+            let palette = BrewTheme.shared.palette
+            VStack(alignment: .leading, spacing: 2) {
+                Text(text).font(.footnote).foregroundStyle(palette.text)
+                if !hint.isEmpty { Text(hint).font(.caption).foregroundStyle(palette.dim) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+            .background(palette.track.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier(identifier)
+        }
     }
 }

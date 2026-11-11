@@ -3,6 +3,7 @@ import SwiftUI
 
 struct InsightsScreen: View {
     @State private var store = InsightsStore()
+    @State private var openedShot: InsightsShotTarget?
 
     var body: some View {
         let palette = BrewTheme.shared.palette
@@ -46,6 +47,9 @@ struct InsightsScreen: View {
                 }
             }
         }
+        .navigationDestination(item: $openedShot) { target in
+            ShotsDetailScreen(shotID: target.id)
+        }
         .refreshable { await store.load() }
         .task { await store.load() }
         .accessibilityIdentifier("insightsScreen")
@@ -64,10 +68,11 @@ struct InsightsScreen: View {
                           coffeeName: { store.coffeeName($0) },
                           onChoose: { id in Task { await store.chooseDrinker(id) } })
         InsightsRoastGrindCard(shots: shots, calibration: grinder.calibration, dial: grinder.dial,
-                               tolerance: store.tolerance)
+                               tolerance: store.tolerance, onOpen: { openedShot = InsightsShotTarget(id: $0) })
         InsightsAgeCard(shots: shots, tolerance: store.tolerance)
         InsightsCalendarCard(shots: shots, powerEvents: store.powerEvents, tolerance: store.tolerance,
-                             currentCoffeeId: store.currentCoffeeId)
+                             currentCoffeeId: store.currentCoffeeId,
+                             onOpen: { openedShot = InsightsShotTarget(id: $0) })
         InsightsDialInCard(shots: shots, tolerance: store.tolerance)
         InsightsGrindCard(accuracy: store.accuracy, dial: grinder.dial, coffeeName: { store.coffeeName($0) })
     }

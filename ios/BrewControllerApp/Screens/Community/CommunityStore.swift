@@ -65,7 +65,7 @@ final class CommunityStore {
         async let shareResult = fetch(CommunityShareStatus.self, "/api/share")
         async let settingsResult = fetch(SettingsModel.self, "/api/settings")
         async let libraryResult = fetch(LibraryModel.self, "/api/library")
-        async let shotsResult = fetch([ShotModel].self, "/api/shots", query: ["limit": "40"])
+        async let shotsResult = fetch([ShotModel].self, "/api/shots", query: ["limit": "500"])
         links = await linksResult
         trending = await trendingResult
         grinders = ((await grindersResult)?.grinders ?? []).filter { !$0.model.isEmpty }
@@ -81,10 +81,11 @@ final class CommunityStore {
     /// What other owners settled on for the coffee and recipe in use.
     func loadNow() async {
         now = nil
-        guard let preset = library.activePresetEntry, preset.coffeeId != 0, let coffee = library.coffee(id: preset.coffeeId),
-              !coffee.libraryId.isEmpty else { return }
+        // Asked whether or not the library knows the coffee: the answer also carries the guess from the
+        // owner's own coffees.
+        guard let entry = brewingEntry else { return }
         now = await fetch(CommunityNow.self, "/api/community",
-                          query: ["coffee": String(preset.coffeeId), "recipe": String(preset.recipeId)])
+                          query: ["coffee": String(entry.preset.coffeeId), "recipe": String(entry.preset.recipeId)])
     }
 
     private func fetch<T: Decodable & Sendable>(_ type: T.Type, _ path: String,
@@ -102,9 +103,17 @@ final class CommunityStore {
         return library.coffee(id: preset.coffeeId)
     }
 
+    /// The entry (coffee and recipe) of the coffee in use that is in use, else the coffee's first (as the web page).
+    var brewingEntry: (index: Int, preset: PresetModel)? {
+        guard let coffee = activeCoffee else { return nil }
+        let entries = library.presets.enumerated().filter { $0.element.coffeeId == coffee.id }
+        guard let pick = entries.first(where: { $0.offset == library.activePreset }) ?? entries.first else { return nil }
+        return (index: pick.offset, preset: pick.element)
+    }
+
     var activeRecipe: RecipeDefModel? {
-        guard let preset = library.activePresetEntry else { return nil }
-        return library.recipe(id: preset.recipeId)
+        guard let entry = brewingEntry else { return nil }
+        return library.recipe(id: entry.preset.recipeId)
     }
 
     /// The feed's links that have the chosen topic.
@@ -187,7 +196,8 @@ final class CommunityStore {
     /// Uses the community's start as the grinder setting of the preset in use (stored steps).
     func useStart(_ setting: Int) async {
         do {
-            try await api.post("/api/library/do", query: ["what": "preset_grind", "a": String(library.activePreset),
+            let index = brewingEntry?.index ?? library.activePreset
+            try await api.post("/api/library/do", query: ["what": "preset_grind", "a": String(index),
                                                           "b": String(setting)])
             say("Starting grind set", good: true)
             if let library = await fetch(LibraryModel.self, "/api/library") { self.library = library }

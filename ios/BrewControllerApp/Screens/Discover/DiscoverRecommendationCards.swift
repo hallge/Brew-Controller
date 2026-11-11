@@ -10,6 +10,35 @@ struct DiscoverCoffeeRecommendationsCard: View {
         String(repeating: "★", count: max(0, min(5, count))) + String(repeating: "☆", count: max(0, 5 - count))
     }
 
+
+    private func recoCard(_ item: DiscoverRecoItem) -> some View {
+        let palette = BrewTheme.shared.palette
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(Self.sources[item.from] ?? "").font(.caption).foregroundStyle(palette.dim)
+            Text(item.name).font(.headline).foregroundStyle(palette.text)
+            let detail = [item.roaster, item.origin, item.process].filter { !$0.isEmpty }.joined(separator: " · ")
+            if !detail.isEmpty { Text(detail).font(.footnote).foregroundStyle(palette.dim) }
+            if !item.why.isEmpty {
+                Text(item.why.joined(separator: ", ")).font(.subheadline.weight(.semibold))
+                    .foregroundStyle(palette.text)
+            }
+            if item.like != 0, let name = store.coffeeName(item.like) {
+                Text("Like the \(name) you gave \(stars(item.likeStars))")
+                    .font(.footnote).foregroundStyle(palette.dim)
+            }
+            let extra = [
+                item.peopleStars > 0 ? "drinkers like you: ★" + BrewFormat.decimal(item.peopleStars, 1) : "",
+                item.communityN > 0 ? "library: ★" + BrewFormat.decimal(item.communityStars, 1) + " from \(item.communityN)" : "",
+                item.sure < 0.4 ? "a guess from its description" : "",
+            ].filter { !$0.isEmpty }.joined(separator: " · ")
+            if !extra.isEmpty { Text(extra).font(.footnote).foregroundStyle(palette.dim) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(palette.track.opacity(0.4), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+
     var body: some View {
         let palette = BrewTheme.shared.palette
         let people = store.ratings.people
@@ -27,30 +56,17 @@ struct DiscoverCoffeeRecommendationsCard: View {
                         identifier: "discoverCoffeeRecommendationsEmpty")
                 } else {
                     ForEach(recommendations.items) { item in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(Self.sources[item.from] ?? "").font(.caption).foregroundStyle(palette.dim)
-                            Text(item.name).font(.headline).foregroundStyle(palette.text)
-                            let detail = [item.roaster, item.origin, item.process].filter { !$0.isEmpty }.joined(separator: " · ")
-                            if !detail.isEmpty { Text(detail).font(.footnote).foregroundStyle(palette.dim) }
-                            if !item.why.isEmpty {
-                                Text(item.why.joined(separator: ", ")).font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(palette.text)
+                        if item.coffee != 0 {
+                            NavigationLink {
+                                DiscoverCoffeeDestination(coffeeId: item.coffee)
+                            } label: {
+                                recoCard(item)
                             }
-                            if item.like != 0, let name = store.coffeeName(item.like) {
-                                Text("Like the \(name) you gave \(stars(item.likeStars))")
-                                    .font(.footnote).foregroundStyle(palette.dim)
-                            }
-                            let extra = [
-                                item.peopleStars > 0 ? "drinkers like you: ★" + BrewFormat.decimal(item.peopleStars, 1) : "",
-                                item.communityN > 0 ? "library: ★" + BrewFormat.decimal(item.communityStars, 1) + " from \(item.communityN)" : "",
-                                item.sure < 0.4 ? "a guess from its description" : "",
-                            ].filter { !$0.isEmpty }.joined(separator: " · ")
-                            if !extra.isEmpty { Text(extra).font(.footnote).foregroundStyle(palette.dim) }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("discoverRecoLink.\(item.coffee)")
+                        } else {
+                            recoCard(item)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                        .background(palette.track.opacity(0.4), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .accessibilityElement(children: .combine)
                     }
                 }
                 if !recommendations.buyAgain.isEmpty {
@@ -75,6 +91,7 @@ struct DiscoverCoffeeRecommendationsCard: View {
 
 struct DiscoverSubscriptionRecommendationsCard: View {
     @Bindable var store: DiscoverStore
+    @FocusState private var countryFocused: Bool
 
     var body: some View {
         let palette = BrewTheme.shared.palette
@@ -96,7 +113,11 @@ struct DiscoverSubscriptionRecommendationsCard: View {
                     .multilineTextAlignment(.trailing)
                     .frame(width: 70)
                     .textFieldStyle(.roundedBorder)
+                    .focused($countryFocused)
                     .onSubmit { Task { await store.savePrefs() } }
+                    .onChange(of: countryFocused) { _, focused in
+                        if !focused { Task { await store.savePrefs() } }
+                    }
                     .onChange(of: store.country) { _, text in if text.count > 2 { store.country = String(text.prefix(2)) } }
                     .accessibilityIdentifier("discoverCountry")
             }
@@ -142,5 +163,22 @@ struct DiscoverMatterChips: View {
                 .accessibilityIdentifier("discoverMatter.\(key)")
             }
         }
+    }
+}
+
+/// A coffee of the shelf, opened from a recommendation (the Coffees page's own form, with its own store).
+struct DiscoverCoffeeDestination: View {
+    let coffeeId: Int
+    @State private var store = CoffeeStore()
+
+    var body: some View {
+        Group {
+            if store.coffee(id: coffeeId) != nil {
+                CoffeeDetailView(store: store, coffeeId: coffeeId, draftStart: nil, onFinished: nil)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .task { await store.load() }
     }
 }
