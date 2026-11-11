@@ -222,6 +222,10 @@ The add-on manager (`src/addons/AddonManager.h`) does it, never the add-on:
     (`ShotRecord::stopTargetCg`, in what was padding, flagged by `SHOT_FLAG_OWN_TARGET`; `stop_target_g` in
     `/api/shots` and the CSV). Every over/under figure (result screen, web page, diagnostics, Home Assistant)
     compares against the target the shot stopped for.
+  - Grind advice counts such a shot with the recipe's other shots: it is the recipe's ratio for the dose
+    in the basket. A target of its own more than 10 % from the recipe's is another yield and is left out
+    (`GRIND_OWN_TARGET_SAME_FRAC`). Before 11 Nov 2026 every shot with a target of its own was left out,
+    so each grinder-dosed shot read "No advice: the shot did not count".
   - The measured dose is saved with the shot's context when the shot is saved (`ShotContextInputs::doseActualDg`,
     flag `CTX_PREP_DOSE_GRINDER`; `dose_weighed_g`). An owner's own entry later replaces it.
 - **Option "a grind selects its recipe here"**, off by default.

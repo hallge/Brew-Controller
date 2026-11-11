@@ -402,19 +402,23 @@ inline bool grindShotValid(const ShotRecord &s, GrindTimeBasis basis = GrindTime
 // Whether a stored shot was made the way the recipe is made now, so that their brew times compare
 // (audit G7, 10 Nov 2026): the same recipe, coffee and bag, dose and yield, and also the same
 // pre-infusion hold and bloom pause, which add straight to the brew time (a hold edited from 7 to
-// 10 s used to read as "slower, grind coarser"). A shot that stopped for a target of its own is
-// another yield. Holds closer than GRIND_HOLD_SAME_MS count as the same.
+// 10 s used to read as "slower, grind coarser"). Holds closer than GRIND_HOLD_SAME_MS count as the same.
+// A shot with a target of its own got it from a grinder add-on's weighed dose: the recipe's ratio kept
+// for the dose actually in the basket (docs/ADDONS.md). That is the recipe as made, so it counts; a
+// target more than GRIND_OWN_TARGET_SAME_FRAC from the recipe's is another yield.
 constexpr uint16_t GRIND_HOLD_SAME_MS = 500;
+constexpr float GRIND_OWN_TARGET_SAME_FRAC = 0.10f;
 inline bool grindRunComparable(const ShotRecord &r, const Recipe &recipe) {
   const uint16_t hold = recipe.preinfusion == Preinfusion::HOLD ? recipe.preinfusionHoldMs : 0;
   auto closeMs = [](uint16_t a, uint16_t b) {
     return (a > b ? a - b : b - a) <= GRIND_HOLD_SAME_MS;
   };
+  const bool ownOk = (r.flags & SHOT_FLAG_OWN_TARGET) == 0 ||
+                     fabsf(shotStopTargetG(r) - recipe.targetWeightG) <= GRIND_OWN_TARGET_SAME_FRAC * recipe.targetWeightG;
   return r.recipeId == recipe.recipeId && r.coffeeId == recipe.coffeeId &&
          sameBag(r.bagId, r.roastDate, recipe.bagId, recipe.roastDate) &&
          fabsf(r.targetWeightG - recipe.targetWeightG) <= 0.05f && fabsf(r.doseG - recipe.doseG) <= 0.05f &&
-         closeMs(r.preinfusionHoldMs, hold) && closeMs(r.bloomPauseMs, recipe.bloomPauseMs) &&
-         (r.flags & SHOT_FLAG_OWN_TARGET) == 0;
+         closeMs(r.preinfusionHoldMs, hold) && closeMs(r.bloomPauseMs, recipe.bloomPauseMs) && ownOk;
 }
 
 // The time a followed advice aimed the next shot at: the recipe's target, or the liked time it was

@@ -236,9 +236,18 @@ static void testAdviceComparable() {
   r.bloomPauseMs = 5000;
   CHECK(!grindRunComparable(r, recipe));
   r.bloomPauseMs = 0;
-  r.flags |= SHOT_FLAG_OWN_TARGET;   // stopped for a target of its own: another yield
+  // A target of its own from a grinder add-on's weighed dose (18.2 g: 36.4 g) is the recipe as made.
+  r.flags |= SHOT_FLAG_OWN_TARGET;
+  r.stopTargetCg = 3640;
+  CHECK(grindRunComparable(r, recipe));
+  r.stopTargetCg = 3250;             // just under 10 % under: still the same yield
+  CHECK(grindRunComparable(r, recipe));
+  r.stopTargetCg = 3200;             // 32 g for a 36 g recipe: another yield
+  CHECK(!grindRunComparable(r, recipe));
+  r.stopTargetCg = 4000;
   CHECK(!grindRunComparable(r, recipe));
   r.flags = 0;
+  r.stopTargetCg = 0;
   recipe.preinfusion = Preinfusion::MACHINE;   // the machine's own: the record keeps 0
   r.preinfusionHoldMs = 0;
   CHECK(grindRunComparable(r, recipe));

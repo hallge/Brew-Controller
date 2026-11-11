@@ -2818,7 +2818,8 @@ bbw::GrindAdvice grindAdvice() {
     // And the grinder as it is now calibrated: a setting from before it was
     // zeroed again is another setting.
     const bool valid = record.grinderId == sc.calibration && bbw::grindShotValid(record, sc.basis);
-    // Also the same pre-infusion hold and bloom pause, and no target of its own (bbw::grindRunComparable).
+    // Also the same pre-infusion hold and bloom pause, and any target of its own near the recipe's
+    // (a grinder add-on's weighed dose; bbw::grindRunComparable).
     const bool same = bbw::grindRunComparable(record, sc.recipe);
     if (same && record.grinderId == sc.calibration && !sc.newestSeen) {
       sc.newestSeen = true;
