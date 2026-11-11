@@ -1,6 +1,6 @@
 #pragma once
 // Plain-C helpers the Swift side needs and BrewHost.h does not carry. Add this header to the app's
-// bridging header (ios/BrewControllerApp/BrewController-Bridging-Header.h) next to BrewHost.h.
+// bridging header (ios/BrewControllerApp/BrewHost-Bridging-Header.h) next to BrewHost.h.
 #include <stdint.h>
 
 #ifdef __cplusplus

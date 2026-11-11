@@ -74,11 +74,12 @@ targets:
       - path: Host/ui_stub.cpp
       - path: Host/ble_corebluetooth.mm
       - path: Host/ios_runtime.mm
-      # Networking (W6), when its files exist on this branch:
+      - path: Host/BrewHostExtras.cpp
+      # Networking: URLSession, MQTT and the P-256 device key (ios/Host/NET.md).
+      - path: Host/net_portable.cpp
+      - path: Host/mqtt_client.cpp
       - path: Host/ios_net.mm
-        optional: true
       - path: Host/ios_devicekey.mm
-        optional: true
       # Headers, shown in Xcode only.
       - path: Host
         buildPhase: none
@@ -144,6 +145,10 @@ targets:
     platform: iOS
     sources:
       - path: BrewCoreTests
+      # The Swift core layer's tests; Fixtures/ is read by #filePath, not bundled.
+      - path: BrewControllerTests
+        excludes:
+          - "Fixtures/**"
     dependencies:
       - target: BrewController
     settings:
