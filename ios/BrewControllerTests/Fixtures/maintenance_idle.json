@@ -1,0 +1,1 @@
+{"shots_total":0,"due":0,"jobs":[{"id":"backflush","since_shots":0,"every_shots":200,"due":false,"last_epoch":0},{"id":"descale","since_shots":0,"every_shots":0,"due":false,"last_epoch":0},{"id":"grinder_clean","since_shots":0,"every_shots":500,"due":false,"last_epoch":0}]}

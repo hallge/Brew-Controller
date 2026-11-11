@@ -68,10 +68,45 @@ void onEvent(int event, int arg, void *) {
   if (event == BBW_EVENT_WAKE) ++g_wakeEvents;
 }
 
+std::string g_dumpDir;  // --dump DIR: every route body is also written there, for the Swift fixtures
+
+void dump(const std::string &name, const std::string &path) {
+  if (g_dumpDir.empty()) return;
+  const Reply r = call("GET", path);
+  FILE *f = fopen((g_dumpDir + "/" + name + ".json").c_str(), "wb");
+  if (!f) return;
+  fwrite(r.body.data(), 1, r.body.size(), f);
+  fclose(f);
+  printf("  dumped %s (%d, %zu bytes)\n", name.c_str(), r.status, r.body.size());
+}
+
+void dumpAll(const char *suffix) {
+  const struct {
+    const char *name;
+    const char *path;
+  } routes[] = {
+      {"status", "/api/status"},     {"screen", "/api/screen"},   {"library", "/api/library"},
+      {"settings", "/api/settings"}, {"shots", "/api/shots?limit=2"}, {"grind", "/api/grind"},
+      {"devices", "/api/devices"},   {"power", "/api/power"},     {"maintenance", "/api/maintenance"},
+      {"machine", "/api/machine"},
+  };
+  for (const auto &rt : routes) dump(std::string(rt.name) + suffix, rt.path);
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
   namespace fs = std::filesystem;
+  // Optional "--dump DIR" anywhere in the arguments; the rest is as before (argv[1]: data dir).
+  for (int i = 1; i + 1 < argc; ++i) {
+    if (!strcmp(argv[i], "--dump")) {
+      g_dumpDir = argv[i + 1];
+      fs::create_directories(g_dumpDir);
+      for (int j = i; j + 2 < argc; ++j) argv[j] = argv[j + 2];
+      argc -= 2;
+      break;
+    }
+  }
   setvbuf(stdout, nullptr, _IOLBF, 4096);
   const bool ownDir = argc < 2;
   const fs::path dir = ownDir ? fs::temp_directory_path() /
@@ -121,6 +156,7 @@ int main(int argc, char **argv) {
   (void)ready2;
 
   const uint32_t shotsBefore = live.last_shot_id;
+  dumpAll("_idle");
   check(bbw_command(BBW_CMD_START) == 0, "bbw_command START");
   // Poll at 10 Hz until the shot has started, is brewing, and ended.
   bool started = false, finished = false;
@@ -128,6 +164,7 @@ int main(int argc, char **argv) {
   const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(120);
   uint32_t lastChange = 0;
   int changes = 0;
+  bool dumpedMid = false;
   while (std::chrono::steady_clock::now() < end) {
     bbw_live(&live);
     if (live.change != lastChange) {
@@ -136,6 +173,10 @@ int main(int argc, char **argv) {
     }
     if (live.weight_g > peakWeight) peakWeight = live.weight_g;
     if (live.shot_time_s > 0.5f) started = true;
+    if (started && !dumpedMid && live.weight_g > 8.0f) {
+      dumpedMid = true;
+      dumpAll("_brewing");
+    }
     if (started && live.last_shot_id != shotsBefore && strcmp(live.state_name, "RESULT") == 0) {
       finished = true;
       break;
@@ -154,6 +195,26 @@ int main(int argc, char **argv) {
   check(g_stateEvents.load() > 0, "state events delivered to the callback");
 
   sleepMs(500);
+  dumpAll("_result");
+  if (!g_dumpDir.empty()) {
+    // A shelf with one coffee and a bag, so the library fixture has every field the page reads.
+    r = call("POST", "/api/coffee",
+             R"({"name":"Guji Natural","roaster":"Demo Roasters","origin":"Ethiopia","region":"Guji","producer":"Smallholders","varietal":"Heirloom","process":"Natural","notes":"jasmine, peach","altitudeM":2100,"roastLevel":1,"roastDate":20261101})");
+    JsonDocument cd;
+    if (r.status == 200 && !deserializeJson(cd, r.body)) {
+      call("POST", "/api/bag",
+           std::string(R"({"coffeeId":)") + std::to_string(cd["id"].as<int>()) +
+               R"(,"roastDate":20261101,"openedDate":20261108,"weightG":250})");
+    }
+    dump("library_coffee", "/api/library");
+  }
+  if (!g_dumpDir.empty()) {
+    r = call("GET", "/api/shots?limit=1");
+    JsonDocument sd;
+    if (!deserializeJson(sd, r.body) && sd.is<JsonArray>() && sd.size() > 0) {
+      dump("shot_data", "/api/shot/data?id=" + std::to_string(sd[0]["id"].as<unsigned long>()));
+    }
+  }
   r = call("GET", "/api/shots?limit=1");
   check(r.status == 200, "GET /api/shots?limit=1");
   {
