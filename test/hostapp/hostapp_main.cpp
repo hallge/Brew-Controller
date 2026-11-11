@@ -212,8 +212,26 @@ int main(int argc, char **argv) {
       call("POST", "/api/bag",
            std::string(R"({"coffeeId":)") + std::to_string(cd["id"].as<int>()) +
                R"(,"roastDate":20261101,"openedDate":20261108,"weightG":250})");
+      // One rating, so the ratings fixture has a row (the iOS library screens read it).
+      call("POST", "/api/coffee/rate",
+           std::string(R"({"coffee":)") + std::to_string(cd["id"].as<int>()) +
+               R"(,"bag":0,"drinker":0,"stars":4,"attr":[3,2,3,1,4],"flavours":5})");
     }
     dump("library_coffee", "/api/library");
+    dump("coffee_ratings", "/api/coffee/ratings");
+    dump("coffee_directory", "/api/directory");
+    dump("coffee_community_coffees", "/api/community/coffees");
+    dump("coffee_library_pending", "/api/library/pending");
+    dump("coffee_share", "/api/share");
+    {
+      JsonDocument ld;
+      r = call("GET", "/api/library");
+      if (!deserializeJson(ld, r.body) && ld["coffees"].size() > 0 && ld["recipes"].size() > 0) {
+        dump("coffee_community",
+             "/api/community?coffee=" + std::to_string(ld["coffees"][0]["id"].as<int>()) +
+                 "&recipe=" + std::to_string(ld["recipes"][0]["id"].as<int>()));
+      }
+    }
   }
   if (!g_dumpDir.empty()) {
     r = call("GET", "/api/shots?limit=1");
