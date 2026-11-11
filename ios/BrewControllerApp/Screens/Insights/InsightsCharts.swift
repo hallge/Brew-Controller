@@ -297,12 +297,12 @@ struct InsightsGrindCard: View {
                           yStart: .value("Low", -tolerance), yEnd: .value("High", tolerance))
                 .foregroundStyle(palette.ok.opacity(0.14))
             ForEach(points) { point in
-                LineMark(x: .value("Change", point.index), y: .value("Confidence", scaled(point.confidence)),
+                LineMark(x: .value("Change", Double(point.index)), y: .value("Confidence", scaled(point.confidence)),
                          series: .value("Series", "confidence"))
                     .foregroundStyle(palette.accent)
             }
             ForEach(points) { point in
-                PointMark(x: .value("Change", point.index), y: .value("Miss", point.error))
+                PointMark(x: .value("Change", Double(point.index)), y: .value("Miss", point.error))
                     .foregroundStyle(point.event.followed
                         ? InsightsColors.pace(InsightsMath.pace(error: point.error, tolerance: tolerance))
                         : Color.gray.opacity(0.6))

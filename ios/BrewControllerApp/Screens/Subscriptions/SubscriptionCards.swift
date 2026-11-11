@@ -1,6 +1,7 @@
 // The cards of the Subscriptions page: a subscription of the owner's (with Manage, Arrived, Skip one,
 // Edit) and a service of the shared library (with Add). Also used by Discover's recommendations.
 import SwiftUI
+import UIKit
 
 enum SubscriptionColors {
     /// "#rrggbb" as a colour; nil for anything else.

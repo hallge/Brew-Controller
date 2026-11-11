@@ -26,7 +26,7 @@ struct SubscriptionsScreen: View {
     var body: some View {
         let palette = BrewTheme.shared.palette
         ScrollView {
-            LazyVStack(spacing: 14) {
+            VStack(spacing: 14) {
                 if let notice = store.notice {
                     Text(notice.text)
                         .font(.subheadline)

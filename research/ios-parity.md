@@ -159,38 +159,38 @@ line for every item) are in the coordinator's notes, `ios-parity/`.
 
 | Feature | Route | Status |
 |---|---|---|
-| Taste radars (5 values, 8 families), drinker switch, liked best | `/api/taste/profile` | ☐ |
-| Roast level against grind | `/api/shots` | ☐ |
-| Coffee age against brew time | `/api/shots` | ☐ |
-| Brewing calendar: shots, coffee & recipe, drift, time of day | `/api/shots`, `/api/power/events` | ☐ |
-| Dial-in shots per bag | `/api/shots` | ☐ |
-| Grind advice against target | `/api/grind/accuracy` | ☐ |
+| Taste radars (5 values, 8 families), drinker switch, liked best | `/api/taste/profile` | ◐ `DiscoverScreensUITests.testOpenEachScreen` |
+| Roast level against grind | `/api/shots` | ◐ `DiscoverScreensUITests.testInsightsChartsAfterADemoShot` (empty note only: the demo shot has no roast level or grind) |
+| Coffee age against brew time | `/api/shots` | ◐ `DiscoverScreensUITests.testInsightsChartsAfterADemoShot` (empty note only: no roast date) |
+| Brewing calendar: shots, coffee & recipe, drift, time of day | `/api/shots`, `/api/power/events` | ◐ `DiscoverScreensUITests.testInsightsChartsAfterADemoShot` (all 4 modes) |
+| Dial-in shots per bag | `/api/shots` | ◐ `DiscoverScreensUITests.testInsightsChartsAfterADemoShot` |
+| Grind advice against target | `/api/grind/accuracy` | ◐ `DiscoverScreensUITests.testInsightsChartsAfterADemoShot` (empty note only: no advised change yet) |
 
 ## 8. Subscriptions (W: `#subscriptions`)
 
 | Feature | Route | Status |
 |---|---|---|
-| Tiles: per month, next up, stock | `/api/subscriptions` | ☐ |
-| Reminders: due soon, running out | `/api/subscriptions` | ☐ |
-| Cards: manage, arrived, skip one, edit | `/arrived`, `/skip` | ☐ |
-| Form: link and read the page, name, kind, status, every, next, price, supplies, manage link, library details, note, look | `/api/subscriptions`, `/preview` | ☐ |
-| Reviews: who, stars, 6 aspects, note; delete | `/review`, `/review/delete` | ☐ |
-| Arrival dialog: pick or make the coffee, roast date, weight | `/arrived`, `/api/coffee`, `/api/bag` | ☐ |
-| Shared library: search, add; send mine | `/api/subscriptions`, `/share` | ☐ |
-| Update from the shops (Chrome helper) | ✕ Chrome-only; "Read the page" covers it | ✕ |
+| Tiles: per month, next up, stock | `/api/subscriptions` | ◐ `DiscoverScreensUITests.testCreateEditAndMarkASubscriptionArrived` |
+| Reminders: due soon, running out | `/api/subscriptions` | ◐ `DiscoverScreensModelTests.testSubscriptionList` (the logic; no UI test: needs a due date in the demo) |
+| Cards: manage, arrived, skip one, edit | `/arrived`, `/skip` | ◐ `DiscoverScreensUITests.testCreateEditAndMarkASubscriptionArrived` (arrived, edit; skip and manage are not tapped) |
+| Form: link and read the page, name, kind, status, every, next, price, supplies, manage link, library details, note, look | `/api/subscriptions`, `/preview` | ◐ `DiscoverScreensUITests.testCreateEditAndMarkASubscriptionArrived` (read the page needs the network: not run) |
+| Reviews: who, stars, 6 aspects, note; delete | `/review`, `/review/delete` | ◐ `DiscoverScreensModelTests.testSubscriptionReviewsPreviewAndLibrary` (model only; no UI test) |
+| Arrival dialog: pick or make the coffee, roast date, weight | `/arrived`, `/api/coffee`, `/api/bag` | ◐ none yet (the UI test arrives a supplies subscription, which skips the dialog; a coffee one needs a roast date picker) |
+| Shared library: search, add; send mine | `/api/subscriptions`, `/share` | ◐ `DiscoverScreensUITests.testOpenEachScreen` (empty state only: no relay in demo) |
+| Update from the shops (Chrome helper) | ✕ Chrome-only (a browser extension); "Read the page" on the form covers it, and the app has no "Apply what is ticked" import | ✕ |
 
 ## 9. Discover and Community (W: `#discover`, `#community`)
 
 | Feature | Route | Status |
 |---|---|---|
-| Who (household or a named drinker) | client | ☐ |
-| Coffees you might like; buy again | `/api/taste/recommend` | ☐ |
-| Subscriptions you might like; country; what matters | `/api/subscriptions/recommend`, `/prefs` | ☐ |
-| Coffee library: published (add); waiting for review (approve or decline with a note) | `/api/community/coffees`, `/api/library/pending`, `/api/library/review` | ☐ |
-| Recipe book: published (make it a recipe); waiting for review | `/api/community/recipes` | ☐ |
-| Community feed with topics; suggest a link (read the page, kind, title, topics, why); yours (delete) | `/api/links`, `/links/suggest`, `/links/delete` | ☐ |
-| Share a shot to Reddit: shot, photo, subreddit, title, 1200x1200 image, text, through the share sheet | client | ☐ |
-| Trending recipes; for what you're brewing; shared grinders; what you share | `/api/trending`, `/api/share` | ☐ |
+| Who (household or a named drinker) | client | ◐ none yet (needs named drinkers on) |
+| Coffees you might like; buy again | `/api/taste/recommend` | ◐ `DiscoverScreensUITests.testOpenEachScreen` (empty state: fewer than 3 rated) |
+| Subscriptions you might like; country; what matters | `/api/subscriptions/recommend`, `/prefs` | ◐ `DiscoverScreensUITests.testOpenEachScreen` (card opens; no relay, so no recommendations) |
+| Coffee library: published (add); waiting for review (approve or decline with a note) | `/api/community/coffees`, `/api/library/pending`, `/api/library/review` | ◐ `DiscoverScreensUITests.testOpenEachScreen` (empty state; filled lists only in the model tests) |
+| Recipe book: published (make it a recipe); waiting for review | `/api/community/recipes` | ◐ `DiscoverScreensModelTests.testLibraryOfflineAndPublished` (model only) |
+| Community feed with topics; suggest a link (read the page, kind, title, topics, why); yours (delete) | `/api/links`, `/links/suggest`, `/links/delete` | ◐ `DiscoverScreensUITests.testCommunityFeedIsEmptyWithoutTheLibrary` (empty state) |
+| Share a shot to Reddit: shot, photo, subreddit, title, 1200x1200 image, text, through the share sheet | client | ◐ `DiscoverScreensModelTests.testRedditText` (the text; the ImageRenderer picture and the share sheet are untested) |
+| Trending recipes; for what you're brewing; shared grinders; what you share | `/api/trending`, `/api/share` | ◐ `DiscoverScreensUITests.testCommunityFeedIsEmptyWithoutTheLibrary` (empty states; the "similar coffee" start guess of "for what you're brewing" is not built) |
 
 ## 10. Devices (W: Setup → Devices; S: Settings)
 

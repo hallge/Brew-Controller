@@ -7,7 +7,7 @@ struct InsightsScreen: View {
     var body: some View {
         let palette = BrewTheme.shared.palette
         ScrollView {
-            LazyVStack(spacing: 14) {
+            VStack(spacing: 14) {
                 switch store.phase {
                 case .loading:
                     ProgressView("Loading insights")
