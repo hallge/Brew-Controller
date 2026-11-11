@@ -32,14 +32,18 @@ final class RetryingTask<Value: Sendable> {
     @ObservationIgnored private let operation: @Sendable () async throws -> Value
     @ObservationIgnored private let maxAttempts: Int
     @ObservationIgnored private let firstDelay: Duration
+    @ObservationIgnored private let retryConflicts: Bool
     @ObservationIgnored private var task: Task<Void, Never>?
 
     /// - maxAttempts: tries before giving up (a failure that retrying cannot fix, such as a 409 or a
     ///   decoding error, stops at once).
-    init(maxAttempts: Int = 4, firstDelay: Duration = .milliseconds(400),
+    /// - retryConflicts: also try again after a 409 ("not while a shot is running"). Right after
+    ///   start-up the controller can answer that to the first settings change with no shot in hand.
+    init(maxAttempts: Int = 4, firstDelay: Duration = .milliseconds(400), retryConflicts: Bool = false,
          operation: @escaping @Sendable () async throws -> Value) {
         self.maxAttempts = max(1, maxAttempts)
         self.firstDelay = firstDelay
+        self.retryConflicts = retryConflicts
         self.operation = operation
     }
 
@@ -72,7 +76,7 @@ final class RetryingTask<Value: Sendable> {
                 phase = .loaded(value)
                 return
             } catch let error as BrewAPIError {
-                if attempt >= maxAttempts || !RetryingTask.isRetryable(error) {
+                if attempt >= maxAttempts || !(RetryingTask.isRetryable(error) || (retryConflicts && error.isConflict)) {
                     phase = .failed(error)
                     return
                 }
