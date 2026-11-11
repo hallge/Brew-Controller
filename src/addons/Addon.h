@@ -273,7 +273,7 @@ constexpr uint32_t NOTICE_TTL_MS = 15UL * 60UL * 1000UL;
 constexpr size_t NOTICE_LEN = 96;
 constexpr size_t FILE_NAME_MAX = 20;
 constexpr size_t FILE_PATH_MAX = 47;   // "/addons/<id>/<name>": fits a backup entry name (core/BackupFormat.h)
-constexpr uint32_t ADDON_FILE_LIMIT = 256UL * 1024UL;     // per add-on, all its files
+constexpr uint32_t ADDON_FILE_LIMIT = 1024UL * 1024UL;    // per add-on, all its files
 constexpr uint32_t ADDON_FILE_RESERVE = 512UL * 1024UL;   // free on the file system after a write
 constexpr size_t CARD_JSON_MAX = 3072;
 
