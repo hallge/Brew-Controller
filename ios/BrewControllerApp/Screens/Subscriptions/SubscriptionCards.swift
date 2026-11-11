@@ -202,9 +202,10 @@ struct SubscriptionLibraryCard: View {
                     Text("Ships to " + service.shipsTo.joined(separator: ", ")).font(.footnote).foregroundStyle(palette.dim)
                 }
                 if let reviews = service.reviews, reviews.n > 0 {
-                    let filled = Int(reviews.stars.rounded())
-                    Text(String(repeating: "★", count: max(0, min(5, filled))) + String(repeating: "☆", count: max(0, 5 - filled))
-                         + " " + BrewFormat.decimal(reviews.stars, 1) + " from \(reviews.n) reviews")
+                    let filled: Int = max(0, min(5, Int(Double(reviews.stars).rounded())))
+                    let starText: String = String(repeating: "★", count: filled) + String(repeating: "☆", count: 5 - filled)
+                    let countText: String = BrewFormat.decimal(Double(reviews.stars), 1) + " from \(reviews.n) reviews"
+                    Text(starText + " " + countText)
                         .font(.footnote).foregroundStyle(palette.accent)
                 } else {
                     Text("Not enough reviews yet").font(.footnote).foregroundStyle(palette.dim)

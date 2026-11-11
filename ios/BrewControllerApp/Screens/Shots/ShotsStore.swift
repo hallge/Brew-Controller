@@ -284,7 +284,7 @@ final class ShotsStore {
     /// Dose weighed (0: not weighed), purged first, flow looked uneven. Marking a shot uneven also sets
     /// its grind vote to Ignore, unless the owner has already chosen one.
     func setPrep(_ id: Int, dose: Double, purged: Bool, uneven: Bool) async {
-        let before = shot(id)
+        let before = shot(id: id)
         do {
             try await api.post("/api/shot/prep", query: [
                 "id": String(id), "dose": BrewFormat.decimal(dose, 1),
