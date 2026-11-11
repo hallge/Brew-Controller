@@ -80,6 +80,9 @@ struct HostHooks {
   // WebServer::begin(): start whatever accepts requests for the device web server and feed them
   // to webDispatch(). Null means in-process only (webEnqueue).
   bool (*webListen)(int port) = nullptr;
+  // Runs first on every thread xTaskCreatePinnedToCore() starts (name and FreeRTOS priority of the
+  // task): a host sets the thread's scheduling class here. Default: nothing.
+  void (*taskStarted)(const char *name, int priority) = nullptr;
 };
 extern HostHooks g_hooks;
 // Reload the RTC variables after a restart (or discard the saved image after a power-on).

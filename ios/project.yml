@@ -1,11 +1,10 @@
 name: BrewController
-# XcodeGen project for the iOS Phase 0 spike (research/ios-app-feasibility.md §5.3, §9).
+# XcodeGen project for the iPhone app that runs the board's own firmware in-process.
 # Generate with:  cd ios && xcodegen generate
 #
-# The firmware's portable core is compiled from where it lives, by path, never copied:
-#   ../src/core/BrewController.cpp and ../lib/EspressoScaleProtocol/src/*.cpp
-# Swift C++ interop is on for the app and its unit tests only (they import CoreSession.h through a
-# bridging header); the UI tests are plain Swift.
+# The firmware (src/main.cpp, Web.cpp, Ble.cpp, Store.cpp, core/ ...) is compiled from where it lives,
+# by path, never copied, with the same source list, flags and include order as test/hostapp/run.sh
+# (keep the two in step). No LVGL, no Ui.cpp, no OBBW code.
 options:
   bundleIdPrefix: com.hallge
   deploymentTarget:
@@ -22,8 +21,10 @@ settings:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.1"
     CODE_SIGN_STYLE: Automatic
-    CLANG_CXX_LANGUAGE_STANDARD: c++17
+    CLANG_CXX_LANGUAGE_STANDARD: gnu++17
     CLANG_CXX_LIBRARY: libc++
+    # emu/shims shadows names (Arduino.h, WiFi.h ...): resolve only through the search paths below.
+    USE_HEADERMAP: NO
 
 targets:
   BrewController:
@@ -31,16 +32,58 @@ targets:
     platform: iOS
     sources:
       - path: BrewControllerApp
-      - path: BrewCoreBridge
-      - path: Sim
-        buildPhase: none
-      # The firmware's core, by path (group "FirmwareCore" in Xcode).
+      # ---- the firmware, by path (test/hostapp/run.sh FIRMWARE) ----
+      - path: ../src/main.cpp
+        group: Firmware
+      - path: ../src/Log.cpp
+        group: Firmware
+      - path: ../src/platform/FirmwareUpdate.cpp
+        group: Firmware/platform
+      - path: ../src/ble/Ble.cpp
+        group: Firmware/ble
       - path: ../src/core/BrewController.cpp
-        group: FirmwareCore
-      - path: ../lib/EspressoScaleProtocol/src
-        group: FirmwareCore/EspressoScaleProtocol
+        group: Firmware/core
+      - path: ../src/net/Web.cpp
+        group: Firmware/net
+      - path: ../src/net/ScreenApi.cpp
+        group: Firmware/net
+      - path: ../src/addons/AddonHost.cpp
+        group: Firmware/addons
+      - path: ../src/storage/Store.cpp
+        group: Firmware/storage
+      - path: ../src/storage/Backup.cpp
+        group: Firmware/storage
+      - path: ../lib/ScaleWire/src
+        group: Firmware/ScaleWire
         includes:
           - "*.cpp"
+      # ---- the PC emulator's portable stand-ins ----
+      - path: ../emu/src/host_runtime.cpp
+        group: Emu
+      - path: ../emu/src/host_web.cpp
+        group: Emu
+      - path: ../emu/src/ble_facade.cpp
+        group: Emu
+      - path: ../emu/src/virtual_radio.cpp
+        group: Emu
+      - path: ../emu/src/emu_devices.cpp
+        group: Emu
+      # ---- the iPhone host ----
+      - path: Host/BrewHost.cpp
+      - path: Host/host_stubs.cpp
+      - path: Host/ui_stub.cpp
+      - path: Host/ble_corebluetooth.mm
+      - path: Host/ios_runtime.mm
+      # Networking (W6), when its files exist on this branch:
+      - path: Host/ios_net.mm
+        optional: true
+      - path: Host/ios_devicekey.mm
+        optional: true
+      # Headers, shown in Xcode only.
+      - path: Host
+        buildPhase: none
+        includes:
+          - "*.h"
     info:
       path: BrewControllerApp/Info.plist
       properties:
@@ -50,8 +93,8 @@ targets:
         # Standard system cryptography only: nothing to declare on App Store Connect.
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
-        NSBluetoothAlwaysUsageDescription: Brew Controller talks to your Acaia Lunar scale and your SwitchBot Bot over Bluetooth to pull a shot to its target weight.
-        NSBluetoothPeripheralUsageDescription: Brew Controller talks to your Acaia Lunar scale and your SwitchBot Bot over Bluetooth to pull a shot to its target weight.
+        NSBluetoothAlwaysUsageDescription: Brew Controller talks to your scale and your brew bot over Bluetooth to pull a shot to its target weight.
+        NSLocalNetworkUsageDescription: Brew Controller talks to Home Assistant and other devices on your home network.
         UIBackgroundModes:
           - bluetooth-central
     settings:
@@ -68,27 +111,39 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         ENABLE_PREVIEWS: YES
         SKIP_INSTALL: NO
-        # Swift C++ interop, for the bridging header only.
-        SWIFT_OBJC_BRIDGING_HEADER: BrewControllerApp/BrewController-Bridging-Header.h
-        SWIFT_OBJC_INTEROP_MODE: objcxx
-        OTHER_SWIFT_FLAGS: "$(inherited) -Xcc -std=c++17"
+        # One plain-C API, no Swift C++ interop: the bridging header imports only plain-C headers.
+        SWIFT_OBJC_BRIDGING_HEADER: BrewControllerApp/BrewHost-Bridging-Header.h
+        # dladdr finds the RTC section in the image that holds the firmware: keep it in one binary.
+        ENABLE_DEBUG_DYLIB: NO
+        # Same defines as test/hostapp/run.sh.
+        GCC_PREPROCESSOR_DEFINITIONS:
+          - BBW_EMULATOR
+          - BBW_HOST_IOS
+          - BBW_CLEAN
+          - CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3
+          - ARDUINOJSON_ENABLE_ARDUINO_STRING=1
+          - ARDUINOJSON_ENABLE_ARDUINO_PRINT=1
+        # Same order as run.sh: -Iios/Host -Iemu/shims -Iemu/src -Isrc -Iios/Generated -Ilib/ScaleWire/src -I<ArduinoJson>
         HEADER_SEARCH_PATHS:
-          - $(SRCROOT)
-          - $(SRCROOT)/BrewCoreBridge
+          - $(SRCROOT)/Host
+          - $(SRCROOT)/../emu/shims
+          - $(SRCROOT)/../emu/src
           - $(SRCROOT)/../src
-          - $(SRCROOT)/../lib/EspressoScaleProtocol/src
+          - $(SRCROOT)/Generated
+          - $(SRCROOT)/../lib/ScaleWire/src
+          - $(SRCROOT)/Vendor/ArduinoJson/src
+        # run.sh builds with -Wno-c++11-narrowing.
+        OTHER_CPLUSPLUSFLAGS: "$(inherited) -Wno-c++11-narrowing"
       configs:
         Release:
           PROVISIONING_PROFILE_SPECIFIER: $(APP_PROFILE)
 
-  # Hosted in the app: the C++ is compiled once, into the app, and the tests call it there.
+  # Hosted in the app: the controller is compiled once, into the app, and the tests call it there.
   BrewCoreTests:
     type: bundle.unit-test
     platform: iOS
     sources:
       - path: BrewCoreTests
-      # The constants are compiled into the tests too, so the tests need not import the app module.
-      - path: BrewControllerApp/BridgeConstants.swift
     dependencies:
       - target: BrewController
     settings:
@@ -98,13 +153,8 @@ targets:
         TEST_HOST: $(BUILT_PRODUCTS_DIR)/BrewController.app/BrewController
         BUNDLE_LOADER: $(TEST_HOST)
         SWIFT_OBJC_BRIDGING_HEADER: BrewCoreTests/BrewCoreTests-Bridging-Header.h
-        SWIFT_OBJC_INTEROP_MODE: objcxx
-        OTHER_SWIFT_FLAGS: "$(inherited) -Xcc -std=c++17"
         HEADER_SEARCH_PATHS:
-          - $(SRCROOT)
-          - $(SRCROOT)/BrewCoreBridge
-          - $(SRCROOT)/../src
-          - $(SRCROOT)/../lib/EspressoScaleProtocol/src
+          - $(SRCROOT)/Host
 
   BrewControllerUITests:
     type: bundle.ui-testing

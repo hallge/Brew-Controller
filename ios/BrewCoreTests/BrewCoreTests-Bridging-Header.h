@@ -1,2 +1,4 @@
-// The same bridge, for the unit tests (the C++ itself is compiled into the host app).
-#include "CoreSession.h"
+// The plain-C interface to the in-process controller (same as the app's).
+#import "BrewHost.h"
+#import "ble_corebluetooth.h"
+#import "ios_runtime.h"

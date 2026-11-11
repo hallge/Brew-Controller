@@ -325,9 +325,13 @@ void vTaskDelayUntil(TickType_t *previousWake, TickType_t increment) {
   *previousWake = wait < -200 ? millis() : target;
 }
 
-int xTaskCreatePinnedToCore(void (*task)(void *), const char *, uint32_t, void *arg, int, void *,
-                            int) {
-  std::thread(task, arg).detach();
+int xTaskCreatePinnedToCore(void (*task)(void *), const char *name, uint32_t, void *arg, int priority,
+                            void *, int) {
+  const std::string taskName = name ? name : "";
+  std::thread([task, arg, taskName, priority] {
+    if (emu::g_hooks.taskStarted) emu::g_hooks.taskStarted(taskName.c_str(), priority);
+    task(arg);
+  }).detach();
   return pdTRUE;
 }
 
