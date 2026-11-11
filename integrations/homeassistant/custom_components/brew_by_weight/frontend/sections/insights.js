@@ -65,7 +65,7 @@ class BrewInsights extends BrewSection {
     const name = (o) => (o.i < 5 ? (o.s > 0 ? "more " : "less ") + o.d : o.d);
     const to = lean.filter((o) => o.s > 0).sort((a, b) => b.s - a.s).slice(0, 4).map(name);
     const from = lean.filter((o) => o.s < 0 && o.i >= 5).sort((a, b) => a.s - b.s).slice(0, 3).map(name);
-    if (!p.coffees) return "No coffees rated yet. Rate the coffees you drink on the Coffees tab (How you liked it) and your taste shows here.";
+    if (!p.coffees) return "No coffees rated yet. Rate the coffees you drink on the controller (How you liked it) and your taste shows here.";
     return (!p.shown ? `Early days: ${p.coffees} coffee${p.coffees == 1 ? "" : "s"} rated; the profile shows from 3. ` : "") +
       (to.length ? `You lean towards <b>${esc(to.join(", "))}</b>` : "") + (from.length ? `${to.length ? "; " : "You lean "}away from <b>${esc(from.join(", "))}</b>` : "") + (to.length || from.length ? "." : "") +
       (p.shown && !p.settled ? ` (${p.coffees} coffees rated: settles from 8)` : "");

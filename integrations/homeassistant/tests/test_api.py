@@ -4,6 +4,7 @@ api.py is loaded by path so importing the package's __init__ (which needs Home A
 """
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 _PKG = Path(__file__).resolve().parents[1] / "custom_components" / "brew_by_weight"
@@ -109,6 +110,11 @@ def test_error_message():
 def test_manifest_and_translations():
     manifest = json.loads((_PKG / "manifest.json").read_text())
     assert manifest["domain"] == "brew_by_weight" and manifest["config_flow"] is True
-    assert manifest["iot_class"] == "local_polling" and manifest["version"] == "0.3.2"
-    assert json.loads((_PKG / "strings.json").read_text()) == json.loads(
-        (_PKG / "translations" / "en.json").read_text())
+    assert manifest["iot_class"] == "local_polling" and manifest["version"] == "0.4.0"
+    strings = json.loads((_PKG / "strings.json").read_text(encoding="utf-8"))
+    assert strings == json.loads((_PKG / "translations" / "en.json").read_text(encoding="utf-8"))
+    # Every entity's translation_key has a name (0.4.0 added a dozen).
+    for platform in ("sensor", "binary_sensor"):
+        source = (_PKG / f"{platform}.py").read_text(encoding="utf-8")
+        for key in re.findall(r'translation_key="([a-z_]+)"', source):
+            assert key in strings["entity"][platform], (platform, key)

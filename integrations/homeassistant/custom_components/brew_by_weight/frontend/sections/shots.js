@@ -1,12 +1,11 @@
 // Shots: summary tiles, history with filters, shot detail (curve, stats, grind vote, preparation,
-// rating, TDS), comparison of up to 8 shots, exports, clear history (WebPage.h:268-283, 1801-1853,
-// 1580-1602).
+// rating, TDS), comparison of up to 8 shots, exports (WebPage.h:268-283, 1801-1853, 1580-1602).
+// Correcting a shot's grind and clearing the history are done in the controller's own page.
 import { BrewSection } from "../lib/section.js";
 import { html, raw } from "../lib/styles.js";
-import { f1, f2, fs, fsn, ps, grindOf, esc } from "../lib/format.js";
+import { f1, f2, fs, fsn, grindOf, esc } from "../lib/format.js";
 import { summaryLine, rateRowHtml, wireRateRow, drawShot, shotData } from "../lib/shotview.js";
 import { compareChart, theme, CCOL, when, TIP_CSS } from "../lib/charts.js";
-import { confirmDialog, formDialog, textField } from "../lib/forms.js";
 
 export const meta = { id: "shots", title: "Shots", icon: "mdi:coffee" };
 
@@ -74,7 +73,7 @@ class BrewShots extends BrewSection {
     return html`
     <div class="card">
       <div class="spread"><h3>Shots</h3><div class="row">
-        <button id="csv">Download CSV</button><button id="json">Download JSON</button><button class="danger" id="clear">Clear history</button></div></div>
+        <button id="csv">Download CSV</button><button id="json">Download JSON</button></div></div>
       <div class="tiles" style="margin:8px 0 12px">
         <div class="tile"><div class="k">Shots</div><div class="v">${all.length}</div><div class="k">${w.length} stopped by weight</div></div>
         <div class="tile"><div class="k">On time</div><div class="v">${timed.length ? Math.round(100 * good / timed.length) + " %" : "--"}</div><div class="k">${timed.length ? good + " of " + timed.length + " within ± " + tol + " s" : "no target times yet"}</div></div>
@@ -108,7 +107,7 @@ class BrewShots extends BrewSection {
         ${tile("In the cup", f1(s.final_weight_g) + " g", "target " + f1(s.stop_target_g ?? s.target_weight_g) + ", drip " + f1(s.drip_weight_g))}
         ${tile("Brew time", f1(s.shot_time_s) + " s", s.target_time_s ? "target " + s.target_time_s : "")}
         ${tile("Pour", f1(s.pour_time_s) + " s", f2(s.pour_flow_g_s) + " g/s, first drops " + f1(s.first_drop_s) + " s")}
-        ${tile("Grind", s.grind_um ? esc(fs(g, s.grind_um)) : "--", s.dose_g + ' g dose · <a class="link" id="editgrind">change</a>')}
+        ${tile("Grind", s.grind_um ? esc(fs(g, s.grind_um)) : "--", s.dose_g + " g dose")}
         ${tile("Flow at 25/50/75 %", [s.flow_25_g_s, s.flow_50_g_s, s.flow_75_g_s].map(f1).join(" / "), "peak " + f2(s.peak_flow_g_s) + " g/s")}
         ${tile("Ended by", esc((s.end_reason || "").replace(/_/g, " ")), "offset " + f2(s.stop_offset_g) + " → " + f2(s.next_stop_offset_g) + " g" + (s.bloom_pause_s ? ", bloom " + s.bloom_pause_s + " s" : ""))}
       </div>
@@ -138,11 +137,6 @@ class BrewShots extends BrewSection {
       const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "brew-shots.json"; a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     };
-    this.$("#clear").onclick = async () => {
-      if (!(await confirmDialog(this.shadowRoot, "Clear the whole shot history? It cannot be brought back (download it first if you may want it)."))) return;
-      const r = await this.post("/api/history/clear", null, "History cleared");
-      if (r.ok) this.store.invalidate("shots", "grind");
-    };
     const det = this.$("#detail"), s = this.SH.find((x) => x.id == UI.sel);
     if (det && s) this.wireDetail(det, s);
     this.wireCompare();
@@ -153,7 +147,6 @@ class BrewShots extends BrewSection {
     const after = () => this.store.invalidate("shots", "grind");
     wireRateRow(this, det, s, after);
     det.querySelectorAll("[data-vote]").forEach((b) => b.onclick = async () => { const r = await this.post("/api/shot/vote", null, "Saved", { id: s.id, vote: +b.dataset.vote }); if (r.ok) after(); });
-    det.querySelector("#editgrind").onclick = () => this.editGrind(s);
     det.querySelector("#cmp").onclick = () => this.toggleCompare(s.id);
     det.querySelector("#dlshot").onclick = () => this.api.download("shot_csv", { id: s.id }, `brew-shot-${s.id}.csv`).catch((e) => this.panel.toast(e.message, false));
     const prep = async () => {
@@ -173,17 +166,6 @@ class BrewShots extends BrewSection {
       const d = data.data || {};
       el.textContent = `Dark: weight. Orange: flow.${ref ? " Dashed green: your best-rated shot of this coffee (" + "★".repeat(ref.rating) + ", " + f1(ref.shot_time_s) + " s)." : ""} ${d.samples || 0} readings over ${d.duration_s || 0} s, one every ${d.mean_period_ms || 0} ms, longest gap ${d.max_gap_ms || 0} ms. ` +
         (d.timer_samples ? `Scale timer in ${d.timer_samples} of them` + (d.timer_span_s > 0 ? `: it counted ${d.timer_span_s} s while this controller counted ${d.clock_span_s} s.` : ".") : "The scale sent no timer.");
-    });
-  }
-
-  async editGrind(s) {
-    const g = this.g;
-    await formDialog(this.shadowRoot, "Grind setting for this shot", textField("v", `Setting, in ${g.unit} (empty or 0 = not recorded)`, fsn(g, s.grind_um)), async (form) => {
-      const v = form.v.value.trim(), um = v === "" || v === "0" ? 0 : ps(g, v);
-      if (um == null) { this.panel.toast("That is not a setting this grinder can have", false); return false; }
-      const r = await this.post("/api/shot/grind", null, "Saved", { id: s.id, um });
-      if (r.ok) this.store.invalidate("shots", "grind");
-      return r.ok;
     });
   }
 

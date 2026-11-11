@@ -10,7 +10,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfMass, UnitOfTemperature, UnitOfTime
+from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfMass, UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -59,6 +59,27 @@ SENSORS: tuple[SensorEntityDescription, ...] = (
     SensorEntityDescription(key="backflush_since", translation_key="backflush_since", icon="mdi:water-sync", state_class=M),
     SensorEntityDescription(key="descale_since", translation_key="descale_since", icon="mdi:water-alert", state_class=M),
     SensorEntityDescription(key="grinder_clean_since", translation_key="grinder_clean_since", icon="mdi:broom", state_class=M),
+    # 0.4.0: the summary
+    SensorEntityDescription(key="shots_today", translation_key="shots_today", icon="mdi:coffee", state_class=M),
+    SensorEntityDescription(key="last_shot_stop_target_g", translation_key="last_shot_stop_target",
+                            native_unit_of_measurement=UnitOfMass.GRAMS,
+                            device_class=SensorDeviceClass.WEIGHT, state_class=M),
+    SensorEntityDescription(key="last_shot_rating", translation_key="last_shot_rating", icon="mdi:star"),
+    SensorEntityDescription(key="room_shift_s", translation_key="room_shift", icon="mdi:home-thermometer",
+                            native_unit_of_measurement=UnitOfTime.SECONDS, state_class=M),
+    SensorEntityDescription(key="scale_battery_pct", translation_key="scale_battery",
+                            native_unit_of_measurement=PERCENTAGE,
+                            device_class=SensorDeviceClass.BATTERY, state_class=M),
+    SensorEntityDescription(key="bags_unopened", translation_key="bags_unopened", icon="mdi:package-variant-closed",
+                            state_class=M),
+    SensorEntityDescription(key="bags_on_the_way", translation_key="bags_on_the_way", icon="mdi:truck-fast",
+                            state_class=M),
+    SensorEntityDescription(key="supplies_left", translation_key="supplies_left", icon="mdi:filter", state_class=M),
+    SensorEntityDescription(key="next_delivery", translation_key="next_delivery", icon="mdi:calendar-arrow-right",
+                            device_class=SensorDeviceClass.DATE),
+    SensorEntityDescription(key="last_coffee_rating", translation_key="last_coffee_rating", icon="mdi:star-face"),
+    SensorEntityDescription(key="firmware_version", translation_key="firmware_version", icon="mdi:chip",
+                            entity_category=EntityCategory.DIAGNOSTIC),
 )
 
 ATTRIBUTES = {
@@ -68,6 +89,11 @@ ATTRIBUTES = {
     "backflush_since": lambda d: {"every_shots": d.get("backflush_every")},
     "descale_since": lambda d: {"every_shots": d.get("descale_every")},
     "grinder_clean_since": lambda d: {"every_shots": d.get("grinder_clean_every")},
+    "shots_today": lambda d: d.get("shots_today_attrs"),
+    "room_shift_s": lambda d: d.get("room_attrs"),
+    "supplies_left": lambda d: d.get("supplies_attrs"),
+    "next_delivery": lambda d: d.get("next_delivery_attrs"),
+    "last_coffee_rating": lambda d: d.get("last_coffee_rating_attrs"),
 }
 
 
@@ -76,6 +102,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry,
     coordinator = entry.runtime_data
     entities: list[SensorEntity] = [BrewSensor(coordinator, entry, d) for d in SENSORS]
     entities.append(MachineStatusSensor(coordinator, entry))
+    entities.append(MonthlySpendSensor(coordinator, entry, hass.config.currency))
     async_add_entities(entities)
 
 
@@ -117,3 +144,13 @@ class MachineStatusSensor(BrewEntity, SensorEntity):
     @property
     def available(self) -> bool:
         return super().available and self.native_value is not None
+
+
+class MonthlySpendSensor(BrewSensor):
+    """What the active subscriptions cost in an average month, in Home Assistant's currency (the
+    controller keeps plain amounts; it has no currency of its own)."""
+
+    def __init__(self, coordinator, entry, currency: str | None) -> None:
+        super().__init__(coordinator, entry, SensorEntityDescription(
+            key="subs_monthly_spend", translation_key="subs_monthly_spend", icon="mdi:cash",
+            device_class=SensorDeviceClass.MONETARY, native_unit_of_measurement=currency or None))

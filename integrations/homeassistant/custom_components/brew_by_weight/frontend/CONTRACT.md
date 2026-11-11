@@ -1,21 +1,26 @@
 # Brew panel contract
 
-The Brew panel is a Home Assistant custom panel served by the `brew_by_weight` integration. It
-re-implements every feature of the controller's own page (`src/net/WebPage.h`) that does not operate
-the hardware, in Home Assistant's look, inside Home Assistant's normal sidebar. Hardware actions stay
-in the controller page (the add-on panel at `/local_brew_controller`); the panel links there.
+The Brew panel is a Home Assistant custom panel served by the `brew_by_weight` integration. From
+0.4.0 it is a **summary app**: the Summary tab, then read-only Shots, Insights, Coffees (the shelf)
+and Subscriptions. Nothing is set up in Home Assistant. Setup and hardware stay in the controller's
+own page (the add-on panel at `/local_brew_controller`, or the controller's address), and the panel
+links there.
 
 ## What is in and out
 
-- In: everything the proxy allows (`../proxy.py`): data, records, library, ratings, advice, history,
-  exports, subscriptions, community, sharing, diagnostics, logs, grind-advice settings.
-- Out: start/stop/tare/ack, power presses and schedule, pairing and device tests, pusher keys, Wi-Fi,
-  firmware install/boot/upload/config, restore, machine make/model changes, brew and press timing
-  settings, power-bot and scale-sleep settings. Where the page has such a control, the panel shows the
-  state read-only (if useful) and an "Open the controller" link instead.
-- Behaviour and maths are ported from `WebPage.h`, not invented: on-time rule, typical miss, taste
-  lean, ratio maths, grind formatting, freezer ageing, chart scales. Cite the WebPage.h line in a
-  comment where a formula comes from.
+- In:
+  - reading everything the proxy allows (`../proxy.py` `GET_ALLOWED`);
+  - the everyday actions: rate a shot, its TDS, preparation and vote; set the advised grind; Use /
+    Keep a recommendation; bag finished, opened or arrived; a delivery arrived or skipped; an upkeep
+    job done.
+- Out (refused by the proxy):
+  - every other write: coffees, bags, recipes, grinder, settings, drinkers, sharing, the Home
+    Assistant link, diagnostics, logs, upkeep intervals, history, shot grind corrections, preset
+    choice (entities only);
+  - everything that operates the hardware.
+- Behaviour and maths are ported from `WebPage.h`, not invented. Cite the WebPage.h line in a
+  comment where a formula comes from. The schedule rule in `lib/schedule.js` mirrors `api.py`
+  `next_power_events`, which is tested.
 
 ## Backend interface (implemented by the integration, faked by `dev/serve.py`)
 
@@ -37,22 +42,19 @@ Downloads (CSV, log, backup): authenticated GET
 
 ## Frontend modules
 
-- `brew-panel.js`: the shell (toolbar with `ha-menu-button`, tab bar, hash routing `#<tab>[/<arg>]`,
-  per-user tab toggles, toast, "Open the controller" link). Owned by the coordinator.
-- `lib/api.js`: `BrewApi` (get, post, text, subscribeStatus, download). Owned by the coordinator.
-- `lib/format.js`: formatters ported from WebPage.h (grind setting display/parse, dates, ages,
-  freezer ageing, money, ago). Owned by the coordinator; ask before changing signatures.
-- `lib/styles.js`: shared CSS (`sharedStyles`) using Home Assistant's CSS variables only, and the
-  `html` escaping helper. Owned by the coordinator.
-- `lib/section.js`: `BrewSection` base class and the shared `store` (cached loads). Owned by the
-  coordinator.
-- `lib/charts.js`: canvas/SVG charts (shot curve, compare, radar, scatter, heat grid, calendar).
-  Owned by thread T2. T3 may import it but not edit it.
-- `lib/forms.js`: form fields, dialogs, confirm. Owned by thread T3. T2 may import it but not edit it.
-- `sections/<id>.js`: one module per tab. Each module:
-  - exports `meta = {id, title, icon, optional}` (`optional: true` for tabs the user can hide:
-    insights, subscriptions, discover, community, logs);
-  - defines a custom element named `brew-<id>` that extends `BrewSection`.
+- `brew-panel.js`: the shell. Toolbar with `ha-menu-button`, the state pill, a per-user tabs menu and
+  "Open the controller"; the tab bar; hash routing `#<tab>[/<arg>]` (0.3 tab names land on
+  `#summary`); toast. A tab's module is `sections/<file or id>.js`, defining `brew-<file or id>`.
+- `lib/api.js`: `BrewApi` (get, getOr, post, text, subscribeStatus, download).
+- `lib/format.js`: formatters ported from WebPage.h (grind setting display, dates, ages, freezer
+  ageing, money, ago).
+- `lib/styles.js`: shared CSS (`sharedStyles`), Home Assistant's CSS variables only; `html` escaping.
+- `lib/section.js`: the `BrewSection` base class and the shared `store` (cached loads).
+- `lib/charts.js`, `lib/shotview.js`: charts, the shot curve and the rate row.
+- `lib/advice.js`: grind advice in words. `lib/schedule.js`: next power events, day and time text.
+- `lib/forms.js`: confirm and form dialogs. `lib/upkeep.js`: job names.
+- `sections/summary.js` (Summary), `shots.js`, `insights.js`, `shelf.js` (tab `coffees`),
+  `deliveries.js` (tab `subscriptions`). Each exports `meta` and defines its element.
 
 ### `BrewSection` (lib/section.js)
 
