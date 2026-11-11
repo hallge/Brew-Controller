@@ -47,6 +47,7 @@
 #include "storage/Store.h"
 #include "storage/Backup.h"
 #include "ui/Ui.h"
+#include "platform/HostHooks.h"
 #include "addons/AddonHost.h"
 #include "core/GrinderRegistry.h"
 
@@ -571,7 +572,7 @@ bool fetchStatus(const char *kid, char *out, size_t size) {
 
 // Asking is a request to GitHub on the board: often enough to notice a
 // reviewer's decision the same day, not so often as to keep the radio busy.
-#ifdef BBW_EMULATOR
+#if defined(BBW_EMULATOR) && !defined(BBW_HOST_IOS)
 constexpr uint32_t SHARE_STATUS_PERIOD_MS = 15000;
 #else
 constexpr uint32_t SHARE_STATUS_PERIOD_MS = 600000;
@@ -904,7 +905,7 @@ void shareSendOne(bool idle) {
 // The library's index is read a file at a time while idle and kept on flash,
 // so what it said is still there with no network. Loop task only.
 
-#ifdef BBW_EMULATOR
+#if defined(BBW_EMULATOR) && !defined(BBW_HOST_IOS)
 constexpr uint32_t LIBRARY_REFRESH_MS = 60000;
 #else
 constexpr uint32_t LIBRARY_REFRESH_MS = 3600000;
@@ -2048,7 +2049,7 @@ void diagTakeWarnings() {
 
 // The period's figures, from what the controller keeps anyway.
 void diagFillInput(bbw::DiagInput &in, uint32_t nowS) {
-#ifdef BBW_EMULATOR
+#if defined(BBW_EMULATOR) && !defined(BBW_HOST_IOS)
   in.emulator = true;
 #endif
   in.firmware = BBW_VERSION;
@@ -2226,7 +2227,7 @@ void diagBoot() {
 
   static bbw::CrashInput c;
   c = bbw::CrashInput();
-#ifdef BBW_EMULATOR
+#if defined(BBW_EMULATOR) && !defined(BBW_HOST_IOS)
   c.emulator = true;
 #endif
   const bool changedSince = previousFw[0] && strcmp(previousFw, BBW_VERSION) != 0;
@@ -4182,7 +4183,11 @@ void restartSoon() {
   LOGI("restarting");
   bbw::logFlush();
   delay(300);
+#ifdef BBW_HOST_IOS
+  hostRequestRestart();  // the app shows "tap to restart"; the host provides this
+#else
   ESP.restart();
+#endif
 }
 
 bool powerPressAnyway() {
@@ -4223,7 +4228,15 @@ bool setTimeZone(const char *rule) {
 bbw::NetConfig netConfig() { return g_net; }
 
 void applyNetConfig(const bbw::NetConfig &net) {
-  g_net = net;
+  {
+    Lock lock;
+    g_net = net;
+    // The brew Bot's SwitchBot password lives in the network record: hand a changed one to the Bot
+    // now, not at the next start.
+    bbw::PusherSecrets use = g_pushers.brew;
+    strlcpy(use.password, g_net.botPassword, sizeof(use.password));
+    g_bot.setSecrets(use);
+  }
   g_store.saveNet(g_net);
 }
 
@@ -4736,7 +4749,20 @@ void haSetProblem(const char *text) {
 const char *mqttNode() {
   static char node[8] = {};
   if (!node[0]) {
-#ifndef BBW_EMULATOR
+#ifdef BBW_HOST_IOS
+    // No MAC on a phone: a random id, made once and kept.
+    Preferences prefs;
+    uint32_t id = 0;
+    if (prefs.begin("bbw", false)) {
+      id = prefs.getUInt("mqtt_node", 0);
+      if (!id) {
+        id = (esp_random() & 0xFFFFFF) | 0x1000000;  // never 0, so "unset" stays distinguishable
+        prefs.putUInt("mqtt_node", id);
+      }
+      prefs.end();
+    }
+    snprintf(node, sizeof(node), "%06x", static_cast<unsigned>(id & 0xFFFFFF));
+#elif !defined(BBW_EMULATOR)
     const uint64_t mac = ESP.getEfuseMac();   // known before Wi-Fi starts, unlike WiFi.macAddress
     snprintf(node, sizeof(node), "%02x%02x%02x", static_cast<unsigned>((mac >> 24) & 0xFF),
              static_cast<unsigned>((mac >> 32) & 0xFF), static_cast<unsigned>((mac >> 40) & 0xFF));

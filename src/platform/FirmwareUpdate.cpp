@@ -52,7 +52,11 @@ bool updateBusy() { return false; }
 void updateUploadActive(bool) {}
 UpdateStatus updateStatus() {
   UpdateStatus s;
+  #ifdef BBW_HOST_IOS
+  strlcpy(s.message, "the app is updated from the App Store", sizeof(s.message));
+#else
   strlcpy(s.message, "the PC emulator is updated by rebuilding it", sizeof(s.message));
+#endif
   return s;
 }
 void updateService(bool, bool) {}

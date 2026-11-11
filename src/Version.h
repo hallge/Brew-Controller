@@ -5,7 +5,9 @@
 #ifndef BBW_VERSION
 #define BBW_VERSION "dev"
 #endif
-#ifdef BBW_EMULATOR
+#if defined(BBW_HOST_IOS)
+#define BBW_BUILT "iPhone app"
+#elif defined(BBW_EMULATOR)
 #define BBW_BUILT "PC emulator"
 #else
 #define BBW_BUILT __DATE__ " " __TIME__

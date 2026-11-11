@@ -56,6 +56,7 @@ static int g_checks = 0;
 #define CHECK_NEAR(a, b, tol) CHECK(fabs(static_cast<double>(a) - static_cast<double>(b)) <= (tol))
 #include "test_apphost.inc"  // needs CHECK above
 #include "test_advice.inc"   // needs CHECK above
+#include "test_screentext.inc"  // needs CHECK above
 
 // ------------------------------------------------------------- simulation --
 
@@ -9655,6 +9656,7 @@ int main() {
   testRamWatch();
   testGrindRoom();
   testAdvice();
+  testScreenText();
   testTimeZoneRule();
   testGrindReminder();
   testPowerAutoOffWaits();
