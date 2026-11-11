@@ -123,8 +123,8 @@ targets:
         # dladdr finds the RTC section in the image that holds the firmware: keep it in one binary.
         ENABLE_DEBUG_DYLIB: NO
         # Same defines as test/hostapp/run.sh.
+        # No $(inherited): Xcode's Debug DEBUG=1 would break the firmware's LogLevel::DEBUG.
         GCC_PREPROCESSOR_DEFINITIONS:
-          - $(inherited)
           - BBW_EMULATOR
           - BBW_HOST_IOS
           - BBW_CLEAN
