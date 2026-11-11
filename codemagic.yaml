@@ -1,0 +1,172 @@
+# Codemagic: tests and a manual TestFlight release for the iOS Phase 0 spike (ios/).
+# Adapted from the Sideline project's codemagic.yaml (same Mac mini M2, same App Store Connect API
+# key flow: ios/scripts/asc-signing.py makes a distribution certificate and an App Store profile for
+# the run and revokes them afterwards).
+#
+# One-time setup is in ios/README.md.
+#
+# Environment group "bbw_release" (app settings -> Environment variables, all Secret):
+#   ASC_KEY_ID, ASC_ISSUER_ID   App Store Connect API key (App Manager role)
+#   ASC_KEY_P8_B64              the AuthKey_XXXX.p8 file, base64-encoded
+#   TEAM_ID                     Apple Developer Team ID
+workflows:
+  # Host tests of the firmware core on macOS (clang), then the iOS unit and UI tests with
+  # screenshots of a simulated shot. Runs on a push to any branch except main, and only when the
+  # iOS app, the shared core or the scale protocol library changed.
+  tests:
+    name: iOS tests and screenshots
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: latest
+    when:
+      changeset:
+        includes:
+          - 'ios/**'
+          - 'src/core/**'
+          - 'lib/**'
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: '*'
+          include: true
+          source: true
+        - pattern: main
+          include: false
+          source: true
+      cancel_previous_builds: true
+    scripts:
+      - name: Host tests of the core (clang)
+        script: |
+          set -euo pipefail
+          CXX=clang++ bash test/host/run.sh
+      - name: Generate project
+        script: |
+          set -euo pipefail
+          brew install xcodegen
+          bash ios/scripts/write-secrets.sh
+          (cd ios && xcodegen generate)
+      - name: iPhone tests
+        script: |
+          set -euo pipefail
+          mkdir -p build
+          UDID=$(bash ios/scripts/pick-iphone.sh)
+          xcrun simctl boot "$UDID" || true
+          xcodebuild build-for-testing -project ios/BrewController.xcodeproj -scheme BrewController \
+            -destination "platform=iOS Simulator,id=$UDID" CODE_SIGNING_ALLOWED=NO \
+            > build/build.log 2>&1 || { grep -E "error:" build/build.log | head -60; exit 1; }
+          xcrun simctl bootstatus "$UDID" -b
+          xcodebuild test-without-building -project ios/BrewController.xcodeproj -scheme BrewController \
+            -destination "platform=iOS Simulator,id=$UDID" -resultBundlePath build/Tests.xcresult \
+            -retry-tests-on-failure -test-iterations 2 > build/test.log 2>&1 || true
+          grep -E "error:|Executed|failed \(" build/test.log | tail -30
+          grep -q "\*\* TEST EXECUTE SUCCEEDED \*\*" build/test.log
+      - name: Export screenshots
+        ignore_failure: true
+        script: |
+          mkdir -p build/screens
+          [ -d build/Tests.xcresult ] && xcrun xcresulttool export attachments --path build/Tests.xcresult --output-path build/screens || true
+          ls -R build/screens | head -60
+    artifacts:
+      - build/*.log
+      - build/screens/**/*.png
+      - build/screens/**/manifest.json
+
+  # Manual only (no triggering block): Codemagic -> Start new build -> "release".
+  release:
+    name: TestFlight release
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      groups:
+        - bbw_release
+      xcode: latest
+    scripts:
+      - name: Archive, sign and upload to TestFlight
+        script: |
+          set -euo pipefail
+          export RUNNER_TEMP="$HOME/asc-tmp"
+          export GITHUB_RUN_ID="cm-$CM_BUILD_ID"
+          export ASC_KEY_PATH="$RUNNER_TEMP/key.p8"
+          export KEYCHAIN_PASSWORD="$(uuidgen)"
+          export BUNDLES="app=com.hallge.brewcontroller"
+          export APP_BUNDLE_ID="com.hallge.brewcontroller"
+          export MIN_BUILD=1
+          mkdir -p "$RUNNER_TEMP" build
+          printf '%s' "$ASC_KEY_P8_B64" | base64 --decode > "$ASC_KEY_PATH"
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q "pyjwt[crypto]"
+          PY="$RUNNER_TEMP/venv/bin/python"
+
+          # Build numbers keep counting from whatever App Store Connect already has.
+          NEXT=$("$PY" ios/scripts/asc-signing.py next-build)
+          echo "Build number: $NEXT"
+
+          brew install xcodegen
+          BUILD_NUMBER="$NEXT" bash ios/scripts/write-secrets.sh
+          (cd ios && xcodegen generate)
+
+          export GITHUB_OUTPUT="$RUNNER_TEMP/sign.out"
+          : > "$GITHUB_OUTPUT"
+          "$PY" ios/scripts/asc-signing.py setup
+          out() { grep "^$1=" "$GITHUB_OUTPUT" | head -1 | cut -d= -f2-; }
+          { echo "APP_ID=$(out app_id)"; echo "BUILD_NUMBER=$NEXT"
+            echo "CERTIFICATE_ID=$(out certificate_id)"; echo "PROFILE_IDS=$(out profile_ids)"; } > "$HOME/release.env"
+
+          xcodebuild archive \
+            -project ios/BrewController.xcodeproj -scheme BrewControllerRelease -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath build/BrewController.xcarchive \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            APP_PROFILE="$(out app_profile)" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $(out keychain)" \
+            > build/archive.log 2>&1 || { grep -E "error:" build/archive.log | head -40; exit 1; }
+          grep -q "\*\* ARCHIVE SUCCEEDED \*\*" build/archive.log
+
+          # Checks on what is about to be uploaded.
+          app=build/BrewController.xcarchive/Products/Applications/BrewController.app
+          [ "$(plutil -extract ITSAppUsesNonExemptEncryption raw "$app/Info.plist")" = "false" ]
+          /usr/libexec/PlistBuddy -c "Print :UIBackgroundModes" "$app/Info.plist" | grep -q bluetooth-central
+          plutil -extract NSBluetoothAlwaysUsageDescription raw "$app/Info.plist" > /dev/null
+          codesign -dvv "$app" 2>&1 | grep -E "Identifier=|Authority=Apple Dist"
+
+          sed -i '' "s/TEAM_ID_PLACEHOLDER/$TEAM_ID/" ios/ExportOptions.plist
+          plutil -replace signingStyle -string manual ios/ExportOptions.plist
+          plutil -replace signingCertificate -string "Apple Distribution" ios/ExportOptions.plist
+          plutil -replace provisioningProfiles -json "{\"com.hallge.brewcontroller\":\"$(out app_profile)\"}" ios/ExportOptions.plist
+          xcodebuild -exportArchive \
+            -archivePath build/BrewController.xcarchive \
+            -exportOptionsPlist ios/ExportOptions.plist \
+            -exportPath build/export \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            > build/export.log 2>&1 || { tail -40 build/export.log; exit 1; }
+          grep -qE "EXPORT SUCCEEDED|Upload succeeded|Uploaded" build/export.log
+          touch "$HOME/UPLOADED"
+          echo "Uploaded build $NEXT"
+    publishing:
+      scripts:
+        # Runs even when the build failed. After an upload the certificate must stay valid
+        # until Apple has processed the build (else it becomes an Invalid Binary), so wait
+        # for that and then revoke; with no upload, revoke straight away.
+        - name: Revoke the signing certificate and delete the profiles
+          script: |
+            export RUNNER_TEMP="$HOME/asc-tmp"
+            export ASC_KEY_PATH="$RUNNER_TEMP/key.p8"
+            PY="$RUNNER_TEMP/venv/bin/python"
+            [ -x "$PY" ] || { echo "Nothing was set up"; exit 0; }
+            if [ -f "$HOME/UPLOADED" ]; then
+              set -a; . "$HOME/release.env"; set +a
+              WAIT_MINUTES=40 "$PY" ios/scripts/asc-signing.py retire
+              "$PY" ios/scripts/asc-signing.py cleanup || true   # local keychain
+            else
+              "$PY" ios/scripts/asc-signing.py cleanup
+            fi
+            rm -rf "$RUNNER_TEMP"
+    artifacts:
+      - build/*.log

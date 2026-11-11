@@ -1,0 +1,9 @@
+*.xcodeproj/
+build/
+DerivedData/
+*.ipa
+*.p8
+.DS_Store
+Config/Secrets.xcconfig
+# Written by XcodeGen from project.yml
+BrewControllerApp/Info.plist
