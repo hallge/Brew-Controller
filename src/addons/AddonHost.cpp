@@ -499,9 +499,12 @@ bool route(bool post, const char *path, const char *body, int &status, const cha
   return true;
 }
 
+// The add-ons compiled into this image only: modules are files and survive an update, so the Firmware card's
+// "installing a public release removes them" must not name them (v0.1.33 did, for a module).
 void namesJson(JsonArray out) {
   if (!g_manager) return;
-  for (size_t i = 0; i < g_manager->count(); ++i) out.add(g_manager->slot(i).entry->id);
+  for (size_t i = 0; i < g_manager->count(); ++i)
+    if (!isModuleSlot(i)) out.add(g_manager->slot(i).entry->id);
 }
 
 #ifndef BBW_EMULATOR

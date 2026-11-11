@@ -69,7 +69,7 @@ To keep add-ons across updates, point it at a private repository whose releases 
 3. On the controller: Setup, Firmware, "Releases from" = the private repository, plus a token that can read it.
 
 The existing checks all apply: the SHA-256 of the download, the image check, the trial start with rollback.
-`/api/update` lists the add-ons compiled into the running image (`addons`). The Firmware card warns when a
+`/api/update` lists the add-ons compiled into the running image (`addons`; modules are not in it). The Firmware card warns when a
 release from the public repository would remove them. An add-on's settings survive any update, including
 one without it, and come back with it.
 
@@ -363,7 +363,8 @@ with the reason, and never started:
 - **stopped after a crash** (below).
 
 A firmware update with a newer `ADDON_ABI` therefore lists the module as "needs a rebuild" until a matching one is
-installed; the Firmware card says so for the modules it finds.
+installed; the Add-ons card says so for that module. Modules are files and stay through any update, so the
+Firmware card says nothing about them (`/api/update` lists them apart, in `modules`).
 
 ### The crash guard
 
