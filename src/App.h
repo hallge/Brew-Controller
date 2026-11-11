@@ -411,7 +411,7 @@ PreviewState pagePreview(char *url, size_t urlSize, bbw::PageMeta &meta, char *p
 
 // Network / history
 bbw::NetConfig netConfig();
-void applyNetConfig(const bbw::NetConfig &net);  // takes effect after restart
+void applyNetConfig(const bbw::NetConfig &net);  // stored now; Wi-Fi and the access point change at the next restart
 bbw::Store &store();
 uint32_t epochNow();
 void setEpoch(uint32_t epochS);

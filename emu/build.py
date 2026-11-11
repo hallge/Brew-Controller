@@ -35,6 +35,7 @@ FIRMWARE = [
     "src/ble/Ble.cpp",
     "src/core/BrewController.cpp",
     "src/net/Web.cpp",
+    "src/net/ScreenApi.cpp",
     "src/addons/AddonHost.cpp",
     "src/storage/Store.cpp",
     "src/storage/Backup.cpp",
