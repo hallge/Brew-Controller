@@ -21,3 +21,9 @@ $CXX -std=c++17 -O1 -Wall -Wextra -Isrc -Ilib/EspressoScaleProtocol/src \
   lib/EspressoScaleProtocol/src/Registry.cpp \
   -o .pio/host/bbw_tests
 .pio/host/bbw_tests
+# The flash storage (Store.cpp, Backup.cpp) on the emulator's shims: a program of its own, because the
+# shims and the portable core tests cannot share a translation unit.
+$CXX -std=c++17 -O1 -w -DBBW_EMULATOR -Iemu/shims -Isrc -Ilib/EspressoScaleProtocol/src \
+  test/host/test_store_main.cpp src/storage/Store.cpp src/storage/Backup.cpp \
+  -o .pio/host/bbw_store_tests
+.pio/host/bbw_store_tests

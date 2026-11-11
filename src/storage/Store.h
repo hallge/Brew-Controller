@@ -102,7 +102,8 @@ class Store {
   size_t loadCurve(uint32_t id, CurvePoint *out, size_t max);  // 0: none stored
   bool hasCurve(uint32_t id);
   // The circumstances of the shot (core/ShotContext.h): one fixed slot per shot in a ring file
-  // beside the history (/contexts.bin, 500 slots). Recorded; the grind advice reads only the room's
+  // beside the history (/contexts.bin, 500 slots), each in the slot its shot has in the history: a shot
+  // that is not in the history has no context (saveContext says false). Recorded; the grind advice reads only the room's
   // slow temperature from it (roomEffX10, 9 Nov 2026).
   bool saveContext(const ShotContext &context);
   bool loadContext(uint32_t id, ShotContext &out);  // false: none stored, or another version
@@ -176,6 +177,12 @@ class Store {
   void removeCurve(uint32_t id);
   bool prepareContexts();
   bool convertContextsOld();  // a version 1 or 2 context file rewritten as the current version
+  bool convertContextsToSlots();  // a file laid out by id (id % 500) laid out by history slot
+  void setAsideContexts();        // a file nothing reads, renamed to /contexts.unread
+  bool loadRingIds();             // the id in each history slot, into a cache (g_slotIds)
+  int32_t slotOfId(uint32_t id);  // the history slot of shot `id`; -1: not in the history
+  bool restoreUnreadHistory();    // /shots.unread back, when this build reads it and none is in use
+  void dropStaleShotData();       // contexts and curves of an earlier history
   bool preparePowerLog();
   bool prepareRatings();
   bool editRatingSlot(uint32_t id, const CoffeeRating *with);
@@ -191,6 +198,7 @@ class Store {
   OutboxState outbox_ = {};
 
   Header header_ = {};
+  bool ringIdsValid_ = false;  // the cache of the ids in the history slots is current
   bool fsOk_ = false;
 };
 

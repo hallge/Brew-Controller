@@ -38,12 +38,21 @@ constexpr uint8_t WARMUP_ALPHA = 70;
 constexpr float STOP_RETRY_FLOW_SHARE = 0.5f;  // still at least half the flow of the moment of the stop
 constexpr float STOP_RETRY_MIN_GAIN_G = 3.0f;
 constexpr uint8_t MAX_STOP_RETRIES = 2;
+// A pump that is running pours about 7-8 g/s at most (Breville, empty basket) and holds that flow.
+// A reading that climbs faster than this, and a pump flow also well above what it was at the stop,
+// is the cup being knocked or a hand on it, not the machine: no retry press on it, and none for a
+// moment after, while the bump is still inside the flow window.
+constexpr float STOP_RETRY_MAX_FLOW_G_S = 9.0f;
+constexpr float STOP_RETRY_MAX_FLOW_VS_STOP = 1.5f;
+constexpr uint32_t STOP_RETRY_BUMP_HOLDOFF_MS = 1500;
 constexpr uint32_t DRIP_EXTRA_WAIT_MS = 3000;
 constexpr uint8_t LOW_WEIGHT_CONFIRM_SAMPLES = 2;
 constexpr uint8_t MAX_REJECTED_SAMPLES = 5;
 constexpr float RUNNING_MIN_WEIGHT_G = 1.0f;
 constexpr float NO_FLOW_BAND_G = 1.0f;
-constexpr uint32_t RECOVERY_WINDOW_MS = 45000;
+// A shot that was running when the controller restarted is looked for this long: a sleeping brew bot
+// can take 40 s to connect, and a shot cannot outlast the ceiling anyway.
+constexpr uint32_t RECOVERY_WINDOW_MS = HARD_MAX_SHOT_MS;
 // Coffee was flowing and has now been still this long: the machine has ended
 // the shot itself (or the puck has choked). Either way a press now would not
 // stop anything, and on a machine that has stopped it would start it again.
@@ -190,6 +199,10 @@ bool BrewController::takeSettingsDirty() {
 
 void BrewController::trackFlow(const WeightSample &sample) {
   const float flow = flow_.flowGS();
+  if (state_ == State::STOPPING_SHOT || state_ == State::POST_SHOT_DRIP) {
+    const float cap = fmaxf(STOP_RETRY_MAX_FLOW_G_S, stopFlowGS_ * STOP_RETRY_MAX_FLOW_VS_STOP);
+    if (flow >= cap) retryHoldOffUntilMs_ = nonZero(sample.atMs + STOP_RETRY_BUMP_HOLDOFF_MS);
+  }
   if (flow >= FLOW_ON_G_S) {
     if (flowHighSinceMs_ == 0) flowHighSinceMs_ = nonZero(sample.atMs);
   } else {
@@ -295,8 +308,12 @@ void BrewController::trackCup(const WeightSample &sample) {
     cupPlacedAtMs_ = sample.atMs;
     // Zero it, unless the scale's own auto-tare already has.
     if (fabsf(level) > CUP_ZERO_BAND_G) {
-      tareWhy_ = "a cup went on";
-      scale_.tare();
+      // Not while a shot that was running at the restart is being looked for: the cup may hold
+      // that shot's coffee, and zeroing it would hide the pour from the recovery.
+      if (recoveryUntilMs_ == 0) {
+        tareWhy_ = "a cup went on";
+        scale_.tare();
+      }
     }
   };
   auto remember = [&]() {
@@ -1106,6 +1123,8 @@ void BrewController::beginStop(EndReason reason, uint32_t nowMs, bool pressAlrea
   stopFlowGS_ = flow_.flowGS();
   stopRetries_ = 0;
   retryInFlight_ = false;
+  stopRetryPending_ = false;
+  retryHoldOffUntilMs_ = 0;
   stopConfirmed_ = false;
   stopLatencyMs_ = 0;
   manualStopNeeded_ = false;
@@ -1130,8 +1149,10 @@ void BrewController::tickStopping(uint32_t nowMs) {
 
   auto delivered = [&]() {
     stopSentMs_ = stopper().pressSentAtMs();
-    firstStopSentMs_ = stopSentMs_;
-    shotTimeS_ = static_cast<uint32_t>(stopSentMs_ - shotStartMs_) / 1000.0f;
+    if (stopRetries_ == 0) {  // a retry press does not move the stop the shot is timed to
+      firstStopSentMs_ = stopSentMs_;
+      shotTimeS_ = static_cast<uint32_t>(stopSentMs_ - shotStartMs_) / 1000.0f;
+    }
     stopper().clearResult();
     if (settings_.scaleTimer) scale_.stopTimer();
     manualStopNeeded_ = false;
@@ -1142,7 +1163,8 @@ void BrewController::tickStopping(uint32_t nowMs) {
   if (stopPressPending_) {
     if (stopPress()) {
       stopPressPending_ = false;
-      if (haveSample_ && weightFresh(nowMs)) stopWeightG_ = last_.weightG;
+      if (haveSample_ && weightFresh(nowMs) && !stopRetryPending_) stopWeightG_ = last_.weightG;
+      stopRetryPending_ = false;
     } else if (waited >= STOP_GIVE_UP_MS) {
       finalizeShot(nowMs, State::STOP_COMMAND_FAILED);
     }
@@ -1169,9 +1191,18 @@ void BrewController::tickStopping(uint32_t nowMs) {
                  static_cast<int32_t>(flowLowSinceMs_ - unconfirmedSinceMs_) >= 0 &&
                  static_cast<uint32_t>(nowMs - flowLowSinceMs_) >= FLOW_HOLD_MS) {
         delivered();
-      } else if (since >= UNCONFIRMED_DECIDE_MS && flow_.flowGS() >= FLOW_ON_G_S) {
+      } else if (stopRetryDue(nowMs, stopper().pressSentAtMs()) && stopRetries_ < MAX_STOP_RETRIES) {
+        // Still pouring well after the press, by the same rule as the retry in the drip phase: 4 s
+        // from the press (full flow goes on about 1.7 s after a real one, and a second press on
+        // that tail would start the pump again), a real gain, and counted against the limit.
+        if (stopRetries_ == 0) {  // the press now given up on is the one the shot is timed to
+          firstStopSentMs_ = stopper().pressSentAtMs();
+          shotTimeS_ = static_cast<uint32_t>(firstStopSentMs_ - shotStartMs_) / 1000.0f;
+        }
         stopper().clearResult();
         unconfirmedSinceMs_ = 0;
+        ++stopRetries_;
+        stopRetryPending_ = true;
         stopPressPending_ = true;
       } else if (since >= UNCONFIRMED_ACCEPT_MS) {
         delivered();
@@ -1184,6 +1215,19 @@ void BrewController::tickStopping(uint32_t nowMs) {
       }
       break;
   }
+}
+
+// The pump is plainly still running STOP_RETRY_AFTER_MS after the press sent at `sentAtMs`: still
+// pouring like espresso, not tailing off, with a real gain since the stop, and not the cup being
+// knocked (trackFlow holds retries off for a moment after a flow no pump makes).
+bool BrewController::stopRetryDue(uint32_t nowMs, uint32_t sentAtMs) const {
+  if (static_cast<uint32_t>(nowMs - sentAtMs) < STOP_RETRY_AFTER_MS) return false;
+  if (retryHoldOffUntilMs_ != 0 && static_cast<int32_t>(nowMs - retryHoldOffUntilMs_) < 0) return false;
+  const float retryFlow = stopFlowGS_ * STOP_RETRY_FLOW_SHARE > FLOW_ON_G_S
+                              ? stopFlowGS_ * STOP_RETRY_FLOW_SHARE : FLOW_ON_G_S;
+  const float cap = fmaxf(STOP_RETRY_MAX_FLOW_G_S, stopFlowGS_ * STOP_RETRY_MAX_FLOW_VS_STOP);
+  const float flow = flow_.flowGS();
+  return flow >= retryFlow && flow < cap && last_.weightG - stopWeightG_ >= STOP_RETRY_MIN_GAIN_G;
 }
 
 void BrewController::tickDrip(uint32_t nowMs) {
@@ -1232,11 +1276,7 @@ void BrewController::tickDrip(uint32_t nowMs) {
 
   // Still pouring like espresso well after the press, not tailing off: the
   // button was missed.
-  const float retryFlow = stopFlowGS_ * STOP_RETRY_FLOW_SHARE > FLOW_ON_G_S
-                              ? stopFlowGS_ * STOP_RETRY_FLOW_SHARE : FLOW_ON_G_S;
-  if (!stopConfirmed_ && fresh && since >= STOP_RETRY_AFTER_MS &&
-      flow_.flowGS() >= retryFlow &&
-      last_.weightG - stopWeightG_ >= STOP_RETRY_MIN_GAIN_G) {
+  if (!stopConfirmed_ && fresh && stopRetryDue(nowMs, stopSentMs_)) {
     if (stopRetries_ >= MAX_STOP_RETRIES) {
       manualStopNeeded_ = true;
       finalizeShot(nowMs, State::STOP_COMMAND_FAILED);

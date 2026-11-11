@@ -9606,6 +9606,8 @@ static void testServiceSharing() {
   CHECK(serviceScore(good, false, 5.0f, 0, 0) == 0.0f);   // people's stars mean nothing without taste
 }
 
+#include "test_safety.inc"  // needs Rig above
+
 int main() {
   setvbuf(stdout, nullptr, _IONBF, 0);  // keep the output if a test crashes
   testAcaiaProtocol();
@@ -9716,6 +9718,7 @@ int main() {
   testSettingFormat();
   testGrinderUnitTidy();
   testAppHost();
+  testSafety();
   printf("\n%d checks, %d failed\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

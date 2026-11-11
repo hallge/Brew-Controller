@@ -6,6 +6,8 @@
 #include <stddef.h>
 #include <string.h>
 
+#include <type_traits>
+
 #include "Log.h"
 #include "Store.h"
 #include "Version.h"
@@ -49,60 +51,136 @@ void allocate() {
   g_sizes = bigArray<uint32_t>(FILES_MAX);
 }
 
-// The network record as NVS keeps it (Store.cpp saveBlob: a version, then the struct).
-struct StoredNet {
+// A record as NVS keeps it (Store.cpp saveBlob: a version, then the struct).
+template <typename T>
+struct StoredRecord {
   uint16_t version;
-  NetConfig value;
+  T value;
 };
 
-// The passwords and the library token taken out of a network record.
-void blankSecrets(uint8_t *record, size_t length) {
-  if (length < sizeof(StoredNet)) {
-    // An older, shorter record: only the fields it has.
-    static StoredNet &full = *bigNew<StoredNet>();  // PSRAM, on first use
-    memset(&full, 0, sizeof(full));
-    memcpy(&full, record, length);
-    blankSecrets(reinterpret_cast<uint8_t *>(&full), sizeof(full));
-    memcpy(record, &full, length);
+// Runs edit(struct) over a record in `record` (length bytes). A record shorter than the struct (an
+// older build's) is edited on a full-size copy and only the bytes it had go back; a longer one (a
+// newer build's) is edited in place, its tail untouched.
+template <typename T, typename Edit>
+void editRecord(uint8_t *record, size_t length, Edit edit) {
+  using Stored = StoredRecord<T>;
+  if (length >= sizeof(Stored)) {
+    edit(reinterpret_cast<Stored *>(record)->value);
     return;
   }
-  StoredNet &n = *reinterpret_cast<StoredNet *>(record);
-  memset(n.value.staPassword, 0, sizeof(n.value.staPassword));
-  memset(n.value.apPassword, 0, sizeof(n.value.apPassword));
-  memset(n.value.botPassword, 0, sizeof(n.value.botPassword));
-  memset(n.value.libraryToken, 0, sizeof(n.value.libraryToken));
-  memset(n.value.haToken, 0, sizeof(n.value.haToken));
-  memset(n.value.haWebhookId, 0, sizeof(n.value.haWebhookId));
-  memset(n.value.mqttPassword, 0, sizeof(n.value.mqttPassword));
+  static Stored &full = *bigNew<Stored>();  // PSRAM, on first use: a record can be too big for the stack
+  memset(&full, 0, sizeof(full));
+  memcpy(&full, record, length);
+  edit(full.value);
+  memcpy(record, &full, length);
 }
 
-// A backup without secrets restored: the passwords and token this controller has now are kept.
-void keepOwnSecrets(uint8_t *record, size_t length) {
-  // PSRAM, on first use: two network records are too big for the stack.
-  static StoredNet &in = *bigNew<StoredNet>();
-  static StoredNet &own = *bigNew<StoredNet>();
-  memset(&in, 0, sizeof(in));
+void blankPusherSecrets(PusherSecrets &s) {
+  memset(s.password, 0, sizeof(s.password));
+  memset(s.tuyaLocalKey, 0, sizeof(s.tuyaLocalKey));
+  memset(s.microbotToken, 0, sizeof(s.microbotToken));
+  s.microbotTokenSet = false;
+}
+
+// The passwords and tokens taken out of an NVS record that holds any: the network record (Wi-Fi,
+// SwitchBot, library, Home Assistant, MQTT), the update channel's token, and the pushers' secrets
+// (SwitchBot password, Tuya local key, MicroBot token). What is not a secret stays.
+void blankSecrets(const char *key, uint8_t *record, size_t length) {
+  if (strcmp(key, "net") == 0) {
+    editRecord<NetConfig>(record, length, [](NetConfig &n) {
+      memset(n.staPassword, 0, sizeof(n.staPassword));
+      memset(n.apPassword, 0, sizeof(n.apPassword));
+      memset(n.botPassword, 0, sizeof(n.botPassword));
+      memset(n.libraryToken, 0, sizeof(n.libraryToken));
+      memset(n.haToken, 0, sizeof(n.haToken));
+      memset(n.haWebhookId, 0, sizeof(n.haWebhookId));
+      memset(n.mqttPassword, 0, sizeof(n.mqttPassword));
+    });
+  } else if (strcmp(key, "otacfg") == 0) {
+    editRecord<UpdateConfig>(record, length, [](UpdateConfig &c) { memset(c.token, 0, sizeof(c.token)); });
+  } else if (strcmp(key, "pushers") == 0) {
+    editRecord<PusherConfig>(record, length, [](PusherConfig &c) {
+      blankPusherSecrets(c.brew);
+      blankPusherSecrets(c.power);
+    });
+  } else if (strcmp(key, "stopbot") == 0) {
+    editRecord<StopBotConfig>(record, length, [](StopBotConfig &c) { blankPusherSecrets(c.secrets); });
+  }
+}
+
+// The record `key` this controller has now, as far as it goes (zeros beyond), into `own`.
+template <typename T>
+void readOwnRecord(const char *key, StoredRecord<T> &own) {
   memset(&own, 0, sizeof(own));
-  memcpy(&in, record, length < sizeof(in) ? length : sizeof(in));
   Preferences prefs;
   if (prefs.begin(NVS_NAMESPACE, true)) {
-    const size_t have = prefs.isKey("net") ? prefs.getBytesLength("net") : 0;
-    if (have > 0 && have <= sizeof(own)) prefs.getBytes("net", &own, have);
+    const size_t have = prefs.isKey(key) ? prefs.getBytesLength(key) : 0;
+    if (have > 0 && have <= sizeof(own)) prefs.getBytes(key, &own, have);
     prefs.end();
   }
-  auto keep = [](char *field, const char *mine, size_t size) {
-    if (field[0] == '\0' && mine[0] != '\0') memcpy(field, mine, size);
-    field[size - 1] = '\0';
+}
+
+// A field the backup left empty keeps what this controller has.
+void keepText(char *field, const char *mine, size_t size) {
+  if (field[0] == '\0' && mine[0] != '\0') memcpy(field, mine, size);
+  field[size - 1] = '\0';
+}
+
+// A pusher's secrets: this controller's are kept where the backup has none, and only for the same
+// device (`same`: the addresses are the same; a secret is never carried over to another bot). The
+// Tuya key goes with its device id.
+void keepPusherSecrets(PusherSecrets &in, const PusherSecrets &own, bool same) {
+  if (!same) return;
+  keepText(in.password, own.password, sizeof(in.password));
+  if (in.tuyaDeviceId[0] != '\0' && strcmp(in.tuyaDeviceId, own.tuyaDeviceId) == 0) {
+    keepText(in.tuyaLocalKey, own.tuyaLocalKey, sizeof(in.tuyaLocalKey));
+  }
+  if (!in.microbotTokenSet && own.microbotTokenSet) {
+    memcpy(in.microbotToken, own.microbotToken, sizeof(in.microbotToken));
+    in.microbotTokenSet = true;
+  }
+}
+
+// A backup without secrets restored: the passwords and tokens this controller has now are kept. The
+// record is `record` (length bytes); what is written back is no longer than it was.
+void keepOwnSecrets(const char *key, uint8_t *record, size_t length) {
+  // PSRAM, on first use: two records at once are too big for the stack.
+  auto merge = [&](auto *type, auto keep) {
+    using T = typename std::remove_pointer<decltype(type)>::type;
+    using Stored = StoredRecord<T>;
+    static Stored &in = *bigNew<Stored>();
+    static Stored &own = *bigNew<Stored>();
+    memset(&in, 0, sizeof(in));
+    memcpy(&in, record, length < sizeof(in) ? length : sizeof(in));
+    readOwnRecord<T>(key, own);
+    keep(in.value, own.value);
+    memcpy(record, &in, length < sizeof(in) ? length : sizeof(in));
   };
-  keep(in.value.staPassword, own.value.staPassword, sizeof(in.value.staPassword));
-  keep(in.value.apPassword, own.value.apPassword, sizeof(in.value.apPassword));
-  keep(in.value.botPassword, own.value.botPassword, sizeof(in.value.botPassword));
-  keep(in.value.libraryToken, own.value.libraryToken, sizeof(in.value.libraryToken));
-  keep(in.value.haToken, own.value.haToken, sizeof(in.value.haToken));
-  keep(in.value.haWebhookId, own.value.haWebhookId, sizeof(in.value.haWebhookId));
-  keep(in.value.mqttPassword, own.value.mqttPassword, sizeof(in.value.mqttPassword));
-  if (in.value.apPassword[0] == '\0') strncpy(in.value.apPassword, NetConfig().apPassword, sizeof(in.value.apPassword) - 1);
-  memcpy(record, &in, length < sizeof(in) ? length : sizeof(in));
+  if (strcmp(key, "net") == 0) {
+    merge(static_cast<NetConfig *>(nullptr), [](NetConfig &in, const NetConfig &own) {
+      keepText(in.staPassword, own.staPassword, sizeof(in.staPassword));
+      keepText(in.apPassword, own.apPassword, sizeof(in.apPassword));
+      keepText(in.botPassword, own.botPassword, sizeof(in.botPassword));
+      keepText(in.libraryToken, own.libraryToken, sizeof(in.libraryToken));
+      keepText(in.haToken, own.haToken, sizeof(in.haToken));
+      keepText(in.haWebhookId, own.haWebhookId, sizeof(in.haWebhookId));
+      keepText(in.mqttPassword, own.mqttPassword, sizeof(in.mqttPassword));
+      if (in.apPassword[0] == '\0') strncpy(in.apPassword, NetConfig().apPassword, sizeof(in.apPassword) - 1);
+    });
+  } else if (strcmp(key, "otacfg") == 0) {
+    merge(static_cast<UpdateConfig *>(nullptr), [](UpdateConfig &in, const UpdateConfig &own) {
+      keepText(in.token, own.token, sizeof(in.token));
+    });
+  } else if (strcmp(key, "pushers") == 0) {
+    merge(static_cast<PusherConfig *>(nullptr), [](PusherConfig &in, const PusherConfig &own) {
+      keepPusherSecrets(in.brew, own.brew, true);  // its address is in the pairing record
+      keepPusherSecrets(in.power, own.power, in.powerAddress[0] != '\0' && strcmp(in.powerAddress, own.powerAddress) == 0);
+    });
+  } else if (strcmp(key, "stopbot") == 0) {
+    merge(static_cast<StopBotConfig *>(nullptr), [](StopBotConfig &in, const StopBotConfig &own) {
+      keepPusherSecrets(in.secrets, own.secrets, in.address[0] != '\0' && strcmp(in.address, own.address) == 0);
+    });
+  }
 }
 
 // The NVS records, each read into g_record and handed to visit(key, length).
@@ -149,7 +227,7 @@ bool skippedFile(const char *name) {
 // kept in while it was converted (/shots.v8.bak...).
 bool historyFile(const char *name) {
   if (strcmp(name, "/shots.bin") == 0 || strcmp(name, "/shots.csv") == 0 || strcmp(name, "/shot.csv") == 0 ||
-      strcmp(name, "/contexts.bin") == 0 || strncmp(name, "/shots.", 7) == 0) {
+      strncmp(name, "/contexts.", 10) == 0 || strncmp(name, "/shots.", 7) == 0) {  // /contexts.unread too
     return true;
   }
   if (name[1] != 'c') return false;
@@ -313,7 +391,7 @@ size_t writeBackup(const BackupOptions &options, void (*out)(const uint8_t *, si
   w.header(h);
   forEachNvsRecord([&](const char *key, size_t length) {
     if (!options.secrets && strcmp(key, "devkey") == 0) return;
-    if (!options.secrets && strcmp(key, "net") == 0) blankSecrets(g_record, length);
+    if (!options.secrets) blankSecrets(key, g_record, length);
     w.entry(BACKUP_ENTRY_NVS, key, g_record, static_cast<uint32_t>(length));
   });
   const size_t count = listFiles();
@@ -394,7 +472,7 @@ const char *applyRestore() {
         ++failed;
         return true;
       }
-      if (!s.secrets && strcmp(name, "net") == 0) keepOwnSecrets(g_record, length);
+      if (!s.secrets) keepOwnSecrets(name, g_record, length);
       if (prefs.putBytes(name, g_record, length) == length) ++records;
       else ++failed;
       return true;

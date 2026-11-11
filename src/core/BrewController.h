@@ -209,6 +209,7 @@ class BrewController {
   void enterBrewingAfterBloom(uint32_t nowMs, uint32_t restartMs);
   void tickStopping(uint32_t nowMs);
   void tickDrip(uint32_t nowMs);
+  bool stopRetryDue(uint32_t nowMs, uint32_t sentAtMs) const;
   void tickFault(uint32_t nowMs, Intent intent);
 
   IScale &scale_;
@@ -321,6 +322,8 @@ class BrewController {
   uint16_t stopLatencyMs_ = 0;
   uint8_t stopRetries_ = 0;
   bool retryInFlight_ = false;
+  bool stopRetryPending_ = false;      // the press now waiting to go is a retry (the stop weight stays the first press's)
+  uint32_t retryHoldOffUntilMs_ = 0;   // a cup bump was seen: no retry press until then
   bool manualStopNeeded_ = false;
   bool stopPressPending_ = false;
   // The stop press was sent with no evidence the machine was running. One

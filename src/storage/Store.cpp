@@ -2,6 +2,13 @@
 
 #include <LittleFS.h>
 #include <Preferences.h>
+#include <stddef.h>
+
+#include <vector>
+
+#ifndef BBW_EMULATOR
+#include <dirent.h>
+#endif
 
 #include "Log.h"
 #include "platform/FsUtil.h"
@@ -28,7 +35,14 @@ constexpr uint16_t HISTORY_VERSION_V9 = 9;      // 9: coffee, recipe and grinder
 constexpr uint16_t HISTORY_VERSION_V8 = 8;
 constexpr uint32_t CURVE_MAGIC = 0x43574242;    // "BBWC"
 constexpr uint16_t CURVE_VERSION = 1;
-constexpr uint32_t CONTEXT_MAGIC = 0x58574242;   // "BBWX"
+// The contexts file: "BBWX" held each shot's context in the slot id % 500 (until 10 Nov 2026), "BBWY"
+// holds it in the shot's own slot of the history ring (see Store.h). Both are read: BBWX is converted.
+constexpr uint32_t CONTEXT_MAGIC_BY_ID = 0x58574242;   // "BBWX"
+constexpr uint32_t CONTEXT_MAGIC = 0x59574242;         // "BBWY"
+constexpr const char *HISTORY_UNREAD_PATH = "/shots.unread";
+constexpr const char *CONTEXT_TMP_PATH = "/contexts.tmp";
+// The largest NVS record this firmware reads or writes, in bytes (Backup.cpp RECORD_MAX).
+constexpr size_t BLOB_MAX = 4096;
 // Flash kept free so the history file and settings can always be written.
 constexpr size_t CURVE_RESERVE_BYTES = 96 * 1024;
 
@@ -39,9 +53,10 @@ struct CurveHeader {
   uint32_t shotId;
 };
 
-// Shot contexts live in one ring file beside the history, one fixed slot per shot (id modulo the
-// history's capacity): one file instead of one per shot keeps the directory small and every
-// read or write a single seek. A slot is only believed when the shot id in it matches.
+// Shot contexts live in one ring file beside the history, one fixed slot per shot, the slot the shot
+// has in the history (a shot's context sits where its record sits): one file instead of one per shot
+// keeps the directory small and every read or write a single seek. A slot is only believed when the
+// shot id in it matches.
 constexpr const char *CONTEXT_PATH = "/contexts.bin";
 struct ContextHeader {
   uint32_t magic;
@@ -89,6 +104,8 @@ constexpr const char *SETTINGS_KEY_V7 = "settings";
 // In PSRAM (platform/BigMem.h), made in Store::begin().
 Library *g_scratchLibrary;
 uint8_t *g_libraryBytes;  // LIBRARY_MAX_BYTES
+uint8_t *g_blobScratch;   // BLOB_MAX: an NVS record longer than its struct is read here
+uint32_t *g_slotIds;      // the id of the shot in each history slot (0: none), for finding a shot's slot
 struct StoredV7 {
   uint16_t version;
   legacy::SettingsV7 value;
@@ -99,6 +116,8 @@ void allocateStoreBuffers() {
   if (g_scratchLibrary) return;
   g_scratchLibrary = bigNew<Library>();
   g_libraryBytes = bigArray<uint8_t>(LIBRARY_MAX_BYTES);
+  g_blobScratch = bigArray<uint8_t>(BLOB_MAX);
+  g_slotIds = bigArray<uint32_t>(Store::HISTORY_CAPACITY);
   g_storedV7 = static_cast<StoredV7 *>(bigAlloc(sizeof(StoredV7)));
 }
 
@@ -129,8 +148,23 @@ bool loadBlob(const char *key, uint16_t version, T &out) {
   stored.version = 0;
   stored.value = out;
   const size_t length = prefs.isKey(key) ? prefs.getBytesLength(key) : 0;
-  const bool ok = length > sizeof(uint16_t) && length <= sizeof(Stored) &&
-                  prefs.getBytes(key, &stored, length) == length && stored.version == version;
+  bool ok = false;
+  if (length > sizeof(uint16_t) && length <= sizeof(Stored)) {
+    ok = prefs.getBytes(key, &stored, length) == length && stored.version == version;
+  } else if (length > sizeof(Stored) && length <= BLOB_MAX && g_blobScratch) {
+    // A record a newer build wrote (the board was rolled back to this one) is longer than this
+    // build's struct. The fields only ever grow at the end, so the front of it is this build's
+    // struct: read whole (NVS refuses a buffer that is too short), and the front taken.
+    ok = prefs.getBytes(key, g_blobScratch, length) == length;
+    if (ok) {
+      memcpy(&stored, g_blobScratch, sizeof(Stored));
+      ok = stored.version == version;
+    }
+    if (ok) {
+      LOGW("store: %s is %u bytes, longer than this build's %u: the fields it knows are used",
+           key, static_cast<unsigned>(length), static_cast<unsigned>(sizeof(Stored)));
+    }
+  }
   prefs.end();
   if (ok) out = stored.value;
   return ok;
@@ -148,7 +182,21 @@ void saveBlob(const char *key, uint16_t version, const T &value) {
   memset(&stored, 0, sizeof(stored));
   stored.version = version;
   stored.value = value;
-  if (prefs.putBytes(key, &stored, sizeof(stored)) != sizeof(stored)) {
+  // A longer record of the same version (written by a newer build) keeps its tail: this build
+  // changes the part it knows, and the settings the newer build added are still there when the
+  // board is updated again.
+  const size_t existing = prefs.isKey(key) ? prefs.getBytesLength(key) : 0;
+  bool keepTail = false;
+  if (existing > sizeof(Stored) && existing <= BLOB_MAX && g_blobScratch &&
+      prefs.getBytes(key, g_blobScratch, existing) == existing) {
+    uint16_t storedVersion = 0;
+    memcpy(&storedVersion, g_blobScratch, sizeof(storedVersion));
+    keepTail = storedVersion == version;
+  }
+  if (keepTail) {
+    memcpy(g_blobScratch, &stored, sizeof(stored));
+    if (prefs.putBytes(key, g_blobScratch, existing) != existing) LOGW("store: write of %s failed", key);
+  } else if (prefs.putBytes(key, &stored, sizeof(stored)) != sizeof(stored)) {
     LOGW("store: write of %s failed", key);
   }
   prefs.end();
@@ -375,12 +423,16 @@ bool Store::begin() {
   if (!bbw::fileExists(HISTORY_PATH) && bbw::fileExists(HISTORY_V8_BACKUP_PATH)) {
     LittleFS.rename(HISTORY_V8_BACKUP_PATH, HISTORY_PATH);
   }
+  restoreUnreadHistory();
   if (bbw::fileExists(HISTORY_TMP_PATH)) LittleFS.remove(HISTORY_TMP_PATH);
   convertHistoryV8();   // a version 8 history becomes version 10 in one step
   convertHistoryV9();
+  ringIdsValid_ = false;
+  header_ = Header();
   File file = LittleFS.open(HISTORY_PATH, "r");
-  const bool valid = file && file.read(reinterpret_cast<uint8_t *>(&header_), sizeof(header_)) ==
-                                 sizeof(header_) &&
+  const bool headerRead = file && file.read(reinterpret_cast<uint8_t *>(&header_), sizeof(header_)) ==
+                                      sizeof(header_);
+  const bool valid = headerRead &&
                      header_.magic == HISTORY_MAGIC && header_.version == HISTORY_VERSION &&
                      header_.recordSize == sizeof(ShotRecord) &&
                      header_.head < HISTORY_CAPACITY && header_.count <= HISTORY_CAPACITY;
@@ -388,16 +440,92 @@ bool Store::begin() {
   if (!valid) {
     // Never throw away a history this build cannot read: set it aside.
     if (bbw::fileExists(HISTORY_PATH)) {
-      if (bbw::fileExists("/shots.unread")) LittleFS.remove("/shots.unread");
-      LittleFS.rename(HISTORY_PATH, "/shots.unread");
-      LOGW("store: shot history not readable, kept as /shots.unread");
+      if (bbw::fileExists(HISTORY_UNREAD_PATH)) LittleFS.remove(HISTORY_UNREAD_PATH);
+      LittleFS.rename(HISTORY_PATH, HISTORY_UNREAD_PATH);
+      LOGW("store: shot history not readable, kept as %s", HISTORY_UNREAD_PATH);
     }
+    // The next id is only believed from a header that is one of ours (a newer version, say). From
+    // anything else the ids start again at 1, and what the old ids left behind must go, or a new shot
+    // would pair with a stale context and curve.
+    const bool trusted = headerRead && header_.magic == HISTORY_MAGIC && header_.version != 0 &&
+                         header_.nextId != 0;
+    if (!trusted) header_ = Header();
     resetHistory();
+    if (!trusted) dropStaleShotData();
   }
   LOGI("store: %u shots in history", static_cast<unsigned>(header_.count));
   // An older context file is converted now, not at the next shot: until then its records could not
   // be read (the advice confidence reads them).
   if (bbw::fileExists(CONTEXT_PATH)) prepareContexts();
+  return true;
+}
+
+// A shot history that is back to id 1 with nothing trusted from before: the contexts and the curves
+// of the ids it had would be taken for the new shots'.
+void Store::dropStaleShotData() {
+  if (bbw::fileExists(CONTEXT_PATH)) LittleFS.remove(CONTEXT_PATH);
+  std::vector<uint32_t> ids;
+  auto collect = [&](const char *name) {
+    if (name[0] == '/') ++name;
+    if (name[0] != 'c') return;
+    uint32_t id = 0;
+    size_t i = 1;
+    for (; name[i] >= '0' && name[i] <= '9' && i < 11; ++i) id = id * 10 + static_cast<uint32_t>(name[i] - '0');
+    if (i > 1 && strcmp(name + i, ".bin") == 0 && id != 0) ids.push_back(id);
+  };
+#ifdef BBW_EMULATOR
+  LittleFS.list([](const char *path, size_t, void *context) {
+    (*static_cast<decltype(collect) *>(context))(path);
+  }, &collect);
+#else
+  DIR *dir = opendir("/littlefs");  // where begin() mounts it
+  if (dir) {
+    while (struct dirent *e = readdir(dir)) collect(e->d_name);
+    closedir(dir);
+  }
+#endif
+  for (uint32_t id : ids) removeCurve(id);
+  if (!ids.empty()) LOGW("store: %u curves of an earlier history removed", static_cast<unsigned>(ids.size()));
+}
+
+// A history an older build set aside as /shots.unread (it could not read the newer format; see
+// begin()) comes back once this build reads its version. Only into an empty history: shots made
+// since are never replaced. true: it is back.
+bool Store::restoreUnreadHistory() {
+  if (!bbw::fileExists(HISTORY_UNREAD_PATH)) return false;
+  File file = LittleFS.open(HISTORY_UNREAD_PATH, "r");
+  Header unread = {};
+  const bool read = file && file.read(reinterpret_cast<uint8_t *>(&unread), sizeof(unread)) == sizeof(unread);
+  const size_t size = file ? file.size() : 0;
+  if (file) file.close();
+  const size_t recordSize = unread.version == HISTORY_VERSION ? sizeof(ShotRecord)
+                            : unread.version == HISTORY_VERSION_V9 ? sizeof(legacy::ShotRecordV9)
+                            : unread.version == HISTORY_VERSION_V8 ? sizeof(legacy::ShotRecordV8) : 0;
+  if (!read || unread.magic != HISTORY_MAGIC || recordSize == 0 || unread.recordSize != recordSize ||
+      unread.head >= HISTORY_CAPACITY || unread.count > HISTORY_CAPACITY ||
+      size < sizeof(Header) + static_cast<size_t>(unread.count) * recordSize) {
+    return false;  // not a history this build reads (yet)
+  }
+  if (bbw::fileExists(HISTORY_PATH)) {
+    File current = LittleFS.open(HISTORY_PATH, "r");
+    Header now = {};
+    const bool haveNow = current && current.read(reinterpret_cast<uint8_t *>(&now), sizeof(now)) == sizeof(now);
+    if (current) current.close();
+    const bool emptyNow = haveNow && now.magic == HISTORY_MAGIC && now.count == 0 &&
+                          (now.version == HISTORY_VERSION || now.version == HISTORY_VERSION_V9 ||
+                           now.version == HISTORY_VERSION_V8);
+    if (!emptyNow) {
+      // Shots in it that are newer, or something this build cannot read: nothing is replaced.
+      if (haveNow && now.magic == HISTORY_MAGIC && now.count != 0) {
+        LOGW("store: the shot history set aside earlier (%u shots) stays as %s: there are newer shots",
+             static_cast<unsigned>(unread.count), HISTORY_UNREAD_PATH);
+      }
+      return false;
+    }
+    LittleFS.remove(HISTORY_PATH);  // empty: nothing in it
+  }
+  if (!LittleFS.rename(HISTORY_UNREAD_PATH, HISTORY_PATH)) return false;
+  LOGI("store: the shot history set aside earlier is back, %u shots", static_cast<unsigned>(unread.count));
   return true;
 }
 
@@ -407,6 +535,7 @@ void Store::resetHistory() {
   header_.recordSize = sizeof(ShotRecord);
   header_.head = 0;
   header_.count = 0;
+  ringIdsValid_ = false;
   if (header_.nextId == 0) header_.nextId = 1;
   File file = LittleFS.open(HISTORY_PATH, "w");
   if (file) {
@@ -435,6 +564,7 @@ bool Store::appendShot(const ShotRecord &record) {
                 sizeof(record);
   file.close();
   if (!ok) return false;
+  if (ringIdsValid_) g_slotIds[header_.head] = record.id;
   header_.head = (header_.head + 1) % HISTORY_CAPACITY;
   if (header_.count < HISTORY_CAPACITY) ++header_.count;
   header_.nextId = record.id + 1;
@@ -456,7 +586,7 @@ bool Store::convertContextsOld() {
   File in = LittleFS.open(CONTEXT_PATH, "r");
   ContextHeader old = {};
   const bool read = in && in.read(reinterpret_cast<uint8_t *>(&old), sizeof(old)) == sizeof(old) &&
-                    old.magic == CONTEXT_MAGIC && old.capacity == HISTORY_CAPACITY;
+                    old.magic == CONTEXT_MAGIC_BY_ID && old.capacity == HISTORY_CAPACITY;
   const size_t oldSize = !read ? 0
                          : old.version == bbw::SHOT_CONTEXT_VERSION_V1 && old.recordSize == bbw::SHOT_CONTEXT_V1_SIZE
                              ? bbw::SHOT_CONTEXT_V1_SIZE
@@ -467,13 +597,14 @@ bool Store::convertContextsOld() {
     if (in) in.close();
     return false;
   }
-  constexpr const char *TMP = "/contexts.tmp";
+  const char *TMP = CONTEXT_TMP_PATH;
   File out = LittleFS.open(TMP, "w");
   if (!out) {
     in.close();
     return false;
   }
-  const ContextHeader header = {CONTEXT_MAGIC, SHOT_CONTEXT_VERSION,
+  // Still the layout by id: convertContextsToSlots moves it on from here.
+  const ContextHeader header = {CONTEXT_MAGIC_BY_ID, SHOT_CONTEXT_VERSION,
                                 static_cast<uint16_t>(sizeof(ShotContext)), HISTORY_CAPACITY};
   bool ok = out.write(reinterpret_cast<const uint8_t *>(&header), sizeof(header)) == sizeof(header);
   uint32_t kept = 0;
@@ -495,6 +626,107 @@ bool Store::convertContextsOld() {
   return true;
 }
 
+// The id of the shot in each history slot into g_slotIds (0: no shot there), so that a shot's
+// context slot is found without reading the history again.
+bool Store::loadRingIds() {
+  if (ringIdsValid_) return true;
+  if (!fsOk_ || !g_slotIds) return false;
+  memset(g_slotIds, 0, HISTORY_CAPACITY * sizeof(uint32_t));
+  if (header_.count > 0) {
+    File file = LittleFS.open(HISTORY_PATH, "r");
+    if (!file) return false;
+    bool ok = true;
+    for (uint32_t i = 0; ok && i < header_.count; ++i) {
+      const uint32_t slot = (header_.head + HISTORY_CAPACITY - header_.count + i) % HISTORY_CAPACITY;
+      uint32_t id = 0;
+      ok = file.seek(sizeof(Header) + static_cast<size_t>(slot) * sizeof(ShotRecord) + offsetof(ShotRecord, id)) &&
+           file.read(reinterpret_cast<uint8_t *>(&id), sizeof(id)) == sizeof(id);
+      g_slotIds[slot] = id;
+    }
+    file.close();
+    if (!ok) return false;
+  }
+  ringIdsValid_ = true;
+  return true;
+}
+
+// The history slot holding shot `id`, or -1 if it is not in the history. The ids grow from the oldest
+// shot to the newest (they may skip, after a shot that could not be saved), so this is a search.
+int32_t Store::slotOfId(uint32_t id) {
+  if (id == 0 || header_.count == 0 || !loadRingIds()) return -1;
+  uint32_t low = 0, high = header_.count;  // [low, high)
+  while (low < high) {
+    const uint32_t mid = low + (high - low) / 2;
+    const uint32_t slot = (header_.head + HISTORY_CAPACITY - header_.count + mid) % HISTORY_CAPACITY;
+    const uint32_t at = g_slotIds[slot];
+    if (at == id) return static_cast<int32_t>(slot);
+    if (at < id) low = mid + 1;
+    else high = mid;
+  }
+  return -1;
+}
+
+// A contexts file in the layout by id (id % 500), as built until 10 Nov 2026, laid out by history
+// slot: every context whose shot is still in the history goes with it. The old file is replaced only
+// when the new one is complete. false: not such a file, or nothing was changed.
+bool Store::convertContextsToSlots() {
+  File in = LittleFS.open(CONTEXT_PATH, "r");
+  ContextHeader old = {};
+  const bool ok = in && in.read(reinterpret_cast<uint8_t *>(&old), sizeof(old)) == sizeof(old) &&
+                  old.magic == CONTEXT_MAGIC_BY_ID && old.version == SHOT_CONTEXT_VERSION &&
+                  old.recordSize == sizeof(ShotContext) && old.capacity == HISTORY_CAPACITY &&
+                  in.size() == sizeof(old) + HISTORY_CAPACITY * sizeof(ShotContext);
+  if (!ok || !loadRingIds()) {
+    if (in) in.close();
+    return false;
+  }
+  File out = LittleFS.open(CONTEXT_TMP_PATH, "w");
+  if (!out) {
+    in.close();
+    return false;
+  }
+  const ContextHeader header = {CONTEXT_MAGIC, SHOT_CONTEXT_VERSION,
+                                static_cast<uint16_t>(sizeof(ShotContext)), HISTORY_CAPACITY};
+  bool good = out.write(reinterpret_cast<const uint8_t *>(&header), sizeof(header)) == sizeof(header);
+  const ShotContext blank;  // shot id 0: an empty slot
+  uint32_t kept = 0;
+  for (uint32_t slot = 0; good && slot < HISTORY_CAPACITY; ++slot) {
+    ShotContext c;
+    const uint32_t id = g_slotIds[slot];
+    const bool found = id != 0 && in.seek(sizeof(old) + static_cast<size_t>(id % HISTORY_CAPACITY) * sizeof(c)) &&
+                       in.read(reinterpret_cast<uint8_t *>(&c), sizeof(c)) == sizeof(c) && c.shotId == id;
+    const ShotContext &put = found ? c : blank;
+    good = out.write(reinterpret_cast<const uint8_t *>(&put), sizeof(put)) == sizeof(put);
+    if (found) ++kept;
+  }
+  in.close();
+  out.close();
+  if (!good || !LittleFS.rename(CONTEXT_TMP_PATH, CONTEXT_PATH)) {
+    LittleFS.remove(CONTEXT_TMP_PATH);
+    LOGW("store: shot contexts could not be moved to the new layout");
+    return false;
+  }
+  LOGI("store: %u shot contexts moved to the layout by history slot", static_cast<unsigned>(kept));
+  return true;
+}
+
+// A contexts file this build does not read: renamed, not deleted (the first free /contexts.unread,
+// /contexts.unread1 ...; when all are taken the last one is replaced).
+void Store::setAsideContexts() {
+  char name[24];
+  for (int n = 0; n < 10; ++n) {
+    if (n == 0) snprintf(name, sizeof(name), "/contexts.unread");
+    else snprintf(name, sizeof(name), "/contexts.unread%d", n);
+    if (!bbw::fileExists(name)) break;
+  }
+  if (LittleFS.rename(CONTEXT_PATH, name)) {
+    LOGW("store: shot contexts not readable, kept as %s", name);
+  } else {
+    LOGW("store: shot contexts not readable and could not be set aside");
+    LittleFS.remove(CONTEXT_PATH);  // last resort: a file nothing reads must not block new contexts
+  }
+}
+
 bool Store::prepareContexts() {
   if (!fsOk_) return false;
   if (bbw::fileExists(CONTEXT_PATH)) {
@@ -506,8 +738,11 @@ bool Store::prepareContexts() {
                     file.size() == sizeof(header) + HISTORY_CAPACITY * sizeof(ShotContext);
     if (file) file.close();
     if (ok) return true;
-    if (convertContextsOld()) return true;
-    LittleFS.remove(CONTEXT_PATH);  // another layout: start again (only recorded data is lost)
+    convertContextsOld();  // version 1 and 2 files become version 3, still by id
+    if (convertContextsToSlots()) return true;
+    // Another layout, or the history could not be read to place the shots: never thrown away, set
+    // aside beside it, and a new file is started.
+    setAsideContexts();
   }
   File file = LittleFS.open(CONTEXT_PATH, "w");
   if (!file) return false;
@@ -724,9 +959,11 @@ void Store::saveDrinkers(const Drinkers &drinkers) { saveBlob("drinkers", 1, dri
 
 bool Store::saveContext(const ShotContext &context) {
   if (context.shotId == 0 || !prepareContexts()) return false;
+  const int32_t slot = slotOfId(context.shotId);  // a shot that was not saved has no slot
+  if (slot < 0) return false;
   File file = LittleFS.open(CONTEXT_PATH, "r+");
   if (!file) return false;
-  const size_t offset = sizeof(ContextHeader) + (context.shotId % HISTORY_CAPACITY) * sizeof(ShotContext);
+  const size_t offset = sizeof(ContextHeader) + static_cast<size_t>(slot) * sizeof(ShotContext);
   const bool ok = file.seek(offset) &&
                   file.write(reinterpret_cast<const uint8_t *>(&context), sizeof(context)) == sizeof(context);
   file.close();
@@ -771,7 +1008,9 @@ void Store::loadRooms(const uint32_t *ids, size_t count, float *roomC) {
   for (size_t i = 0; ok && i < count; ++i) {
     if (ids[i] == 0) continue;
     ShotContext c;
-    const size_t offset = sizeof(ContextHeader) + (ids[i] % HISTORY_CAPACITY) * sizeof(ShotContext);
+    const int32_t slot = slotOfId(ids[i]);
+    if (slot < 0) continue;
+    const size_t offset = sizeof(ContextHeader) + static_cast<size_t>(slot) * sizeof(ShotContext);
     if (!file.seek(offset) || file.read(reinterpret_cast<uint8_t *>(&c), sizeof(c)) != sizeof(c)) break;
     if (c.shotId == ids[i] && c.roomEffX10 != bbw::AMBIENT_NONE_X10) roomC[i] = c.roomEffX10 / 10.0f;
   }
@@ -786,7 +1025,9 @@ bool Store::loadContext(uint32_t id, ShotContext &out) {
   bool ok = file.read(reinterpret_cast<uint8_t *>(&header), sizeof(header)) == sizeof(header) &&
             header.magic == CONTEXT_MAGIC && header.version == SHOT_CONTEXT_VERSION &&
             header.recordSize == sizeof(ShotContext) && header.capacity == HISTORY_CAPACITY;
-  const size_t offset = sizeof(ContextHeader) + (id % HISTORY_CAPACITY) * sizeof(ShotContext);
+  const int32_t slot = ok ? slotOfId(id) : -1;
+  const size_t offset = sizeof(ContextHeader) + static_cast<size_t>(slot < 0 ? 0 : slot) * sizeof(ShotContext);
+  if (ok && slot < 0) ok = false;
   if (ok) ok = file.seek(offset) && file.read(reinterpret_cast<uint8_t *>(&out), sizeof(out)) == sizeof(out);
   file.close();
   return ok && out.shotId == id;   // a slot still holding an older shot is not this one

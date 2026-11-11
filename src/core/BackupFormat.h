@@ -22,7 +22,11 @@ constexpr uint32_t BACKUP_MAGIC = 0x42574242;  // "BBWB"
 constexpr uint32_t BACKUP_END = 0x444E4542;    // "BEND"
 constexpr uint16_t BACKUP_FORMAT = 1;
 enum BackupFlags : uint16_t {
-  BACKUP_SECRETS = 1u << 0,  // passwords, the library token and the signing key are in it
+  // Every password and token is in it: Wi-Fi, SwitchBot, library, Home Assistant and MQTT (the
+  // network record), the update channel's token (otacfg), the pushers' and the stop bot's secrets
+  // (SwitchBot password, Tuya local key, MicroBot token), and the signing key. Without the flag
+  // Backup.cpp blanks all of them, and a restore keeps the ones the controller has.
+  BACKUP_SECRETS = 1u << 0,
   BACKUP_HISTORY = 1u << 1,  // the shot history is in it
 };
 enum BackupEntryType : uint8_t { BACKUP_ENTRY_NVS = 1, BACKUP_ENTRY_FILE = 2 };
