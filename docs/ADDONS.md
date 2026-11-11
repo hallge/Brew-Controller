@@ -319,10 +319,16 @@ an add-on, `AddonModule.h` and `ModuleAddon.h` together, so every call crosses t
 A module has no C++ runtime and no `malloc`: `operator new` takes zeroed PSRAM from `Host::allocate`, `delete`
 does nothing, nothing runs at exit, and a static constructor must not allocate (it runs before the entry).
 Build flags are `-fno-exceptions -fno-rtti -fno-threadsafe-statics`. **A module may call only this allow-list
-from the firmware:** `snprintf`, `vsnprintf`, `strtod`, `atof`, `strlen`, `strcmp`, `strncmp`, `strstr`, `strchr`,
-`memcpy`, `memmove`, `memset`, `memcmp`, `strcpy`, `strncpy`, `floorf`, `fabsf`, `sqrtf`. Anything else makes the
-module fail to load, and the card names the symbol ("it needs X, which a module may not use"). Code that needs
-64-bit arithmetic or double-precision maths gets it from `libgcc`, linked into the module.
+from the firmware:** `snprintf`, `vsnprintf`, `strtod`, `atof`, `atoi`, `atol` (formatting and parsing numbers);
+`strlen`, `strcmp`, `strncmp`, `strncasecmp`, `strstr`, `strchr`, `strtok`, `memcpy`, `memmove`, `memset`,
+`memcmp`, `memchr`, `strcpy`, `strncpy` (text and memory); `floorf`, `fabsf`, `sqrtf`, `fminf` (single-precision
+maths). Anything else makes the module fail to load, and the card names the symbol ("it needs X, which a module
+may not use"). Code that needs 64-bit arithmetic or double-precision maths gets it from `libgcc`, which
+`scripts/build_module.py` links into the module itself (without its `.eh_frame`, which a shared link cannot take),
+so those helpers (`__udivmoddi4`, `__divdf3`, `__muldf3`, ...) are not imports. The list is `src/platform/AddonImports.h`;
+a host test keeps it and this paragraph equal. `strtok` keeps its state in the C library, which is fine because
+module code only ever runs in the loop task. The loader supports the relocation types a module build produces:
+`R_XTENSA_RELATIVE`, `R_XTENSA_JMP_SLOT` and `R_XTENSA_RTLD` (and `R_XTENSA_GLOB_DAT`); any other type refuses the module.
 
 Module code runs from PSRAM. While flash is written PSRAM cannot be reached, so module code is only ever called
 from the loop task (never from an interrupt, never from the control task).

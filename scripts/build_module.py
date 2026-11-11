@@ -120,8 +120,18 @@ def build(folder, out_dir, firmware, toolchain, min_firmware, sums):
             obj = tmp / (src.stem + ".o")
             run([cxx, *CXXFLAGS, "-I", str(firmware / "src"), "-I", str(folder), "-c", str(src), "-o", str(obj)])
             objects.append(str(obj))
+        # libgcc supplies the 64-bit and soft-float helpers a module needs, but it must be linked without its
+        # .eh_frame. The cause of "BFD ... elf32-xtensa.c:3299 assertion fail": libgcc is not built with -fPIC,
+        # and its larger members (_umoddi3, _udivmoddi4, ...) carry an .eh_frame whose R_XTENSA_32 entries
+        # point into .text. In a -shared link that read-only section would need dynamic relocations, which this
+        # binutils (2.35) asserts on instead of reporting. Nothing in a module unwinds (-fno-exceptions), so the
+        # section is simply removed from a private copy of libgcc.a (objcopy accepts an archive).
+        libgcc = run([cxx, "-print-libgcc-file-name"]).stdout.strip()
+        (tmp / "gcc").mkdir()
+        run([tool(bindir, "objcopy"), "--remove-section=.eh_frame", "--remove-section=.rela.eh_frame", libgcc,
+             str(tmp / "gcc" / "libgcc.a")])
         elf = tmp / "module.elf"
-        run([cxx, *LDFLAGS, *objects, "-lgcc", "-o", str(elf)])
+        run([cxx, *LDFLAGS, *objects, "-L", str(tmp / "gcc"), "-lgcc", "-o", str(elf)])
         run([strip, *STRIP, str(elf)])
         data = elf.read_bytes()
     if len(data) > MAX_ELF:

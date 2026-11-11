@@ -44,6 +44,7 @@
 #include "core/Inflate.h"
 #include "core/TimeZone.h"
 #include "platform/RamWatch.h"
+#include "platform/AddonImports.h"
 #include "core/BackupFormat.h"
 #include <vector>
 
@@ -10394,6 +10395,7 @@ static void testServiceSharing() {
 }
 
 #include "test_safety.inc"  // needs Rig above
+#include "test_imports.inc"  // needs CHECK above
 
 int main() {
   setvbuf(stdout, nullptr, _IONBF, 0);  // keep the output if a test crashes
@@ -10427,6 +10429,7 @@ int main() {
   testAddonManager();
   testAddonGroundwork();
   testAddonModules();
+  testModuleImportList();
   testGrindsKeepOneHistory();
   testContextGrinderDose();
   testShotDataSet();

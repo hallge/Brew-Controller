@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
 
@@ -26,6 +27,7 @@ extern "C" {
 #include "addons/ModuleAddon.h"
 #include "addons/ModuleFile.h"
 #include "core/Sha256.h"
+#include "platform/AddonImports.h"
 #include "platform/BigMem.h"
 #include "platform/FirmwareUpdate.h"
 #include "platform/FsUtil.h"
@@ -109,32 +111,15 @@ bool crashReset() {
 
 // The short allow-list: the module is linked with -nostdlib and gets only these from the firmware.
 // Anything else it needs makes it fail to load, with the name shown.
-char *(*const STRCHR)(const char *, int) = strchr;
-char *(*const STRSTR)(const char *, const char *) = strstr;
-
+// The names and addresses are in AddonImports.h, which the host tests read too (against docs/ADDONS.md).
 struct Export {
   const char *name;
   const void *address;
 };
 const Export EXPORTS[] = {
-    {"snprintf", reinterpret_cast<const void *>(&snprintf)},
-    {"vsnprintf", reinterpret_cast<const void *>(&vsnprintf)},
-    {"strtod", reinterpret_cast<const void *>(&strtod)},
-    {"atof", reinterpret_cast<const void *>(&atof)},
-    {"strlen", reinterpret_cast<const void *>(&strlen)},
-    {"strcmp", reinterpret_cast<const void *>(&strcmp)},
-    {"strncmp", reinterpret_cast<const void *>(&strncmp)},
-    {"strstr", reinterpret_cast<const void *>(STRSTR)},
-    {"strchr", reinterpret_cast<const void *>(STRCHR)},
-    {"memcpy", reinterpret_cast<const void *>(&memcpy)},
-    {"memmove", reinterpret_cast<const void *>(&memmove)},
-    {"memset", reinterpret_cast<const void *>(&memset)},
-    {"memcmp", reinterpret_cast<const void *>(&memcmp)},
-    {"strcpy", reinterpret_cast<const void *>(&strcpy)},
-    {"strncpy", reinterpret_cast<const void *>(&strncpy)},
-    {"floorf", reinterpret_cast<const void *>(static_cast<float (*)(float)>(&floorf))},
-    {"fabsf", reinterpret_cast<const void *>(static_cast<float (*)(float)>(&fabsf))},
-    {"sqrtf", reinterpret_cast<const void *>(static_cast<float (*)(float)>(&sqrtf))},
+#define BBW_EXPORT_ENTRY(name, address) {#name, reinterpret_cast<const void *>(address)},
+    BBW_ADDON_IMPORTS(BBW_EXPORT_ENTRY)
+#undef BBW_EXPORT_ENTRY
 };
 
 
