@@ -88,7 +88,7 @@ final class RetryingTask<Value: Sendable> {
     }
 
     /// Not ready, timeouts and server-side 5xx are worth another try; the rest are not.
-    static func isRetryable(_ error: BrewAPIError) -> Bool {
+    nonisolated static func isRetryable(_ error: BrewAPIError) -> Bool {
         switch error {
         case .notReady, .timeout: return true
         case .http(let status, _): return status >= 500

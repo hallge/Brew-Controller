@@ -119,9 +119,12 @@ void controllerMain() {
   emu::g_options.dataDir = g_dataDir;
   std::error_code ignored;
   std::filesystem::create_directories(g_dataDir, ignored);
-  emu::g_resetReason = emu::Reset::POWER_ON;
-  emu::g_board.resetReason = "power on";
-  emu::rtcRestore(emu::Reset::POWER_ON);
+  // A host that keeps the RTC image across launches says when a launch is a restart mid-shot, so the
+  // firmware's restart recovery runs (main.cpp resumedMidShot). Otherwise: power on.
+  const emu::Reset reason = emu::g_hooks.bootReason ? emu::g_hooks.bootReason() : emu::Reset::POWER_ON;
+  emu::g_resetReason = reason;
+  emu::g_board.resetReason = reason == emu::Reset::POWER_ON ? "power on" : "restart";
+  emu::rtcRestore(reason);
   emu::log("emu", "host controller boot (%s)", g_demo ? "demo" : "real devices");
   if (g_demo) {
     bleSetBackend(bleVirtualRadioBackend());

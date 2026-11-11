@@ -75,14 +75,37 @@ long rtcRead(char *data, size_t size) {
 
 // At start: put the saved image back, if there is one of exactly the right size. (The firmware's own
 // rtcRestore(POWER_ON) discards nothing here: rtcClear below keeps the file.)
+// main.cpp SHOT_IN_PROGRESS_MAGIC: g_shotInProgress holds it while the machine may be brewing.
+constexpr uint32_t kShotInProgressMagic = 0xB7E55107;
+emu::Reset g_bootReason = emu::Reset::POWER_ON;
+
+// At start: if the saved image (of exactly the right size) shows a shot in progress, the app was
+// killed mid-shot: put the image back and start as a software restart, so the firmware's restart
+// recovery stops the machine and keeps the shot. Any other launch is a power on with a zeroed image,
+// as on the board: a cup believed on the scale hours ago is not believed again.
 void rtcRestoreAtStart() {
   char *begin;
   size_t size;
   rtcRegion(begin, size);
   if (!begin) return;
   std::vector<char> image(size);
-  if (rtcRead(image.data(), size) == static_cast<long>(size)) memcpy(begin, image.data(), size);
+  bool midShot = false;
+  if (rtcRead(image.data(), size) == static_cast<long>(size)) {
+    for (size_t at = 0; at + sizeof(uint32_t) <= size; at += sizeof(uint32_t)) {
+      uint32_t word;
+      memcpy(&word, image.data() + at, sizeof(word));
+      if (word == kShotInProgressMagic) midShot = true;
+    }
+  }
+  if (midShot) {
+    memcpy(begin, image.data(), size);
+    g_bootReason = emu::Reset::SOFTWARE;
+  } else {
+    memset(begin, 0, size);
+  }
 }
+
+emu::Reset bootReason() { return g_bootReason; }
 
 // Saves the image to rtc.bin whenever it differs from the last one saved, checked every 100 ms.
 void rtcWatcher() {
@@ -147,6 +170,7 @@ void prepareOnce(const char *override, int demo) {
   emu::g_hooks.rtcClear = [] {};  // keep rtc.bin: it is the only record of a shot cut short by a kill
   emu::g_hooks.onRestart = onRestart;
   emu::g_hooks.taskStarted = taskStarted;
+  emu::g_hooks.bootReason = bootReason;
   emu::g_hooks.webListen = nullptr;  // in process only
 
   rtcRestoreAtStart();

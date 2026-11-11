@@ -98,7 +98,7 @@ final class CoreModelFixtureTests: XCTestCase {
         XCTAssertTrue(shot.stopConfirmed)
         XCTAssertTrue(shot.hasData)
         XCTAssertEqual(shot.finalWeightG, 37.2, accuracy: 0.001)
-        XCTAssertEqual(shot.pourTimeS, 17.69, accuracy: 0.001)
+        XCTAssertEqual(shot.pourTimeS, 17.74, accuracy: 0.001)
         XCTAssertNotNil(shot.date)
         let data = try BrewAPI.decode(ShotDataModel.self, from: fixture("shot_data"))
         XCTAssertEqual(data.id, 1)

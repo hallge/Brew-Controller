@@ -85,6 +85,9 @@ targets:
         buildPhase: none
         includes:
           - "*.h"
+    dependencies:
+      - sdk: CoreBluetooth.framework
+      - sdk: Security.framework
     info:
       path: BrewControllerApp/Info.plist
       properties:
@@ -98,6 +101,9 @@ targets:
         NSLocalNetworkUsageDescription: Brew Controller talks to Home Assistant and other devices on your home network.
         UIBackgroundModes:
           - bluetooth-central
+        # Plain http to devices on the home network only (Home Assistant, .local names): ios/Host/NET.md.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hallge.brewcontroller
@@ -118,6 +124,7 @@ targets:
         ENABLE_DEBUG_DYLIB: NO
         # Same defines as test/hostapp/run.sh.
         GCC_PREPROCESSOR_DEFINITIONS:
+          - $(inherited)
           - BBW_EMULATOR
           - BBW_HOST_IOS
           - BBW_CLEAN
@@ -134,7 +141,7 @@ targets:
           - $(SRCROOT)/../lib/ScaleWire/src
           - $(SRCROOT)/Vendor/ArduinoJson/src
         # run.sh builds with -Wno-c++11-narrowing.
-        OTHER_CPLUSPLUSFLAGS: "$(inherited) -Wno-c++11-narrowing"
+        OTHER_CPLUSPLUSFLAGS: "$(inherited) -Wno-c++11-narrowing -Wno-nullability-completeness"
       configs:
         Release:
           PROVISIONING_PROFILE_SPECIFIER: $(APP_PROFILE)

@@ -194,9 +194,10 @@ extension ShotDataModel {
         shot = c.lenient(.shot, ShotModel())
         data = c.lenient(.data, ShotDataStats())
         analysis = c.lenient(.analysis, ShotAnalysis())
-        timeS = c.lenient(.timeS, [])
-        weightG = c.lenient(.weightG, [])
-        flowGS = c.lenient(.flowGS, [])
+        // A point the controller could not compute is null (the first flow point always is): 0.
+        timeS = c.lenient(.timeS, OptionalSeries()).map { $0 ?? 0 }
+        weightG = c.lenient(.weightG, OptionalSeries()).map { $0 ?? 0 }
+        flowGS = c.lenient(.flowGS, OptionalSeries()).map { $0 ?? 0 }
         scaleTimerS = c.lenient(.scaleTimerS, [])
     }
 }

@@ -23,7 +23,7 @@ enum BrewFormat {
         guard value >= 60 else { return seconds(max(0, value)) }
         let minutes = Int(value) / 60
         let rest = value - Double(minutes * 60)
-        return String(format: "%d:%04.1f", minutes, rest)
+        return String(format: "%ld:%04.1f", minutes, rest)
     }
     /// A battery percentage: "85%", or "--" when not reported (negative).
     static func battery(_ percent: Int) -> String { percent < 0 ? "--" : "\(percent)%" }
