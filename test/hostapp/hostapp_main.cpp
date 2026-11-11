@@ -100,6 +100,70 @@ void dumpAll(const char *suffix) {
   for (const auto &rt : routes) dump(std::string(rt.name) + suffix, rt.path);
 }
 
+// The Insights, Subscriptions, Discover and Community screens' routes (ios/BrewControllerApp/Screens/*):
+// seeds three rated coffees, two subscriptions, a review and a link suggestion, then writes each route's
+// body as <screen>_<route>.json. The library relay is not reachable here, so the shared-library caches
+// come back empty: those fixtures show the offline shape.
+void dumpScreens() {
+  int ids[3] = {0, 0, 0};
+  const char *names[3] = {"Guji Natural", "Huila Washed", "Santos Dark"};
+  const char *origins[3] = {"Ethiopia", "Colombia", "Brazil"};
+  const char *processes[3] = {"Natural", "Washed", "Natural"};
+  const int levels[3] = {1, 2, 5};
+  for (int i = 0; i < 3; ++i) {
+    Reply r = call("POST", "/api/coffee",
+                   std::string(R"({"name":")") + names[i] + R"(","roaster":"Demo Roasters","origin":")" + origins[i] +
+                       R"(","process":")" + processes[i] + R"(","notes":"berry, cocoa","roastLevel":)" +
+                       std::to_string(levels[i]) + R"(,"roastDate":2026110)" + std::to_string(i + 1) + "}");
+    JsonDocument d;
+    if (r.status == 200 && !deserializeJson(d, r.body)) ids[i] = d["id"].as<int>();
+    if (ids[i]) {
+      call("POST", "/api/coffee/rate",
+           std::string(R"({"coffee":)") + std::to_string(ids[i]) +
+               R"(,"bag":0,"drinker":0,"stars":)" + std::to_string(5 - i) + R"(,"attr":[4,3,3,2,4],"flavours":3})");
+    }
+  }
+  call("POST", "/api/subscriptions",
+       R"({"name":"Demo Roasters Monthly","kind":"coffee","status":"active","url":"https://example.com/coffee","manage_url":"https://example.com/manage","every_days":28,"next_date":20261120,"price_cents":1800,"note":"2 bags, whole bean"})");
+  call("POST", "/api/subscriptions",
+       R"({"name":"Paper filters","kind":"supplies","status":"active","url":"https://example.com/filters","every_days":60,"next_date":20261215,"price_cents":900,"item":"paper filters","stock":40,"per_shot":1,"per_delivery":100})");
+  JsonDocument sd;
+  Reply sl = call("GET", "/api/subscriptions");
+  if (!deserializeJson(sd, sl.body) && sd["subscriptions"].size() > 0) {
+    const int sid = sd["subscriptions"][0]["id"].as<int>();
+    call("POST", "/api/subscriptions/review",
+         std::string(R"({"subscription":)") + std::to_string(sid) +
+             R"(,"drinker":0,"stars":4,"aspects":{"value":3,"quality":5},"note":"good"})");
+  }
+  call("POST", "/api/links/suggest",
+       R"({"url":"https://example.com/video","title":"Dialling in espresso","kind":"video","topics":["dialing_in"],"why":"clear"})");
+  const struct {
+    const char *name;
+    const char *path;
+  } routes[] = {
+      {"insights_shots", "/api/shots?limit=50"},
+      {"insights_taste_profile", "/api/taste/profile?drinker=0"},
+      {"insights_ratings", "/api/coffee/ratings"},
+      {"insights_grind_accuracy", "/api/grind/accuracy"},
+      {"insights_power_events", "/api/power/events?days=90"},
+      {"subscriptions_list", "/api/subscriptions"},
+      {"subscriptions_reviews", "/api/subscriptions/reviews"},
+      {"subscriptions_recommend", "/api/subscriptions/recommend?drinker=0"},
+      {"subscriptions_library", "/api/subscriptions/library"},
+      {"subscriptions_preview", "/api/subscriptions/preview"},
+      {"discover_recommend", "/api/taste/recommend?drinker=0"},
+      {"discover_pending", "/api/library/pending"},
+      {"discover_community_coffees", "/api/community/coffees"},
+      {"discover_community_recipes", "/api/community/recipes"},
+      {"community_links", "/api/links"},
+      {"community_trending", "/api/trending"},
+      {"community_grinders", "/api/community/grinders"},
+      {"community_share", "/api/share"},
+      {"community_now", "/api/community"},
+  };
+  for (const auto &rt : routes) dump(rt.name, rt.path);
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -232,6 +296,7 @@ int main(int argc, char **argv) {
                  "&recipe=" + std::to_string(ld["recipes"][0]["id"].as<int>()));
       }
     }
+    dumpScreens();
   }
   if (!g_dumpDir.empty()) {
     r = call("GET", "/api/shots?limit=1");
