@@ -212,6 +212,14 @@ struct GrinderMyGrinderView: View {
         return (own + lib).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    private var customLabel: String {
+        store.grinder.model.isEmpty ? "Not set yet: pick one, or type it below" : "Another grinder: type it below"
+    }
+
+    private var pickedName: String {
+        pickItems.first { $0.tag == form.pick }?.name ?? (form.pick == "custom" && !form.name.isEmpty ? form.name : customLabel)
+    }
+
     private var currentBurrs: String {
         if form.pick.hasPrefix("own:"), let m = models.first(where: { "own:\($0.id)" == form.pick }) { return m.burrs }
         if form.pick.hasPrefix("lib:"), let m = store.sharedGrinders.first(where: { "lib:\($0.id)" == form.pick }) { return m.burrs }
@@ -231,14 +239,20 @@ struct GrinderMyGrinderView: View {
         Form {
             GrinderMessages(error: store.error, notice: store.notice)
             Section {
-                Picker("Model", selection: $form.pick) {
-                    Text(store.grinder.model.isEmpty ? "Not set yet: pick one, or type it below" : "Another grinder: type it below").tag("custom")
-                    ForEach(pickItems, id: \.tag) { item in
-                        Text(item.name).tag(item.tag)
+                NavigationLink {
+                    GrinderModelPickerView(items: pickItems.map { GrinderPickItem(tag: $0.tag, name: $0.name) },
+                                           selected: form.pick, customLabel: customLabel) { tag in
+                        form.pick = tag
+                        pickChanged(tag)
+                    }
+                } label: {
+                    HStack {
+                        Text("Model")
+                        Spacer()
+                        Text(pickedName).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
                 .accessibilityIdentifier("grinderModelPicker")
-                .onChange(of: form.pick) { _, newValue in pickChanged(newValue) }
                 if form.pick == "custom" {
                     TextField("Name, e.g. My hand grinder", text: $form.name)
                         .accessibilityIdentifier("grinderNameField")

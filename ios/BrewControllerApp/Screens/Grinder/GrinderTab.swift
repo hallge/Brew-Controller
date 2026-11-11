@@ -135,7 +135,7 @@ struct GrinderTab: View {
                     Text("Each shot's setting appears here, oldest first.").font(.footnote).foregroundStyle(.secondary)
                 } else {
                     GrinderShotsChart(points: shown, dial: store.dial, targetS: store.advice.targetTimeS,
-                                      toleranceS: store.advice.toleranceS)
+                                      toleranceS: store.advice.toleranceS, currentCoffee: store.advice.coffee)
                 }
             }
         }

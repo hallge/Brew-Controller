@@ -9,6 +9,11 @@ final class SetupStore {
     var settings = SettingsModel()
     var drinkers = SetupDrinkers()
     var loaded = false
+    /// The controller's firmware version and build date (GET /api/update); empty until read.
+    var firmware = ""
+    var built = ""
+    /// How many add-ons the controller lists (GET /api/addons): the Add-ons row shows only when there are any.
+    var addonCount = 0
     var error: String?
     var notice: String?
 
@@ -29,6 +34,12 @@ final class SetupStore {
             self.error = String(describing: error)
         }
         if let value = try? await api.get("/api/coffee/ratings", as: SetupDrinkers.self) { drinkers = value }
+        if let response = try? await api.getRaw("/api/update"),
+           let object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any] {
+            firmware = object["version"] as? String ?? ""
+            built = object["built"] as? String ?? ""
+        }
+        if let list = try? await api.get("/api/addons", as: SetupAddonList.self) { addonCount = list.addons.count }
     }
 
     /// Runs a change; success shows `done`, failure the controller's words.

@@ -101,41 +101,80 @@ struct SetupBrewView: View {
     }
 }
 
-/// A title and a decimal field.
+/// A title and a decimal field. The value follows every keystroke (a number pad has no way to end editing,
+/// so committing on end-editing would save the old number); the keyboard has a Done button.
 struct SetupNumberRow: View {
     var title: String
     @Binding var value: Double
     var id: String
+    @State private var text = ""
+    @State private var synced = false
+    @FocusState private var focused: Bool
 
     var body: some View {
         HStack {
             Text(title)
             Spacer()
-            TextField("0", value: $value, format: .number.precision(.fractionLength(0...2)))
+            TextField("0", text: $text)
                 .keyboardType(.decimalPad)
                 .multilineTextAlignment(.trailing)
                 .frame(width: 90)
+                .focused($focused)
                 .accessibilityIdentifier(id)
+                .onChange(of: text) { _, now in
+                    if let parsed = Double(now.replacingOccurrences(of: ",", with: ".")) { value = parsed }
+                }
+                .toolbar {
+                    if focused {
+                        ToolbarItemGroup(placement: .keyboard) {
+                            Spacer()
+                            Button("Done") { focused = false }
+                        }
+                    }
+                }
         }
+        .onAppear { sync() }
+        .onChange(of: value) { _, _ in if !focused { sync() } }
+    }
+
+    private func sync() {
+        text = value.formatted(.number.precision(.fractionLength(0...2)).grouping(.never))
+        synced = true
     }
 }
 
-/// A title and a whole-number field.
+/// A title and a whole-number field (same rules as `SetupNumberRow`).
 struct SetupIntRow: View {
     var title: String
     @Binding var value: Int
     var id: String
+    @State private var text = ""
+    @FocusState private var focused: Bool
 
     var body: some View {
         HStack {
             Text(title)
             Spacer()
-            TextField("0", value: $value, format: .number.grouping(.never))
+            TextField("0", text: $text)
                 .keyboardType(.numberPad)
                 .multilineTextAlignment(.trailing)
                 .frame(width: 90)
+                .focused($focused)
                 .accessibilityIdentifier(id)
+                .onChange(of: text) { _, now in
+                    if let parsed = Int(now) { value = parsed }
+                }
+                .toolbar {
+                    if focused {
+                        ToolbarItemGroup(placement: .keyboard) {
+                            Spacer()
+                            Button("Done") { focused = false }
+                        }
+                    }
+                }
         }
+        .onAppear { text = String(value) }
+        .onChange(of: value) { _, now in if !focused { text = String(now) } }
     }
 }
 

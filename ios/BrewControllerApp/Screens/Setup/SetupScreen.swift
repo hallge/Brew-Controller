@@ -5,6 +5,7 @@ import SwiftUI
 struct SetupScreen: View {
     @State private var store = SetupStore()
     @State private var confirmMode = false
+    @State private var confirmFirstRun = false
 
     private var theme: BrewTheme { BrewTheme.shared }
     private var isDemo: Bool { LiveModel.shared.live.demo }
@@ -20,7 +21,10 @@ struct SetupScreen: View {
                 link("Backup and restore", "externaldrive", id: "setupBackupLink") { SetupBackupView(store: store) }
                 link("Shared library", "person.3", id: "setupShareLink") { SetupSharingView(store: store) }
                 link("Diagnostics", "stethoscope", id: "setupDiagLink") { SetupDiagnosticsView(store: store) }
-                link("Getting started", "list.number", id: "setupStartedLink") { SetupStartedView() }
+                link("Getting started", "list.number", id: "setupStartedLink") { SetupStartedScreen() }
+                if store.addonCount > 0 {
+                    link("Add-ons", "puzzlepiece.extension", id: "setupAddonsLink") { SetupAddonsView() }
+                }
             }
             panelsSection
             appSection
@@ -29,6 +33,12 @@ struct SetupScreen: View {
         .accessibilityIdentifier("setupScreen")
         .task { await store.refresh() }
         .refreshable { await store.refresh() }
+        .confirmationDialog("Show the first run again?", isPresented: $confirmFirstRun, titleVisibility: .visible) {
+            Button("Show it again") { Onboarding.shared.reset() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The safety notice and the choice of demo or real devices come back now. Nothing on the controller changes.")
+        }
         .confirmationDialog(isDemo ? "Use real devices?" : "Use the demo?", isPresented: $confirmMode, titleVisibility: .visible) {
             Button("Switch and restart") { Task { await switchMode(toReal: isDemo) } }
             Button("Cancel", role: .cancel) {}
@@ -111,10 +121,33 @@ struct SetupScreen: View {
             }
             Button(isDemo ? "Use real devices" : "Use the demo") { confirmMode = true }
                 .accessibilityIdentifier("setupModeSwitch")
+            NavigationLink("Safety notice") { SetupSafetyView() }
+                .accessibilityIdentifier("setupSafetyLink")
+            Button("Show first run again") { confirmFirstRun = true }
+                .accessibilityIdentifier("setupFirstRun")
+            versionRow("App", appVersion, id: "setupAppVersion")
+            if !store.firmware.isEmpty {
+                versionRow("Controller firmware", store.firmware + (store.built.isEmpty ? "" : " (\(store.built))"), id: "setupFirmwareVersion")
+            }
         } header: {
             Text("This app")
         } footer: {
             Text("The demo runs a simulated scale, bot and machine and keeps its own data. Switching restarts the app: it closes, and you open it again.")
+        }
+    }
+
+    private var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? ""
+        let build = info?["CFBundleVersion"] as? String ?? ""
+        return build.isEmpty ? short : "\(short) (\(build))"
+    }
+
+    private func versionRow(_ title: String, _ value: String, id: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(value).foregroundStyle(.secondary).accessibilityIdentifier(id)
         }
     }
 
@@ -138,5 +171,18 @@ struct SetupSwatch: View {
         .frame(width: 42, height: 22)
         .clipShape(RoundedRectangle(cornerRadius: 5))
         .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.5), lineWidth: 0.5))
+    }
+}
+
+/// The safety notice, to read again (the wording of the first-run notice, docs/SAFETY.md condensed).
+struct SetupSafetyView: View {
+    var body: some View {
+        List {
+            Text("Brew Controller is a hobby project, not a certified appliance. It presses a button on your espresso machine to stop a shot at a target weight. It has not been tested by any safety body and comes without warranty.")
+            Text("It is an aid to stopping at a weight, not a safety device. Be present while a shot runs: if the scale or the button pusher is lost, a machine that was started keeps running until you stop it by hand.")
+            Text("Check the first shots by hand before leaving it to itself.")
+        }
+        .navigationTitle("Before you brew")
+        .accessibilityIdentifier("setupSafetyScreen")
     }
 }

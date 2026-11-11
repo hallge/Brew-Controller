@@ -28,9 +28,22 @@ struct MachineUpkeepRow: View {
                         .accessibilityIdentifier("\(idPrefix)Every")
                         .focused($focused)
                         .onChange(of: focused) { _, now in
-                            if !now { Task { await onEvery(min(5000, max(0, Int(everyText) ?? 0))) } }
+                            if !now, changed { commit() }
+                        }
+                        .toolbar {
+                            if focused {
+                                ToolbarItemGroup(placement: .keyboard) {
+                                    Spacer()
+                                    Button("Set") { commit(); focused = false }
+                                }
+                            }
                         }
                     Text("shots").foregroundStyle(.secondary)
+                    if changed {
+                        Button("Set") { commit(); focused = false }
+                            .buttonStyle(.bordered)
+                            .accessibilityIdentifier("\(idPrefix)EverySet")
+                    }
                     Spacer()
                     Button("Done today") { Task { await onDone() } }
                         .buttonStyle(.bordered)
@@ -47,6 +60,14 @@ struct MachineUpkeepRow: View {
                 synced = true
             }
         }
+    }
+
+    private var typed: Int { min(5000, max(0, Int(everyText) ?? 0)) }
+    private var changed: Bool { typed != (job?.everyShots ?? 0) }
+
+    private func commit() {
+        let value = typed
+        Task { await onEvery(value) }
     }
 
     private func status(_ job: MaintenanceJob) -> String {
