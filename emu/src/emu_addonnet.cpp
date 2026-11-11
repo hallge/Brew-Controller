@@ -28,9 +28,12 @@ std::string tempPath(const char *what) {
   return path;
 }
 
-bool safe(const char *s) {
+// Only characters that cannot break out of the quoted curl argument. A cookie may hold spaces ("a=1; b=2",
+// the cookies the reader keeps), which are safe inside the quotes.
+bool safe(const char *s, bool spaceOk = false) {
   for (const char *p = s; *p; ++p) {
     const unsigned char c = static_cast<unsigned char>(*p);
+    if (spaceOk && c == ' ') continue;
     if (c == '"' || c == '%' || c == '^' || c == '&' || c == '|' || c == '<' || c == '>' || c < 0x21 || c == 0x7F)
       return false;
   }
@@ -46,7 +49,7 @@ void fetchHere(FetchJob &job) {
   if (strcmp(u.host, "127.0.0.1") != 0 && strcmp(u.host, "localhost") != 0) {
     return say(job, -2, "the emulator fetches from this PC only (127.0.0.1)");
   }
-  if (!safe(job.url) || !safe(job.cookie)) return say(job, -2, "the address could not be used");
+  if (!safe(job.url) || !safe(job.cookie, true)) return say(job, -2, "the address could not be used");
   const std::string answer = tempPath("a"), data = tempPath("d");
   std::string command = "curl -s -i --http1.0 --max-time " + std::to_string(job.totalTimeoutMs / 1000 + 1) +
                         " --connect-timeout " + std::to_string(job.connectTimeoutMs / 1000 + 1) + " -o \"" + answer + "\" ";
