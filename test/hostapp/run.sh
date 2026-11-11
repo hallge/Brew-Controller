@@ -6,7 +6,7 @@
 #   test/hostapp/run.sh              build and run (the native target)
 #   test/hostapp/run.sh syntax       only the macOS syntax check (-target aarch64-macos, compiled to a throwaway object: zig 0.x cannot do -fsyntax-only for C++)
 #
-# Needs a C++17 compiler; by default zig (python -m ziglang c++). Set CXX to use another. ArduinoJson
+# Needs a C++17 compiler; by default zig (python -m ziglang c++). Set CXX to use another (CXX=clang++ on macOS). ArduinoJson
 # is read from .pio/libdeps (a junction to the main checkout's is fine).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -24,6 +24,8 @@ else
 fi
 
 ARDUINOJSON=${ARDUINOJSON:-.pio/libdeps/t-display-s3-amoled-plus/ArduinoJson/src}
+# No PlatformIO libdeps (CI): the copy the iPhone app builds with.
+[ -d "$ARDUINOJSON" ] || ARDUINOJSON=ios/Vendor/ArduinoJson/src
 [ -d "$ARDUINOJSON" ] || { echo "ArduinoJson not found at $ARDUINOJSON"; exit 2; }
 
 FIRMWARE=(
@@ -76,7 +78,7 @@ if grep -l "EspressoScaleProtocol" "$OUT"/obj/*.d >/dev/null 2>&1; then
   exit 1
 fi
 
-EXE=$OUT/hostapp.exe
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXE=$OUT/hostapp.exe;; *) EXE=$OUT/hostapp;; esac
 "${CXXCMD[@]}" "$OUT"/obj/*.o -o "$EXE"
 echo "built $EXE"
 "$EXE" "$@"

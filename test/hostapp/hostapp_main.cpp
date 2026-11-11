@@ -92,8 +92,15 @@ int main(int argc, char **argv) {
   // Pair the simulated bot (its address is fixed in emu_devices.cpp) and pick the Breville profile.
   Reply r = call("POST", "/api/pair", R"({"kind":"bot","address":"e5:8a:3c:11:9d:40","type":1})");
   check(r.status == 200, "POST /api/pair (bot)");
-  r = call("POST", "/api/machine", R"({"builtin":1})");
+  // Right after start-up the controller can answer 409 "not while a shot is running" for a moment
+  // (seen on the first request after the bot is paired): retry for a few seconds.
+  for (int i = 0; i < 40; ++i) {
+    r = call("POST", "/api/machine", R"({"builtin":1})");
+    if (r.status != 409) break;
+    sleepMs(250);
+  }
   check(r.status == 200, "POST /api/machine (builtin 1, Breville)");
+  if (r.status != 200) printf("  machine reply: %d %s\n", r.status, r.body.c_str());
   r = call("GET", "/api/machine");
   check(r.status == 200 && r.body.find("Breville") != std::string::npos, "GET /api/machine says Breville");
 

@@ -1,69 +1,64 @@
-# Brew Controller for iOS: Phase 0 spike
+# Brew Controller for iOS: the board's firmware, in the phone
 
-The spike from `research/ios-app-feasibility.md` (§5.3 bridge, §9 tests, Phase 0). It proves one
-thing: the firmware's own `src/core` state machine can run unchanged inside an iPhone app, behind a
-small Swift/C++ interop bridge, and bring a **simulated** shot to `SHOT_COMPLETE`. It uses simulated
-devices only, because the real Lunar and SwitchBot Bot stay with the deployed board. Nothing in
-`src/`, `lib/`, `test/` or `emu/` was changed.
+The iPhone app runs the Brew Controller's own firmware in-process: `src/main.cpp`, `Web.cpp`,
+`Ble.cpp`, `Store.cpp` and `core/`, compiled with `-DBBW_EMULATOR -DBBW_HOST_IOS -DBBW_CLEAN` against
+the PC emulator's portable stand-ins (`emu/src`). Native SwiftUI screens sit on the plain-C API in
+`Host/BrewHost.h`. Design notes: `ios-parity/design.md` (sections 1, 5, 6). This PC is Windows and
+cannot build iOS: builds run on Codemagic and reach the phone through TestFlight.
 
-This PC is Windows and cannot build iOS. Builds run on Codemagic and reach the iPhone through
-TestFlight, the same way as the Sideline project.
-
-## What is here
+## What is built
 
 ```
 ios/
   project.yml                XcodeGen project: iOS 18, com.hallge.brewcontroller
   Config/Base.xcconfig       team + build number (Secrets.xcconfig is written by CI, not committed)
-  BrewCoreBridge/            the C++ side of the bridge
-    CoreSession.h/.cpp         one class Swift sees: owns a BrewController, simulator or real transport
-    BridgeTypes.h              plain structs across the boundary, and the command queue
-  Sim/MachineSim.h           the host tests' simulated Breville + Lunar + Bot, copied (attributed)
-  BrewControllerApp/         SwiftUI app, ShotSession (core queue + timer), CoreBluetooth transport
-  BrewCoreTests/             a full shot through the bridge, the command queue
-  BrewControllerUITests/     a demo shot with screenshots
+  Host/                      BrewHost.h/.cpp (C API), ios_runtime.mm/.h (clock, RTC, QoS, data folder),
+                             ble_corebluetooth.mm/.h (radio), host_stubs.cpp, ui_stub.cpp
+  Vendor/ArduinoJson/        ArduinoJson 7.4.3 (MIT), copied from the PlatformIO libdeps
+  Generated/AddonList.h      the (empty) add-on list
+  BrewControllerApp/         BrewControllerApp.swift: app entry and a placeholder ContentView;
+                             BrewHost-Bridging-Header.h: imports BrewHost.h, ble_corebluetooth.h, ios_runtime.h
+  BrewCoreTests/             XCTest: a demo shot through the C API (port of test/hostapp/hostapp_main.cpp)
+  BrewControllerUITests/     launch, tap Start, see the state change; screenshots
   scripts/                   asc-signing.py, pick-iphone.sh, write-secrets.sh (adapted from Sideline)
-codemagic.yaml (repo root)   "tests" on pushes, "release" by hand
+codemagic.yaml (repo root)   "tests" on pushes to non-main branches, "release" by hand
 ```
 
-The firmware core is compiled **by path, never copied**: `../src/core/BrewController.cpp` and
-`../lib/EspressoScaleProtocol/src/*.cpp`, with header search paths `../src` and
-`../lib/EspressoScaleProtocol/src`, C++17.
+The app target compiles exactly the C++ sources of `test/hostapp/run.sh` (minus its runner), with the
+same defines and the same header search order, plus `ble_corebluetooth.mm` and `ios_runtime.mm`
+(and `ios_net.mm` / `ios_devicekey.mm` when the networking work lands). `USE_HEADERMAP=NO` and
+`gnu++17`. Keep `project.yml` and `run.sh` in step when a source is added. All Swift under
+`BrewControllerApp/` is compiled, so the `Core/` folder of the Swift core layer is picked up.
 
-### How the bridge works
+**ios_runtime.mm** installs the host hooks (`emu::g_hooks`): the clock from
+`clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)`; the RTC region (`__DATA,__bbw_rtc`) saved to
+`<data>/rtc.bin` by a 100 ms watcher and restored at start; `onRestart` parks the thread and never
+exits; no web listener (requests go through `bbw_request`). FreeRTOS tasks become pthreads whose QoS
+follows the priority (control: user-interactive, BLE: user-initiated, the rest default), through a new
+minimal hook, `HostHooks::taskStarted`, in `emu/src/emu.h` and `host_runtime.cpp`. The data folder is
+`Application Support/Controller` (real) or `Controller-demo` (demo), file protection
+`CompleteUntilFirstUserAuthentication`. `bbw_ios_prepare(demo)` does all of it and calls
+`bbw_host_configure`; in real mode it installs the CoreBluetooth backend.
 
-- `CoreSession` is a C++ class imported into Swift as a **reference type**
-  (`swift_attr("import_reference")` with retain/release). Its header holds no core types (pimpl), so
-  Swift imports only plain structs: `LiveView`, `ShotSummary`, `ProbeEntry`, `BridgeCommand`,
-  `CommandQueue`.
-- Swift cannot subclass the core's virtual classes, so `IScale`, `IActuator` and `PusherWriter` are
-  implemented in `CoreSession.cpp`. In **simulated** mode they forward to `brewsim::Sim`. In **real**
-  mode they encode with the core's `ScaleLink`/`PusherLink` and queue the bytes as `BridgeCommand`s,
-  which Swift drains after every call and writes with CoreBluetooth.
-- The simulated Lunar sends real Acaia frames (`wireFrame()`) through the core's `ScaleLink`, so the
-  decode path is the one the board uses.
-- One serial queue runs everything: the 10 ms `DispatchSourceTimer`, the UI's requests and the
-  `CBCentralManager`. Time is `clock_gettime(CLOCK_UPTIME_RAW)` in ms. The core is ticked from the
-  timer and again after every scale notification.
-- **Suspension is imitated, not just ticked slowly**: "Pause ticks" lets the simulated machine run on
-  while the core gets no ticks and no readings, then ticks it with the gap. The Probe log shows the
-  gap.
+**Simulated:** demo mode (the default until the real screens switch it; `-bbwReal` as a launch argument
+selects real devices) runs the simulated Lunar, SwitchBot and Breville on the virtual radio. The
+unit test and the UI test use demo mode only. Real devices are not exercised by any test.
 
-### The screens
+**Tests:** the unit tests are hosted in the app, which does not start the controller when XCTest hosts
+it (`XCTestConfigurationFilePath`), so the test starts it on a temporary folder
+(`bbw_ios_prepare_at`). The UI test passes `-bbwDemoReady`, which makes the app pair the simulated
+bot, pick the Breville profile and place the cup, as the unit test does.
 
-One main screen: the ring (weight over target), weight, shot time, state, Start/Stop (Done after a
-shot). Sheets: **Recipe** (target and dose), **Faults** (lost Bot acknowledgement, missed stop,
-scale goes silent, pause ticks for N s), **Probe log** (timestamp of every tick, reading and
-command, with the longest tick gap), **Devices** (the "Real devices" switch: off by default,
-labelled untested). `isIdleTimerDisabled` is on while the app is open. No Live Activity yet.
+**Retired:** the Phase 0 spike (`BrewCoreBridge`, `Sim/MachineSim.h`, its Swift screens and tests) and
+every `EspressoScaleProtocol` path. The `tests` workflow fails if `project.yml` or the Xcode build log
+mention it.
 
-## What was checked on this PC
+## How CI runs
 
-`CoreSession.cpp` and `MachineSim.h` were compiled with `zig c++` (clang, C++17, `-Wall -Wextra`) and
-driven from a small C++ program. A simulated shot reached `SHOT_COMPLETE` ending on weight (35.4 g
-for a 36 g target, 27.7 s), a missed stop and a 5 s pause mid-shot both ended in a record, the
-pause showed as a 5000 ms tick gap in the probe log, and the command queue refused the 65th entry
-and counted it. No Swift, no Xcode, no iOS SDK was involved.
+`tests` (Codemagic, pushes to non-main branches that touch `ios/`, `src/`, `lib/`, `emu/` or `test/`):
+EspressoScaleProtocol grep, `test/host/run.sh` and `BBW_CLEAN=1 test/host/run.sh` with clang,
+`test/hostapp/run.sh` with clang, `xcodegen`, then build-for-testing and the unit and UI tests on a
+simulator, with the logs and screenshots as artifacts.
 
 ## One-time setup (you)
 
@@ -98,53 +93,28 @@ and a team, so most of it is reuse.
    the build, and revokes the certificate.
 7. **Install.** App Store Connect, the app, TestFlight: when the build shows as processed, add
    yourself as an Internal Tester, then install from the TestFlight app on the iPhone (iOS 18 or
-   later). Open it: the screen shows READY after a second; tap Start.
+   later). Open it: the placeholder screen shows the controller's state and weight; tap Start.
 
 Do not run Real devices against the Lunar and Bot while the deployed board owns them.
 
 ## Unverified until the first Codemagic run
 
-Nothing in Swift, XcodeGen, Xcode or Codemagic has been run. Likeliest to need a fix, roughly in order:
+Nothing in Swift, XcodeGen, Xcode or Codemagic has been run, and `ios_runtime.mm` and
+`ble_corebluetooth.mm` have never been compiled with the iOS SDK. Likeliest to need a fix:
 
-1. **Swift/C++ interop import.** The attributes `import_reference` / `retain:` / `release:` /
-   `returns_retained` and the `_Nonnull` pointer qualifiers; calling imported methods **without
-   argument labels** (`core.tick(now)`, `core.setRecipe(a, b)`); `String(cString:)` on the
-   `const char *` members; mutating C++ methods on an imported struct (`var q = CommandQueue();
-   q.push(c)`); structs with fixed arrays (imported as tuples, a 64-element one in `CommandQueue`).
-2. **`constexpr` constants** are deliberately *not* used from Swift: `BridgeConstants.swift` mirrors
-   them by hand (`Cmd`, `Fault`, `Probe`). Nothing checks that the two agree.
-3. **Interop scope.** `SWIFT_OBJC_INTEROP_MODE: objcxx` is per target, so the whole app target and
-   the unit tests have it on (only the UI tests do not). Confining it to the bridge, as §5.3 wants,
-   needs a framework target; that is Phase 1.
-4. **Unit tests hosted in the app.** `BrewCoreTests` has its own bridging header and relies on
-   `TEST_HOST`/`BUNDLE_LOADER` to find the C++ symbols in the app binary (the C++ is compiled once, in
-   the app). If the linker cannot see them, compile the bridge files into the test target too.
-5. **XcodeGen specifics.** External source paths with `group:`, `includes: ["*.cpp"]` on
-   `../lib/EspressoScaleProtocol/src`, `buildPhase: none` for `Sim/`, and `info:` together with
-   `GENERATE_INFOPLIST_FILE` (the same combination as Sideline).
-6. **The test numbers.** The Swift tests' expectations (final weight within 1.5 g of 36 g, shot time
-   20 to 35 s, end reason `weight` or `weight_predicted`) come from the same C++ run on the PC, not
-   from a Swift run. The missed-stop test only requires the shot to end (done or a fault state).
-7. **The UI test.** Accessibility queries (identifiers on the ring's `Text`s, `resultCard` as a
-   combined element) and its length: a real-time shot takes about 50 s plus the fixed waits.
-8. **Host tests under clang/libc++** on macOS (`CXX=clang++ bash test/host/run.sh`); they have run
-   with g++ only.
-9. **Codemagic.** `when: changeset` at the workflow level (and how it treats the first push of a new
-   branch); that `-retry-tests-on-failure` re-runs the 50 s UI test acceptably.
-10. **Signing and upload.** `asc-signing.py` was adapted by removing the HealthKit and watch parts,
-    and has never run for this app: bundle ID registration, the ASC app record, the profile name
-    passed as `APP_PROFILE`, the generated 1024 px app icon (a plain ring, replace it later), and
-    `MIN_BUILD=1` for the first build number.
-11. **CoreBluetooth transport: all of it.** Scale name prefixes, the Lunar's characteristic pair,
-    write type, the Bot connected only while the core wants it, no reconnect back-off, no state
-    restoration, no AccessorySetupKit. The background mode is declared, but nothing has shown that a
-    background wake keeps the shot alive (that is what the real-hardware checklist in §9 is for).
-12. **Idle timer and scene phase.** `isIdleTimerDisabled` is set on appear and on scene changes.
-13. **Clock.** The core's `uint32_t` millisecond clock wraps after 49.7 days of uptime (the board has
-    the same limit); not looked at here.
-
-## Not in the spike
-
-Persistence, the library and history, recipes beyond target and dose, the grind advisor, Live
-Activity and widgets, App Intents, networking, AccessorySetupKit, the `main.cpp` orchestration move
-(`AppHost`), and the golden-run replay of the host tests through the bridge.
+1. XcodeGen: `path:` entries outside `ios/` with `group:`, single-file sources, `optional: true` for the
+   networking files, a `Host` entry with `buildPhase: none` that lists only headers, and `info:` with
+   `GENERATE_INFOPLIST_FILE`.
+2. Header resolution with `USE_HEADERMAP=NO` and the search-path order; `emu/shims` headers
+   (`Arduino.h`, `WiFi.h`) must win over nothing in the SDK.
+3. `getsectiondata` + `dladdr` finding `__DATA,__bbw_rtc`; `ENABLE_DEBUG_DYLIB=NO` keeps it in one
+   image. If the section is dropped (dead strip), RTC persistence silently does nothing.
+4. `BrewHost.cpp` always boots as `POWER_ON`, so a shot cut short by a kill is not recovered through the
+   restored RTC flag yet (design section 6); a follow-up there.
+5. Swift: `BbwLive()` zero init, `state_name` as a tuple read with `withUnsafeBytes`, async XCTest on a
+   blocking C API.
+6. The unit test needs the C symbols from the app through `TEST_HOST`/`BUNDLE_LOADER`.
+7. Both tests are timing based: a demo shot takes about 30 s in real time.
+8. `test/host/run.sh` and `test/hostapp/run.sh` with Apple clang/libc++.
+9. Codemagic `when: changeset` on the first push of a branch; `-retry-tests-on-failure`.
+10. Signing and upload: as for the spike, never run for this app.
