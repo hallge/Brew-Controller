@@ -66,7 +66,7 @@ int httpRequest(const HttpRequest &request, char *response, size_t cap, HttpResu
   return code;
 }
 
-#if !defined(__APPLE__)
+#if !defined(BBW_IOS_NATIVE_NET)  // set by ios/project.yml, where ios_net.mm and ios_devicekey.mm are built
 // No network off the iPhone: the Windows runner never reaches a real service.
 int hostHttpNative(const HttpRequest &, char *response, size_t cap, HttpResult &, char *problem,
                    size_t problemSize) {
@@ -107,7 +107,7 @@ bool derToRaw(const uint8_t *der, size_t length, uint8_t out[64]) {
   return at == length;
 }
 
-#if !defined(__APPLE__)
+#if !defined(BBW_IOS_NATIVE_NET)  // set by ios/project.yml, where ios_net.mm and ios_devicekey.mm are built
 bool hostP256Generate(uint8_t blob[KEY_BLOB_LEN]) {
   (void)blob;
   return false;

@@ -128,6 +128,8 @@ targets:
           - BBW_EMULATOR
           - BBW_HOST_IOS
           - BBW_CLEAN
+          # The real network and device key (ios_net.mm, ios_devicekey.mm) instead of net_portable.cpp's stand-ins.
+          - BBW_IOS_NATIVE_NET
           - CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3
           - ARDUINOJSON_ENABLE_ARDUINO_STRING=1
           - ARDUINOJSON_ENABLE_ARDUINO_PRINT=1
