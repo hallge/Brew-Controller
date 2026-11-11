@@ -13,12 +13,17 @@
 #endif
 
 #include "App.h"
+#include "ScreenApi.h"
 #include "Log.h"
 #include "Version.h"
 #include "ShotFormat.h"
+#ifndef BBW_HOST_IOS  // the app has its own screens, and no browser to hand a page or the extension to
 #include "WebPage.h"
+#endif
 #include "addons/AddonHost.h"
+#ifndef BBW_HOST_IOS
 #include "ExtensionZip.h"   // made from browser-extension/ by its make_zip.py
+#endif
 #include "core/Directory.h"
 #include "core/TasteProfile.h"
 #include "core/SettingsUtil.h"
@@ -2943,8 +2948,10 @@ void handleNet() {
   net.webStartEnabled = doc["webStartEnabled"] | false;
   app::applyNetConfig(net);
   sendOk();
+#ifndef BBW_HOST_IOS  // the app has nothing to restart for a new password
   restartPending = true;
   restartAtMs = millis() + 1500;
+#endif
 }
 
 }  // namespace
@@ -3085,7 +3092,10 @@ void handleUpdateInfo() {
     o["running"] = slots[i].running;
     o["boot_next"] = slots[i].bootNext;
   }
-#ifdef BBW_EMULATOR
+#ifdef BBW_HOST_IOS
+  doc["can_update"] = false;
+  doc["slot"] = "app";
+#elif defined(BBW_EMULATOR)
   doc["can_update"] = false;
   doc["slot"] = "emulator";
 #else
@@ -3367,13 +3377,16 @@ void begin() {
   LOGI("radio: Bluetooth first%s", coex == ESP_OK ? "" : " (not accepted)");
 #endif
 
+#ifndef BBW_HOST_IOS
   server.on("/", HTTP_GET, []() {
     // Always the page of the firmware now running: a browser holding on to
     // the page from before an update runs old code against the new API.
     server.sendHeader("Cache-Control", "no-cache");
     server.send_P(200, "text/html", WEB_PAGE);
   });
+#endif
   server.on("/api/status", HTTP_GET, handleStatus);
+  registerScreenApi(server);  // /api/screen, /api/screen/do (ScreenApi.cpp)
   server.on("/api/settings", HTTP_GET, handleGetSettings);
   server.on("/api/settings", HTTP_POST, handlePostSettings);
   server.on("/api/library", HTTP_GET, handleLibrary);
@@ -3552,10 +3565,12 @@ void begin() {
   server.on("/api/taste/profile", HTTP_GET, handleGetTasteProfile);
   server.on("/api/taste/recommend", HTTP_GET, handleGetRecommend);
   // The Brew Controller helper for Chrome, as a zip to unpack and load (docs/SUBSCRIPTIONS.md).
+#ifndef BBW_HOST_IOS
   server.on("/extension.zip", HTTP_GET, []() {
     server.sendHeader("Content-Disposition", "attachment; filename=\"brew-controller-helper.zip\"");
     server.send_P(200, "application/zip", reinterpret_cast<const char *>(EXTENSION_ZIP), EXTENSION_ZIP_LEN);
   });
+#endif
   server.on("/api/subscriptions", HTTP_GET, handleGetSubscriptions);
   server.on("/api/subscriptions", HTTP_POST, handlePostSubscription);
   server.on("/api/subscriptions/delete", HTTP_POST, handleDeleteSubscription);
@@ -3658,8 +3673,10 @@ void begin() {
     if (busyBrewing()) return sendError(409, "not while a shot is running");
     if (!app::setRamSmallToPsram(doc["small_to_psram"].as<bool>())) return sendError(500, "not stored");
     sendOk();
+#ifndef BBW_HOST_IOS
     restartPending = true;
     restartAtMs = millis() + 1500;
+#endif
   });
   server.on("/api/diagnostics/relay", HTTP_POST, []() {
     JsonDocument doc;

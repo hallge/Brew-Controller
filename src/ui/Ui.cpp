@@ -9,10 +9,13 @@
 #include "core/SettingFormat.h"
 #include "core/SettingsUtil.h"
 #include "Log.h"
+#include "Palette.h"
+#include "ScreenText.h"
 #include "Version.h"
 
 using bbw::GrindAction;
 using bbw::State;
+namespace screen = bbw::screen;
 
 // Screen language borrowed from the Yield Target Pro guide (status line, one
 // dominant value, detail line), with its knob replaced by touch keys down the
@@ -24,21 +27,9 @@ namespace {
 
 LilyGo_Class amoled;
 
-// The colour schemes (bbw::UiTheme, chosen on the web page): the colours each role on the screens
-// takes. The dark schemes keep a true black background, so AMOLED pixels stay off. Within a palette
-// every colour differs, so a change of scheme can tell each object's colour's role from its value.
-struct Palette {
-  uint32_t bg, text, dim, ok, bad, sleep, accent, panel, track, select;
-};
-constexpr Palette PALETTES[bbw::UI_THEME_COUNT] = {
-    // bg        text      dim       ok        bad       sleep     accent    panel     track     select
-    {0x000000, 0xFFFFFF, 0x8A8A8A, 0x2ECC71, 0xE74C3C, 0x777777, 0xE67E22, 0x1C1C1C, 0x2A2A2A, 0x3A2A12},  // Dark
-    {0xF2F1EE, 0x141414, 0x5E5E5E, 0x1E8E4E, 0xC0392B, 0x8C8C8C, 0xC2560C, 0xFFFFFF, 0xD9D7D2, 0xF5DCC2},  // Light
-    {0x000000, 0xECEFF4, 0xA3ABB9, 0xA3BE8C, 0xBF616A, 0x7B8394, 0xD08770, 0x3B4252, 0x4C566A, 0x5A4A45},  // Nord
-    {0x000000, 0xEEE8D5, 0x93A1A1, 0x859900, 0xDC322F, 0x657B83, 0xCB4B16, 0x073642, 0x0F4654, 0x3D3A1E},  // Solarized Dark
-    {0x000000, 0xF8F8F2, 0xA9ADC8, 0x50FA7B, 0xFF5555, 0x6272A4, 0xFFB86C, 0x282A36, 0x44475A, 0x4D3F3A},  // Dracula
-    {0x000000, 0xFFFFFF, 0xD0D0D0, 0x00E676, 0xFF3B30, 0xA0A0A0, 0xFFB000, 0x1A1A1A, 0x3C3C3C, 0x4A3500},  // High contrast
-};
+// The colour schemes (bbw::UiTheme) are in ui/Palette.h, shared with the iPhone app.
+using bbw::Palette;
+using bbw::PALETTES;
 // The scheme in use: set before the screens are built, and by applyTheme.
 uint32_t COLOR_BG = PALETTES[0].bg;
 uint32_t COLOR_TEXT = PALETTES[0].text;
@@ -65,6 +56,18 @@ void setPalette(uint8_t theme) {
   COLOR_TRACK = p.track;
   COLOR_SELECT = p.select;
   themeShown = theme < bbw::UI_THEME_COUNT ? theme : 0;
+}
+
+// The colour of a role named by the shared screen text (ui/ScreenText.h).
+uint32_t toneColor(screen::Tone tone) {
+  switch (tone) {
+    case screen::Tone::DIM: return COLOR_DIM;
+    case screen::Tone::OK: return COLOR_OK;
+    case screen::Tone::BAD: return COLOR_BAD;
+    case screen::Tone::SLEEP: return COLOR_SLEEP;
+    case screen::Tone::ACCENT: return COLOR_ACCENT;
+    default: return COLOR_TEXT;
+  }
 }
 
 // Landscape with the USB-C connector on the left. On the 1.91" panel
@@ -973,43 +976,6 @@ void buildSettings() {
              LV_ALIGN_TOP_RIGHT, -12, 6, onCloseSettings);
 }
 
-// Short enough to fit beside the OK key; the exact state name is still what
-// the web page, the log and the CSV use.
-const char *faultTitle_(State state) {
-  switch (state) {
-    case State::SCALE_DISCONNECTED: return "SCALE DISCONNECTED";
-    case State::SWITCHBOT_DISCONNECTED: return "BOT NOT CONNECTED";
-    case State::SCALE_DATA_STALE: return "SCALE WENT SILENT";
-    case State::START_COMMAND_FAILED: return "START NOT CONFIRMED";
-    case State::STOP_COMMAND_FAILED: return "STOP NOT CONFIRMED";
-    case State::TARE_FAILED: return "TARE FAILED";
-    case State::SHOT_TIMEOUT: return "SHOT TIMED OUT";
-    case State::INVALID_WEIGHT: return "WEIGHT NOT VALID";
-    case State::BLE_ERROR: return "BLUETOOTH ERROR";
-    default: return bbw::stateName(state);
-  }
-}
-
-const char *faultMessage(State state, bool manualStop, bool stopStartedPump) {
-  if (manualStop) return "STOP THE MACHINE BY HAND.\nThe stop press could not be delivered or confirmed.";
-  if (state == State::START_COMMAND_FAILED && stopStartedPump) {
-    return "The start press never reached the button, so STOP started the pump. It was stopped "
-           "again when coffee appeared. Check the Bot's arm.";
-  }
-  switch (state) {
-    case State::SCALE_DISCONNECTED: return "The scale is not connected. Switch it on.";
-    case State::SWITCHBOT_DISCONNECTED: return "The brew bot did not answer. Check it is paired, in range and has battery.";
-    case State::SCALE_DATA_STALE: return "The scale stopped sending weight. The shot was stopped.";
-    case State::START_COMMAND_FAILED: return "The start press was not confirmed by coffee flow. Check the machine.";
-    case State::STOP_COMMAND_FAILED: return "The stop press was not confirmed. Check the machine.";
-    case State::TARE_FAILED: return "The scale did not settle at zero. Keep the cup still and start again.";
-    case State::SHOT_TIMEOUT: return "Maximum shot time reached. The shot was stopped.";
-    case State::INVALID_WEIGHT: return "Implausible weight (cup removed?). The shot was stopped.";
-    case State::BLE_ERROR: return "Bluetooth failed to start. Restart the controller.";
-    default: return "";
-  }
-}
-
 void refreshSettings() {
   app::discover();  // keep the pairing list fresh while this panel is open
   const bbw::Settings s = app::settings();
@@ -1054,83 +1020,20 @@ void refreshSettings() {
   show(Panel::SETTINGS);
 }
 
-// Days from 1970-01-01 to a YYYYMMDD date (proleptic Gregorian).
-long daysFromCivil(uint32_t yyyymmdd) {
-  long y = yyyymmdd / 10000;
-  const unsigned m = (yyyymmdd / 100) % 100, d = yyyymmdd % 100;
-  y -= m <= 2;
-  const long era = (y >= 0 ? y : y - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(y - era * 400);
-  const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097 + static_cast<long>(doe) - 719468;
-}
-
-// "12 d off roast", or the date itself until the clock has been set. Brief,
-// after the roast level: "12 d", or the date alone.
+// "12 d off roast", or the date itself until the clock has been set (the wording is in
+// ui/ScreenText.h, shared with the iPhone app).
 void describeRoastAge(const bbw::Recipe &r, bool brief, char *out, size_t size) {
-  out[0] = '\0';
-  if (r.roastDate == 0) return;
-  const uint32_t now = app::epochNow();
-  const long days = now ? static_cast<long>(now / 86400) - daysFromCivil(r.roastDate) : -1;
-  if (days >= 0 && days < 1000) {
-    snprintf(out, size, brief ? "%ld d" : "%ld d off roast", days);
-  } else {
-    snprintf(out, size, brief ? "%04u-%02u-%02u" : "roasted %04u-%02u-%02u",
-             static_cast<unsigned>(r.roastDate / 10000),
-             static_cast<unsigned>((r.roastDate / 100) % 100),
-             static_cast<unsigned>(r.roastDate % 100));
-  }
+  screen::describeRoastAge(r, app::epochNow(), brief, out, size);
 }
 
-// What a grind setting is read in on this controller's grinder ("um", "steps"...).
-const char *grindUnit() {
-  static bbw::Grinder grinder;
-  grinder = app::grinder();
-  return grinder.unit;
-}
-
-// A setting as this grinder's dial reads (core/SettingFormat.h), in one of a few rotating buffers so
-// that several can go into one line. A change of setting, and what to call it, likewise.
-const char *gs(uint16_t value) {
-  static char buffers[6][12];
-  static uint8_t next;
-  char *out = buffers[next++ % 6];
-  bbw::formatSetting(value, app::grinder(), out, sizeof(buffers[0]));
-  return out;
-}
-const char *gd(int delta) {
-  static char buffers[3][12];
-  static uint8_t next;
-  char *out = buffers[next++ % 3];
-  bbw::formatSettingDelta(delta, app::grinder(), out, sizeof(buffers[0]));
-  return out;
-}
-const char *gdu() {
-  static bbw::Grinder grinder;
-  grinder = app::grinder();
-  return bbw::settingDeltaUnit(grinder);
-}
-
-void describePreinfusion(const bbw::Recipe &r, char *out, size_t size) {
-  if (r.preinfusion == bbw::Preinfusion::HOLD) {
-    if (r.bloomPauseMs) {
-      snprintf(out, size, "pre %.1f s, bloom %.0f s", r.preinfusionHoldMs / 1000.0f,
-               r.bloomPauseMs / 1000.0f);
-    } else {
-      snprintf(out, size, "pre-inf hold %.1f s", r.preinfusionHoldMs / 1000.0f);
-    }
-  } else {
-    snprintf(out, size, "pre-inf machine");
-  }
-}
+using screen::describePreinfusion;
 
 void refreshRecipes() {
   static uint32_t builtFor = 0;
   if (builtFor != recipesOpenedAtMs) {  // build once per opening, not every refresh
     builtFor = recipesOpenedAtMs;
     const uint8_t count = app::presetCount(), activeIndex = app::activePreset();
-    const char *unit = grindUnit();
+    const bbw::Grinder grinder = app::grinder();
     lv_obj_clean(recipeList);
     for (uint8_t i = 0; i < count; ++i) {
       // Entries of a finished coffee are left out (the active one stays, should every entry be hidden).
@@ -1139,15 +1042,9 @@ void refreshRecipes() {
       // Two lines: the coffee, then the recipe with what it makes and the
       // grind (a long name wraps onto a third). A recipe listed by itself has
       // its name on the first line. The roast details are on the home screen.
-      char grind[24] = "", text[144];
-      if (r.grindUm) snprintf(grind, sizeof(grind), "  %s %s", gs(r.grindUm), unit);
-      if (r.coffee[0]) {
-        snprintf(text, sizeof(text), "%s\n%s  %.1f -> %.1f g%s", r.coffee, r.name, r.doseG,
-                 r.targetWeightG, grind);
-      } else {
-        snprintf(text, sizeof(text), "%s\n%.1f -> %.1f g%s", r.name, r.doseG, r.targetWeightG,
-                 grind);
-      }
+      char text[144];
+      screen::Dial dial(grinder);
+      screen::recipeListLine(r, dial, text, sizeof(text));
       lv_obj_t *item = lv_list_add_btn(recipeList, nullptr, text);
       // The list's default is a scrolling marquee; show the text still.
       lv_label_set_long_mode(lv_obj_get_child(item, 0), LV_LABEL_LONG_WRAP);
@@ -1179,54 +1076,11 @@ void refreshRecipes() {
 
 void describeEditField(const bbw::Recipe &r, int field, char *title, char *value, char *hint,
                        size_t size) {
-  switch (field) {
-    case 0:
-      if (r.useRatio) {
-        snprintf(title, size, "RATIO");
-        snprintf(value, size, "1:%.1f", r.ratio);
-        snprintf(hint, size, "%.1f g in gives\n%.1f g out", r.doseG, r.doseG * r.ratio);
-      } else {
-        snprintf(title, size, "TARGET OUT");
-        snprintf(value, size, "%.1f g", r.targetWeightG);
-        snprintf(hint, size, "tap 0.5 g,\nhold for 0.1 g");
-      }
-      break;
-    case 1:
-      snprintf(title, size, "DOSE IN");
-      snprintf(value, size, "%.1f g", r.doseG);
-      snprintf(hint, size, "dry coffee in\nthe basket");
-      break;
-    case 2:
-      snprintf(title, size, "GRIND");
-      if (r.grindUm) snprintf(value, size, "%s %s", gs(r.grindUm), grindUnit());
-      else snprintf(value, size, "not set");
-      {
-        const bbw::GrindAdvice g = app::grindAdvice();
-        if (g.action == GrindAction::FINER || g.action == GrindAction::COARSER) {
-          const char *way = g.action == GrindAction::FINER ? "finer" : "coarser";
-          if (bbw::adviceHasNumber(g)) snprintf(hint, size, "advice: go %s,\nset %s %s", way, gs(g.suggestedUm), grindUnit());
-          else snprintf(hint, size, "advice: go %s\nhow far: see the\nweb page", way);
-        } else {
-          snprintf(hint, size, "number on the\ngrinder: tap 1,\nhold for 10");
-        }
-      }
-      break;
-    case 3:
-      snprintf(title, size, "TARGET TIME");
-      snprintf(value, size, "%.1f s", r.targetTimeS);
-      snprintf(hint, size, "brew time the\ngrind advice\naims for");
-      break;
-    default:
-      snprintf(title, size, "PRE-INFUSION");
-      if (r.preinfusion == bbw::Preinfusion::HOLD) {
-        snprintf(value, size, "HOLD %.1f s", r.preinfusionHoldMs / 1000.0f);
-        snprintf(hint, size, "pre-infusion lasts\nonly as long as\nthe hold");
-      } else {
-        snprintf(value, size, "MACHINE");
-        snprintf(hint, size, "press and release:\nthe machine\npre-infuses");
-      }
-      break;
-  }
+  const bbw::Grinder grinder = app::grinder();
+  screen::Dial dial(grinder);
+  bbw::GrindAdvice advice;
+  if (field == 2) advice = app::grindAdvice();
+  screen::describeEditField(r, field, dial, advice, title, value, hint, size);
 }
 
 void refreshEdit() {
@@ -1240,7 +1094,9 @@ void refreshEdit() {
   uint16_t advised = 0;
   if (editField == EDIT_FIELD_GRIND && adviceSetting(advised) && editRecipe.grindUm != advised) {
     char label[32];
-    snprintf(label, sizeof(label), "SET %s %s", gs(advised), grindUnit());
+    const bbw::Grinder grinder = app::grinder();
+    screen::Dial dial(grinder);
+    screen::editSetAdviceLabel(dial, advised, label, sizeof(label));
     fitText(editSetAdviceLabel, label, 170, 2, &lv_font_montserrat_22, &lv_font_montserrat_20);
     lv_obj_clear_flag(editSetAdviceBtn, LV_OBJ_FLAG_HIDDEN);
   } else {
@@ -1352,30 +1208,16 @@ bool refreshNoGrind() {
   if (active.grindUm != 0 || noGrindDismissed == noGrindKey()) return false;
   recNoGrind = true;
   recReminder = false;
-  const uint16_t last = app::lastGrindSetting();
-  const uint16_t guess = last ? 0 : bbw::grinderFirstGuess(app::grinder()).setting;
-  noGrindStart = last ? last : guess;
-  const char *unit = grindUnit();
-  setText(recTitle, "SET THE GRIND");
-  char text[96], why[200];
-  if (noGrindStart) snprintf(text, sizeof(text), "%s %s", gs(noGrindStart), unit);
-  else snprintf(text, sizeof(text), "Not set");
-  setText(recSetting, text);
-  const char *coffee = active.coffee[0] ? active.coffee : "This recipe";
-  if (last) {
-    snprintf(why, sizeof(why), "%s: no grind setting. The last shot was at %s %s. Set it before you brew.",
-             coffee, gs(last), unit);
-  } else if (guess) {
-    snprintf(why, sizeof(why), "%s: no grind setting. A first guess from the grinder's range. Set it before you brew.",
-             coffee);
-  } else {
-    snprintf(why, sizeof(why), "%s: no grind setting. Set it before you brew.", coffee);
-  }
-  setText(recWhy, why);
-  if (noGrindStart) snprintf(text, sizeof(text), "SET\n%s", gs(noGrindStart));
-  else snprintf(text, sizeof(text), "SET");
-  setText(recUseLabel, text);
-  setText(recKeepLabel, "NOT NOW");
+  const bbw::Grinder grinder = app::grinder();
+  screen::Dial dial(grinder);
+  screen::GrindPromptText t;
+  screen::noGrindText(active, app::lastGrindSetting(), dial, t);
+  noGrindStart = t.useUm;
+  setText(recTitle, t.title);
+  setText(recSetting, t.setting);
+  setText(recWhy, t.why);
+  setText(recUseLabel, t.use);
+  setText(recKeepLabel, t.keep);
   show(Panel::GRINDREC);
   return true;
 }
@@ -1390,34 +1232,18 @@ bool refreshGrindReminder(const bbw::LiveStatus &st) {
     return false;
   }
   const bbw::GrindAdvice g = app::grindAdvice();
-  const bool finer = g.action == GrindAction::FINER;
-  const bool number = bbw::adviceHasNumber(g);
   recNoGrind = false;
   recReminder = true;
-  reminderUm = number ? g.suggestedUm : 0;
-  setText(recTitle, "GRIND REMINDER");
-  const char *unit = grindUnit();
-  char text[96], why[200];
-  if (number) snprintf(text, sizeof(text), "%s -> %s %s", gs(g.currentUm), gs(g.suggestedUm), unit);
-  else snprintf(text, sizeof(text), "GRIND %s", finer ? "FINER" : "COARSER");
-  setText(recSetting, text);
-  if (g.shotsUsed > 1) {
-    snprintf(why, sizeof(why), "The last %u shots averaged %.1f s (aim %.0f s): the advice was %s. The grinder is still set at %s %s.",
-             static_cast<unsigned>(g.shotsUsed), g.averageTimeS, g.targetTimeS, finer ? "finer" : "coarser",
-             gs(g.currentUm), unit);
-  } else {
-    snprintf(why, sizeof(why), "The last shot ran %.1f s (aim %.0f s): the advice was %s. The grinder is still set at %s %s.",
-             g.averageTimeS, g.targetTimeS, finer ? "finer" : "coarser", gs(g.currentUm), unit);
-  }
-  if (number && g.notePlay) {
-    const size_t used = strlen(why);
-    snprintf(why + used, sizeof(why) - used, " Incl. %s %s play.", gd(static_cast<int>(lroundf(g.backlashAddedSteps))), gdu());
-  }
-  setText(recWhy, why);
-  if (number) snprintf(text, sizeof(text), "SET\n%s", gs(g.suggestedUm));
-  else snprintf(text, sizeof(text), "OK");
-  setText(recUseLabel, text);
-  setText(recKeepLabel, "NOT NOW");
+  const bbw::Grinder grinder = app::grinder();
+  screen::Dial dial(grinder);
+  screen::GrindPromptText t;
+  screen::grindReminderText(g, dial, t);
+  reminderUm = t.useUm;
+  setText(recTitle, t.title);
+  setText(recSetting, t.setting);
+  setText(recWhy, t.why);
+  setText(recUseLabel, t.use);
+  setText(recKeepLabel, t.keep);
   show(Panel::GRINDREC);
   return true;
 }
@@ -1428,194 +1254,93 @@ bool refreshGrindRec() {
   if (!r.setting) return false;
   recNoGrind = false;
   recReminder = false;
-  setText(recTitle, "NEW GRIND ADVICE");
-  const char *unit = grindUnit();
-  char text[96], now[16];
-  snprintf(text, sizeof(text), "%s %s", gs(r.setting), unit);
-  setText(recSetting, text);
-  strlcpy(now, r.current ? gs(r.current) : "", sizeof(now));
   const bbw::Recipe active = app::activeRecipe();
-  char why[200];
-  if (r.source == app::GrindRecSource::COMMUNITY) {
-    snprintf(why, sizeof(why), "%s: from the community (%u %s), +/- %u.", active.coffee,
-             static_cast<unsigned>(r.people), r.people == 1 ? "person" : "people", static_cast<unsigned>(r.range));
-  } else if (r.source == app::GrindRecSource::SIMILAR) {
-    snprintf(why, sizeof(why), "%s: from your similar coffee %s, +/- %u.", active.coffee, r.from,
-             static_cast<unsigned>(r.range));
-  } else {
-    snprintf(why, sizeof(why), "%s: a first guess from the grinder's range, +/- %u.", active.coffee,
-             static_cast<unsigned>(r.range));
-  }
-  char more[80];
-  if (r.current) snprintf(more, sizeof(more), " Grinder now at %s %s.", now, unit);
-  else snprintf(more, sizeof(more), " No setting yet.");
-  const size_t used = strlen(why);
-  snprintf(why + used, sizeof(why) - used, "%s", more);
-  setText(recWhy, why);
-  snprintf(text, sizeof(text), "SET\n%s", gs(r.setting));
-  setText(recUseLabel, text);
-  if (r.current) snprintf(text, sizeof(text), "KEEP\n%s", now);
-  else snprintf(text, sizeof(text), "NOT NOW");
-  setText(recKeepLabel, text);
+  const bbw::Grinder grinder = app::grinder();
+  screen::Dial dial(grinder);
+  screen::GrindPromptText t;
+  const screen::RecSource source = r.source == app::GrindRecSource::COMMUNITY ? screen::RecSource::COMMUNITY
+                                   : r.source == app::GrindRecSource::SIMILAR ? screen::RecSource::SIMILAR
+                                                                               : screen::RecSource::RANGE;
+  screen::grindRecommendationText(source, r.setting, r.range, r.current, r.people, r.from, active.coffee, dial, t);
+  setText(recTitle, t.title);
+  setText(recSetting, t.setting);
+  setText(recWhy, t.why);
+  setText(recUseLabel, t.use);
+  setText(recKeepLabel, t.keep);
   show(Panel::GRINDREC);
   return true;
 }
 
 void refreshHome(const bbw::LiveStatus &st) {
   const bool ready = st.state == State::READY;
-  // Ready, and the brew bot is wanted (the scale is on) but not linked yet: say so, in amber.
-  const bool botWaking = ready && st.botPaired && !st.botConnected &&
-                         st.machineStyle != static_cast<uint8_t>(bbw::MachineStyle::MANUAL);
-  if (!ready) {
-    setText(homeStatus, app::scaleResting() ? "SCALE RESTING" : "NO SCALE");
-  } else if (!st.botPaired && st.machineStyle != static_cast<uint8_t>(bbw::MachineStyle::MANUAL)) {
-    setText(homeStatus, "NO BOT");
-  } else if (st.cupRequired && !st.cupPresent) {
-    setTextF(homeStatus, "NO CUP  %.1f g", st.weightG);
-  } else if (botWaking) {
-    // BREW still works: the shot starts as soon as the bot answers.
-    setTextF(homeStatus, "WAKING BOT  %.1f g", st.weightG);
-  } else {
-    setTextF(homeStatus, "READY  %.1f g", st.weightG);
-  }
-  // Red: no scale. Amber: scale, but no cup on it yet. Green: ready to brew.
-  const bool cupMissing = st.state == State::READY && st.cupRequired && !st.cupPresent;
-  setDot(homeScaleDot, !st.scaleConnected ? COLOR_BAD : (cupMissing ? COLOR_ACCENT : COLOR_OK));
-  if (st.scaleConnected && st.scaleBatteryPercent >= 0) {
-    setTextF(homeScaleBattery, "%d%%", st.scaleBatteryPercent);
-    setColor(homeScaleBattery, st.scaleBatteryPercent <= 15 ? COLOR_ACCENT : COLOR_DIM);
+  screen::HomeState hs;
+  hs.scaleResting = app::scaleResting();
+  hs.scaleStartPending = !ready && app::scaleStartPending();
+  hs.scaleNearby = !ready && app::scaleNearby();
+  screen::HomeStatusText ht;
+  screen::homeStatusText(st, hs, ht);
+  setText(homeStatus, ht.status);
+  setDot(homeScaleDot, toneColor(ht.scaleDot));
+  if (ht.scaleBattery >= 0) {
+    setTextF(homeScaleBattery, "%d%%", ht.scaleBattery);
+    setColor(homeScaleBattery, toneColor(ht.scaleBatteryTone));
   } else {
     setText(homeScaleBattery, "");
   }
-  // Grey: paired and asleep, which is the normal idle state.
-  setDot(homeBotDot, st.botConnected ? COLOR_OK
-                     : botWaking    ? COLOR_ACCENT
-                     : st.botPaired ? COLOR_SLEEP
-                                    : COLOR_BAD);
-  if (st.botBatteryPercent >= 0) {
-    setTextF(homeBotBattery, "%d%%", st.botBatteryPercent);
-    setColor(homeBotBattery, st.botBatteryPercent <= 15 ? COLOR_ACCENT : COLOR_DIM);
+  setDot(homeBotDot, toneColor(ht.botDot));
+  if (ht.botBattery >= 0) {
+    setTextF(homeBotBattery, "%d%%", ht.botBattery);
+    setColor(homeBotBattery, toneColor(ht.botBatteryTone));
   } else {
     setText(homeBotBattery, "");
   }
 
   const bbw::Recipe r = app::activeRecipe();
-  char text[64];
+  const bbw::GrindAdvice g = app::grindAdvice();
+  const bbw::Grinder grinder = app::grinder();
+  screen::Dial dial(grinder);
+  const uint16_t communityStart = !r.grindUm ? app::communityStartForActive().setting : 0;
+  const uint16_t similarStart =
+      !r.grindUm && r.coffeeId != 0 ? app::similarStart(r.coffeeId, r.recipeId).setting : 0;
+  screen::HomeCard card;
+  screen::homeCardText(r, g, dial, communityStart, similarStart, card);
   // The coffee is what the card is headed by; a recipe listed by itself heads its own.
-  fitText(homeName, r.coffee[0] ? r.coffee : r.name, CARD_W - 24, 3, &lv_font_montserrat_26, &lv_font_montserrat_22,
+  fitText(homeName, card.name, CARD_W - 24, 3, &lv_font_montserrat_26, &lv_font_montserrat_22,
           &lv_font_montserrat_20);
-  scrollIfLong(homeName, r.coffee[0] ? r.coffee : r.name, CARD_W - 24);
-  // With the coffee as the heading, this line names the recipe: "Triple - 24.0 in -> 48.0 out",
-  // with the ratio after it when there is room.
-  char yield[64];
-  if (r.coffee[0]) snprintf(yield, sizeof(yield), "%s - %.1f in -> %.1f out", r.name, r.doseG, r.targetWeightG);
-  else snprintf(yield, sizeof(yield), "%.1f g in -> %.1f g out", r.doseG, r.targetWeightG);
-  snprintf(text, sizeof(text), "%s  1:%.1f", yield, r.ratio);
-  if (!r.useRatio || lv_txt_get_width(text, strlen(text), &lv_font_montserrat_20, 0,
-                                      LV_TEXT_FLAG_NONE) > CARD_W) {
-    snprintf(text, sizeof(text), "%s", yield);
+  scrollIfLong(homeName, card.name, CARD_W - 24);
+  // The recipe's name and what it makes, with the ratio after it when there is room.
+  const char *text = card.yieldRatio;
+  if (!card.useRatio || lv_txt_get_width(text, strlen(text), &lv_font_montserrat_20, 0,
+                                         LV_TEXT_FLAG_NONE) > CARD_W) {
+    text = card.yield;
   }
   fitText(homeYield, text, CARD_W, 3, &lv_font_montserrat_24, &lv_font_montserrat_22,
           &lv_font_montserrat_20);
   scrollIfLong(homeYield, text, CARD_W);
 
-  // Left column: grind, the advisor's verdict, pre-infusion. Each has a
-  // shorter wording for when the full one is too wide for the column.
-  const bbw::GrindAdvice g = app::grindAdvice();
-  const char *unit = grindUnit();
-  char shorter[64], grindText[40];
-  if (r.grindUm) snprintf(grindText, sizeof(grindText), "grind %s %s", gs(r.grindUm), unit);
-  else snprintf(grindText, sizeof(grindText), "grind not set");
-  // As on the result screen, the setting to go to is only shown once the
-  // sensitivity has been measured from this grinder's own shots. The unit is
-  // on the grind line above, so the short wording leaves it out.
-  if (r.grindUm && (g.action == GrindAction::FINER || g.action == GrindAction::COARSER)) {
-    const char *way = g.action == GrindAction::FINER ? "finer" : "coarser";
-    if (bbw::adviceHasNumber(g)) {
-      const char *to = gs(g.suggestedUm);
-      if (g.refined) snprintf(text, sizeof(text), "liked: %s %s %s", way, to, unit);
-      else snprintf(text, sizeof(text), "go %s: %s %s", way, to, unit);
-      snprintf(shorter, sizeof(shorter), "%s%s %s", g.refined ? "liked: " : "", way, to);
-    } else {
-      snprintf(text, sizeof(text), "go %s", way);
-      snprintf(shorter, sizeof(shorter), "%s", way);
-    }
-  } else if (r.grindUm && g.action == GrindAction::INCONSISTENT) {
-    snprintf(text, sizeof(text), "brew times vary");
-    snprintf(shorter, sizeof(shorter), "times vary");
-  } else if (r.grindUm && g.action == GrindAction::HOLD && g.betweenSteps) {
-    snprintf(text, sizeof(text), "closest step to target");
-    snprintf(shorter, sizeof(shorter), "closest to target");
-  } else if (r.grindUm && g.action == GrindAction::HOLD) {
-    snprintf(text, sizeof(text), "brew time on target");
-    snprintf(shorter, sizeof(shorter), "time on target");
-  } else if (!r.grindUm && app::communityStartForActive().setting != 0) {
-    // No setting entered yet, and the shared library has somewhere to start.
-    const char *start = gs(app::communityStartForActive().setting);
-    snprintf(text, sizeof(text), "community: start %s %s", start, unit);
-    snprintf(shorter, sizeof(shorter), "community %s %s", start, unit);
-    if (lv_txt_get_width(shorter, strlen(shorter), &lv_font_montserrat_20, 0, LV_TEXT_FLAG_NONE) > COL_W) {
-      snprintf(shorter, sizeof(shorter), "community %s", start);  // the unit is on the edit screen
-    }
-  } else if (!r.grindUm && r.coffeeId != 0 &&
-             app::similarStart(r.coffeeId, r.recipeId).setting != 0) {
-    // Nothing from the library either: the owner's own most similar coffee (a guess).
-    const char *start = gs(app::similarStart(r.coffeeId, r.recipeId).setting);
-    snprintf(text, sizeof(text), "similar: try %s %s", start, unit);
-    snprintf(shorter, sizeof(shorter), "similar: %s %s", start, unit);
-  } else if (!r.grindUm && bbw::grinderFirstGuess(app::grinder()).setting != 0) {
-    // Nothing else to go on: a first guess from the grinder's range.
-    const char *start = gs(bbw::grinderFirstGuess(app::grinder()).setting);
-    snprintf(text, sizeof(text), "first guess: try %s %s", start, unit);
-    snprintf(shorter, sizeof(shorter), "guess: %s %s", start, unit);
-  } else {
-    text[0] = shorter[0] = '\0';
+  // Left column: grind, the advisor's verdict, pre-infusion. Each has a shorter wording for when
+  // the full one is too wide for the column.
+  const char *shorter = card.adviceShort;
+  if (strcmp(card.adviceShortest, card.adviceShort) != 0 &&
+      lv_txt_get_width(shorter, strlen(shorter), &lv_font_montserrat_20, 0, LV_TEXT_FLAG_NONE) > COL_W) {
+    shorter = card.adviceShortest;
   }
-  setColor(homeAdvice, g.action == GrindAction::HOLD ? COLOR_OK : COLOR_ACCENT);
-  char preText[48], preShort[48], footText[32];
-  describePreinfusion(r, preText, sizeof(preText));
-  snprintf(preShort, sizeof(preShort), "pre %.1f, bloom %.0f s", r.preinfusionHoldMs / 1000.0f,
-           r.bloomPauseMs / 1000.0f);  // only ever needed with a bloom
-  // The stop offset is learned and looks after itself; it is not shown here.
-  snprintf(footText, sizeof(footText), "brew time %.0f s", r.targetTimeS);
-  const CardEntry entries[] = {{homeGrind, grindText, grindText},
-                               {homeAdvice, text, shorter},
-                               {homePre, preText, preShort},
-                               {homeFoot, footText, footText}};
+  setColor(homeAdvice, toneColor(card.adviceTone));
+  const CardEntry entries[] = {{homeGrind, card.grind, card.grind},
+                               {homeAdvice, card.advice, shorter},
+                               {homePre, card.pre, card.preShort},
+                               {homeFoot, card.foot, card.foot}};
   fitCardEntries(entries, 4);
 
   // The roast level and age are on the COFFEE screen.
 
   // An idle scale is let go so that it can switch itself off (core/ScaleRest.h). While it rests, or
   // is on its way back, Start takes it back and brews as soon as it is there.
-  const bool startPending = !ready && app::scaleStartPending();
-  const bool scaleNear = !ready && !startPending && app::scaleNearby();
-  if (startPending) {
-    setText(homeHint, "CONNECTING TO THE SCALE");
-    setColor(homeHint, COLOR_DIM);
-  } else if (scaleNear) {
-    setText(homeHint, touchHint());
-    setColor(homeHint, COLOR_OK);
-  } else if (!ready) {
-    setText(homeHint, "SWITCH ON THE SCALE");
-    setColor(homeHint, COLOR_DIM);
-  } else if (!st.botPaired && st.machineStyle != static_cast<uint8_t>(bbw::MachineStyle::MANUAL)) {
-    setText(homeHint, "PAIR THE BOT IN SETTINGS");
-    setColor(homeHint, COLOR_DIM);
-  } else if (!st.weightFresh) {
-    setText(homeHint, "WAITING FOR WEIGHT");
-    setColor(homeHint, COLOR_DIM);
-  } else if (st.cupRequired && !st.cupPresent) {
-    setText(homeHint, "PLACE CUP ON SCALE");
-    setColor(homeHint, COLOR_ACCENT);
-  } else {
-    setText(homeHint, touchHint());
-    setColor(homeHint, COLOR_OK);
-  }
+  if (ht.hintIsTouch) setText(homeHint, touchHint());
+  else setText(homeHint, ht.hint);
+  setColor(homeHint, toneColor(ht.hintTone));
   // A key only while it offers the start; plain text, as before, otherwise.
-  const bool canStart = scaleNear ||
-                        (ready && (st.botPaired || st.machineStyle == static_cast<uint8_t>(bbw::MachineStyle::MANUAL)) &&
-                         st.weightFresh && !(st.cupRequired && !st.cupPresent));
+  const bool canStart = ht.canStart;
   if (canStart != homeCanStart || !lv_obj_has_flag(homeStartKey, LV_OBJ_FLAG_USER_1)) {
     homeCanStart = canStart;
     lv_obj_add_flag(homeStartKey, LV_OBJ_FLAG_USER_1);  // styled at least once
@@ -1627,53 +1352,17 @@ void refreshHome(const bbw::LiveStatus &st) {
 }
 
 void refreshBrew(const bbw::LiveStatus &st) {
-  const char *stopText = "STOP";
-  const char *phase = "";
-  uint32_t phaseColor = COLOR_ACCENT;
   uint32_t ringColor = COLOR_TRACK;
-  bool running = false;  // the machine has been started
-  switch (st.state) {
-    case State::TARING:
-      phase = "AUTO TARE\nWAIT FOR ZERO";
-      stopText = "CANCEL";
-      break;
-    case State::WAITING_FOR_CUP:
-      phase = "PLACE CUP\nON THE SCALE";
-      stopText = "CANCEL";
-      break;
-    case State::READY_TO_BREW:
-      phase = st.botConnected || st.machineStyle == static_cast<uint8_t>(bbw::MachineStyle::MANUAL)
-                  ? "TOUCH KEY\nTO BREW" : "WAKING BOT\nSTARTS WHEN LINKED";
-      stopText = "CANCEL";
-      break;
-    case State::STARTING_SHOT:
-      phase = st.awaitingDrip ? "PULL THE SHOT\nWAITING FOR COFFEE"
-              : st.holdingButton ? "PRE-INFUSION\nHOLDING BUTTON" : "STARTING";
-      running = true;
-      break;
-    case State::BREWING:
-      phase = st.targetCue ? "STOP NOW" : st.firstDropSeen ? "BREWING" : "PRE-INFUSION";
-      running = true;
-      break;
-    case State::BLOOMING: {
-      static char bloomText[24];
-      snprintf(bloomText, sizeof(bloomText), "BLOOM\n%.0f s", st.bloomLeftS);
-      phase = st.holdingButton ? "BLOOM DONE\nSTARTING" : bloomText;
-      running = true;
-      break;
-    }
-    case State::STOPPING_SHOT:
-      phase = st.manualStopNeeded ? "STOP BY HAND!" : "STOPPING";
-      if (st.manualStopNeeded) phaseColor = COLOR_BAD;
-      running = true;
-      break;
-    default:  // POST_SHOT_DRIP
-      // After a stop with no coffee seen, the pump is watched for a while:
-      // one press toggles, so the stop may have been a start.
-      phase = st.verifyingStop ? "CHECKING\nPUMP IS OFF" : "FINALIZING\nLEAVE CUP";
-      running = true;
-      break;
+  // BOOT was pressed during the shot: ask before stopping.
+  const bool stoppable = st.state == State::STARTING_SHOT || st.state == State::BREWING ||
+                         st.state == State::BLOOMING;
+  if (!stoppable) stopConfirmUntilMs = 0;
+  if (stopConfirmUntilMs != 0 && static_cast<int32_t>(millis() - stopConfirmUntilMs) >= 0) {
+    stopConfirmUntilMs = 0;
   }
+  screen::BrewPhaseText bp;
+  screen::brewPhaseText(st, stopConfirmUntilMs != 0, bp);
+  const bool running = bp.running;  // the machine has been started
 
   // Ring: empty and grey before the machine starts, a full red ring while it
   // runs with nothing in the cup, then green growing with the weight.
@@ -1711,21 +1400,9 @@ void refreshBrew(const bbw::LiveStatus &st) {
           &lv_font_montserrat_26);
   setTextF(brewTarget, "/ %.1f g", st.targetWeightG);
   setTextF(brewFlow, "%.1f g/s", st.flowGS);
-  // BOOT was pressed during the shot: ask before stopping.
-  const bool stoppable = st.state == State::STARTING_SHOT || st.state == State::BREWING ||
-                         st.state == State::BLOOMING;
-  if (!stoppable) stopConfirmUntilMs = 0;
-  if (stopConfirmUntilMs != 0 && static_cast<int32_t>(millis() - stopConfirmUntilMs) >= 0) {
-    stopConfirmUntilMs = 0;
-  }
-  if (stopConfirmUntilMs != 0) {
-    phase = "STOP SHOT?\nPRESS AGAIN";
-    phaseColor = COLOR_BAD;
-    stopText = "YES\nSTOP";
-  }
-  setText(brewPhase, phase);
-  setColor(brewPhase, phaseColor);
-  setText(brewStopLabel, stopText);
+  setText(brewPhase, bp.phase);
+  setColor(brewPhase, toneColor(bp.phaseTone));
+  setText(brewStopLabel, bp.stop);
   show(Panel::BREW);
 }
 
@@ -1734,115 +1411,40 @@ void refreshBrew(const bbw::LiveStatus &st) {
 bool resReviewPending = false;  // the result screen is showing IGNORE / COUNT
 
 void refreshResult(State state) {
-  bbw::ShotRecord shot;
-  const bool have = app::lastShot(shot);
-  const bbw::EndReason ended =
-      have ? static_cast<bbw::EndReason>(shot.endReason) : bbw::EndReason::NONE;
-  // Anything but a normal finish gets a red heading saying what ended it.
-  const bool abnormal = state != State::SHOT_COMPLETE;
-  // Of those, the ones that ran out of time are put to the user (below).
-  const bool timedOut = abnormal && (ended == bbw::EndReason::TIMEOUT ||
-                                     ended == bbw::EndReason::MACHINE_STOPPED);
-  if (have) {
-    const float error = shot.finalWeightG - bbw::shotStopTargetG(shot);  // its own target, if it had one
-    char yield[32];
-    if (fabsf(error) < 0.05f) snprintf(yield, sizeof(yield), "ON TARGET");
-    else snprintf(yield, sizeof(yield), "%s %+.1f g", error > 0 ? "OVER" : "UNDER", error);
+  screen::ResultInput in;
+  in.have = app::lastShot(in.shot);
+  in.state = state;
+  const bbw::Settings cfg = app::settings();
+  in.basis = cfg.grindTimeBasis;
+  in.toleranceS = cfg.grindToleranceS;
+  const bbw::GrindAdvice g = app::grindAdvice();
+  const bbw::Grinder grinder = app::grinder();
+  screen::Dial dial(grinder);
+  screen::ResultText rt;
+  screen::resultText(in, g, dial, rt);
 
-    if (abnormal) {
-      const char *heading = "SHOT ENDED EARLY";
-      switch (ended) {
-        case bbw::EndReason::TIMEOUT: heading = "SHOT TIMED OUT"; break;
-        // The pour stopped with nothing pressed here: the machine's own
-        // time-out, or someone pressed its button. The scale cannot tell which.
-        case bbw::EndReason::MACHINE_STOPPED: heading = "STOPPED AT THE MACHINE"; break;
-        case bbw::EndReason::CUP_REMOVED: heading = "CUP LIFTED: STOPPED"; break;
-        case bbw::EndReason::RECOVERED: heading = "STOPPED AFTER RESTART"; break;
-        default: break;
-      }
-      fitText(resTop, heading, LEFT_W, 3, &lv_font_montserrat_26, &lv_font_montserrat_22,
-              &lv_font_montserrat_20);
-      setColor(resTop, COLOR_BAD);
-    } else {
-      // How far off the weight, and how far off the brew time.
-      const bbw::Settings cfg = app::settings();
-      const float brewS = bbw::grindShotTime(shot, cfg.grindTimeBasis);
-      const float late = brewS - shot.targetTimeS;
-      const bool timed = shot.targetTimeS > 0.0f && brewS > 0.0f;
-      char top[64];
-      if (!timed) snprintf(top, sizeof(top), "%s", yield);
-      else if (fabsf(late) < 0.05f) snprintf(top, sizeof(top), "%s   ON TIME", yield);
-      else snprintf(top, sizeof(top), "%s   %s %+.1f s", yield, late > 0 ? "SLOW" : "FAST", late);
-      fitText(resTop, top, LEFT_W, 2, &lv_font_montserrat_26, &lv_font_montserrat_22,
-              &lv_font_montserrat_20);
-      const bool good = fabsf(error) <= 0.5f && (!timed || fabsf(late) <= cfg.grindToleranceS);
-      setColor(resTop, good ? COLOR_OK : COLOR_ACCENT);
+  if (rt.have) {
+    fitText(resTop, rt.top, LEFT_W, rt.abnormal ? 3 : 2, &lv_font_montserrat_26, &lv_font_montserrat_22,
+            &lv_font_montserrat_20);
+    setColor(resTop, toneColor(rt.topTone));
+    setText(resWeight, rt.weight);
+    fitDetail(resLine1, "%s", rt.line1);
+    // The longest line on the screen: tighter wordings until one fits at 20 pt.
+    const char *line2 = rt.line2[0];
+    for (int i = 0; i + 1 < rt.line2Count; ++i) {
+      if (lv_txt_get_width(line2, strlen(line2), &lv_font_montserrat_20, 0, LV_TEXT_FLAG_NONE) <= LEFT_W) break;
+      line2 = rt.line2[i + 1];
     }
-    // An asterisk marks a weight that did not settle (cup lifted early).
-    setTextF(resWeight, "%.1f g%s", shot.finalWeightG,
-             (shot.flags & bbw::SHOT_FLAG_FINAL_VALID) ? "" : " *");
-    if (abnormal && shot.pourTimeS > 0.0f) {
-      fitDetail(resLine1, "%s   %.1f s   pour %.1f s", yield, shot.shotTimeS, shot.pourTimeS);
-    } else if (abnormal) {
-      fitDetail(resLine1, "%s   %.1f s", yield, shot.shotTimeS);
-    } else if (shot.pourTimeS > 0.0f) {
-      fitDetail(resLine1, "%.1f s total   pour %.1f s", shot.shotTimeS, shot.pourTimeS);
-    } else {
-      fitDetail(resLine1, "%.1f s", shot.shotTimeS);
-    }
-    const float flow = shot.pourTimeS > 0.0f ? shot.pourFlowGS : shot.averageFlowGS;
-    const float change = shot.nextStopOffsetG - shot.stopOffsetG;
-    if ((shot.flags & bbw::SHOT_FLAG_LEARNED) && fabsf(change) >= 0.005f) {
-      // A larger offset means the next shot is stopped earlier.
-      // The longest line on the screen: tighter wordings until one fits at 20 pt.
-      const char *way = change > 0 ? "earlier" : "later";
-      char line[64];
-      snprintf(line, sizeof(line), "%.2f g/s  drip %.1f g  auto %s %.2f", flow, shot.dripWeightG,
-               way, fabsf(change));
-      if (lv_txt_get_width(line, strlen(line), &lv_font_montserrat_20, 0, LV_TEXT_FLAG_NONE) > LEFT_W) {
-        snprintf(line, sizeof(line), "%.1f g/s  drip %.1f g  auto %s %.2f", flow, shot.dripWeightG,
-                 way, fabsf(change));
-      }
-      if (lv_txt_get_width(line, strlen(line), &lv_font_montserrat_20, 0, LV_TEXT_FLAG_NONE) > LEFT_W) {
-        snprintf(line, sizeof(line), "%.1f g/s drip %.1f g %s %.2f", flow, shot.dripWeightG, way,
-                 fabsf(change));
-      }
-      fitDetail(resLine2, "%s", line);
-    } else {
-      fitDetail(resLine2, "%.2f g/s   drip %.1f g", flow, shot.dripWeightG);
-    }
+    fitDetail(resLine2, "%s", line2);
   }
 
-  // Grinder verdict. Two different things are kept apart here: how THIS shot
-  // ran, and what the recent shots at this setting say about the grind. A
-  // single fast shot among consistent ones is reported as fast, with the
-  // grind left alone until it happens again.
-  const bbw::GrindAdvice g = app::grindAdvice();
-  const bbw::Settings s = app::settings();
-  const bbw::GrindUse use =
-      have ? bbw::grindShotUse(shot, s.grindTimeBasis) : bbw::GrindUse::NO_TIME;
-  const bool counted = use == bbw::GrindUse::COUNTED;
-  const float thisTime = have ? bbw::grindShotTime(shot, s.grindTimeBasis) : 0.0f;
-
-  // Ask rather than decide, when the shot was unusual and has not been ruled
-  // on yet: a one-off among consistent shots, or one that ran out of time.
-  const bool undecided = have && shot.grindVote == static_cast<uint8_t>(bbw::GrindVote::AUTO) &&
-                         shot.grindUm != 0 && thisTime > 0.0f;
-  const bool oneOff = undecided && counted && g.newestIgnored;
-  // ...or one that reached its weight but so far off the target time that it
-  // falls outside what is counted automatically.
-  const bool offTime = undecided && (use == bbw::GrindUse::TOO_SHORT ||
-                                     use == bbw::GrindUse::TOO_LONG);
-  const bool review = oneOff || offTime || (undecided && timedOut);
   auto showIf = [](lv_obj_t *obj, bool visible) {
     if (visible) lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
   };
+  const bool review = rt.review;
+  const bool grindChange = rt.grindChange;
   resReviewPending = review;
-  // A grind change recommended by this shot: offer the way to the grinder
-  // setting beside READY.
-  const bool grindChange = !review && have && counted && !g.newestIgnored &&
-                           (g.action == GrindAction::FINER || g.action == GrindAction::COARSER);
   showIf(resReview, review);
   showIf(resIgnoreBtn, review);
   showIf(resCountBtn, review);
@@ -1852,105 +1454,20 @@ void refreshResult(State state) {
   showIf(resGrind, !review);
   showIf(resGrindSub, !review);
   if (review) {
-    resShotId = shot.id;
-    // A shot that ran out of time was slow by definition.
-    const bool fast = !timedOut && thisTime < shot.targetTimeS;
-    if (g.firstDropOneOffS != 0.0f) {
-      // The first drops came far from their usual time: the puck, not the grind.
-      setTextF(resReview, "First drops %.0f s %s.\nReview preparation routine.\nGrind kept for now.",
-               fabsf(g.firstDropOneOffS), g.firstDropOneOffS < 0.0f ? "early" : "late");
-    } else {
-      // The advice goes with the warning. A shot too far off to count still says which way to go
-      // and by how much (adviseOutOfRange); leaving the setting off this screen left the owner to guess.
-      const bool way = g.action == (fast ? GrindAction::FINER : GrindAction::COARSER);
-      const char *dir = fast ? "finer" : "coarser";
-      char advice[48];
-      snprintf(advice, sizeof(advice), "Grind %s if necessary.", dir);
-      if (way && bbw::adviceHasNumber(g) && g.suggestedUm) {
-        snprintf(advice, sizeof(advice), "Advice: %s, set %s %s", dir, gs(g.suggestedUm), grindUnit());
-        // One line only: the label has room for three.
-        if (lv_txt_get_width(advice, strlen(advice), &lv_font_montserrat_20, 0, LV_TEXT_FLAG_NONE) > LEFT_W) {
-          snprintf(advice, sizeof(advice), "Advice: set %s %s", gs(g.suggestedUm), grindUnit());
-        }
-      } else if (way) {
-        snprintf(advice, sizeof(advice), "Advice: grind %s.", dir);
-      }
-      setTextF(resReview, "Shot %s than expected.\nReview preparation routine.\n%s", fast ? "faster" : "slower",
-               advice);
-    }
+    resShotId = rt.shotId;
+    // One line only for the advice: the label has room for three.
+    const bool tooWide = rt.reviewAdvice[0] &&
+                         lv_txt_get_width(rt.reviewAdvice, strlen(rt.reviewAdvice), &lv_font_montserrat_20, 0,
+                                          LV_TEXT_FLAG_NONE) > LEFT_W;
+    setText(resReview, tooWide ? rt.reviewTextShort : rt.reviewText);
     show(Panel::RESULT);
     return;
   }
 
-  setColor(resGrind, COLOR_ACCENT);
-  if (g.action == GrindAction::NO_GRIND_SET) {
-    setText(resGrind, "");
-    setText(resGrindSub, "set the grind in EDIT\nfor grind advice");
-  } else if (!counted) {
-    // Say why, in each case.
-    const char *why = "this shot is not counted\nfor grind advice";
-    switch (use) {
-      case bbw::GrindUse::IGNORED_BY_USER: why = "ignored for grind advice,\nas you chose"; break;
-      case bbw::GrindUse::NO_TIME: why = "no first drops detected:\nnot counted for grind advice"; break;
-      case bbw::GrindUse::OTHER_BASIS: why = "time basis was changed:\nnot counted for grind advice"; break;
-      case bbw::GrindUse::NOT_SETTLED: why = "cup lifted, weight unsettled:\nnot counted for grind advice"; break;
-      case bbw::GrindUse::STOP_RETRIED: why = "stop had to be repeated:\nnot counted for grind advice"; break;
-      case bbw::GrindUse::TOO_SHORT: why = "under 15 s: check preparation;\ntap COUNT to use it"; break;
-      case bbw::GrindUse::NOT_WEIGHT_STOP:
-        switch (ended) {
-          case bbw::EndReason::USER: why = "stopped with STOP:\nnot counted for grind advice"; break;
-          case bbw::EndReason::CUP_REMOVED: why = "cup lifted during the shot:\nnot counted for grind advice"; break;
-          case bbw::EndReason::RECOVERED: why = "restarted during the shot:\nnot counted for grind advice"; break;
-          default: why = "did not stop on its weight:\nnot counted for grind advice"; break;
-        }
-        break;
-      default: break;
-    }
-    setText(resGrind, "");
-    setText(resGrindSub, why);
-  } else if (g.newestIgnored) {
-    fitLine(resGrind, thisTime < shot.targetTimeS ? "BREW FAST   ONE-OFF?"
-                                                  : "BREW SLOW   ONE-OFF?");
-    setTextF(resGrindSub, "%.1f s vs %.0f s: grind kept,\nadvice if it repeats",
-             thisTime, shot.targetTimeS);
-  } else if (g.checkPrep) {
-    // Fast and uneven, or fast and sour: more likely the puck than the grind (audit G6); no change.
-    fitLine(resGrind, "CHECK PREPARATION   GRIND KEPT");
-    setTextF(resGrindSub, "%.1f s, %s:\ncheck dose and tamp, pull again", thisTime,
-             g.checkPrepWhy == bbw::CHECK_PREP_UNEVEN ? "flow uneven" : "fast and sour");
-  } else if (g.action == GrindAction::FINER || g.action == GrindAction::COARSER) {
-    const bool finer = g.action == GrindAction::FINER;
-    fitLine(resGrind, finer ? "BREW FAST   GRIND FINER" : "BREW SLOW   GRIND COARSER");
-    // The amount is only shown once it rests on a sensitivity measured from
-    // this grinder's own history.
-    if (bbw::adviceHasNumber(g) && g.notePlay) {
-      // Turning the dial back: the number includes the adjustment's play (GrindAdvice::notePlay).
-      setTextF(resGrindSub, "%s %s %s  ->  set %s %s\nincl. %s %s play", gd(g.deltaUm), gdu(),
-               finer ? "finer" : "coarser", gs(g.suggestedUm), grindUnit(),
-               gd(static_cast<int>(lroundf(g.backlashAddedSteps))), gdu());
-    } else if (bbw::adviceHasNumber(g)) {
-      setTextF(resGrindSub, "%s %s %s  ->  set %s %s", gd(g.deltaUm),
-               gdu(), finer ? "finer" : "coarser", gs(g.suggestedUm), grindUnit());
-    } else {
-      setText(resGrindSub, "see web page for details");
-    }
-  } else if (g.action == GrindAction::INCONSISTENT) {
-    fitLine(resGrind, "BREW TIMES VARY   NO ADVICE");
-    setTextF(resGrindSub, "%.0f to %.0f s at %s %s:\ncheck the preparation",
-             g.minTimeS, g.maxTimeS, gs(g.currentUm), grindUnit());
-  } else if (g.action == GrindAction::HOLD) {
-    fitLine(resGrind, "BREW TIME OK   KEEP GRIND");
-    setColor(resGrind, COLOR_OK);
-    if (g.shotsUsed > 1) {
-      setTextF(resGrindSub, "this shot %.1f s, last %u\naverage %.1f s, target %.0f s",
-               thisTime, g.shotsUsed, g.averageTimeS, g.targetTimeS);
-    } else {
-      setTextF(resGrindSub, "%.1f s, target %.0f s", thisTime, g.targetTimeS);
-    }
-  } else {
-    setText(resGrind, "");
-    setText(resGrindSub, "");
-  }
+  setColor(resGrind, toneColor(rt.grindTone));
+  if (rt.grind[0]) fitLine(resGrind, rt.grind);
+  else setText(resGrind, "");
+  setText(resGrindSub, rt.grindSub);
   show(Panel::RESULT);
 }
 
@@ -2093,10 +1610,10 @@ void refresh() {
     }
       [[fallthrough]];
     default: {
-      fitText(faultTitle, st.manualStopNeeded ? "STOP MACHINE" : faultTitle_(st.state),
+      fitText(faultTitle, st.manualStopNeeded ? "STOP MACHINE" : screen::faultTitle(st.state),
               LEFT_W - 16, 3, &lv_font_montserrat_24, &lv_font_montserrat_22,
               &lv_font_montserrat_18);
-      setText(faultText, faultMessage(st.state, st.manualStopNeeded, st.stopStartedPump));
+      setText(faultText, screen::faultMessage(st.state, st.manualStopNeeded, st.stopStartedPump));
       const bool offerPress = st.botConnected && (st.state == State::START_COMMAND_FAILED ||
                                                   st.state == State::STOP_COMMAND_FAILED);
       if (offerPress) lv_obj_clear_flag(faultPressBtn, LV_OBJ_FLAG_HIDDEN);

@@ -24,6 +24,8 @@ described; the rest are as the page uses them.
 | Route | | What it is |
 | --- | --- | --- |
 | `/api/status` | GET | live state: `state`, `weight_g`, `flow_g_s`, `shot_time_s`, devices, `scale_resting` (an idle scale let go so it can switch itself off) and `scale_start_pending` (a Start waiting for it to come back), `api_version`, `capabilities`, `maintenance_due` |
+| `/api/screen` | GET | the controller's screen as data: the panel the board would show and its words (`src/ui/ScreenText.h`), the status flags `/api/status` lacks; see below |
+| `/api/screen/do` | POST | `?what=` pair_nearest_bot, discover, finish_active_coffee, apply_preset_edit, next_recipe, select_recipe, answer_grind_reco, dismiss_grind_prompt, set_grind, vote, manual_press, rotate, learning: the actions only the screen had |
 | `/api/shots` | GET | the last shots (newest first), each with the fields of the CSV, plus `tds_pct`, `extraction_pct` when measured |
 | `/api/contexts` | GET | `?limit=` (default 100): the circumstances of the newest shots, joined to `/api/shots` by `shot_id`: bean age at the shot (effective, calendar, frozen days), time since the previous shot, shots since the grinder was cleaned, the start suggestions on offer (community and own-coffee, with ranges and basis), the advice given after the shot, curve quality (sample interval, weight step, points), the advisor settings in force, engine version, reserved owner fields, the room's slow temperature (`room_eff_c`) and the aim the advice used. The grind advice reads the room and the aim (confidence, the room term); capability `shot_context_v1` (`core/ShotContext.h`, `research/dial-in-engine.md`) |
 | `/api/contexts`, `/api/shots` (fields added 3 Nov 2026) | GET | `ambient_rh_pct`, `ambient_temp_c` (the room at the shot, when a reading under 30 minutes old was known); on contexts also `ambient_source` (`ha` or `push`) and `ambient_age_s`. The context file is version 2; a version 1 file is converted at start-up, keeping every record |
@@ -142,6 +144,53 @@ something published, and no decline, publish an item; a decline holds it for a p
 `GET /api/community` adds `range_guess` {`setting`, `range`} when the grinder has a range and says what it covers: a first
 guess for espresso (a fifth of the way up an espresso-to-filter range, the middle of an espresso-only one, ± a sixth of
 the span), for when no shots, community figure or similar coffee give one.
+
+## `GET /api/screen` and `POST /api/screen/do`: the controller's screen as data
+
+For a native copy of the controller's screen (the iPhone app): what the board's screen shows, with its wording, and the
+actions only the screen has. The words come from `src/ui/ScreenText.h`, the same functions the board's `Ui.cpp` draws
+with, so both read alike character for character. Colours are roles (`text`, `dim`, `ok`, `bad`, `sleep`, `accent`),
+whose values per scheme are in `src/ui/Palette.h`. Where the glass picks the longest wording that fits, every wording is
+given (`advice`, `advice_short`, `advice_shortest`; `line2` as a list) and the client picks.
+
+`GET /api/screen` answers `{"ok": true, "panel", "theme", "live", "home", ...}`:
+
+| Key | What it is |
+| --- | --- |
+| `panel` | the panel the board would show: `home`, `brew`, `result`, `fault` or `grind_prompt` (the lists the owner opens by hand, such as recipes, edit and settings, are not here) |
+| `theme` | colour scheme, 0 Dark .. 5 High contrast (`bbw::UiTheme`) |
+| `live` | what `/api/status` lacks: `state`, `verifying_stop`, `holding_button`, `stop_started_pump`, `first_drop_seen`, `scale_timer_valid`, `scale_timer_s`, `bloom_left_s`, `scale_resting`, `scale_near`, `scale_start_pending`, `target_cue`, `manual_stop_needed`, `awaiting_drip` |
+| `home` | always: `status`, `hint` (empty while `hint_is_touch`: the touch key's own wording), `hint_tone`, `scale_dot`, `bot_dot`, `scale_battery`, `bot_battery` (and `_tone`, only when read), `bot_waking`, `can_start`, and `card`: `name`, `yield`, `yield_ratio` (use it while `use_ratio` and it fits), `grind`, `advice`, `advice_short`, `advice_shortest`, `advice_tone`, `pre`, `pre_short`, `foot`, `roast_age`, `roast_age_brief` |
+| `brew` | while `panel` is `brew`: `phase` (lines split by `\n`), `stop` (the stop key's label), `phase_tone`, `running`, `clock_s`, `show_weight` (the centre shows the live weight, else the target), `ring_progress` (0 to 1) |
+| `result` | while `result`: `have`, `abnormal`, `timed_out`, `top`, `top_tone`, `weight`, `line1`, `line2` (list, longest first), `shot_id`, `review` (the IGNORE / COUNT question is up: then `review_text`, `review_text_short`), otherwise `grind`, `grind_sub`, `grind_tone`; `grind_change` (the GRINDER key beside READY), `counted`, `auto_ack` (the board returns to home by itself: a cup is back and nothing is being asked) |
+| `fault` | while `fault`: `title`, `message`, `offer_press` |
+| `grind_prompt` | present while a grind question is up: `kind` (`new_advice`, `no_grind` or `reminder`), `title`, `setting`, `why`, `use`, `keep` (the keys' labels), `use_um` (what the left key takes; 0: none) |
+
+The grind questions are asked in the screen's order (new advice for a coffee or bag, a missing setting, advice not acted
+on), only while the state is READY. "Not now" and the once-per-wake reminder are remembered here as the screen
+remembers them, and asked again when the scale reconnects.
+
+`POST /api/screen/do?what=...` runs an action; the arguments go in the query or a form body. `{"ok": true}` on success,
+`{"ok": false, "error"}` otherwise. **409** while a shot is in hand (the same test as the rest of the API) for
+`finish_active_coffee`, `apply_preset_edit`, `next_recipe`, `select_recipe`, `answer_grind_reco` and `set_grind`.
+
+| `what` | Arguments | Does |
+| --- | --- | --- |
+| `pair_nearest_bot` | | `{"ok": true, "pairing": false}` when no bot was found nearby |
+| `discover` | | scan for a while so the pairing list fills in |
+| `finish_active_coffee` | | "bag finished" for the active recipe's coffee (the next by roast age is selected) |
+| `apply_preset_edit` | `index` (default the active preset), `dose_g`, `target_g`, `ratio`, `use_ratio`, `grind_um`, `target_time_s`, `preinfusion` (`machine`/`hold`), `preinfusion_hold_ms` | the edit screen's SAVE: only the fields given change. Out-of-range values are a 400 naming the field (the screen drops them silently) |
+| `next_recipe` | | the next shown recipe |
+| `select_recipe` | `index` | the recipe list's tap |
+| `answer_grind_reco` | `use=true\|false` | the open grind question's keys: `new_advice` uses or keeps the recommendation; `reminder` sets the advised grind (or not) and ends the reminder; `no_grind` with `use=true` answers `edit_grind_um` (open the edit screen on it, as the board does), with `false` is NOT NOW. 409 when no question is open |
+| `dismiss_grind_prompt` | | NOT NOW, whichever question is up |
+| `set_grind` | `um` (1 to 2000, in steps) | the active recipe's grind setting |
+| `vote` | `shot_id`, `vote=ignore\|count` | the result screen's IGNORE / COUNT |
+| `manual_press` | | the fault screen's press-the-button key |
+| `rotate` | | flips the screen half a turn (`displayFlipped`) |
+| `learning` | `on=true\|false` (default: toggle) | learning on or off |
+
+`/api/screen` and its actions are present on the board, in the PC emulator and in the iPhone app alike.
 
 ## `GET /api/grind`
 
