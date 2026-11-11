@@ -106,6 +106,11 @@ bool LittleFSClass::remove(const char *path) {
   std::error_code e;
   return fs::remove(g_fsRoot + path, e);
 }
+bool LittleFSClass::mkdir(const char *path) {   // restore of add-on module files (Backup.cpp)
+  std::error_code e;
+  fs::create_directories(g_fsRoot + path, e);
+  return !e;
+}
 bool LittleFSClass::rename(const char *from, const char *to) {
   std::error_code e;
   fs::rename(g_fsRoot + from, g_fsRoot + to, e);
