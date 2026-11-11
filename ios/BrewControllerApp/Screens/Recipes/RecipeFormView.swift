@@ -89,7 +89,7 @@ struct RecipeFormView: View {
             Section {
                 Button("Save") { Task { await save() } }
                     .disabled(saving)
-                    .accessibilityIdentifier("recipeSave")
+                    .accessibilityIdentifier("recipeSaveBottom")
                 if !isNew {
                     shareControls
                 }
@@ -114,6 +114,12 @@ struct RecipeFormView: View {
         .onAppear(perform: loadDraft)
         .onChange(of: store.library) { _, _ in loadDraft() }
         .toolbar {
+            // Save always in reach: the form is long and its rows are built only when scrolled to.
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") { Task { await save() } }
+                    .disabled(saving)
+                    .accessibilityIdentifier("recipeSave")
+            }
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
                 Button("Done") { Task { await endEditing() } }

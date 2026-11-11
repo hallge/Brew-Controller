@@ -59,6 +59,12 @@ struct CoffeeDetailView: View {
                         .accessibilityIdentifier("coffeeCancel")
                 }
             }
+            // Save always in reach: the form is long and its rows are built only when scrolled to.
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") { Task { await save(force: false) } }
+                    .disabled(saving)
+                    .accessibilityIdentifier("coffeeSave")
+            }
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
                 Button("Done") { Task { await endEditing() } }
@@ -162,7 +168,7 @@ struct CoffeeDetailView: View {
         Section {
             Button("Save") { Task { await save(force: false) } }
                 .disabled(saving)
-                .accessibilityIdentifier("coffeeSave")
+                .accessibilityIdentifier("coffeeSaveBottom")
             if !isNew, let coffee {
                 Button(coffee.finished != 0 ? "New bag: back on the shelf..." : "New bag...") {
                     bagRoastDate = 0

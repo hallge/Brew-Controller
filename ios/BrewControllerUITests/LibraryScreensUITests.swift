@@ -49,12 +49,14 @@ final class LibraryScreensUITests: XCTestCase {
 
     /// Scrolls the screen up until the element can be tapped.
     private func reveal(_ element: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
-        XCTAssertTrue(element.waitForExistence(timeout: 15), "missing \(element)", file: file, line: line)
+        // List rows are built only when scrolled to, so scroll while it does not exist yet, too.
+        _ = element.waitForExistence(timeout: 10)
         var tries = 0
-        while !element.isHittable && tries < 12 {
+        while !(element.exists && element.isHittable) && tries < 15 {
             app.swipeUp()
             tries += 1
         }
+        XCTAssertTrue(element.exists, "missing \(element)", file: file, line: line)
         XCTAssertTrue(element.isHittable, "\(element) is not reachable", file: file, line: line)
     }
 
@@ -175,7 +177,7 @@ final class LibraryScreensUITests: XCTestCase {
         row.tap()
         XCTAssertTrue(element(id: "shotDetail").waitForExistence(timeout: 20), "the shot detail did not open")
         XCTAssertTrue(element(id: "shotVote").exists)
-        XCTAssertTrue(element(id: "shotsCurve").waitForExistence(timeout: 20), "no curve")
+        reveal(element(id: "shotsCurve"))
         screenshot("shot-detail")
 
         // Rate it: 4 stars.
@@ -290,7 +292,10 @@ final class LibraryScreensUITests: XCTestCase {
             search.tap()
             search.typeText("zzzz-no-such-coffee")
             XCTAssertTrue(element(id: "coffeesEmpty").waitForExistence(timeout: 10))
-            app.buttons["Cancel"].tap()
+            // iOS 18 shows Cancel next to an active search field; older layouts a clear button.
+            let cancel = app.buttons["Cancel"].firstMatch
+            if cancel.waitForExistence(timeout: 3) { cancel.tap() }
+            else if search.buttons.firstMatch.exists { search.buttons.firstMatch.tap() }
         }
         // The directory: nothing read from the shared library yet in demo mode.
         reveal(element(id: "coffeeDirectoryLink"))
