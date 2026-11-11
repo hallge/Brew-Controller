@@ -1895,6 +1895,7 @@ void refreshResult(State state) {
       case bbw::GrindUse::OTHER_BASIS: why = "time basis was changed:\nnot counted for grind advice"; break;
       case bbw::GrindUse::NOT_SETTLED: why = "cup lifted, weight unsettled:\nnot counted for grind advice"; break;
       case bbw::GrindUse::STOP_RETRIED: why = "stop had to be repeated:\nnot counted for grind advice"; break;
+      case bbw::GrindUse::TOO_SHORT: why = "under 15 s: check preparation;\ntap COUNT to use it"; break;
       case bbw::GrindUse::NOT_WEIGHT_STOP:
         switch (ended) {
           case bbw::EndReason::USER: why = "stopped with STOP:\nnot counted for grind advice"; break;
@@ -1912,6 +1913,11 @@ void refreshResult(State state) {
                                                   : "BREW SLOW   ONE-OFF?");
     setTextF(resGrindSub, "%.1f s vs %.0f s: grind kept,\nadvice if it repeats",
              thisTime, shot.targetTimeS);
+  } else if (g.checkPrep) {
+    // Fast and uneven, or fast and sour: more likely the puck than the grind (audit G6); no change.
+    fitLine(resGrind, "CHECK PREPARATION   GRIND KEPT");
+    setTextF(resGrindSub, "%.1f s, %s:\ncheck dose and tamp, pull again", thisTime,
+             g.checkPrepWhy == bbw::CHECK_PREP_UNEVEN ? "flow uneven" : "fast and sour");
   } else if (g.action == GrindAction::FINER || g.action == GrindAction::COARSER) {
     const bool finer = g.action == GrindAction::FINER;
     fitLine(resGrind, finer ? "BREW FAST   GRIND FINER" : "BREW SLOW   GRIND COARSER");

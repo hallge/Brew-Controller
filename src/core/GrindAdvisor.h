@@ -68,6 +68,21 @@ struct GrindConfig {
   // temperature (negative: colder is slower), and that temperature now. 0 / NAN: off.
   float roomSPerC = 0.0f;
   float roomNowC = NAN;
+  // Added 10 Nov 2026 (audit G4): the most one shot's room shift may be, in tolerances (3 is the
+  // original rule; the controller's strict gate sets 1); and a room effect that is suspected but not
+  // replicated (s per degree C, negative): reported with the advice, never applied. 0: none.
+  float roomCapTolerances = 3.0f;
+  float roomSuspectedSPerC = 0.0f;
+  // Added 10 Nov 2026 (audit G6): guards against steering the grind finer on a fast shot that may
+  // be a channelled puck. Off in a plain config (the original rule, kept for comparison); on in
+  // grindConfigForGrinder, which the controller always uses. On: a shot under 15 s asks for a check of the preparation instead of the
+  // largest step finer; (with loneFastDamping) a lone shot more than two tolerances fast takes half the step; FINER is
+  // held back when the newest shot is marked uneven, or fast and sour. The too-long side is unchanged.
+  bool fastGuards = false;
+  // ...and, separately, the lone fast shot's half step. Off even with fastGuards: the settling
+  // simulations (research/validation/settle_sim_*) show it costs about two points of two-shot
+  // success on a grinder with no channelled shots, and it gained nothing at 10-20 % bad shots.
+  bool loneFastDamping = false;
 };
 
 // Where the sensitivity applied came from.
@@ -101,6 +116,7 @@ struct GrindShot {
   int8_t dir = 0;
   bool afterReversal = false;
   float roomC = NAN;        // the room's slow temperature at it (roomEffectiveUpdate); NAN not known
+  bool uneven = false;      // the owner marked the flow uneven (CTX_PREP_UNEVEN); set for the newest shot only
 };
 
 enum class GrindAction : uint8_t {
@@ -292,6 +308,20 @@ struct GrindAdvice {
   float roomSPerC = 0.0f;
   float roomNowC = NAN;
   float roomShiftS = 0.0f;
+  // Added 10 Nov 2026 (audit G4): a room effect seen but not yet replicated (GrindConfig::roomSuspectedSPerC).
+  float roomSuspectedSPerC = 0.0f;
+  // Added 10 Nov 2026 (audit G6): no advice to move, because the shot may be the puck, not the grind
+  // (action is NO_DATA). checkPrepWhy: GrindCheckPrep.
+  bool checkPrep = false;
+  uint8_t checkPrepWhy = 0;
+  bool loneFastDamped = false;   // a lone shot far on the fast side: the step was halved (stepFactor 0.5)
+};
+
+enum GrindCheckPrep : uint8_t {
+  CHECK_PREP_NONE = 0,
+  CHECK_PREP_TOO_SHORT = 1,   // under 15 s: a flush or a gusher
+  CHECK_PREP_UNEVEN = 2,      // the owner marked the flow uneven
+  CHECK_PREP_FAST_SOUR = 3,   // far fast and tasting sour
 };
 
 // The grinder cannot go past the ends of its range: a suggestion beyond one is the end itself, and
@@ -369,6 +399,31 @@ inline bool grindShotValid(const ShotRecord &s, GrindTimeBasis basis = GrindTime
   return grindShotUse(s, basis) == GrindUse::COUNTED;
 }
 
+// Whether a stored shot was made the way the recipe is made now, so that their brew times compare
+// (audit G7, 10 Nov 2026): the same recipe, coffee and bag, dose and yield, and also the same
+// pre-infusion hold and bloom pause, which add straight to the brew time (a hold edited from 7 to
+// 10 s used to read as "slower, grind coarser"). A shot that stopped for a target of its own is
+// another yield. Holds closer than GRIND_HOLD_SAME_MS count as the same.
+constexpr uint16_t GRIND_HOLD_SAME_MS = 500;
+inline bool grindRunComparable(const ShotRecord &r, const Recipe &recipe) {
+  const uint16_t hold = recipe.preinfusion == Preinfusion::HOLD ? recipe.preinfusionHoldMs : 0;
+  auto closeMs = [](uint16_t a, uint16_t b) {
+    return (a > b ? a - b : b - a) <= GRIND_HOLD_SAME_MS;
+  };
+  return r.recipeId == recipe.recipeId && r.coffeeId == recipe.coffeeId &&
+         sameBag(r.bagId, r.roastDate, recipe.bagId, recipe.roastDate) &&
+         fabsf(r.targetWeightG - recipe.targetWeightG) <= 0.05f && fabsf(r.doseG - recipe.doseG) <= 0.05f &&
+         closeMs(r.preinfusionHoldMs, hold) && closeMs(r.bloomPauseMs, recipe.bloomPauseMs) &&
+         (r.flags & SHOT_FLAG_OWN_TARGET) == 0;
+}
+
+// The time a followed advice aimed the next shot at: the recipe's target, or the liked time it was
+// refining towards (ShotContext::aimOffsetDs, tenths of a second from the target; 0 for a record
+// from before it was kept, which is the recipe's target as it always was).
+inline float adviceAimS(float recipeTargetS, int aimOffsetDs) {
+  return recipeTargetS + 0.1f * static_cast<float>(aimOffsetDs);
+}
+
 // A shot that ran far too long (more than 15 s over the target) or far too
 // short (under 15 s) is rightly kept out of the average and the learning: it may not be a fair shot.
 // But when it is the newest shot at the current setting and nothing valid has been pulled there,
@@ -378,6 +433,13 @@ inline bool grindShotValid(const ShotRecord &s, GrindTimeBasis basis = GrindTime
 inline void adviseOutOfRange(GrindAdvice &advice, GrindUse use, uint16_t currentUm, const GrindConfig &config) {
   if (advice.action != GrindAction::NO_DATA || currentUm == 0) return;
   if (use != GrindUse::TOO_LONG && use != GrindUse::TOO_SHORT) return;
+  if (use == GrindUse::TOO_SHORT && config.fastGuards) {
+    // A gusher is most often a channelled or badly prepared puck, and grinding finer makes that
+    // worse: no step, ask for a check (the owner can tap COUNT to use the shot anyway).
+    advice.checkPrep = true;
+    advice.checkPrepWhy = CHECK_PREP_TOO_SHORT;
+    return;
+  }
   const int step = config.maxStepUm < 1 ? 1 : config.maxStepUm;
   int suggested = static_cast<int>(currentUm) + (use == GrindUse::TOO_LONG ? step : -step);
   if (suggested < 1) suggested = 1;
@@ -467,6 +529,8 @@ constexpr size_t GRIND_BRACKET_LOOKBACK = 8;    // shots before this run searche
 constexpr uint32_t GRIND_BRACKET_MAX_AGE_S = 3u * 86400u;
 // Larger errors than this many tolerances keep the full step however uncertain the sensitivity.
 constexpr float GRIND_FULL_STEP_ERRORS = 2.0f;
+// A lone shot more than that many tolerances fast takes this share of the step (GrindConfig::fastGuards).
+constexpr float GRIND_LONE_FAST_STEP_FACTOR = 0.5f;
 
 // ------------------------------------------------------- the adjustment's dead zone --
 // A threaded adjustment has a dead zone (backlash): when the dial turns back, the first part of the
@@ -1001,6 +1065,8 @@ inline GrindConfig grindConfigForGrinder(const GrindConfig &base, float umPerSte
   c.bracketMaxAgeS = GRIND_BRACKET_MAX_AGE_S;
   // 3 Nov 2026 (research/grind-logic-review.md section 8).
   c.learnDrift = true;
+  // 10 Nov 2026 (audit G6).
+  c.fastGuards = true;
   return c;
 }
 
@@ -1038,17 +1104,49 @@ struct RoomShot {
   float setting = 0.0f;
   float roomC = NAN;
   uint16_t group = 0;   // coffee, bag and recipe
+  uint32_t epochS = 0;  // when it was pulled; 0 not known (the strict gate then has no age term)
 };
 
 struct GrindRoomFit {
-  bool used = false;      // stands clear of zero: apply sPerC
-  float sPerC = 0.0f;     // as learned (0 when not)
+  bool used = false;      // accepted: apply sPerC
+  float sPerC = 0.0f;     // as learned; with used or suspected, the figure that is (or would be) applied
   float se = 0.0f;
   uint16_t shots = 0;     // with a room reading, in groups of two or more
   float spanC = 0.0f;     // coldest to warmest of them
+  // Added 10 Nov 2026 (audit G4), the strict gate.
+  bool legacy = false;     // the original rule was used (GRIND_ROOM_LEGACY)
+  bool suspected = false;  // significant, but not replicated: reported, not applied
+  bool replicated = false; // two coffees agree, or enough within-run pairs
+  float z = 0.0f;          // the estimate's size in standard errors (as fitted, with the prior)
+  uint8_t groupsAgree = 0; // coffees with a span of GRIND_ROOM_MIN_SPAN_C whose own slope is negative
+  uint8_t groupsDisagree = 0;
+  uint16_t pairs = 0;      // within-run pairs (same setting, <= 2 days apart) that differ in room temperature
 };
 
-inline GrindRoomFit grindRoomEffect(const RoomShot *shots, size_t count) {
+// The strict gate (audit G4, 10 Nov 2026). The first version was accepted on one coffee's six
+// shots and could not tell staling in a cooling week from a room effect (the audit's synthetic
+// coffee that goes stale at 0.8 s/day with no room effect was accepted at -1.3 s/C). Changes:
+//   * a shot-age regressor (days) beside setting and room, within each coffee;
+//   * prior N(0, 1 s/C), z >= 3, the estimate shrunk by (1 - 1/z^2);
+//   * the slope never beyond GRIND_ROOM_STRICT_MAX_S_PER_C, one shot's shift at most one tolerance;
+//   * applied only once replicated: two or more coffees, each spanning 2 C, whose own slopes are
+//     all negative; or 10 or more within-run pairs that differ in room temperature (and whose own
+//     slope is negative). Until then it is "suspected": reported with the advice, never applied.
+// It is re-fitted from the newest shots on every scan and keeps no state, so it turns itself on
+// when a second coffee replicates it and off when the shots stop supporting it.
+// Slope cap: independent research (side-session room-effect-research-2026-11-10.md) finds the
+// physical mechanisms (bean and burr temperature through a PID boiler) support only about
+// -0.2 to -1.0 s per degree C at a 30 s shot, so -1 s/C, before and after replication.
+constexpr float GRIND_ROOM_STRICT_PRIOR_SD = 1.0f;       // s per degree C
+constexpr float GRIND_ROOM_STRICT_MAX_S_PER_C = -1.0f;   // the most it is believed (research note above)
+constexpr float GRIND_ROOM_STRICT_MIN_Z = 3.0f;
+constexpr float GRIND_ROOM_STRICT_MAX_TOLERANCES = 1.0f; // largest correction of one shot, in tolerances
+constexpr size_t GRIND_ROOM_GROUP_MIN_SHOTS = 5;         // a coffee's own slope needs this many shots
+constexpr size_t GRIND_ROOM_REPLICATE_PAIRS = 10;
+constexpr uint32_t GRIND_ROOM_PAIR_MAX_GAP_S = 2u * 86400u;
+constexpr float GRIND_ROOM_PAIR_MIN_DIFF_C = 0.5f;
+
+inline GrindRoomFit grindRoomEffectLegacy(const RoomShot *shots, size_t count) {
   GrindRoomFit fit;
   if (!shots || count < GRIND_ROOM_MIN_SHOTS) return fit;
   constexpr size_t MAX_GROUPS = 32;
@@ -1132,6 +1230,207 @@ inline GrindRoomFit grindRoomEffect(const RoomShot *shots, size_t count) {
   return fit;
 }
 
+namespace room_detail {
+// Least squares on the normal equations M (sums of products of within-coffee deviations; variables
+// 0 setting, 1 age in days, 2 room, 3 time) over the regressors reg[0..n), n <= 3, with `lambda`
+// added to the room's diagonal (the ridge). beta: the coefficients; invRoom: the room's entry of the
+// inverse (times the noise variance, the room coefficient's variance).
+inline bool solve(const double M[4][4], const uint8_t *reg, int n, int roomPos, double lambda, double *beta,
+                  double &invRoom) {
+  double A[3][6] = {};
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < n; ++j) A[i][j] = M[reg[i]][reg[j]] + (i == j && i == roomPos ? lambda : 0.0);
+    A[i][3 + i] = 1.0;
+  }
+  for (int c = 0; c < n; ++c) {
+    int p = c;
+    for (int r = c + 1; r < n; ++r) {
+      if (fabs(A[r][c]) > fabs(A[p][c])) p = r;
+    }
+    if (!(fabs(A[p][c]) > 1e-9)) return false;
+    if (p != c) {
+      for (int j = 0; j < 6; ++j) { const double t = A[c][j]; A[c][j] = A[p][j]; A[p][j] = t; }
+    }
+    const double d = A[c][c];
+    for (int j = 0; j < 6; ++j) A[c][j] /= d;
+    for (int r = 0; r < n; ++r) {
+      if (r == c) continue;
+      const double f = A[r][c];
+      if (f == 0.0) continue;
+      for (int j = 0; j < 6; ++j) A[r][j] -= f * A[c][j];
+    }
+  }
+  for (int i = 0; i < n; ++i) {
+    double s = 0.0;
+    for (int j = 0; j < n; ++j) s += A[i][3 + j] * M[reg[j]][3];
+    beta[i] = s;
+  }
+  invRoom = A[roomPos][3 + roomPos];
+  return true;
+}
+
+// Which regressors a set of deviations can support: the setting and the age when they vary, the
+// room always (the caller has checked it varies). Returns how many; roomPos: the room's place.
+inline int regressors(const double M[4][4], bool haveEpoch, uint8_t *reg, int &roomPos) {
+  int n = 0;
+  if (M[0][0] > 1e-6) reg[n++] = 0;
+  if (haveEpoch && M[1][1] > 1e-9) reg[n++] = 1;
+  roomPos = n;
+  reg[n++] = 2;
+  return n;
+}
+}  // namespace room_detail
+
+inline GrindRoomFit grindRoomEffectStrict(const RoomShot *shots, size_t count) {
+  GrindRoomFit fit;
+  if (!shots || count < GRIND_ROOM_MIN_SHOTS) return fit;
+  bool haveEpoch = false;
+  uint32_t epoch0 = 0xFFFFFFFFu;
+  for (size_t i = 0; i < count; ++i) {
+    if (shots[i].epochS) {
+      haveEpoch = true;
+      if (shots[i].epochS < epoch0) epoch0 = shots[i].epochS;
+    }
+  }
+  // With any epoch known, a shot without one is left out: it would put staling at day 0.
+  auto ok = [&](const RoomShot &s) {
+    return s.timeS > 0.0f && s.setting > 0.0f && !std::isnan(s.roomC) && (!haveEpoch || s.epochS != 0);
+  };
+  auto vars = [&](const RoomShot &s, double *v) {
+    v[0] = s.setting;
+    v[1] = haveEpoch ? (static_cast<double>(s.epochS) - static_cast<double>(epoch0)) / 86400.0 : 0.0;
+    v[2] = s.roomC;
+    v[3] = s.timeS;
+  };
+  constexpr size_t MAX_GROUPS = 32;
+  uint16_t ids[MAX_GROUPS];
+  uint16_t n[MAX_GROUPS] = {};
+  size_t groups = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (!ok(shots[i])) continue;
+    size_t g = 0;
+    while (g < groups && ids[g] != shots[i].group) ++g;
+    if (g == groups) {
+      if (groups == MAX_GROUPS) continue;
+      ids[groups++] = shots[i].group;
+    }
+    ++n[g];
+  }
+  double M[4][4] = {};
+  float lo = 1e9f, hi = -1e9f;
+  size_t used = 0, usedGroups = 0;
+  uint8_t agree = 0, disagree = 0;
+  for (size_t g = 0; g < groups; ++g) {
+    if (n[g] < 2) continue;
+    ++usedGroups;
+    double mean[4] = {};
+    for (size_t i = 0; i < count; ++i) {
+      if (!ok(shots[i]) || shots[i].group != ids[g]) continue;
+      double v[4];
+      vars(shots[i], v);
+      for (int a = 0; a < 4; ++a) mean[a] += v[a];
+    }
+    for (int a = 0; a < 4; ++a) mean[a] /= n[g];
+    double G[4][4] = {};
+    float glo = 1e9f, ghi = -1e9f;
+    for (size_t i = 0; i < count; ++i) {
+      if (!ok(shots[i]) || shots[i].group != ids[g]) continue;
+      double v[4];
+      vars(shots[i], v);
+      for (int a = 0; a < 4; ++a) {
+        for (int b = 0; b < 4; ++b) G[a][b] += (v[a] - mean[a]) * (v[b] - mean[b]);
+      }
+      if (shots[i].roomC < glo) glo = shots[i].roomC;
+      if (shots[i].roomC > ghi) ghi = shots[i].roomC;
+    }
+    for (int a = 0; a < 4; ++a) {
+      for (int b = 0; b < 4; ++b) M[a][b] += G[a][b];
+    }
+    used += n[g];
+    if (glo < lo) lo = glo;
+    if (ghi > hi) hi = ghi;
+    // This coffee's own slope, for the replication test: wide enough, enough shots to fit it.
+    if (n[g] >= GRIND_ROOM_GROUP_MIN_SHOTS && ghi - glo >= GRIND_ROOM_MIN_SPAN_C && G[2][2] > 0.0) {
+      uint8_t reg[3];
+      int roomPos = 0;
+      const int nr = room_detail::regressors(G, haveEpoch, reg, roomPos);
+      double beta[3], inv = 0.0;
+      if (static_cast<int>(n[g]) - 1 - nr >= 2 && room_detail::solve(G, reg, nr, roomPos, 0.0, beta, inv)) {
+        if (beta[roomPos] < 0.0) ++agree;
+        else if (beta[roomPos] > 0.0) ++disagree;
+      }
+    }
+  }
+  fit.shots = static_cast<uint16_t>(used > 0xFFFF ? 0xFFFF : used);
+  fit.spanC = used ? hi - lo : 0.0f;
+  fit.groupsAgree = agree;
+  fit.groupsDisagree = disagree;
+  if (used < GRIND_ROOM_MIN_SHOTS || fit.spanC < GRIND_ROOM_MIN_SPAN_C || !(M[2][2] > 0.0)) return fit;
+  uint8_t reg[3];
+  int roomPos = 0;
+  const int nr = room_detail::regressors(M, haveEpoch, reg, roomPos);
+  double beta[3] = {}, inv = 0.0;
+  if (!room_detail::solve(M, reg, nr, roomPos, 0.0, beta, inv)) return fit;
+  double rss = M[3][3];
+  for (int i = 0; i < nr; ++i) {
+    rss -= 2.0 * beta[i] * M[reg[i]][3];
+    for (int j = 0; j < nr; ++j) rss += beta[i] * beta[j] * M[reg[i]][reg[j]];
+  }
+  const long dof = static_cast<long>(used) - static_cast<long>(usedGroups) - nr;
+  double noise = dof > 0 && rss > 0.0 ? rss / dof : 0.0;
+  if (noise < GRIND_ROOM_NOISE_MIN_S * GRIND_ROOM_NOISE_MIN_S) noise = GRIND_ROOM_NOISE_MIN_S * GRIND_ROOM_NOISE_MIN_S;
+  if (!room_detail::solve(M, reg, nr, roomPos, noise / (GRIND_ROOM_STRICT_PRIOR_SD * GRIND_ROOM_STRICT_PRIOR_SD), beta,
+                          inv)) {
+    return fit;
+  }
+  const double k = beta[roomPos];
+  fit.sPerC = static_cast<float>(k);
+  fit.se = static_cast<float>(sqrt(noise * inv));
+  if (!(k < 0.0) || !(fit.se > 0.0f)) return fit;
+  const float z = -fit.sPerC / fit.se;
+  fit.z = z;
+  if (z < GRIND_ROOM_STRICT_MIN_Z) return fit;
+  // Within-run pairs: the same coffee at the same setting within two days, one shot against the
+  // newest older one; the room's difference against the time's.
+  size_t pairs = 0;
+  double sdt = 0.0, sdr = 0.0;
+  if (haveEpoch) {
+    for (size_t i = 0; i < count; ++i) {
+      if (!ok(shots[i])) continue;
+      int best = -1;
+      for (size_t j = 0; j < count; ++j) {
+        if (j == i || !ok(shots[j]) || shots[j].group != shots[i].group) continue;
+        if (fabsf(shots[j].setting - shots[i].setting) > 0.5f) continue;
+        if (shots[j].epochS >= shots[i].epochS || shots[i].epochS - shots[j].epochS > GRIND_ROOM_PAIR_MAX_GAP_S) continue;
+        if (best < 0 || shots[j].epochS > shots[best].epochS) best = static_cast<int>(j);
+      }
+      if (best < 0) continue;
+      const double dr = static_cast<double>(shots[i].roomC) - shots[best].roomC;
+      if (fabs(dr) < GRIND_ROOM_PAIR_MIN_DIFF_C) continue;
+      ++pairs;
+      sdt += (static_cast<double>(shots[i].timeS) - shots[best].timeS) * dr;
+      sdr += dr * dr;
+    }
+  }
+  fit.pairs = static_cast<uint16_t>(pairs > 0xFFFF ? 0xFFFF : pairs);
+  fit.replicated = (agree >= 2 && disagree == 0) || (pairs >= GRIND_ROOM_REPLICATE_PAIRS && sdr > 0.0 && sdt / sdr < 0.0);
+  // Shrunk by (1 - 1/z^2): the estimate of an effect picked because it stood out is too large.
+  float applied = fit.sPerC * (1.0f - 1.0f / (z * z));
+  if (applied < GRIND_ROOM_STRICT_MAX_S_PER_C) applied = GRIND_ROOM_STRICT_MAX_S_PER_C;
+  fit.sPerC = applied;
+  fit.used = fit.replicated;
+  fit.suspected = !fit.replicated;
+  return fit;
+}
+
+// legacy: the original rule (GRIND_ROOM_LEGACY), exactly; otherwise the strict gate.
+inline GrindRoomFit grindRoomEffect(const RoomShot *shots, size_t count, bool legacy = false) {
+  if (!legacy) return grindRoomEffectStrict(shots, count);
+  GrindRoomFit fit = grindRoomEffectLegacy(shots, count);
+  fit.legacy = true;
+  return fit;
+}
+
 // shots: valid shots of one recipe, newest first.
 inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t currentUm,
                                float targetTimeS, const GrindConfig &config) {
@@ -1139,6 +1438,7 @@ inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t cu
   advice.currentUm = advice.suggestedUm = currentUm;
   advice.targetTimeS = targetTimeS;
   advice.umPerS = config.defaultUmPerS;
+  advice.roomSuspectedSPerC = config.roomSuspectedSPerC;
   if (currentUm == 0) return advice;
 
   advice.source = static_cast<SensitivitySource>(config.guessSource);
@@ -1147,7 +1447,7 @@ inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t cu
   // in this one buffer (the loop task's stack has no room for another).
   GrindShot forward[LEARN_MAX];
   if (config.roomSPerC < 0.0f && !std::isnan(config.roomNowC) && count <= LEARN_MAX) {
-    const float cap = GRIND_ROOM_MAX_TOLERANCES * config.toleranceS;
+    const float cap = config.roomCapTolerances * config.toleranceS;
     for (size_t i = 0; i < count; ++i) {
       forward[i] = shots[i];
       if (std::isnan(shots[i].roomC)) continue;
@@ -1344,6 +1644,15 @@ inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t cu
     delta *= advice.stepFactor;
     limit *= advice.stepFactor;
     if (limit < 1.0f) limit = 1.0f;
+  } else if (config.fastGuards && config.loneFastDamping && runCount == 1 && advice.shotsUsed == 1 &&
+             advice.errorS < -GRIND_FULL_STEP_ERRORS * config.toleranceS) {
+    // A lone shot far on the fast side at a new setting is as likely a channelled puck as a coarse
+    // grind: half the step (audit G6). The direction was never in doubt, the size is.
+    advice.stepFactor = GRIND_LONE_FAST_STEP_FACTOR;
+    advice.loneFastDamped = true;
+    delta *= advice.stepFactor;
+    limit *= advice.stepFactor;
+    if (limit < 1.0f) limit = 1.0f;
   }
   if (fabsf(delta) > limit) {
     delta = delta > 0 ? limit : -limit;
@@ -1420,6 +1729,24 @@ inline GrindAdvice adviseGrind(const GrindShot *shots, size_t count, uint16_t cu
   advice.deltaUm = static_cast<int16_t>(suggested - static_cast<int>(currentUm));
   advice.suggestedUm = static_cast<uint16_t>(suggested);
   advice.action = advice.deltaUm < 0 ? GrindAction::FINER : GrindAction::COARSER;
+  // FINER is held back when the newest shot may be the puck (audit G6): marked uneven, or far fast and
+  // tasting sour. "Count this one" from the owner overrides. No move: the same as having no shot, so
+  // the dial-in is not counted as settled and ratings do not refine it.
+  if (config.fastGuards && advice.action == GrindAction::FINER && count && shots[0].grindUm == currentUm &&
+      !shots[0].forced && !advice.newestIgnored) {
+    uint8_t why = CHECK_PREP_NONE;
+    if (shots[0].uneven) why = CHECK_PREP_UNEVEN;
+    else if (shots[0].taste == 1 && shots[0].timeS < targetTimeS - GRIND_FULL_STEP_ERRORS * config.toleranceS)
+      why = CHECK_PREP_FAST_SOUR;
+    if (why != CHECK_PREP_NONE) {
+      advice.action = GrindAction::NO_DATA;
+      advice.deltaUm = 0;
+      advice.suggestedUm = currentUm;
+      advice.stepLimited = false;
+      advice.checkPrep = true;
+      advice.checkPrepWhy = why;
+    }
+  }
   return advice;
 }
 
