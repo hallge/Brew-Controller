@@ -196,7 +196,9 @@ void handleGetSettings() {
   doc["shareRatings"] = s.shareRatings;
   doc["grindRatedTarget"] = s.grindRatedTarget;
   doc["grindConfidence"] = !s.grindConfidenceOff;
-  doc["grindRoom"] = !bbw::grindRoomOff(s);
+  // true: the strict gate; false: off; 2: the original rule (bbw::GRIND_ROOM_LEGACY).
+  if (bbw::grindRoomLegacy(s)) doc["grindRoom"] = 2;
+  else doc["grindRoom"] = !bbw::grindRoomOff(s);
   doc["activeRecipe"] = activePreset;
   doc["maxRecipes"] = bbw::MAX_PRESETS;
   // The controller's list, one flat entry per preset: the form this page's
@@ -302,7 +304,10 @@ void handlePostSettings() {
   s.shareRatings = doc["shareRatings"] | s.shareRatings;
   s.grindRatedTarget = doc["grindRatedTarget"] | s.grindRatedTarget;
   if (!doc["grindConfidence"].isNull()) s.grindConfidenceOff = !(doc["grindConfidence"] | true);
-  if (!doc["grindRoom"].isNull()) s.grindRoomMark = (doc["grindRoom"] | true) ? 0 : bbw::GRIND_ROOM_OFF;
+  if (!doc["grindRoom"].isNull()) {
+    const int room = doc["grindRoom"].is<bool>() ? (doc["grindRoom"].as<bool>() ? 1 : 0) : (doc["grindRoom"] | 1);
+    s.grindRoomMark = room == 2 ? bbw::GRIND_ROOM_LEGACY : room ? 0 : bbw::GRIND_ROOM_OFF;
+  }
 
   JsonArrayConst recipes = doc["recipes"];
   if (!recipes.isNull() && recipes.size() >= 1) {
@@ -1361,6 +1366,9 @@ void handleGrind() {
   doc["bracketed"] = a.bracketed;
   doc["between_steps"] = a.betweenSteps;
   doc["out_of_range"] = a.outOfRange;
+  doc["check_prep"] = a.checkPrep;   // no move: the shot may be the puck, not the grind (audit G6)
+  doc["check_prep_why"] = a.checkPrepWhy == bbw::CHECK_PREP_TOO_SHORT ? "too_short" : a.checkPrepWhy == bbw::CHECK_PREP_UNEVEN ? "uneven" : a.checkPrepWhy == bbw::CHECK_PREP_FAST_SOUR ? "fast_sour" : "";
+  doc["lone_fast_damped"] = a.loneFastDamped;
   {
     const bbw::GrinderElasticity el = app::grinderElasticity();
     if (el.known) {
@@ -1429,6 +1437,12 @@ void handleGrind() {
     if (!std::isnan(now)) r["now_c"] = roundf(now * 10.0f) / 10.0f;
     r["applied"] = a.roomSPerC < 0.0f;
     r["shift_s"] = roundf(a.roomShiftS * 10.0f) / 10.0f;
+    r["mode"] = bbw::grindRoomOff(s) ? "off" : bbw::grindRoomLegacy(s) ? "legacy" : "strict";
+    r["replicated"] = rf.replicated;
+    r["suspected"] = a.roomSuspectedSPerC < 0.0f;   // seen, not applied until a second coffee replicates it
+    r["suspected_s_per_c"] = roundf(a.roomSuspectedSPerC * 100.0f) / 100.0f;
+    r["z"] = roundf(rf.z * 10.0f) / 10.0f;
+    r["pairs"] = rf.pairs;
   }
   // No setting for the pair in use: where its newest shot was pulled (a start for the owner).
   if (a.currentUm == 0) doc["last_um"] = app::lastGrindSetting();

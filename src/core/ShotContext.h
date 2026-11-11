@@ -82,7 +82,9 @@ struct ShotContext {
   uint8_t startBasis = 0;        // StartBasis
   uint8_t similarFitted = 0;
   uint8_t similarSamples = 0;
-  uint8_t pad0 = 0;
+  // The liked time the advice aimed at, relative to the recipe target, tenths of a second (0: the
+  // target itself, or not kept). Was padding; the confidence of the next shot is scored against it.
+  int8_t aimOffsetDs = 0;
   // Advised after the shot.
   uint16_t adviceUm = 0;         // the setting the advice names (= current if it says keep)
   int16_t adviceDeltaUm = 0;
@@ -245,6 +247,11 @@ inline ShotContext buildShotContext(const ShotContextInputs &in) {
   c.adviceShots = a.shotsUsed;
   c.adviceLearnShots = a.learned ? a.learnShots : 0;
   c.adviceFlags = static_cast<uint8_t>((a.learned ? 1 : 0) | (a.stepLimited ? 2 : 0) | (a.refined ? 4 : 0));
+  if (a.refined && a.aimTimeS > 0.0f && a.targetTimeS > 0.0f) {
+    float off = (a.aimTimeS - a.targetTimeS) * 10.0f;
+    off = off < 0.0f ? off - 0.5f : off + 0.5f;
+    c.aimOffsetDs = static_cast<int8_t>(off < -127.0f ? -127 : (off > 127.0f ? 127 : static_cast<int>(off)));
+  }
   c.adviceConfidence = a.confidence < 0.0f ? 0 : static_cast<uint8_t>(a.confidence * 100.0f + 1.5f);
   curveQuality(in.curve, in.curvePoints, c.sampleIntervalMs, c.weightStepCg);
   c.curvePoints = static_cast<uint16_t>(in.curvePoints > 0xFFFF ? 0xFFFF : in.curvePoints);

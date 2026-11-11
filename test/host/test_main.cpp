@@ -55,6 +55,7 @@ static int g_checks = 0;
   } while (0)
 #define CHECK_NEAR(a, b, tol) CHECK(fabs(static_cast<double>(a) - static_cast<double>(b)) <= (tol))
 #include "test_apphost.inc"  // needs CHECK above
+#include "test_advice.inc"   // needs CHECK above
 
 // ------------------------------------------------------------- simulation --
 
@@ -2249,7 +2250,13 @@ static void testGrindRoom() {
     printf("  synthetic: %.2f s/C (se %.2f), %u shots, span %.1f C, used %d\n", fit.sPerC, fit.se,
            static_cast<unsigned>(fit.shots), fit.spanC, fit.used ? 1 : 0);
     CHECK(fit.used && fit.shots == 30 && fit.spanC >= 6.0f);
-    CHECK(fit.sPerC > -4.0f && fit.sPerC < -2.0f && fit.se > 0.0f && fit.se < 0.5f);
+    // Changed expectation (audit G4): the slope was about -2.9 s/C; the strict gate caps it at -1 s/C
+    // (the physical limit from the research note). The legacy gate still gives the -2.9 (below).
+    CHECK(fit.replicated && fit.sPerC == GRIND_ROOM_STRICT_MAX_S_PER_C && fit.se > 0.0f && fit.se < 0.5f);
+    {
+      const GrindRoomFit orig = grindRoomEffect(shots, n, true);
+      CHECK(orig.used && orig.sPerC > -4.0f && orig.sPerC < -2.0f && orig.se > 0.0f && orig.se < 0.5f);
+    }
     // Too few shots, too little span, or warmer-is-slower: not used.
     CHECK(!grindRoomEffect(shots, 5).used);
     RoomShot narrow[30];
@@ -2288,10 +2295,20 @@ static void testGrindRoom() {
     RoomShot shots[sizeof(real) / sizeof(real[0])];
     size_t n = 0;
     for (const Real &x : real) shots[n++] = {x.timeS, x.setting, x.roomC, x.group};
-    const GrindRoomFit fit = grindRoomEffect(shots, n);
-    printf("  real shots: %.2f s/C (se %.2f), %u shots, span %.1f C, used %d\n", fit.sPerC, fit.se,
+    // 10 Nov 2026 (audit G4): the original rule, kept as GRIND_ROOM_LEGACY, gives what it always did.
+    const GrindRoomFit fit = grindRoomEffect(shots, n, true);
+    printf("  real shots (legacy gate): %.2f s/C (se %.2f), %u shots, span %.1f C, used %d\n", fit.sPerC, fit.se,
            static_cast<unsigned>(fit.shots), fit.spanC, fit.used ? 1 : 0);
-    CHECK(fit.used && fit.sPerC > -4.5f && fit.sPerC < -1.5f);
+    CHECK(fit.used && fit.legacy && fit.sPerC > -4.5f && fit.sPerC < -1.5f);
+    CHECK_NEAR(fit.sPerC, -3.31f, 0.01f);
+    CHECK_NEAR(fit.se, 0.81f, 0.01f);
+    // The strict gate (the default) does not apply it: one coffee spans 2 C, nothing replicates it.
+    // Changed expectation: this was `used` under the original rule; now "suspected" at most.
+    const GrindRoomFit strict = grindRoomEffect(shots, n);
+    printf("  real shots (strict gate): %.2f s/C (se %.2f, z %.1f), used %d, suspected %d, coffees agreeing %u\n",
+           strict.sPerC, strict.se, strict.z, strict.used ? 1 : 0, strict.suspected ? 1 : 0,
+           static_cast<unsigned>(strict.groupsAgree));
+    CHECK(!strict.used && !strict.replicated && strict.groupsAgree <= 1);
   }
   // Applying it: two shots at 70 um ran 30 s (target 29) in a 20 C room. The room is 17 C now.
   {
@@ -8899,7 +8916,10 @@ static void testLearnGrinder() {
     CHECK(a.action == GrindAction::COARSER && a.suggestedUm == 80 && a.outOfRange && adviceHasNumber(a));
     a = adviseGrind(nullptr, 0, 60, 28.0f, c);
     adviseOutOfRange(a, GrindUse::TOO_SHORT, 60, c);
-    CHECK(a.action == GrindAction::FINER && a.suggestedUm == 40);
+    // Changed expectation (audit G6): a gusher no longer gets the largest step finer, which a
+    // channelling puck makes worse; it asks for a check, and COUNT uses the shot as before.
+    CHECK(a.action == GrindAction::NO_DATA && a.checkPrep && a.checkPrepWhy == CHECK_PREP_TOO_SHORT &&
+          a.suggestedUm == 60 && !a.outOfRange);
     a = adviseGrind(nullptr, 0, 60, 28.0f, c);
     adviseOutOfRange(a, GrindUse::NOT_WEIGHT_STOP, 60, c);   // an interfered shot says nothing
     CHECK(a.action == GrindAction::NO_DATA && !a.outOfRange);
@@ -9625,6 +9645,7 @@ int main() {
   testBotWarmupHold();
   testRamWatch();
   testGrindRoom();
+  testAdvice();
   testTimeZoneRule();
   testGrindReminder();
   testPowerAutoOffWaits();

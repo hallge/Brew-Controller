@@ -2720,7 +2720,7 @@ size_t adviceOutcomes(bbw::AdviceOutcome *out, size_t max) {
     o.advised = ctx.adviceUm;
     o.nextSetting = p.newer.setting;
     o.nextTimeS = p.newer.timeS;
-    o.targetS = p.newer.targetS;
+    o.targetS = bbw::adviceAimS(p.newer.targetS, ctx.aimOffsetDs);   // what the advice aimed at (audit G7)
     o.followed = p.newer.setting == ctx.adviceUm;
     o.confidencePct = ctx.adviceConfidence;
   }
@@ -2811,10 +2811,8 @@ bbw::GrindAdvice grindAdvice() {
     // And the grinder as it is now calibrated: a setting from before it was
     // zeroed again is another setting.
     const bool valid = record.grinderId == sc.calibration && bbw::grindShotValid(record, sc.basis);
-    const bool same = record.recipeId == sc.recipe.recipeId && record.coffeeId == sc.recipe.coffeeId &&
-                      bbw::sameBag(record.bagId, record.roastDate, sc.recipe.bagId, sc.recipe.roastDate) &&
-                      fabsf(record.targetWeightG - sc.recipe.targetWeightG) <= 0.05f &&
-                      fabsf(record.doseG - sc.recipe.doseG) <= 0.05f;
+    // Also the same pre-infusion hold and bloom pause, and no target of its own (bbw::grindRunComparable).
+    const bool same = bbw::grindRunComparable(record, sc.recipe);
     if (same && record.grinderId == sc.calibration && !sc.newestSeen) {
       sc.newestSeen = true;
       sc.newestUse = bbw::grindShotUse(record, sc.basis);
@@ -2895,6 +2893,7 @@ bbw::GrindAdvice grindAdvice() {
       r.timeS = bbw::grindShotTime(record, sc.basis);
       r.setting = static_cast<float>(record.grindUm);
       r.group = group;
+      r.epochS = record.epochS;
       sc.roomIds[sc.roomCount++] = record.id;
     }
     return true;   // SCAN_SHOTS bounds the pass
@@ -2953,11 +2952,24 @@ bbw::GrindAdvice grindAdvice() {
         }
       }
     }
-    g_roomFit = bbw::grindRoomEffect(scan.rooms, scan.roomCount);
+    // 10 Nov 2026 (audit G4): the strict gate unless the owner chose the legacy rule. A suspected
+    // effect (significant, not yet replicated) is reported with the advice and never applied.
+    const bool legacyRoom = bbw::grindRoomLegacy(s);
+    g_roomFit = bbw::grindRoomEffect(scan.rooms, scan.roomCount, legacyRoom);
     g_adviceRoomC = roomEffectiveC();
     if (g_roomFit.used && !bbw::grindRoomOff(s) && !std::isnan(g_adviceRoomC)) {
       config.roomSPerC = g_roomFit.sPerC;
       config.roomNowC = g_adviceRoomC;
+      if (!legacyRoom) config.roomCapTolerances = bbw::GRIND_ROOM_STRICT_MAX_TOLERANCES;
+    } else if (g_roomFit.suspected && !bbw::grindRoomOff(s)) {
+      config.roomSuspectedSPerC = g_roomFit.sPerC;
+    }
+    // The newest shot marked uneven by the owner (CTX_PREP_UNEVEN): FINER is held back for it (audit G6).
+    if (count) {
+      bbw::ShotContext newestCtx;
+      if (g_store.loadContext(scan.shotIds[0], newestCtx)) {
+        scan.shots[0].uneven = (newestCtx.prepFlags & bbw::CTX_PREP_UNEVEN) != 0;
+      }
     }
   }
   g_grindAdvice = bbw::adviseGrindRated(shots, count, recipe.grindUm, recipe.targetTimeS, config,
