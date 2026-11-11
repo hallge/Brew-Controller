@@ -40,6 +40,7 @@
 #include "addons/ModuleFile.h"
 #include "Hello.h"
 #include "addons/AddonRules.h"
+#include "addons/HttpWire.h"
 #include "addons/NetGate.h"
 #include "core/Inflate.h"
 #include "core/TimeZone.h"
@@ -3267,6 +3268,51 @@ struct NullHost : addon::Host {
   int32_t readFile(const char *, uint32_t, uint8_t *, size_t) const override { return -1; }
   uint16_t recipeForGrinderRecipe(uint8_t) const override { return 0; }
 };
+
+// The answer reader keeps every Set-Cookie: a login may set the session cookie second (lastUserRole, then
+// PHPSESSID), and keeping only the first sent the next request without its session.
+static void testHttpWireCookies() {
+  printf("add-on fetch: every Set-Cookie is kept, in order, ready to send back\n");
+  using namespace bbw::addon;
+  auto read = [](const char *answer, FetchJob &job, uint8_t *buf, size_t cap) {
+    job.out = buf;
+    job.outCap = cap;
+    job.outLen = 0;
+    job.setCookie[0] = '\0';
+    ResponseReader r(job);
+    r.feed(reinterpret_cast<const uint8_t *>(answer), strlen(answer));
+  };
+  uint8_t buf[16];
+  {
+    FetchJob job;
+    read("HTTP/1.1 302 Found\r\nSet-Cookie: lastUserRole=Owner; expires=Fri, 11 Dec 2026 18:06:57 GMT; path=/\r\n"
+         "Set-Cookie: PHPSESSID=1pklnfpe9evthp774jkie8d40l; path=/\r\nLocation: index.php\r\n\r\n", job, buf, sizeof(buf));
+    CHECK(job.status == 302);
+    CHECK(strcmp(job.setCookie, "lastUserRole=Owner; PHPSESSID=1pklnfpe9evthp774jkie8d40l") == 0);
+  }
+  {  // one cookie: as before
+    FetchJob job;
+    read("HTTP/1.0 200 OK\r\nset-cookie:PHPSESSID=abc\r\nContent-Length: 2\r\n\r\nok", job, buf, sizeof(buf));
+    CHECK(strcmp(job.setCookie, "PHPSESSID=abc") == 0 && job.outLen == 2 && memcmp(buf, "ok", 2) == 0);
+  }
+  {  // an empty one is skipped
+    FetchJob job;
+    read("HTTP/1.0 200 OK\r\nSet-Cookie: ;path=/\r\n\r\n", job, buf, sizeof(buf));
+    CHECK(job.setCookie[0] == '\0');
+  }
+  {  // one that does not fit whole is left out; the ones around it stay
+    FetchJob job;
+    char big[400];
+    snprintf(big, sizeof(big), "HTTP/1.0 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=%0130d\r\nSet-Cookie: c=3\r\n\r\n", 0);
+    read(big, job, buf, sizeof(buf));
+    CHECK(strcmp(job.setCookie, "a=1; c=3") == 0);
+  }
+  {  // a Set-Cookie line in the body is body, not a header
+    FetchJob job;
+    read("HTTP/1.0 200 OK\r\nSet-Cookie: s=1\r\n\r\nSet-Cookie: t=2\r\n", job, buf, sizeof(buf));
+    CHECK(strcmp(job.setCookie, "s=1") == 0);
+  }
+}
 
 static void testAddonManager() {
   printf("add-ons: none, switching on, settings, routes\n");
@@ -10437,6 +10483,7 @@ int main() {
   testAddonGroundwork();
   testAddonModules();
   testModuleImportList();
+  testHttpWireCookies();
   testGrindsKeepOneHistory();
   testContextGrinderDose();
   testShotDataSet();

@@ -113,7 +113,7 @@ struct FetchJob {
   size_t outLen = 0;
   bool truncated = false;          // more came than outCap
   int status = 0;                  // HTTP status; <0: failed before an answer (problem says why)
-  char setCookie[128] = {};        // the first Set-Cookie, name=value only
+  char setCookie[128] = {};        // every Set-Cookie's name=value, joined by "; " (ready to send as cookie)
   char problem[64] = {};
   std::atomic<uint8_t> state{IDLE};
 

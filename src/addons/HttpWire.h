@@ -97,7 +97,7 @@ inline size_t buildRequest(const FetchJob &job, const UrlParts &u, char *out, si
   return len;
 }
 
-// Reads the answer as it arrives: status line, headers (the first Set-Cookie's name=value), then the
+// Reads the answer as it arrives: status line, headers (every Set-Cookie's name=value), then the
 // body into the job's buffer.
 class ResponseReader {
  public:
@@ -135,13 +135,23 @@ class ResponseReader {
       inBody_ = true;
       return;
     }
-    if (strncasecmpPortable(line_, "set-cookie:", 11) == 0 && !job_.setCookie[0]) {
+    if (strncasecmpPortable(line_, "set-cookie:", 11) == 0) {
+      // Every cookie's name=value, joined by "; " as a browser sends them back: a login may set the session
+      // after another cookie (lastUserRole=...; PHPSESSID=...). One that does not fit whole is left out.
       const char *v = line_ + 11;
       while (*v == ' ') ++v;
       size_t n = 0;
-      while (v[n] && v[n] != ';' && n + 1 < sizeof(job_.setCookie)) ++n;
-      memcpy(job_.setCookie, v, n);
-      job_.setCookie[n] = '\0';
+      while (v[n] && v[n] != ';') ++n;
+      if (n == 0) return;
+      size_t at = strlen(job_.setCookie);
+      const size_t sep = at ? 2 : 0;
+      if (at + sep + n + 1 > sizeof(job_.setCookie)) return;
+      if (sep) {
+        job_.setCookie[at++] = ';';
+        job_.setCookie[at++] = ' ';
+      }
+      memcpy(job_.setCookie + at, v, n);
+      job_.setCookie[at + n] = '\0';
     } else if (strncasecmpPortable(line_, "content-length:", 15) == 0) {
       contentLength_ = atol(line_ + 15);
     }
