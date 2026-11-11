@@ -104,7 +104,14 @@ struct CoffeesTab: View {
     @ViewBuilder
     private var sharedSection: some View {
         let shared = store.sharedMatches(search)
-        if !shared.isEmpty {
+        if shared.isEmpty {
+            Section("In the shared library") {
+                Text(sharedHint)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("coffeeSharedHint")
+            }
+        } else {
             Section("In the shared library") {
                 ForEach(shared) { entry in
                     HStack {
@@ -119,8 +126,21 @@ struct CoffeesTab: View {
         }
     }
 
+    private var sharedHint: String {
+        guard store.shareEnabled else { return "Sharing is switched off (Setup), so the shared library is not used." }
+        return search.isEmpty
+            ? "No coffees published yet. Published coffees appear here, ready to add to your shelf."
+            : "No shared coffee matches that."
+    }
+
     private var elsewhereSection: some View {
         Section {
+            NavigationLink {
+                RecipesScreen()
+            } label: {
+                Label("Recipes", systemImage: "slider.horizontal.3")
+            }
+            .accessibilityIdentifier("coffeeRecipesLink")
             NavigationLink {
                 CoffeeDirectoryView(store: store)
             } label: {

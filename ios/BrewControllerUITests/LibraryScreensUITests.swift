@@ -350,4 +350,69 @@ final class LibraryScreensUITests: XCTestCase {
         XCTAssertTrue(element(id: "recipesList").waitForExistence(timeout: 20))
         XCTAssertFalse(app.staticTexts["UI Full Recipe"].waitForExistence(timeout: 5), "the recipe is still listed")
     }
+
+    // MARK: Gaps of build 3
+
+    func testCoffeesLinksToRecipesAndHintsAtTheSharedLibrary() {
+        openTab("Coffees")
+        XCTAssertTrue(element(id: "coffeesList").waitForExistence(timeout: 30))
+        // With sharing off or nothing published the shared library says why it is empty.
+        reveal(element(id: "coffeeSharedHint"))
+        reveal(element(id: "coffeeRecipesLink"))
+        element(id: "coffeeRecipesLink").tap()
+        XCTAssertTrue(element(id: "recipesList").waitForExistence(timeout: 20), "the Recipes link did not open Recipes")
+    }
+
+    func testRecipeLinksBackToCoffees() {
+        openRecipes()
+        let first = element(prefix: "recipeRow-")
+        XCTAssertTrue(first.waitForExistence(timeout: 20), "no recipe in the demo")
+        first.tap()
+        reveal(element(id: "recipeAddToCoffee"))
+        element(id: "recipeAddToCoffee").tap()
+        XCTAssertTrue(element(id: "coffeesList").waitForExistence(timeout: 20), "Add to a coffee did not open Coffees")
+    }
+
+    func testCoffeeRatingsSectionIsNeverMissing() {
+        openTab("Coffees")
+        XCTAssertTrue(element(id: "coffeesList").waitForExistence(timeout: 30))
+        element(id: "coffeeAdd").tap()
+        replaceText(app.textFields["coffeeName"], with: "UI Ratings Coffee")
+        dismissKeyboard()
+        reveal(element(id: "coffeeSave"))
+        element(id: "coffeeSave").tap()
+        XCTAssertTrue(app.staticTexts["UI Ratings Coffee"].waitForExistence(timeout: 20))
+        app.staticTexts["UI Ratings Coffee"].tap()
+        // Either the rating card or its "unavailable" note with Retry.
+        let card = element(id: "coffeeRatingSave")
+        let unavailable = element(id: "coffeeRatingsRetry")
+        XCTAssertTrue(card.waitForExistence(timeout: 20) || unavailable.waitForExistence(timeout: 5),
+                      "neither the ratings nor a retry")
+    }
+
+    func testShotsLatestShotAndDetailScreenAfterADemoShot() {
+        // A shot pulled on the Brew tab shows as "Latest shot" and opens its detail with a Reddit link.
+        openTab("Shots")
+        XCTAssertTrue(element(id: "shotsList").waitForExistence(timeout: 30))
+        app.tabBars.buttons.element(boundBy: 0).tap()
+        let start = element(id: "startButton")
+        XCTAssertTrue(start.waitForExistence(timeout: 90), "no Start button on the first tab")
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "isEnabled == true"),
+                                                          evaluatedWith: start)], timeout: 90), .completed)
+        start.tap()
+        openTab("Shots")
+        let latest = element(id: "shotsLatest")
+        var found = latest.waitForExistence(timeout: 20)
+        var tries = 0
+        while !found && tries < 12 {
+            element(id: "shotsList").swipeDown()
+            found = latest.waitForExistence(timeout: 10)
+            tries += 1
+        }
+        XCTAssertTrue(found, "no Latest shot entry after the demo shot")
+        latest.tap()
+        XCTAssertTrue(element(id: "shotDetail").waitForExistence(timeout: 20))
+        reveal(element(id: "shotReddit"))
+        XCTAssertTrue(element(id: "shotReddit").isHittable)
+    }
 }

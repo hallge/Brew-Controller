@@ -16,6 +16,8 @@ struct CoffeeDetailView: View {
     @State private var draft = CoffeeDraft()
     @State private var loadedFor: Int?
     @State private var saving = false
+    /// The altitude field's text: it goes into `draft` on every keystroke, not when the edit ends.
+    @State private var altitudeText = ""
 
     @State private var showNewBag = false
     @State private var bagRoastDate = 0
@@ -63,6 +65,10 @@ struct CoffeeDetailView: View {
             }
         }
         .onAppear(perform: loadDraft)
+        .onChange(of: altitudeText) { _, text in draft.altitudeM = Int(text.filter(\.isNumber)) ?? 0 }
+        .onChange(of: draft.altitudeM) { _, metres in
+            if (Int(altitudeText) ?? 0) != metres { altitudeText = altitudeShown(metres) }
+        }
         .onChange(of: store.library) { _, _ in loadDraft() }
         .confirmationDialog("Is the bag of \"\(coffee?.name ?? "")\" finished?", isPresented: $confirmFinish,
                             titleVisibility: .visible) {
@@ -140,7 +146,7 @@ struct CoffeeDetailView: View {
             HStack {
                 Text("Altitude (m)")
                 Spacer()
-                TextField("", value: altitudeBinding, format: .number.grouping(.never))
+                TextField("", text: $altitudeText)
                     .keyboardType(.numberPad)
                     .multilineTextAlignment(.trailing)
                     .frame(maxWidth: 90)
@@ -150,9 +156,7 @@ struct CoffeeDetailView: View {
     }
 
     /// Altitude 0 shows as an empty field.
-    private var altitudeBinding: Binding<Int?> {
-        Binding(get: { draft.altitudeM == 0 ? nil : draft.altitudeM }, set: { draft.altitudeM = $0 ?? 0 })
-    }
+    private func altitudeShown(_ metres: Int) -> String { metres == 0 ? "" : String(metres) }
 
     private var actionsSection: some View {
         Section {
@@ -300,6 +304,12 @@ struct CoffeeDetailView: View {
                     }
                 }
             }
+            NavigationLink {
+                RecipesScreen()
+            } label: {
+                Text("Recipes")
+            }
+            .accessibilityIdentifier("coffeeRecipesLinkDetail")
         } header: {
             Text("Brew it with")
         } footer: {

@@ -90,7 +90,7 @@ line for every item) are in the coordinator's notes, `ios-parity/`.
 
 | Feature | Route | Status |
 |---|---|---|
-| Summary tiles: shots, on time %, typical miss, rated average | `/api/shots` | ◐ `LibraryScreensUITests.testShotsScreenOpens` |
+| Summary tiles: shots, on time %, typical miss, rated average | `/api/shots` | ◐ `LibraryScreensUITests.testShotsScreenOpens`; "Latest shot" link to the newest shot: `LibraryScreensUITests.testShotsLatestShotAndDetailScreenAfterADemoShot` |
 | Filters: coffee; all, stopped by weight, off target, not rated | `/api/shots` | ◐ `LibraryScreensUITests.testShotsScreenOpens` (the two menus) |
 | List: time, coffee and recipe, rating, taste, end reason, out, brew time, grind; 20 more | `/api/shots` | ◐ `LibraryScreensUITests.testShotDetailOpensAfterADemoShot` |
 | Detail tiles: in the cup, brew time, pour and first drops, grind (change), flow 25/50/75, ended by | `/api/shot/data`, `/api/shot/grind` | ◐ `LibraryScreensUITests.testShotDetailOpensAfterADemoShot` |
@@ -99,16 +99,16 @@ line for every item) are in the coordinator's notes, `ios-parity/`.
 | Taste sour / balanced / bitter, stars 1-5, TDS %, prep (dose weighed, purged, uneven) | `/api/shot/rate`, `/tds`, `/prep` | ◐ `LibraryScreensUITests.testShotDetailOpensAfterADemoShot` (stars; taste, TDS and prep fields present) |
 | Compare up to 8: flow, line-up | client | ◐ `LibraryScreensUITests.testShotDetailOpensAfterADemoShot` (one shot added) |
 | CSV / JSON / one shot's CSV through the share sheet | `/shots.csv`, `/api/shots`, `/shot.csv` | ◐ `LibraryScreensUITests.testShotsExportAndClearHistoryAsk` (menu present; the share sheet is system UI) |
-| Clear history, with confirm | `/api/history/clear` | ◐ `LibraryScreensUITests.testShotsExportAndClearHistoryAsk` (the confirmation, cancelled) |
+| Clear history, with confirm | `/api/history/clear` | ◐ `LibraryScreensUITests.testShotsExportAndClearHistoryAsk` (the confirmation, cancelled); `ShotsDetailScreen(shotID:)` and Share to Reddit (`CommunityScreen(redditShotID:)`) in shot detail: `LibraryScreensUITests.testShotsLatestShotAndDetailScreenAfterADemoShot`. No touch tooltip on the curve: the web `draw` has none |
 
 ## 3. Coffees (W: `#coffees`)
 
 | Feature | Route | Status |
 |---|---|---|
-| Shelf, search, finished bags folded | `/api/library` | ◐ `LibraryScreensUITests.testCoffeeSearchDirectoryVisualizerAndImportAreReachable, testCoffeeFinishAndDelete` |
+| Shelf, search, finished bags folded | `/api/library` | ◐ `LibraryScreensUITests.testCoffeeSearchDirectoryVisualizerAndImportAreReachable, testCoffeeFinishAndDelete`; shared-library hint when empty/off and the Recipes link: `LibraryScreensUITests.testCoffeesLinksToRecipesAndHintsAtTheSharedLibrary` |
 | Form: name, roaster, roast level, notes, roast/freezer/thaw dates, origin, region, producer, varietal, process, altitude | `/api/coffee` | ◐ `LibraryScreensUITests.testCoffeesScreenCreatesAndEditsACoffeeAndABag` |
 | New bag, bag finished, delete; bags: use, forget, arrived, open | `/api/bag`, `/api/library/do` | ◐ `LibraryScreensUITests.testCoffeesScreenCreatesAndEditsACoffeeAndABag` (new bag), testCoffeeFinishAndDelete (finished, delete); use, forget, arrived and open are untested |
-| Ratings: who, stars, 5 attribute sliders, 8 flavour families, list with edit and delete | `/api/coffee/rate`, `/rate/delete` | ◐ `LibraryScreensUITests.testCoffeeRatingBrewWithAndCommunity` (stars, flavour, save, delete; who and sliders untested) |
+| Ratings: who, stars, 5 attribute sliders, 8 flavour families, list with edit and delete | `/api/coffee/rate`, `/rate/delete` | ◐ `LibraryScreensUITests.testCoffeeRatingBrewWithAndCommunity` (stars, flavour, save, delete; who and sliders untested); "unavailable" with Retry: `LibraryScreensUITests.testCoffeeRatingsSectionIsNeverMissing` |
 | Brew it with (recipe ticks) | `preset_add` / `preset_delete` | ◐ `LibraryScreensUITests.testCoffeeRatingBrewWithAndCommunity` |
 | Share this coffee | `/api/share/coffee` | ◐ `LibraryScreensUITests.testCoffeeRatingBrewWithAndCommunity` (the state is shown; Send needs sharing on) |
 | In the shared library: Add | `/api/coffee/adopt` | ◐ no UI test: the demo has an empty shared library |
@@ -126,7 +126,7 @@ line for every item) are in the coordinator's notes, `ios-parity/`.
 | Dose; yield by target or ratio; target brew time | `/api/recipe` | ◐ `LibraryScreensUITests.testRecipeFormFieldsUsedWithAndDelete, testRecipesScreenCreatesAndDuplicatesARecipe` |
 | Pre-infusion (machine, or hold 0.3-30 s); bloom 0-45 s | `/api/recipe` | ◐ `LibraryScreensUITests.testRecipeFormFieldsUsedWithAndDelete` |
 | If the target is never reached: who stops, stop after, starting offset | `/api/recipe` | ◐ `LibraryScreensUITests.testRecipeFormFieldsUsedWithAndDelete` |
-| Used with: coffee, grind, learned offset, in use, reset offset, take off, list by itself | `/api/offset/reset`, `preset_*` | ◐ `LibraryScreensUITests.testRecipeFormFieldsUsedWithAndDelete` |
+| Used with: coffee, grind, learned offset, in use, reset offset, take off, list by itself | `/api/offset/reset`, `preset_*` | ◐ `LibraryScreensUITests.testRecipeFormFieldsUsedWithAndDelete`; "Add to a coffee" link: `LibraryScreensUITests.testRecipeLinksBackToCoffees` |
 | Share to the recipe book | `/api/recipes/share` | ◐ `LibraryScreensUITests.testRecipeFormFieldsUsedWithAndDelete` (disabled while the library is not linked) |
 
 ## 5. Grinder (W: `#grinder`)

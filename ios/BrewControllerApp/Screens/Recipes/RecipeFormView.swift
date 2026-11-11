@@ -199,6 +199,12 @@ struct RecipeFormView: View {
                 Button("List it on the controller by itself") { Task { await store.listAlone(recipe: recipeId) } }
                     .accessibilityIdentifier("recipeListAlone")
             }
+            NavigationLink {
+                CoffeesTab()
+            } label: {
+                Text("Add to a coffee")
+            }
+            .accessibilityIdentifier("recipeAddToCoffee")
         } header: {
             Text("Used with")
         } footer: {
@@ -249,21 +255,40 @@ struct RecipeFormView: View {
     }
 }
 
-/// A labelled number field. The value is clamped when the recipe is saved.
+/// A labelled number field. It keeps its own text and writes the number into the form on every keystroke,
+/// so Save never depends on the field having ended its edit (a number pad has no Return key). The value is
+/// clamped when the recipe is saved.
 private struct RecipeNumberRow: View {
     let title: String
     @Binding var value: Double
     let identifier: String
 
+    @State private var text = ""
+
     var body: some View {
         HStack {
             Text(title)
             Spacer()
-            TextField("", value: $value, format: .number.precision(.fractionLength(0...2)))
+            TextField("", text: $text)
                 .keyboardType(.decimalPad)
                 .multilineTextAlignment(.trailing)
                 .frame(maxWidth: 90)
                 .accessibilityIdentifier(identifier)
         }
+        .onAppear { text = Self.format(value) }
+        .onChange(of: text) { _, newText in
+            if let parsed = Double(newText.replacingOccurrences(of: ",", with: ".")), parsed != value { value = parsed }
+        }
+        .onChange(of: value) { _, newValue in
+            let typed = Double(text.replacingOccurrences(of: ",", with: "."))
+            if typed != newValue { text = Self.format(newValue) }
+        }
+    }
+
+    /// "18", "1.5", "0.3": no trailing zeros.
+    private static func format(_ number: Double) -> String {
+        var text = BrewFormat.decimal(number, 2)
+        while text.contains(".") && (text.hasSuffix("0") || text.hasSuffix(".")) { text.removeLast() }
+        return text
     }
 }
