@@ -94,6 +94,7 @@ int main(int argc, char **argv) {
   check(r.status == 200, "POST /api/pair (bot)");
   r = call("POST", "/api/machine", R"({"builtin":1})");
   check(r.status == 200, "POST /api/machine (builtin 1, Breville)");
+  if (r.status != 200) printf("    answered %d: %s\n", r.status, r.body.c_str());
   r = call("GET", "/api/machine");
   check(r.status == 200 && r.body.find("Breville") != std::string::npos, "GET /api/machine says Breville");
 

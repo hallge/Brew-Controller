@@ -32,7 +32,8 @@ FIRMWARE=(
 )
 SCALEWIRE=(lib/ScaleWire/src/*.cpp)
 EMU=(emu/src/host_runtime.cpp emu/src/host_web.cpp emu/src/ble_facade.cpp emu/src/virtual_radio.cpp emu/src/emu_devices.cpp)
-HOST=(ios/Host/BrewHost.cpp ios/Host/host_stubs.cpp ios/Host/ui_stub.cpp)
+HOST=(ios/Host/BrewHost.cpp ios/Host/host_stubs.cpp ios/Host/ui_stub.cpp ios/Host/net_portable.cpp ios/Host/mqtt_client.cpp)
+# The Apple-only files (ios_net.mm, ios_devicekey.mm) are not compiled on Windows: net_portable.cpp holds the stand-ins.
 RUNNER=(test/hostapp/hostapp_main.cpp)
 SOURCES=("${FIRMWARE[@]}" "${SCALEWIRE[@]}" "${EMU[@]}" "${HOST[@]}" "${RUNNER[@]}")
 
@@ -41,7 +42,7 @@ for s in "${SOURCES[@]}"; do
   case "$s" in *EspressoScaleProtocol*) echo "OBBW source in the build: $s"; exit 1;; esac
 done
 
-FLAGS=(-std=gnu++17 -O1 -g0 -Wall -Wextra -Wno-c++11-narrowing
+FLAGS=(-std=gnu++17 -O1 -g0 -Wall -Wextra -Wno-c++11-narrowing -Wno-nullability-completeness
   -DBBW_EMULATOR -DBBW_HOST_IOS -DBBW_CLEAN -DCONFIG_BT_NIMBLE_MAX_CONNECTIONS=3
   -DARDUINOJSON_ENABLE_ARDUINO_STRING=1 -DARDUINOJSON_ENABLE_ARDUINO_PRINT=1
   -Iios/Host -Iemu/shims -Iemu/src -Isrc -Iios/Generated -Ilib/ScaleWire/src "-I$ARDUINOJSON")
@@ -75,6 +76,12 @@ if grep -l "EspressoScaleProtocol" "$OUT"/obj/*.d >/dev/null 2>&1; then
   grep -l "EspressoScaleProtocol" "$OUT"/obj/*.d
   exit 1
 fi
+
+# The portable network code on its own, with a fake transport (no sockets, no real service).
+NETSRC=(test/hostapp/net_test.cpp ios/Host/net_portable.cpp ios/Host/mqtt_client.cpp ios/Host/host_stubs.cpp)
+NETEXE=$OUT/net_test.exe
+"${CXXCMD[@]}" "${FLAGS[@]}" "${NETSRC[@]}" -o "$NETEXE" || { echo "net test build failed"; exit 1; }
+"$NETEXE" || exit 1
 
 EXE=$OUT/hostapp.exe
 "${CXXCMD[@]}" "$OUT"/obj/*.o -o "$EXE"

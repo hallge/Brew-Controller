@@ -1,27 +1,21 @@
-// Portable stand-ins for what the Windows-only emulator files provide to the firmware: the device
-// key, the shared-library link, Home Assistant, MQTT, diagnostics upload, page preview and the add-on
-// network fetch (emu_devicekey, emu_homeassistant, emu_telemetry, emu_preview, emu_addonnet).
+// What the Windows-only emulator files provide to the firmware, for the iPhone build: Home Assistant
+// REST, diagnostics upload, page preview and the add-on network fetch, with the board's behaviour
+// (src/platform/HomeAssistantLink.cpp, TelemetryLink.cpp, PagePreview.cpp, AddonNet.cpp).
 //
-// They answer "no network" / "not available" until W6 replaces this file's contents with URLSession
-// (hostHttp) and Security.framework (the key). Everything that leaves the process goes through
-// hostHttp() so that W6 swaps one function.
-#include <Preferences.h>
-
+// Everything that leaves the process goes through hostnet::httpRequest (net_portable.cpp), whose
+// transport is URLSession on iOS (ios_net.mm). The library link, the device key and MQTT are in
+// net_portable.cpp. See NET.md.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <random>
 #include <string>
 
 #include "BrewHost.h"
 #include "addons/Addon.h"
 #include "addons/HttpWire.h"
 #include "core/HomeAssistant.h"
-#include "core/Share.h"
-#include "emu.h"
-#include "platform/DeviceKey.h"
+#include "net_portable.h"
 #include "platform/HomeAssistantLink.h"
-#include "platform/LibraryLink.h"
 #include "platform/PagePreview.h"
 #include "platform/TelemetryLink.h"
 
@@ -34,107 +28,28 @@ void say(char *problem, size_t size, const char *text) {
   }
 }
 
+bool hasProblem(const char *problem) { return problem && problem[0]; }
+
 }  // namespace
 
-// ------------------------------------------------------------------ the one network seam --
-int hostHttp(const char *method, const char *url, const char *headers, const void *body,
-             size_t bodyLen, char *response, size_t responseCap, size_t *responseLen,
-             int timeoutMs, char *problem, size_t problemSize) {
-  (void)method;
-  (void)url;
-  (void)headers;
-  (void)body;
-  (void)bodyLen;
-  (void)timeoutMs;
-  if (response && responseCap) response[0] = '\0';
-  if (responseLen) *responseLen = 0;
-  say(problem, problemSize, "no network in this build yet");
-  return -1;
+// ----------------------------------------------------------------- the C seam (BrewHost.h) --
+int hostHttp(const char *method, const char *url, const char *headers, const void *body, size_t bodyLen,
+             char *response, size_t responseCap, size_t *responseLen, int timeoutMs, char *problem,
+             size_t problemSize) {
+  bbw::hostnet::HttpRequest r;
+  r.method = method ? method : "GET";
+  r.url = url;
+  r.headers = headers;
+  r.body = body;
+  r.bodyLen = bodyLen;
+  r.timeoutMs = timeoutMs;
+  bbw::hostnet::HttpResult res;
+  const int code = bbw::hostnet::httpRequest(r, response, responseCap, res, problem, problemSize);
+  if (responseLen) *responseLen = res.length;
+  return code;
 }
 
 namespace bbw {
-
-// ------------------------------------------------------------------------- device key --
-namespace {
-
-// Not a signature, and says so in its algorithm name: the library refuses it. W6: P-256 through
-// Security.framework.
-class StandInSigner : public ISigner {
- public:
-  bool begin() {
-    Preferences prefs;
-    prefs.begin("bbw", false);
-    if (prefs.getBytesLength("devkey_host") != sizeof(secret_) ||
-        prefs.getBytes("devkey_host", secret_, sizeof(secret_)) != sizeof(secret_)) {
-      std::random_device source;
-      for (uint8_t &b : secret_) b = static_cast<uint8_t>(source());
-      prefs.putBytes("devkey_host", secret_, sizeof(secret_));
-    }
-    publicKey_[0] = 0x04;
-    mix("x", publicKey_ + 1);
-    mix("y", publicKey_ + 33);
-    ready_ = true;
-    return true;
-  }
-  bool ready() const override { return ready_; }
-  const uint8_t *publicKey() const override { return publicKey_; }
-  const char *algorithm() const override { return "HOST-UNSIGNED"; }
-  bool sign(const uint8_t hash[32], uint8_t signature[SIGNATURE_LEN]) override {
-    Sha256 a, b;
-    a.update(secret_, sizeof(secret_));
-    a.update(hash, 32);
-    a.finish(signature);
-    b.update(hash, 32);
-    b.update(secret_, sizeof(secret_));
-    b.finish(signature + 32);
-    return true;
-  }
-
- private:
-  void mix(const char *tag, uint8_t out[32]) {
-    Sha256 h;
-    h.update(secret_, sizeof(secret_));
-    h.update(reinterpret_cast<const uint8_t *>(tag), 1);
-    h.finish(out);
-  }
-  uint8_t secret_[32] = {};
-  uint8_t publicKey_[PUBLIC_KEY_LEN] = {};
-  bool ready_ = false;
-};
-
-StandInSigner g_signer;
-
-LibraryLinkStatus g_libraryStatus;
-
-}  // namespace
-
-bool beginDeviceKey() { return g_signer.begin(); }
-ISigner &deviceSigner() { return g_signer; }
-
-// -------------------------------------------------------------------- shared library --
-void libraryLinkSetRelay(const char *) {}
-bool libraryTakeRefused() { return false; }
-bool libraryTakeKeyMissing() { return false; }
-void libraryLinkConfigure(const char *repo, const char *) {
-  g_libraryStatus = LibraryLinkStatus{};
-  g_libraryStatus.configured = repo && repo[0];
-  if (repo) strncpy(g_libraryStatus.repository, repo, sizeof(g_libraryStatus.repository) - 1);
-}
-bool libraryLinkReady() { return false; }
-bool libraryPut(const char *, const char *) { return false; }
-void libraryLinkRelease() {}
-bool libraryGet(const char *, char *out, size_t size) {
-  if (out && size) out[0] = '\0';
-  return false;
-}
-LibraryLinkStatus libraryLinkStatus() {
-  LibraryLinkStatus status = g_libraryStatus;
-  status.ready = false;
-  status.toLibrary = false;
-  say(status.problem, sizeof(status.problem), "the library is not reachable in this build yet");
-  say(status.via, sizeof(status.via), "no network in this build yet");
-  return status;
-}
 
 // ---------------------------------------------------------------------- Home Assistant --
 int haRequest(const char *url, const char *token, const char *body, char *out, size_t outSize,
@@ -148,29 +63,23 @@ int haRequest(const char *url, const char *token, const char *body, char *out, s
   std::string headers;
   if (token && token[0]) headers += std::string("Authorization: Bearer ") + token + "\r\n";
   if (body) headers += "Content-Type: application/json\r\n";
-  size_t length = 0;
-  const int code = hostHttp(body ? "POST" : "GET", url, headers.c_str(), body, body ? strlen(body) : 0,
-                            out, outSize, &length, timeoutMs, problem, problemSize);
+  hostnet::HttpRequest r;
+  r.method = body ? "POST" : "GET";
+  r.url = url;
+  r.headers = headers.c_str();
+  r.body = body;
+  r.bodyLen = body ? strlen(body) : 0;
+  r.timeoutMs = timeoutMs;
+  hostnet::HttpResult res;
+  char why[64] = {};
+  const int code = hostnet::httpRequest(r, out, outSize, res, why, sizeof(why));
   if (code < 0) {
-    if (!problem || !problem[0]) say(problem, problemSize, "Home Assistant could not be reached");
+    say(problem, problemSize, why[0] ? why : "Home Assistant could not be reached");
   } else if (code == 401) say(problem, problemSize, "Home Assistant refused the token");
   else if (code == 404) say(problem, problemSize, "Home Assistant has no such entity or webhook");
   else if (code >= 400) say(problem, problemSize, "Home Assistant answered with an error");
   return code;
 }
-
-namespace {
-char g_mqttProblem[64] = {};
-}
-
-void mqttConfigure(const char *url, const char *, const char *, const char *, const char *) {
-  g_mqttProblem[0] = '\0';
-  if (url && url[0]) say(g_mqttProblem, sizeof(g_mqttProblem), "MQTT is not available in this build yet");
-}
-bool mqttService(bool, void (*)()) { return false; }
-bool mqttConnected() { return false; }
-bool mqttPublish(const char *, const char *, bool) { return false; }
-const char *mqttProblem() { return g_mqttProblem; }
 
 // ------------------------------------------------------------------------- diagnostics --
 int diagPost(const char *url, const char *envelope, char *problem, size_t problemSize) {
@@ -179,18 +88,46 @@ int diagPost(const char *url, const char *envelope, char *problem, size_t proble
     say(problem, problemSize, "the relay's address is not an https link");
     return -2;
   }
-  char answer[64];
-  size_t length = 0;
-  const int code = hostHttp("POST", url, "Content-Type: application/json\r\n", envelope,
-                            envelope ? strlen(envelope) : 0, answer, sizeof(answer), &length, 20000,
-                            problem, problemSize);
-  if (code < 0) say(problem, problemSize, "the relay could not be reached");
-  else if (code == 429) say(problem, problemSize, "the relay has had enough from this controller today");
-  else if (code >= 400) say(problem, problemSize, "the relay refused it");
+  hostnet::HttpRequest r;
+  r.method = "POST";
+  r.url = url;
+  r.headers = "Content-Type: application/json\r\nUser-Agent: brew-by-weight-controller\r\n";
+  r.body = envelope;
+  r.bodyLen = envelope ? strlen(envelope) : 0;
+  r.timeoutMs = 16000;
+  r.followRedirects = false;
+  char answer[512];
+  hostnet::HttpResult res;
+  char why[96] = {};
+  const int code = hostnet::httpRequest(r, answer, sizeof(answer), res, why, sizeof(why));
+  if (code < 0) {
+    char text[160];
+    snprintf(text, sizeof(text), "the relay could not be reached%s%s", why[0] ? ": " : "", why);
+    say(problem, problemSize, text);
+  } else if (code == 429) {
+    say(problem, problemSize, "the relay has had enough from this controller today");
+  } else if (code >= 400) {
+    // The relay says why in {"ok":false,"error":"..."}: kept short.
+    char text[160];
+    const char *at = strstr(answer, "\"error\":\"");
+    if (at) {
+      const char *start = at + 9;
+      const char *end = strchr(start, '"');
+      const int n = end ? static_cast<int>(end - start) : static_cast<int>(strlen(start));
+      snprintf(text, sizeof(text), "the relay refused it (%d): %.*s", code, n, start);
+    } else {
+      snprintf(text, sizeof(text), "the relay refused it (%d)", code);
+    }
+    say(problem, problemSize, text);
+  }
   return code;
 }
 
 // -------------------------------------------------------------------------- page preview --
+namespace {
+constexpr size_t PAGE_MAX = 192 * 1024;  // some shops put their tags far into a long <head>
+}
+
 int fetchPagePreview(const char *url, PageMeta &out, char *problem, size_t problemSize) {
   out = PageMeta{};
   say(problem, problemSize, "");
@@ -198,27 +135,43 @@ int fetchPagePreview(const char *url, PageMeta &out, char *problem, size_t probl
     say(problem, problemSize, "not a web link");
     return -2;
   }
-  static char page[196608];
-  size_t length = 0;
-  const int code = hostHttp("GET", url, "Accept: text/html\r\n", nullptr, 0, page, sizeof(page),
-                            &length, 15000, problem, problemSize);
-  if (code < 0) {
-    say(problem, problemSize, "the shop's site could not be reached");
-    return -1;
+  static std::string page(PAGE_MAX + 1, '\0');
+  hostnet::HttpRequest r;
+  r.url = url;
+  // A browser-style agent that still says what it is: shops behind bot filters refuse unknown ones.
+  r.headers =
+      "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) BrewController/1.0\r\n"
+      "Accept: text/html,application/xhtml+xml\r\nAccept-Language: en\r\n";
+  r.timeoutMs = 16000;
+  r.stopAfter = "</head";  // enough once the head has ended
+  hostnet::HttpResult res;
+  char why[96] = {};
+  int code = -1;
+  for (int tries = 0; tries < 2; ++tries) {  // a connection that fails is tried once more
+    code = hostnet::httpRequest(r, &page[0], page.size(), res, why, sizeof(why));
+    if (code >= 0) break;
   }
-  if (code != 200 && code != 206) {
-    say(problem, problemSize, "the shop's site answered with an error");
-    return code;
+  if (code == 200) {
+    parsePageHead(page.c_str(), res.length, url, out);
+    return 200;
   }
-  parsePageHead(page, length, url, out);
-  return 200;
+  if (code < 0 && why[0]) snprintf(problem, problemSize, "no secure connection: %s", why);
+  else if (code < 0) say(problem, problemSize, "the shop's site could not be reached");
+  else if (code == 403 || code == 429 || code == 503) say(problem, problemSize, "the shop's site turned the controller away");
+  else if (code >= 300 && code < 400) say(problem, problemSize, "too many redirects");
+  else say(problem, problemSize, "the shop's site answered with an error");
+  return code;
 }
 
 // ---------------------------------------------------------------------- add-on network --
 namespace addon {
 
+// The board checks an https server's certificate by its SHA-256 before sending a byte (a grinder's
+// own certificate is self-signed and names no host); URLSession does the same in ios_net.mm.
 void fetchHere(FetchJob &job) {
   job.problem[0] = '\0';
+  job.truncated = false;
+  job.setCookie[0] = '\0';
   UrlParts u;
   if (!splitUrl(job.url, u)) {
     job.status = -2;
@@ -227,12 +180,26 @@ void fetchHere(FetchJob &job) {
   }
   std::string headers;
   if (job.cookie[0]) headers += std::string("Cookie: ") + job.cookie + "\r\n";
-  if (job.post) headers += std::string("Content-Type: ") + (job.contentType ? job.contentType : "application/json") + "\r\n";
-  size_t length = 0;
-  job.status = hostHttp(job.post ? "POST" : "GET", job.url, headers.c_str(), job.body,
-                        job.body ? strlen(job.body) : 0, reinterpret_cast<char *>(job.out), job.outCap,
-                        &length, job.totalTimeoutMs, job.problem, sizeof(job.problem));
-  job.outLen = length;
+  if (job.post) {
+    headers += std::string("Content-Type: ") + (job.contentType ? job.contentType : "application/json") + "\r\n";
+  }
+  hostnet::HttpRequest r;
+  r.method = job.post ? "POST" : "GET";
+  r.url = job.url;
+  r.headers = headers.c_str();
+  r.body = job.body;
+  r.bodyLen = job.body ? strlen(job.body) : 0;
+  r.timeoutMs = job.totalTimeoutMs;
+  r.followRedirects = false;  // the board does not follow them
+  if (u.tls) r.pinSha256 = job.certSha256;
+  hostnet::HttpResult res;
+  job.status = hostnet::httpRequest(r, reinterpret_cast<char *>(job.out), job.outCap, res, job.problem,
+                                    sizeof(job.problem));
+  job.outLen = res.length;
+  job.truncated = res.truncated;
+  strncpy(job.setCookie, res.setCookie, sizeof(job.setCookie) - 1);
+  job.setCookie[sizeof(job.setCookie) - 1] = '\0';
+  if (job.status < 0 && !hasProblem(job.problem)) say(job.problem, sizeof(job.problem), "could not connect");
 }
 
 }  // namespace addon
