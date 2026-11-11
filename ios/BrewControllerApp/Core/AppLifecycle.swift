@@ -174,10 +174,68 @@ final class AppLifecycle {
     }
 }
 
-/// The root view uses this to feed touches into `AppLifecycle.userActivity()`:
-/// `.simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in lifecycle.userActivity() })`.
+/// The root view uses this to feed touches into `AppLifecycle.userActivity()`.
+///
+/// Not a SwiftUI gesture: a `DragGesture(minimumDistance: 0)` on the root, even as a simultaneous
+/// gesture, swallows taps in Lists and Forms on iOS 18 (More's rows, pickers, add buttons). Instead a
+/// UIKit recognizer on the window sees every touch begin and then fails at once, so it never delays,
+/// cancels or competes with any control.
 extension View {
     func brewTracksActivity(_ lifecycle: AppLifecycle) -> some View {
-        simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in lifecycle.userActivity() })
+        background(BrewTouchObserver { lifecycle.userActivity() }.frame(width: 0, height: 0))
     }
+}
+
+/// Puts a `BrewTouchRecognizer` on the window the view is in.
+private struct BrewTouchObserver: UIViewRepresentable {
+    let onTouch: @MainActor () -> Void
+
+    func makeUIView(context: Context) -> BrewTouchHostView {
+        let view = BrewTouchHostView()
+        view.onTouch = onTouch
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ uiView: BrewTouchHostView, context: Context) {
+        uiView.onTouch = onTouch
+    }
+}
+
+final class BrewTouchHostView: UIView {
+    var onTouch: (@MainActor () -> Void)?
+    private var recognizer: BrewTouchRecognizer?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if let recognizer { recognizer.view?.removeGestureRecognizer(recognizer) }
+        recognizer = nil
+        guard let window else { return }
+        let added = BrewTouchRecognizer(target: nil, action: nil)
+        added.onTouch = { [weak self] in self?.onTouch?() }
+        window.addGestureRecognizer(added)
+        recognizer = added
+    }
+}
+
+/// Reports a touch and fails straight away: it never recognises, so every other gesture and control
+/// gets the touch exactly as without it.
+final class BrewTouchRecognizer: UIGestureRecognizer, UIGestureRecognizerDelegate {
+    var onTouch: (@MainActor () -> Void)?
+
+    override init(target: Any?, action: Selector?) {
+        super.init(target: target, action: action)
+        cancelsTouchesInView = false
+        delaysTouchesBegan = false
+        delaysTouchesEnded = false
+        delegate = self
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        onTouch?()
+        state = .failed
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 }
