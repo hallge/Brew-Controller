@@ -42,7 +42,10 @@ final class DiscoverScreensUITests: XCTestCase {
         } else {
             let more = app.tabBars.buttons["More"]
             if more.exists { more.tap() }
-            let row = app.buttons[title].exists ? app.buttons[title] : app.staticTexts[title]
+            // By the row's identifier: a bare label can also match buttons on other tabs.
+            let back = app.navigationBars.buttons.element(boundBy: 0)
+            for _ in 0..<3 where !element(app, "moreTab").exists && back.exists { back.tap() }
+            let row = element(app, "moreRow-\(title)")
             XCTAssertTrue(row.waitForExistence(timeout: 10), "no \(title) on the More tab")
             row.tap()
         }

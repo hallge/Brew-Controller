@@ -73,7 +73,7 @@ final class BrewTabUITests: DemoUITestCase {
         let alert = app.alerts["STOP THE SHOT?"]
         XCTAssertTrue(alert.waitForExistence(timeout: 5), "stop asks first")
         screenshot("04-stop-confirm")
-        alert.buttons["KEEP BREWING"].tap()
+        alert.buttons["KEEP BREWING"].firstMatch.tap()
         XCTAssertTrue(poll(5) { !alert.exists })
         if stop.exists && stop.label == "STOP" {
             stop.tap()

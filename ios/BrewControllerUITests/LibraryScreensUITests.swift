@@ -41,7 +41,7 @@ final class LibraryScreensUITests: XCTestCase {
     /// Recipes is pushed from More.
     private func openRecipes() {
         openTab("More")
-        let row = app.buttons["Recipes"].exists ? app.buttons["Recipes"] : app.staticTexts["Recipes"]
+        let row = element(id: "moreRow-Recipes")  // a bare "Recipes" label also matches the Brew tab
         XCTAssertTrue(row.waitForExistence(timeout: 10), "More has no Recipes row")
         row.tap()
         XCTAssertTrue(element(id: "recipesList").waitForExistence(timeout: 20))

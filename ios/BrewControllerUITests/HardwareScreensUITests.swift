@@ -42,9 +42,12 @@ final class HardwareScreensUITests: XCTestCase {
             let more = app.tabBars.buttons["More"]
             XCTAssertTrue(more.waitForExistence(timeout: 15), "no tab named \(name) and no More tab")
             more.tap()
-            let row = [app.buttons[name], app.staticTexts[name], app.cells.staticTexts[name]].first { $0.waitForExistence(timeout: 5) }
-            XCTAssertNotNil(row, "no row named \(name) in More")
-            row?.tap()
+            // By the row's identifier: a label such as "Machine" also names buttons on other tabs.
+            let back = app.navigationBars.buttons.element(boundBy: 0)
+            for _ in 0..<3 where !element(app, "moreTab").exists && back.exists { back.tap() }
+            let row = element(app, "moreRow-\(name)")
+            XCTAssertTrue(row.waitForExistence(timeout: 10), "no row named \(name) in More")
+            row.tap()
         }
         XCTAssertTrue(element(app, root).waitForExistence(timeout: 15), "\(name) did not open")
     }
