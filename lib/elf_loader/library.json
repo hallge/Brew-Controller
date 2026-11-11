@@ -1,0 +1,18 @@
+{
+  "name": "elf_loader",
+  "version": "2.1.0",
+  "description": "Espressif ELF loader (esp-iot-solution, components/elf_loader 2.1.0, Apache-2.0), vendored unmodified for the add-on module loader (docs/ADDONS.md). Only the files an ESP32-S3 build with the module code in PSRAM needs.",
+  "license": "Apache-2.0",
+  "build": {
+    "srcDir": "src",
+    "includeDir": "include",
+    "flags": [
+      "-std=gnu11",
+      "-DELF_LOADER_VER_MAJOR=2",
+      "-DELF_LOADER_VER_MINOR=1",
+      "-DELF_LOADER_VER_PATCH=0",
+      "-Wno-unused-function",
+      "-Wno-unused-variable"
+    ]
+  }
+}

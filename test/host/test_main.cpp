@@ -33,7 +33,13 @@
 #include "core/SwitchBotProtocol.h"
 #include "core/TasteProfile.h"
 #include "core/Telemetry.h"
+#include "addons/AddonAbi.h"
 #include "addons/AddonManager.h"
+#include "addons/AddonModule.h"
+#include "addons/ModuleAddon.h"
+#include "addons/ModuleFile.h"
+#include "Hello.h"
+#include "addons/AddonRules.h"
 #include "addons/NetGate.h"
 #include "core/Inflate.h"
 #include "core/TimeZone.h"
@@ -3166,6 +3172,8 @@ struct TestGrinder : addon::Addon, addon::GrinderDriver {
   int begun = 0, ended = 0, ticks = 0, shots = 0;
   std::vector<addon::GrindEvent> queue;
   addon::ShotReport lastReport;
+  bool shadow = false;   // a recipe in shadow mode: wants reports without the owner's switch
+  bool wantsShotReports() const override { return shadow; }
   const addon::AddonInfo &info() const override { return meta; }
   void begin(addon::Host &) override { ++begun; }
   void end() override { ++ended; }
@@ -3249,6 +3257,14 @@ struct NullHost : addon::Host {
   addon::GrinderInfo grinder() const override { return {}; }
   void *allocate(size_t size) override { return calloc(1, size); }
   bool fetchStart(addon::FetchJob &) override { return false; }
+  void notice(const char *) override {}
+  uint32_t chipFree() const override { return 0; }
+  const char *requestShotStart(uint16_t) override { return "no"; }
+  const char *appendFile(const char *, const char *, size_t) override { return "no"; }
+  const char *writeFile(const char *, const char *, size_t) override { return "no"; }
+  int32_t fileSize(const char *) const override { return -1; }
+  int32_t readFile(const char *, uint32_t, uint8_t *, size_t) const override { return -1; }
+  uint16_t recipeForGrinderRecipe(uint8_t) const override { return 0; }
 };
 
 static void testAddonManager() {
@@ -3398,6 +3414,749 @@ static void testAddonManager() {
   // Forgotten: off, settings and map gone.
   m.forget(0);
   CHECK(!m.slot(0).enabled && m.slot(0).map[2].recipeId == 0 && !m.slot(0).options.shotFeedback);
+}
+
+// Interface 2 (docs/ADDONS.md): the report's grind, the file and start rules, the C table's layout.
+static void testAddonGroundwork() {
+  printf("add-ons: interface 2, report, files, start, C table\n");
+  CHECK(addon::ADDON_API_VERSION == 2 && BBW_ADDON_ABI == addon::ADDON_API_VERSION);
+
+  // The report carries the grind the shot followed, and its new fields default to "not known".
+  {
+    addon::ShotReport blank;
+    CHECK(blank.recipeId == 0 && blank.grindSeq == 0 && !blank.advice.valid && blank.advice.action == addon::AdviceSnapshot::NONE);
+    CHECK(blank.targetTimeS == 0.0f && blank.pourTimeS == 0.0f && blank.firstDropS == 0.0f);
+    addon::MachineState ms;
+    CHECK(ms.shotPhase == addon::MachineState::PHASE_NONE && ms.shotElapsedMs == 0);
+  }
+  static const addon::AddonEntry table[] = {
+      {"test-grinder", []() -> addon::Addon * { return g_testGrinder = new TestGrinder(); }, {"/api/dev/", nullptr}},
+  };
+  {
+    addon::Manager m;
+    m.attach(table, 1);
+    NullHost host;
+    m.setHost(0, &host);
+    m.setEnabled(0, true);
+    m.slot(0).options.shotFeedback = true;
+    TestActions act;
+    act.list = {recipeView(2, "Triple", 24.0f, 48.0f)};
+    act.info.rangeKnown = true;
+    act.info.minStep = 1;
+    act.info.maxStep = 300;
+    addon::GrindEvent ev = grindOf(2, 24.0f, 24.0f, 48.0f, 80.0f, 1000);
+    ev.seq = 41;
+    g_testGrinder->queue.push_back(ev);
+    m.tick(1010, act);
+    CHECK(m.grindSeqForShot(2) == 0);            // no shot has started since the grind
+    m.noteShotStart(5000);
+    CHECK(m.grindSeqForShot(2) == 41 && m.grindSeqForShot(1) == 0);
+    addon::ShotReport given;
+    given.shotId = 7;
+    given.recipeId = 2;
+    given.targetTimeS = 30.0f;
+    given.advice.valid = true;
+    given.advice.action = addon::AdviceSnapshot::COARSER;
+    given.advice.suggestedSteps = 84;
+    m.shotSaved(2, given);
+    const addon::ShotReport &got = g_testGrinder->lastReport;
+    CHECK(got.shotId == 7 && got.grindSeq == 41 && got.recipeId == 2 && got.targetTimeS == 30.0f);
+    CHECK(got.advice.valid && got.advice.action == addon::AdviceSnapshot::COARSER && got.advice.suggestedSteps == 84);
+    // The grind is used up: a second shot on the recipe followed no grind.
+    m.noteShotStart(9000);
+    CHECK(m.grindSeqForShot(2) == 0);
+    m.shotSaved(2, given);
+    CHECK(g_testGrinder->lastReport.grindSeq == 0);
+    // The grind carries the recipe it mapped to (the card and the add-on's own log use it).
+    CHECK(m.slot(0).grind.recipeId == 2 && m.slot(0).grind.seq == 41);
+    // The lookup: by the link, 0 when unmapped, out of range, or the recipe is gone.
+    {
+      const auto list = act.list;
+      CHECK(m.recipeForGrinderRecipe(0, 2, list.data(), list.size()) == 2);   // grinder recipe 2 was mapped on that grind
+      CHECK(m.recipeForGrinderRecipe(0, 3, list.data(), list.size()) == 0);
+      CHECK(m.recipeForGrinderRecipe(0, 0, list.data(), list.size()) == 0);
+      CHECK(m.recipeForGrinderRecipe(0, addon::MAX_GRINDER_RECIPES + 1, list.data(), list.size()) == 0);
+      CHECK(m.recipeForGrinderRecipe(5, 2, list.data(), list.size()) == 0);   // no such add-on
+      CHECK(m.recipeForGrinderRecipe(0, 2, list.data(), 0) == 0);             // its recipe was deleted
+      CHECK(m.setMap(0, 5, 2) && m.recipeForGrinderRecipe(0, 5, list.data(), list.size()) == 2);
+      CHECK(m.setMap(0, 5, 0) && m.recipeForGrinderRecipe(0, 5, list.data(), list.size()) == 0);
+    }
+    // The report's new fields reach the add-on as given, and default to "not known".
+    {
+      addon::ShotReport blank;
+      CHECK(blank.coffeeId == 0 && blank.bagId == 0 && std::isnan(blank.roomTempC) && blank.coffee[0] == '\0');
+      addon::ShotReport full;
+      full.coffeeId = 12;
+      full.bagId = 3;
+      full.roomTempC = 21.5f;
+      snprintf(full.coffee, sizeof(full.coffee), "%s", "Idjwi Island");
+      m.shotSaved(2, full);
+      const addon::ShotReport &g = g_testGrinder->lastReport;
+      CHECK(g.coffeeId == 12 && g.bagId == 3 && g.roomTempC == 21.5f && strcmp(g.coffee, "Idjwi Island") == 0);
+      m.shotSaved(2, blank);
+      CHECK(std::isnan(g_testGrinder->lastReport.roomTempC));
+    }
+    // Shadow mode: reports reach an add-on that asks for them even with the owner's switch off.
+    {
+      m.slot(0).options.shotFeedback = false;
+      const int before = g_testGrinder->shots;
+      m.shotSaved(2, given);
+      CHECK(g_testGrinder->shots == before);          // off, and not asking: nothing
+      g_testGrinder->shadow = true;
+      m.shotSaved(2, given);
+      CHECK(g_testGrinder->shots == before + 1);      // asking: delivered
+      g_testGrinder->shadow = false;
+      m.slot(0).options.shotFeedback = true;
+    }
+    // A shot more than 15 minutes after its grind, or before it, followed no grind.
+    ev.seq = 42;
+    ev.atMs = 100000;
+    g_testGrinder->queue.push_back(ev);
+    m.tick(100010, act);
+    m.noteShotStart(100000 + addon::GRIND_WINDOW_MS + 5);
+    CHECK(m.grindSeqForShot(2) == 0);
+    // The add-on with nothing to say about a card: nothing declared.
+    char card[64];
+    CHECK(!g_testGrinder->cardJson(card, sizeof(card)));
+  }
+
+  // Which files an add-on may touch: /addons/<its id>/<name>, nothing else.
+  {
+    char p[64];
+    CHECK(addon::addonFilePath("mill", "compare.csv", p, sizeof(p)) && strcmp(p, "/addons/mill/compare.csv") == 0);
+    CHECK(addon::addonFilePath("mill", "compare_summary.csv", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "../x", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "..", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "a..b", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "/etc/passwd", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "/addons/other/x.csv", p, sizeof(p)));   // another id, by path
+    CHECK(!addon::addonFilePath("mill", "sub/x.csv", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "..\\x", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", ".hidden", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "UPPER.csv", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "this-name-is-far-too-long.csv", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("../mill", "x.csv", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("Mill", "x.csv", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("", "x.csv", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill/x", "y.csv", p, sizeof(p)));
+    CHECK(!addon::addonFilePath("mill", "x.csv", p, 8));                          // does not fit
+    // A path that would not fit a backup entry is refused, and what is allowed is a backup name.
+    CHECK(!addon::addonFilePath("an-addon-with-a-long-id-abc", "compare_summary.csv", p, sizeof(p)));
+    CHECK(addon::addonFilePath("my-grinder-addon", "compare_summary.csv", p, sizeof(p)) && strlen(p) <= bbw::BACKUP_NAME_MAX);
+    CHECK(bbw::backupNameOk(bbw::BACKUP_ENTRY_FILE, "/addons/mill/compare.csv"));
+    CHECK(!bbw::backupNameOk(bbw::BACKUP_ENTRY_FILE, "/other/compare.csv"));
+    CHECK(!bbw::backupNameOk(bbw::BACKUP_ENTRY_FILE, "/addons/mill/sub/x.csv"));
+    CHECK(!bbw::backupNameOk(bbw::BACKUP_ENTRY_FILE, "/addons/../x.csv"));
+    CHECK(!bbw::backupNameOk(bbw::BACKUP_ENTRY_FILE, "/addons//x.csv"));
+    CHECK(!bbw::backupNameOk(bbw::BACKUP_ENTRY_FILE, "/addons/mill/"));
+  }
+
+  // The limit and the reserve.
+  {
+    using addon::fileWriteRefusal;
+    const uint32_t big = 100u * 1024u * 1024u;
+    CHECK(fileWriteRefusal(0, 0, 300, big) == nullptr);
+    CHECK(fileWriteRefusal(addon::ADDON_FILE_LIMIT - 300, 0, 300, big) == nullptr);        // exactly at the limit
+    CHECK(fileWriteRefusal(addon::ADDON_FILE_LIMIT - 299, 0, 300, big) != nullptr);        // one byte over
+    // A replacement counts the new size, not old plus new.
+    CHECK(fileWriteRefusal(addon::ADDON_FILE_LIMIT, addon::ADDON_FILE_LIMIT, addon::ADDON_FILE_LIMIT, big) == nullptr);
+    CHECK(fileWriteRefusal(addon::ADDON_FILE_LIMIT, 1000, addon::ADDON_FILE_LIMIT, big) != nullptr);   // other files fill it
+    CHECK(fileWriteRefusal(addon::ADDON_FILE_LIMIT, 1000, 1000, big) == nullptr);
+    CHECK(fileWriteRefusal(addon::ADDON_FILE_LIMIT, addon::ADDON_FILE_LIMIT, addon::ADDON_FILE_LIMIT + 1, big) != nullptr);
+    // Free space: at least 512 kB must be left after the write.
+    CHECK(fileWriteRefusal(0, 0, 300, addon::ADDON_FILE_RESERVE + 300) == nullptr);
+    const char *low = fileWriteRefusal(0, 0, 300, addon::ADDON_FILE_RESERVE + 299);
+    CHECK(low && strcmp(low, "storage low") == 0);
+    CHECK(fileWriteRefusal(0, 0, 300, 100) != nullptr);                                    // less free than the write
+    CHECK(fileWriteRefusal(0, 0, 0, addon::ADDON_FILE_RESERVE) == nullptr);                // nothing to add
+    // A replacement that does not grow the file is allowed even when storage is low, and one that
+    // grows it is not.
+    CHECK(fileWriteRefusal(5000, 5000, 3000, addon::ADDON_FILE_RESERVE - 10) == nullptr);
+    CHECK(fileWriteRefusal(5000, 5000, 5001, addon::ADDON_FILE_RESERVE - 10) != nullptr);
+  }
+
+  // Starting a shot: every one of the checks, one at a time.
+  {
+    addon::StartContext c;
+    c.webStartEnabled = c.ready = c.scaleConnected = true;
+    c.activeRecipeId = c.wantedRecipeId = 2;
+    CHECK(addon::startRefusal(c) == nullptr);
+    { auto x = c; x.webStartEnabled = false; CHECK(addon::startRefusal(x) && strstr(addon::startRefusal(x), "web page is off")); }
+    { auto x = c; x.updateBusy = true; CHECK(addon::startRefusal(x) != nullptr); }
+    { auto x = c; x.ready = false; CHECK(addon::startRefusal(x) != nullptr); }
+    { auto x = c; x.scaleConnected = false; CHECK(addon::startRefusal(x) != nullptr); }
+    { auto x = c; x.dripOrResult = true; CHECK(addon::startRefusal(x) != nullptr); }
+    { auto x = c; x.activeRecipeId = 3; CHECK(addon::startRefusal(x) && strstr(addon::startRefusal(x), "recipe")); }
+    { auto x = c; x.wantedRecipeId = 0; x.activeRecipeId = 0; CHECK(addon::startRefusal(x) != nullptr); }
+    { auto x = c; x.cupRequired = true; x.cupPresent = false; CHECK(addon::startRefusal(x) && strstr(addon::startRefusal(x), "cup")); }
+    { auto x = c; x.cupRequired = true; x.cupPresent = true; CHECK(addon::startRefusal(x) == nullptr); }
+    { auto x = c; x.webStartEnabled = false; x.activeRecipeId = 9; x.ready = false; CHECK(addon::startRefusal(x) != nullptr); }  // off wins
+  }
+
+  // The C table: sizes are fixed, and match the C++ interface where they carry the same data.
+  {
+    CHECK(sizeof(bbw_machine_state) == 28 && sizeof(bbw_grinder_info) == 20 && sizeof(bbw_grind_event) == 32);
+    CHECK(sizeof(bbw_advice) == 20 && sizeof(bbw_shot_report) == 96 && sizeof(bbw_response) == 548);
+    CHECK(sizeof(bbw_host_api) == 2 * sizeof(uint32_t) + (1 + BBW_HOST_API_SLOTS) * sizeof(void *));
+    CHECK(sizeof(bbw_addon_api) == 2 * sizeof(uint32_t) + (1 + BBW_ADDON_API_SLOTS) * sizeof(void *));
+    CHECK(offsetof(bbw_host_api, abi) == 0 && offsetof(bbw_host_api, size) == 4);
+    CHECK(offsetof(bbw_addon_api, abi) == 0 && offsetof(bbw_addon_api, size) == 4);
+    // The table has a slot for every Host and Addon call of interface 2 (host: 8 older + 8 new).
+    CHECK(BBW_HOST_API_SLOTS == 16 && BBW_ADDON_API_SLOTS == 13);
+    // Appended only: the first 56 bytes of the report, and every older field of the grind event, stay put.
+    CHECK(offsetof(bbw_shot_report, advice) == 36 && offsetof(bbw_shot_report, coffee_id) == 56 &&
+          offsetof(bbw_shot_report, room_temp_c) == 60 && offsetof(bbw_shot_report, coffee) == 64);
+    CHECK(offsetof(bbw_grind_event, grinder_recipe) == 28 && offsetof(bbw_grind_event, recipe_id) == 30);
+    CHECK(sizeof(addon::ShotReport::coffee) == sizeof(bbw_shot_report::coffee));
+    // Each report field of the C++ struct has its place in the C one.
+    addon::ShotReport r;
+    CHECK(sizeof(r.recipeId) == sizeof(bbw_shot_report::recipe_id) && sizeof(r.grindSeq) == sizeof(bbw_shot_report::grind_seq) &&
+          sizeof(r.advice.suggestedSteps) == sizeof(bbw_advice::suggested_steps));
+    CHECK(sizeof(addon::MachineState::shotElapsedMs) == sizeof(bbw_machine_state::shot_elapsed_ms));
+  }
+}
+
+// ---- Add-ons as modules (docs/ADDONS.md): the .bbwmod file, the crash guard, the C-table boundary ----
+
+static std::vector<uint8_t> makeModuleFile(const char *id, uint16_t abi, uint32_t minFw, size_t elfSize,
+                                           const char *version = "1.0.0") {
+  std::vector<uint8_t> f(addon::module::HEADER_SIZE + elfSize, 0);
+  for (size_t i = 0; i < elfSize; ++i) f[addon::module::HEADER_SIZE + i] = static_cast<uint8_t>(i * 31 + 7);
+  if (elfSize >= 4) {
+    const uint8_t elf[4] = {0x7f, 'E', 'L', 'F'};
+    memcpy(&f[addon::module::HEADER_SIZE], elf, 4);
+  }
+  addon::module::Header h;
+  memset(&h, 0, sizeof(h));
+  memcpy(h.magic, addon::module::MAGIC, 4);
+  h.headerSize = addon::module::HEADER_SIZE;
+  h.abi = abi;
+  h.elfSize = static_cast<uint32_t>(elfSize);
+  h.minFirmware = minFw;
+  strncpy(h.id, id, sizeof(h.id) - 1);
+  strncpy(h.version, version, sizeof(h.version) - 1);
+  Sha256 sha;
+  sha.update(&f[addon::module::HEADER_SIZE], elfSize);
+  sha.finish(h.sha256);
+  memcpy(f.data(), &h, sizeof(h));
+  return f;
+}
+
+struct MemGuardStore : addon::module::GuardStore {
+  std::string loading, blocked;
+  void get(const char *key, char *out, size_t size) override {
+    const std::string &v = strcmp(key, "loading") == 0 ? loading : blocked;
+    strncpy(out, v.c_str(), size - 1);
+    out[size - 1] = '\0';
+  }
+  void put(const char *key, const char *value) override { (strcmp(key, "loading") == 0 ? loading : blocked) = value; }
+};
+
+// What a host does for the tests: records the calls a module makes through the C table.
+struct RecHost : addon::Host {
+  std::vector<std::string> logs, notices, files;
+  addon::MachineState state;
+  addon::FetchJob *job = nullptr;
+  int allocated = 0;
+  uint32_t nowMs() const override { return 12345; }
+  uint32_t epochS() const override { return 1700000000; }
+  const char *config(const char *key) const override { return strcmp(key, "greeting") == 0 ? "hi" : ""; }
+  void log(const char *t) override { logs.push_back(t); }
+  addon::MachineState machine() const override { return state; }
+  addon::GrinderInfo grinder() const override {
+    addon::GrinderInfo g;
+    g.modelId = 7;
+    strcpy(g.unit, "um");
+    g.divisor = 2;
+    g.subSteps = 4;
+    g.minStep = 3;
+    g.maxStep = 900;
+    g.rangeKnown = true;
+    return g;
+  }
+  void *allocate(size_t size) override {
+    ++allocated;
+    return calloc(1, size);
+  }
+  bool fetchStart(addon::FetchJob &j) override {
+    if (strncmp(j.url, "https://", 8) == 0 && strlen(j.certSha256) < 64) {
+      strcpy(j.problem, "https needs the certificate's fingerprint");
+      return false;
+    }
+    job = &j;
+    j.state.store(addon::FetchJob::RUNNING);
+    return true;
+  }
+  void notice(const char *t) override { notices.push_back(t); }
+  uint32_t chipFree() const override { return 31337; }
+  uint16_t recipeForGrinderRecipe(uint8_t g) const override { return g == 2 ? 77 : 0; }
+  const char *requestShotStart(uint16_t r) override { return r == 3 ? nullptr : "refused for the test"; }
+  const char *appendFile(const char *n, const char *d, size_t len) override {
+    files.push_back(std::string(n) + ":" + std::string(d, len));
+    return nullptr;
+  }
+  const char *writeFile(const char *, const char *, size_t) override { return "read only"; }
+  int32_t fileSize(const char *n) const override { return strcmp(n, "a.csv") == 0 ? 42 : -1; }
+  int32_t readFile(const char *n, uint32_t off, uint8_t *out, size_t cap) const override {
+    if (strcmp(n, "a.csv") != 0) return -1;
+    const char text[] = "0123456789";
+    if (off >= 10) return 0;
+    const size_t k = std::min<size_t>(cap, 10 - off);
+    memcpy(out, text + off, k);
+    return static_cast<int32_t>(k);
+  }
+};
+
+static addon::Addon *g_modMade = nullptr;
+static addon::Addon *makeModuleTestGrinder() { return g_modMade = new TestGrinder(); }
+static const bbw_addon_api *moduleEntryCall(void *, const bbw_host_api *host) {
+  return addon::moduleEntry(host, makeModuleTestGrinder, "/api/dev/", nullptr);
+}
+static void *testCalloc(size_t n) { return calloc(1, n); }
+
+static const bbw_addon_api *badNone(void *, const bbw_host_api *) { return nullptr; }
+static const bbw_addon_api *badWrongSize(void *, const bbw_host_api *) {
+  static bbw_addon_api t;
+  memset(&t, 0, sizeof(t));
+  t.abi = BBW_ADDON_ABI;
+  t.size = sizeof(t) - 4;
+  return &t;
+}
+static const bbw_addon_api *badWrongAbi(void *, const bbw_host_api *) {
+  static bbw_addon_api t;
+  memset(&t, 0, sizeof(t));
+  t.abi = BBW_ADDON_ABI + 1;
+  t.size = sizeof(t);
+  return &t;
+}
+static const bbw_addon_api *badNoInfo(void *, const bbw_host_api *) {
+  static bbw_addon_api t;
+  memset(&t, 0, sizeof(t));
+  t.abi = BBW_ADDON_ABI;
+  t.size = sizeof(t);
+  return &t;
+}
+static const bbw_addon_api *helloEntry(void *, const bbw_host_api *h) {
+  return addon::moduleEntry(h, addon::makeHello, "/api/hello/", nullptr);
+}
+
+static TestGrinder *g_directGrinder = nullptr;
+static addon::Addon *makeDirectGrinder() { return g_directGrinder = new TestGrinder(); }
+static addon::Addon *makeWrappedGrinder() { return new addon::ModuleAddon(moduleEntryCall, nullptr, testCalloc); }
+static addon::Addon *makeOldStub() { return new addon::ModuleStub("old-mod", "", "0.9"); }
+
+static void testAddonModules() {
+  printf("add-on modules: file, guard, C-table boundary\n");
+  namespace mod = addon::module;
+
+  // ---- versions, ids, names, repositories, checksums ----
+  CHECK(mod::packVersion("0.3.2") == ((0u << 16) | (3u << 8) | 2u) && mod::packVersion("v1.12.3-rc1") == ((1u << 16) | (12u << 8) | 3u));
+  CHECK(mod::packVersion("dev") == 0 && mod::packVersion("") == 0 && mod::packVersion(nullptr) == 0 && mod::packVersion("2") == (2u << 16));
+  CHECK(mod::validId("hello") && mod::validId("a1-b2") && !mod::validId("a") && !mod::validId("-ab") && !mod::validId("Ab") &&
+        !mod::validId("a_b") && !mod::validId("../x") && !mod::validId("") && !mod::validId(nullptr));
+  {
+    char id[32];
+    CHECK(mod::idFromAssetName("hello.bbwmod", id, sizeof(id)) && strcmp(id, "hello") == 0);
+    CHECK(!mod::idFromAssetName("hello.bin", id, sizeof(id)) && !mod::idFromAssetName(".bbwmod", id, sizeof(id)) &&
+          !mod::idFromAssetName("a.bbwmod", id, sizeof(id)) && !mod::idFromAssetName("../x.bbwmod", id, sizeof(id)));
+  }
+  CHECK(mod::validRepo("owner/name") && mod::validRepo("a-b.c/d_e") && !mod::validRepo("owner") && !mod::validRepo("a/b/c") &&
+        !mod::validRepo("/name") && !mod::validRepo("owner/") && !mod::validRepo("own er/name") && !mod::validRepo("a/..") &&
+        !mod::validRepo("") && !mod::validRepo(nullptr) && !mod::validRepo("https://x/y"));
+  {
+    const char *sums =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  other.bbwmod\r\n"
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789ABCDEF *hello.bbwmod\r\n"
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  xhello.bbwmod\n";
+    uint8_t out[32];
+    CHECK(mod::sumsLookup(sums, "hello.bbwmod", out) && out[0] == 0x01 && out[1] == 0x23 && out[31] == 0xEF);
+    CHECK(mod::sumsLookup(sums, "other.bbwmod", out) && out[0] == 0xaa);
+    CHECK(mod::sumsLookup(sums, "xhello.bbwmod", out) && out[0] == 0xbb);
+    CHECK(!mod::sumsLookup(sums, "missing.bbwmod", out) && !mod::sumsLookup(sums, "ello.bbwmod", out) && !mod::sumsLookup("", "a", out));
+    CHECK(!mod::sumsLookup("zzzz  hello.bbwmod\n", "hello.bbwmod", out));  // not 64 hex digits
+  }
+
+  // ---- the file: wrong magic, ABI, size, SHA-256 ----
+  {
+    mod::Header h;
+    auto good = makeModuleFile("hello", 2, 0, 300);
+    CHECK(mod::verifyFile(good.data(), good.size(), h) == nullptr && strcmp(h.id, "hello") == 0 && h.elfSize == 300 &&
+          strcmp(h.version, "1.0.0") == 0);
+    auto bad = good;
+    bad[0] = 'X';
+    const char *why = mod::verifyFile(bad.data(), bad.size(), h);
+    CHECK(why && strstr(why, "not an add-on"));
+    bad = good;
+    bad[addon::module::HEADER_SIZE + 10] ^= 1;  // one bit of the ELF
+    why = mod::verifyFile(bad.data(), bad.size(), h);
+    CHECK(why && strstr(why, "checksum"));
+    bad = good;
+    bad[4] = 0;  // header size 0 (little endian, low byte)
+    CHECK(mod::verifyFile(bad.data(), bad.size(), h) != nullptr);
+    bad = good;
+    bad.push_back(0);  // longer than the header says
+    why = mod::verifyFile(bad.data(), bad.size(), h);
+    CHECK(why && strstr(why, "size"));
+    bad = good;
+    bad.pop_back();
+    why = mod::verifyFile(bad.data(), bad.size(), h);
+    CHECK(why && strstr(why, "size"));
+    CHECK(mod::verifyFile(good.data(), 100, h) != nullptr && mod::verifyFile(nullptr, 0, h) != nullptr);
+    auto empty = makeModuleFile("hello", 2, 0, 0);
+    CHECK(mod::verifyFile(empty.data(), empty.size(), h) != nullptr);
+    auto big = makeModuleFile("hello", 2, 0, mod::MODULE_MAX_ELF);
+    CHECK(mod::verifyFile(big.data(), big.size(), h) == nullptr);   // the limit itself is allowed
+    auto over = makeModuleFile("hello", 2, 0, mod::MODULE_MAX_ELF + 1);
+    why = mod::verifyFile(over.data(), over.size(), h);
+    CHECK(why && strstr(why, "256"));
+    auto badId = makeModuleFile("Hello!", 2, 0, 64);
+    why = mod::verifyFile(badId.data(), badId.size(), h);
+    CHECK(why && strstr(why, "id"));
+    // The ABI and the minimum firmware.
+    mod::Header a;
+    auto f1 = makeModuleFile("hello", 2, 0, 64);
+    mod::verifyFile(f1.data(), f1.size(), a);
+    CHECK(mod::fits(a, 2, mod::packVersion("0.3.2")) == mod::Fit::OK);
+    CHECK(mod::fits(a, 3, mod::packVersion("0.3.2")) == mod::Fit::NEEDS_REBUILD);      // firmware has a newer interface
+    CHECK(mod::fits(a, 1, 0) == mod::Fit::NEEDS_REBUILD);                              // or an older one
+    auto f2 = makeModuleFile("hello", 2, mod::packVersion("0.4.0"), 64);
+    mod::verifyFile(f2.data(), f2.size(), a);
+    CHECK(mod::fits(a, 2, mod::packVersion("0.3.2")) == mod::Fit::NEEDS_FIRMWARE);
+    CHECK(mod::fits(a, 2, mod::packVersion("0.4.0")) == mod::Fit::OK && mod::fits(a, 2, mod::packVersion("1.0.0")) == mod::Fit::OK);
+    CHECK(mod::fits(a, 2, 0) == mod::Fit::OK);                                         // a build by hand: any minimum
+  }
+
+  // ---- the crash guard ----
+  {
+    MemGuardStore st;
+    mod::Guard g(st);
+    g.boot(false);                                   // nothing set: nothing happens
+    CHECK(!g.blocked("hello") && st.loading.empty());
+    g.loading("hello", 1000);
+    CHECK(st.loading == "hello" && g.armed());
+    g.service(1000 + mod::Guard::CLEAR_AFTER_MS - 1);
+    CHECK(st.loading == "hello");                    // not yet 120 s
+    g.service(1000 + mod::Guard::CLEAR_AFTER_MS);
+    CHECK(st.loading.empty() && !g.armed());         // cleared after 120 s of normal running
+  }
+  {
+    MemGuardStore st;
+    st.loading = "hello";
+    mod::Guard g(st);
+    g.boot(true);                                    // came back after a panic or watchdog, flag still set
+    CHECK(g.blocked("hello") && st.loading.empty() && !g.blocked("other"));
+    mod::Guard again(st);                            // and the next start too
+    again.boot(true);
+    CHECK(again.blocked("hello"));
+    again.retry("hello");
+    CHECK(!again.blocked("hello") && st.blocked.empty());
+  }
+  {
+    MemGuardStore st;
+    st.loading = "hello";
+    mod::Guard g(st);
+    g.boot(false);                                   // a restart by the owner (or an update): not a crash
+    CHECK(!g.blocked("hello") && st.loading.empty());
+  }
+  {
+    MemGuardStore st;
+    mod::Guard g(st);
+    g.loading("aa-mod", 0);
+    g.loading("bb-mod", 50000);                      // the clock restarts with each module
+    CHECK(st.loading == "aa-mod,bb-mod");
+    g.service(mod::Guard::CLEAR_AFTER_MS);
+    CHECK(!st.loading.empty());
+    g.service(50000 + mod::Guard::CLEAR_AFTER_MS);
+    CHECK(st.loading.empty());
+    st.loading = "aa-mod,bb-mod";
+    mod::Guard h(st);
+    h.boot(true);                                    // it cannot tell which: both are held back
+    CHECK(h.blocked("aa-mod") && h.blocked("bb-mod"));
+    h.retry("aa-mod");
+    CHECK(!h.blocked("aa-mod") && h.blocked("bb-mod") && st.blocked == "bb-mod");
+  }
+
+  // ---- the boundary: add-on -> AddonModule.h -> C table -> ModuleAddon.h ----
+  {
+    RecHost host;
+    addon::ModuleAddon m(moduleEntryCall, nullptr, testCalloc);
+    TestGrinder *inner = static_cast<TestGrinder *>(g_modMade);
+    CHECK(m.ok() && inner != nullptr && m.table()->abi == BBW_ADDON_ABI && m.table()->size == sizeof(bbw_addon_api));
+    // What it says about itself comes through unchanged.
+    const addon::AddonInfo &info = m.info();
+    CHECK(strcmp(info.id, "test-grinder") == 0 && strcmp(info.name, "Test grinder") == 0 && strcmp(info.version, "1") == 0 &&
+          info.api == addon::ADDON_API_VERSION && info.kind == addon::Kind::GRINDER && info.fieldCount == 3);
+    CHECK(strcmp(info.fields[0].key, "grinder_url") == 0 && info.fields[0].type == addon::FieldType::URL &&
+          strcmp(info.fields[0].def, "https://10.0.0.9") == 0 && info.fields[1].type == addon::FieldType::SECRET &&
+          info.fields[2].type == addon::FieldType::NUMBER);
+    CHECK(m.route(0) && strcmp(m.route(0), "/api/dev/") == 0 && m.route(1) == nullptr);
+    // Switching on and off, and the tick, are forwarded.
+    m.begin(host);
+    m.tick(10);
+    m.tick(20);
+    CHECK(inner->begun == 1 && inner->ticks == 2);
+    // The grinder side: caps, link, a queued grind arrives field for field.
+    CHECK(m.grinder() == &m && m.caps() == (addon::GRIND_EVENTS | addon::SHOT_FEEDBACK) && m.link() == addon::Link::CONNECTED);
+    inner->queue.push_back(grindOf(3, 18.2f, 18.0f, 36.0f, 74.5f, 777));
+    inner->queue.back().seq = 9;
+    inner->queue.back().recipeTimeS = 29.0f;
+    inner->queue.back().filter = 2;
+    addon::GrindEvent ev;
+    inner->queue.back().recipeId = 12;
+    CHECK(m.takeGrind(ev) && ev.seq == 9 && ev.atMs == 777 && ev.grinderRecipe == 3 && ev.filter == 2 && ev.recipeId == 12);
+    CHECK_NEAR(ev.doseActualG, 18.2, 1e-5);
+    CHECK_NEAR(ev.doseTargetG, 18.0, 1e-5);
+    CHECK_NEAR(ev.gapUm, 74.5, 1e-5);
+    CHECK_NEAR(ev.beverageTargetG, 36.0, 1e-5);
+    CHECK_NEAR(ev.recipeTimeS, 29.0, 1e-5);
+    CHECK(!m.takeGrind(ev));
+    // NaN stays NaN across the table.
+    inner->queue.push_back(addon::GrindEvent());
+    CHECK(m.takeGrind(ev) && std::isnan(ev.doseActualG) && std::isnan(ev.gapUm));
+    // A shot report, every field, including the advice.
+    addon::ShotReport r;
+    r.shotId = 41;
+    r.totalTimeS = 31.5f;
+    r.yieldG = 36.2f;
+    r.weighed = true;
+    r.aborted = false;
+    r.recipeId = 12;
+    r.targetTimeS = 30.0f;
+    r.timeBasis = 1;
+    r.pourTimeS = 25.5f;
+    r.firstDropS = 6.0f;
+    r.grindSeq = 9;
+    r.coffeeId = 5;
+    r.bagId = 3;
+    r.roomTempC = 21.5f;
+    strcpy(r.coffee, "Idjwi Island");
+    r.advice.valid = true;
+    r.advice.action = addon::AdviceSnapshot::COARSER;
+    r.advice.hasNumber = true;
+    r.advice.currentSteps = 80;
+    r.advice.suggestedSteps = 84;
+    r.advice.umPerStep = 1.0f;
+    r.advice.umPerS = 2.5f;
+    r.advice.stepLimited = true;
+    r.advice.counted = true;
+    m.onShotComplete(r);
+    const addon::ShotReport &g = inner->lastReport;
+    CHECK(inner->shots == 1 && g.shotId == 41 && g.weighed && !g.aborted && g.recipeId == 12 && g.timeBasis == 1 && g.grindSeq == 9);
+    CHECK_NEAR(g.totalTimeS, 31.5, 1e-5);
+    CHECK_NEAR(g.yieldG, 36.2, 1e-5);
+    CHECK_NEAR(g.targetTimeS, 30.0, 1e-5);
+    CHECK_NEAR(g.pourTimeS, 25.5, 1e-5);
+    CHECK_NEAR(g.firstDropS, 6.0, 1e-5);
+    CHECK(g.advice.valid && g.advice.action == addon::AdviceSnapshot::COARSER && g.advice.hasNumber && g.advice.currentSteps == 80 &&
+          g.advice.suggestedSteps == 84 && g.advice.stepLimited && g.advice.counted);
+    CHECK_NEAR(g.advice.umPerStep, 1.0, 1e-5);
+    CHECK_NEAR(g.advice.umPerS, 2.5, 1e-5);
+    CHECK(g.coffeeId == 5 && g.bagId == 3 && strcmp(g.coffee, "Idjwi Island") == 0);
+    CHECK_NEAR(g.roomTempC, 21.5, 1e-5);
+    // An unknown room temperature (NaN) and a long coffee name cross intact (cut to fit).
+    r.roomTempC = NAN;
+    memset(r.coffee, 'x', sizeof(r.coffee) - 1);
+    r.coffee[sizeof(r.coffee) - 1] = '\0';
+    m.onShotComplete(r);
+    CHECK(std::isnan(inner->lastReport.roomTempC) && strlen(inner->lastReport.coffee) == sizeof(r.coffee) - 1);
+    // The add-on's own request for reports (shadow mode) is forwarded.
+    CHECK(!m.wantsShotReports());
+    inner->shadow = true;
+    CHECK(m.wantsShotReports());
+    // Switched off: forwarded.
+    m.end();
+    CHECK(inner->ended == 1);
+  }
+
+  // ---- the host's calls, as the module sees them ----
+  {
+    RecHost host;
+    host.state.power = addon::MachineState::ON;
+    host.state.shotPhase = addon::MachineState::PHASE_POURING;
+    host.state.shotElapsedMs = 12000;
+    host.state.warming = true;
+    host.state.brewing = true;
+    host.state.scaleConnected = true;
+    host.state.lastShotId = 5;
+    host.state.lastShotTimeS = 28.5f;
+    host.state.lastShotYieldG = 36.0f;
+    host.state.lastShotAgeS = 99;
+    addon::HostBridge bridge;
+    // Before begin: harmless defaults, and memory from the loader's allocator.
+    addon::ModuleHost early(bridge.api());
+    CHECK(early.nowMs() == 0 && strcmp(early.config("greeting"), "") == 0 && early.allocate(8) == nullptr && early.fileSize("a.csv") == -1);
+    CHECK(early.requestShotStart(3) != nullptr && !early.machine().brewing);
+    bridge.useAllocator(testCalloc);
+    void *early1 = early.allocate(16);
+    CHECK(early1 != nullptr);
+    free(early1);
+    bridge.attach(&host);
+    addon::ModuleHost mh(bridge.api());
+    CHECK(mh.nowMs() == 12345 && mh.epochS() == 1700000000 && strcmp(mh.config("greeting"), "hi") == 0 && mh.chipFree() == 31337);
+    mh.log("hello");
+    mh.notice("a notice");
+    CHECK(host.logs.size() == 1 && host.logs[0] == "hello" && host.notices.size() == 1 && host.notices[0] == "a notice");
+    const addon::MachineState ms = mh.machine();
+    CHECK(ms.power == addon::MachineState::ON && ms.shotPhase == addon::MachineState::PHASE_POURING && ms.shotElapsedMs == 12000 &&
+          ms.warming && ms.brewing && ms.scaleConnected && ms.lastShotId == 5 && ms.lastShotAgeS == 99);
+    CHECK_NEAR(ms.lastShotTimeS, 28.5, 1e-5);
+    CHECK_NEAR(ms.lastShotYieldG, 36.0, 1e-5);
+    const addon::GrinderInfo gi = mh.grinder();
+    CHECK(gi.modelId == 7 && strcmp(gi.unit, "um") == 0 && gi.divisor == 2 && gi.subSteps == 4 && gi.minStep == 3 && gi.maxStep == 900 && gi.rangeKnown);
+    void *mem = mh.allocate(32);
+    CHECK(mem != nullptr && host.allocated == 1);
+    free(mem);
+    CHECK(mh.recipeForGrinderRecipe(2) == 77 && mh.recipeForGrinderRecipe(3) == 0);
+    CHECK(mh.requestShotStart(3) == nullptr && strcmp(mh.requestShotStart(4), "refused for the test") == 0);
+    CHECK(mh.appendFile("a.csv", "row1\n", 5) == nullptr && host.files.size() == 1 && host.files[0] == "a.csv:row1\n");
+    CHECK(strcmp(mh.writeFile("a.csv", "x", 1), "read only") == 0 && mh.fileSize("a.csv") == 42 && mh.fileSize("b.csv") == -1);
+    uint8_t buf[4];
+    CHECK(mh.readFile("a.csv", 2, buf, 4) == 4 && memcmp(buf, "2345", 4) == 0 && mh.readFile("a.csv", 8, buf, 4) == 2 &&
+          mh.readFile("a.csv", 10, buf, 4) == 0 && mh.readFile("b.csv", 0, buf, 4) == -1);
+
+    // A fetch: started through the table, finished on the network task, handed back on the next ticks.
+    char out[64] = {};
+    addon::FetchJob job;
+    strcpy(job.url, "http://10.0.0.9/x");
+    job.post = true;
+    job.body = "{\"a\":1}";
+    job.contentType = "text/plain";
+    strcpy(job.cookie, "PHPSESSID=abc");
+    job.connectTimeoutMs = 1234;
+    job.totalTimeoutMs = 5678;
+    job.out = reinterpret_cast<uint8_t *>(out);
+    job.outCap = sizeof(out);
+    CHECK(mh.fetchStart(job) && job.running() && host.job != nullptr);
+    const addon::FetchJob &seen = *host.job;
+    CHECK(strcmp(seen.url, "http://10.0.0.9/x") == 0 && seen.post && strcmp(seen.body, "{\"a\":1}") == 0 &&
+          strcmp(seen.contentType, "text/plain") == 0 && strcmp(seen.cookie, "PHPSESSID=abc") == 0 &&
+          seen.connectTimeoutMs == 1234 && seen.totalTimeoutMs == 5678 && seen.outCap == sizeof(out) &&
+          seen.out == reinterpret_cast<uint8_t *>(out));
+    CHECK(!mh.fetchStart(job));                       // already running
+    bridge.pump();
+    mh.pump();
+    CHECK(job.running());                             // the network task has not finished
+    // The network task writes straight into the module's buffer and finishes.
+    strcpy(out, "answer");
+    host.job->outLen = 6;
+    host.job->status = 200;
+    host.job->truncated = true;
+    strcpy(host.job->setCookie, "PHPSESSID=new");
+    host.job->state.store(addon::FetchJob::DONE);
+    mh.pump();                                        // the module's tick alone: the firmware has not handed it over yet
+    CHECK(job.running());
+    bridge.pump();
+    mh.pump();
+    CHECK(job.done() && job.outLen == 6 && job.status == 200 && job.truncated && strcmp(job.setCookie, "PHPSESSID=new") == 0 &&
+          strcmp(out, "answer") == 0);
+    // Refused starts say why: https without a fingerprint.
+    addon::FetchJob bad;
+    strcpy(bad.url, "https://10.0.0.9/x");
+    CHECK(!mh.fetchStart(bad) && strstr(bad.problem, "fingerprint") != nullptr && !bad.running());
+    // The job can be used again.
+    job.state.store(addon::FetchJob::IDLE);
+    CHECK(mh.fetchStart(job));
+    bridge.attach(nullptr);                           // switched off: calls find nothing, and start nothing
+    addon::FetchJob after;
+    strcpy(after.url, "http://10.0.0.9/y");
+    CHECK(!mh.fetchStart(after) && strstr(after.problem, "not switched on") != nullptr);
+  }
+
+  // ---- the same grind policy through the table as compiled in ----
+  {
+    auto scenario = [](addon::Manager &m, TestGrinder *g, TestActions &act) {
+      act.list.push_back(recipeView(1, "Double", 18.0f, 36.0f));
+      act.info.rangeKnown = true;
+      act.info.minStep = 1;
+      act.info.maxStep = 2000;
+      act.um = 1.0f;
+      m.slot(0).options.shotFeedback = true;
+      m.setEnabled(0, true);
+      g->queue.push_back(grindOf(1, 18.4f, 18.0f, 36.0f, 74.0f, 1000));
+      m.tick(1010, act);
+      addon::ShotReport r;
+      r.shotId = 3;
+      r.totalTimeS = 30.0f;
+      m.shotSaved(1, r);
+    };
+    static const addon::AddonEntry directTable[] = {{"test-grinder", makeDirectGrinder, {"/api/dev/", nullptr}}};
+    addon::Manager a;
+    a.attach(directTable, 1);
+    NullHost hostA;
+    a.setHost(0, &hostA);
+    TestActions actA;
+    scenario(a, g_directGrinder, actA);
+    static const addon::AddonEntry moduleTable[] = {{"test-grinder", makeWrappedGrinder, {"/api/dev/", nullptr}}};
+    addon::Manager b;
+    b.attach(moduleTable, 1);
+    NullHost hostB;
+    b.setHost(0, &hostB);
+    TestActions actB;
+    TestGrinder *inner = static_cast<TestGrinder *>(g_modMade);
+    scenario(b, inner, actB);
+    CHECK(a.slot(0).apiOk && b.slot(0).apiOk && b.slot(0).started);
+    CHECK(actA.adopted == actB.adopted && !actB.adopted.empty() && actA.adopted[0].second == 74);
+    CHECK(actA.target == actB.target && actA.targetRecipe == actB.targetRecipe && actB.targetCalls == actA.targetCalls);
+    CHECK(a.slot(0).plan.mapped && b.slot(0).plan.mapped && a.slot(0).plan.doseDg == b.slot(0).plan.doseDg &&
+          a.slot(0).plan.shotTargetG == b.slot(0).plan.shotTargetG);
+    CHECK(inner->shots == g_directGrinder->shots && g_directGrinder->shots == 1);
+    CHECK(inner->lastReport.grindSeq == g_directGrinder->lastReport.grindSeq);
+    // The route reaches the module only under the prefix it declared.
+    CHECK(b.routeFor("/api/dev/status") == 0 && b.routeFor("/api/other/x") == -1);
+  }
+
+  // ---- a table the firmware cannot use is refused, not followed ----
+  {
+    CHECK(!addon::ModuleAddon(badNone, nullptr).ok() && !addon::ModuleAddon(badWrongSize, nullptr).ok() &&
+          !addon::ModuleAddon(badWrongAbi, nullptr).ok() && !addon::ModuleAddon(badNoInfo, nullptr).ok() &&
+          !addon::ModuleAddon(nullptr, nullptr).ok());
+    // A refused module still behaves: every call does nothing.
+    addon::ModuleAddon dead(badNone, nullptr);
+    NullHost h;
+    dead.begin(h);
+    dead.tick(1);
+    dead.end();
+    addon::GrindEvent ev;
+    char buf[16] = "x";
+    CHECK(dead.caps() == 0 && !dead.takeGrind(ev) && !dead.command("c", "a", buf, sizeof(buf)) && dead.grinder() == nullptr);
+    dead.statusText(buf, sizeof(buf));
+    CHECK(buf[0] == '\0');
+    // The module entry refuses a host table of another layout.
+    bbw_host_api other;
+    memset(&other, 0, sizeof(other));
+    other.abi = BBW_ADDON_ABI;
+    other.size = sizeof(other) + 4;
+    CHECK(addon::moduleEntry(&other, makeModuleTestGrinder, nullptr, nullptr) == nullptr &&
+          addon::moduleEntry(nullptr, makeModuleTestGrinder, nullptr, nullptr) == nullptr);
+    // A stub is listed but never started.
+    addon::ModuleStub stub("old-mod", "", "0.9");
+    CHECK(strcmp(stub.info().id, "old-mod") == 0 && strcmp(stub.info().name, "old-mod") == 0 && stub.info().api == 0);
+    static const addon::AddonEntry stubTable[] = {{"old-mod", makeOldStub, {nullptr, nullptr}}};
+    addon::Manager m;
+    m.attach(stubTable, 1);
+    NullHost nh;
+    m.setHost(0, &nh);
+    CHECK(!m.slot(0).apiOk && !m.setEnabled(0, true) && !m.slot(0).started);
+  }
+
+  // ---- the spike's test module, built into the host tests as the same code the board loads ----
+  {
+    RecHost host;
+    addon::ModuleAddon m(helloEntry, nullptr, testCalloc);
+    CHECK(m.ok() && strcmp(m.info().id, "hello") == 0 && m.info().fieldCount == 1);
+    m.begin(host);
+    for (uint32_t i = 1; i <= 3000; ++i) m.tick(i * 10);
+    char status[96];
+    m.statusText(status, sizeof(status));
+    CHECK(strncmp(status, "ok: hi, 3000 ticks, longest gap 10 ms", 36) == 0);
+    addon::Request req;
+    req.path = "/api/hello/x";
+    addon::Response resp;
+    CHECK(m.handleRoute(req, resp) && resp.status == 200 && strstr(resp.body, "\"ticks\":3000") != nullptr &&
+          strcmp(resp.type, "application/json") == 0);
+    CHECK(host.logs.size() == 1 && host.logs[0] == "hello: begin");
+  }
 }
 
 // Five grinds of 23.8 to 24.2 g on one recipe: every shot keeps the recipe's dose and target, so grind
@@ -9666,6 +10425,8 @@ int main() {
   testInflate();
   testNetGate();
   testAddonManager();
+  testAddonGroundwork();
+  testAddonModules();
   testGrindsKeepOneHistory();
   testContextGrinderDose();
   testShotDataSet();

@@ -6,8 +6,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 CXX=${CXX:-g++}
 mkdir -p .pio/host
-$CXX -std=c++17 -O1 -Wall -Wextra -Isrc -Ilib/EspressoScaleProtocol/src \
-  test/host/test_main.cpp src/core/BrewController.cpp \
+$CXX -std=c++17 -O1 -Wall -Wextra -Isrc -Itest/module/hello -Ilib/EspressoScaleProtocol/src \
+  test/host/test_main.cpp test/module/hello/Hello.cpp src/core/BrewController.cpp \
   lib/EspressoScaleProtocol/src/Acaia.cpp \
   lib/EspressoScaleProtocol/src/ScaleProtocolCommon.cpp \
   lib/EspressoScaleProtocol/src/Felicita.cpp \

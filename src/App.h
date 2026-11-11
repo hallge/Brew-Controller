@@ -185,6 +185,9 @@ bbw::addon::GrinderInfo addonGrinder(float &umPerStep);
 bool addonAdoptSetting(uint16_t recipeId, uint16_t steps);
 void addonNextShotTarget(float targetG, uint16_t recipeId);
 void addonSelectRecipe(uint16_t recipeId);
+// An add-on asks for a shot on this recipe: nullptr when the controller was asked to start (through
+// start(), as /api/start does), else why it was refused (addons/AddonRules.h startRefusal).
+const char *addonRequestShotStart(uint16_t recipeId);
 bool setShotRating(uint32_t shotId, uint8_t rating, uint8_t taste);
 bool setShotTds(uint32_t shotId, uint16_t tdsX100);
 // The room's slow temperature at a past shot (Store::setShotRoom); NAN clears it.

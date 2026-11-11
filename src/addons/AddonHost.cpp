@@ -5,15 +5,27 @@
 #include "addons/AddonHost.h"
 
 #include <Arduino.h>
+#include <LittleFS.h>
 #include <Preferences.h>
+#ifndef BBW_EMULATOR
+#include <dirent.h>
+#include <sys/stat.h>
+#endif
 
 #include "AddonList.h"
 #include "App.h"
 #include "Log.h"
 #include "addons/AddonManager.h"
+#include "addons/AddonRules.h"
+#include "addons/ModuleAddon.h"
+#include "core/GrindAdvisor.h"
 #include "platform/BigMem.h"
+#include "platform/FsUtil.h"
 #include "platform/NetWorker.h"
 #include "platform/RamWatch.h"
+#ifndef BBW_EMULATOR
+#include "platform/AddonLoader.h"
+#endif
 #include "storage/Store.h"
 
 namespace bbw {
@@ -41,6 +53,91 @@ char *g_text = nullptr;         // STATE_MAX, PSRAM
 uint32_t chipFree() {
   const bbw::MemoryReport r = bbw::memoryReport();
   return r.known ? r.internalFree : 0;
+}
+
+// The newest notice (Host::notice), for the screens.
+char g_notice[NOTICE_LEN] = {};
+uint32_t g_noticeAtMs = 0;
+
+// ---- an add-on's files: /addons/<id>/<name> ----
+
+// What the add-on's folder holds now, bytes. The sizes are the files' own (a whole block each on the
+// partition is not counted: the free-space reserve is far larger than that).
+uint32_t folderBytes(const char *id) {
+  uint32_t total = 0;
+#ifdef BBW_EMULATOR
+  struct Ctx {
+    char prefix[48];
+    uint32_t total;
+  } ctx;
+  snprintf(ctx.prefix, sizeof(ctx.prefix), "/addons/%s/", id);
+  ctx.total = 0;
+  LittleFS.list([](const char *path, size_t size, void *c) {
+    Ctx &x = *static_cast<Ctx *>(c);
+    if (strncmp(path, x.prefix, strlen(x.prefix)) == 0) x.total += static_cast<uint32_t>(size);
+  }, &ctx);
+  total = ctx.total;
+#else
+  char dir[64];
+  snprintf(dir, sizeof(dir), "/littlefs/addons/%s", id);
+  DIR *d = opendir(dir);
+  if (!d) return 0;
+  char full[160];
+  while (struct dirent *e = readdir(d)) {
+    if (e->d_name[0] == '.') continue;
+    snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
+    struct stat info;
+    if (stat(full, &info) == 0 && S_ISREG(info.st_mode)) total += static_cast<uint32_t>(info.st_size);
+  }
+  closedir(d);
+#endif
+  return total;
+}
+
+uint32_t fsFree() {
+  const size_t total = LittleFS.totalBytes(), used = LittleFS.usedBytes();
+  return total > used ? static_cast<uint32_t>(total - used) : 0;
+}
+
+int32_t sizeOfFile(const char *path) {
+  if (!bbw::fileExists(path)) return -1;
+  File f = LittleFS.open(path, "r");
+  if (!f) return -1;
+  const int32_t n = static_cast<int32_t>(f.size());
+  f.close();
+  return n;
+}
+
+// Appends (append = true) or replaces the add-on's file. nullptr: done, else why not.
+const char *writeAddonFile(const char *id, const char *name, const char *data, size_t len, bool append) {
+  char path[FILE_PATH_MAX + 1];
+  if (!addonFilePath(id, name, path, sizeof(path))) return "that file name is not allowed";
+  if (len > 0 && !data) return "no data";
+  const int32_t now = sizeOfFile(path);
+  const uint32_t replaced = append || now < 0 ? 0 : static_cast<uint32_t>(now);
+  if (const char *why = fileWriteRefusal(folderBytes(id), replaced, static_cast<uint32_t>(len), fsFree())) return why;
+  char dir[40];
+  LittleFS.mkdir("/addons");
+  snprintf(dir, sizeof(dir), "/addons/%s", id);
+  LittleFS.mkdir(dir);
+  if (append) {
+    File f = LittleFS.open(path, "a");
+    if (!f) return "the file could not be opened";
+    const bool ok = len == 0 || f.write(reinterpret_cast<const uint8_t *>(data), len) == len;
+    f.close();
+    return ok ? nullptr : "the write failed";
+  }
+  char tmp[FILE_PATH_MAX + 8];
+  snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+  File f = LittleFS.open(tmp, "w");
+  if (!f) return "the file could not be opened";
+  const bool ok = len == 0 || f.write(reinterpret_cast<const uint8_t *>(data), len) == len;
+  f.close();
+  if (!ok || !LittleFS.rename(tmp, path)) {
+    LittleFS.remove(tmp);
+    return "the write failed";
+  }
+  return nullptr;
 }
 
 class SlotHost : public Host {
@@ -85,7 +182,50 @@ class SlotHost : public Host {
     return true;
   }
 
+  void notice(const char *text) override {
+    if (!text || !text[0]) {
+      g_notice[0] = '\0';
+      return;
+    }
+    strlcpy(g_notice, text, sizeof(g_notice));
+    g_noticeAtMs = millis();
+  }
+  uint32_t chipFree() const override { return addons::chipFree(); }
+  const char *requestShotStart(uint16_t recipeId) override {
+    const char *why = app::addonRequestShotStart(recipeId);
+    if (why) LOGI("addon %s: shot start refused: %s", id(), why);
+    else LOGI("addon %s: shot start asked for recipe %u", id(), static_cast<unsigned>(recipeId));
+    return why;
+  }
+  const char *appendFile(const char *name, const char *data, size_t len) override {
+    return writeAddonFile(id(), name, data, len, true);
+  }
+  const char *writeFile(const char *name, const char *data, size_t len) override {
+    return writeAddonFile(id(), name, data, len, false);
+  }
+  int32_t fileSize(const char *name) const override {
+    char path[FILE_PATH_MAX + 1];
+    return addonFilePath(id(), name, path, sizeof(path)) ? sizeOfFile(path) : -1;
+  }
+  int32_t readFile(const char *name, uint32_t offset, uint8_t *out, size_t cap) const override {
+    char path[FILE_PATH_MAX + 1];
+    if (!out || !addonFilePath(id(), name, path, sizeof(path)) || !bbw::fileExists(path)) return -1;
+    File f = LittleFS.open(path, "r");
+    if (!f) return -1;
+    int32_t n = 0;
+    if (offset < f.size() && f.seek(offset)) n = static_cast<int32_t>(f.read(out, cap));
+    f.close();
+    return n;
+  }
+
+  uint16_t recipeForGrinderRecipe(uint8_t grinderRecipe) const override {
+    RecipeView recipes[24];
+    const size_t n = app::addonRecipes(recipes, 24);
+    return g_manager->recipeForGrinderRecipe(index_, grinderRecipe, recipes, n);
+  }
+
  private:
+  const char *id() const { return g_manager->slot(index_).entry->id; }
   size_t index_ = 0;
 };
 
@@ -233,30 +373,79 @@ int slotOf(const char *id, const char *&problem) {
 
 bool shotRunning() { return app::addonMachineState().brewing; }
 
+// ---- modules (docs/ADDONS.md, "Add-ons as modules"; board only) ----
+// The manager's table is the compiled-in entries followed by one entry per module file. A module that
+// cannot start (another interface, a crash, a refusal) is still listed, with a stub that never runs.
+AddonEntry *g_table = nullptr;  // PSRAM
+size_t g_tableCount = 0;
+size_t g_moduleCount = 0;
+
+#ifndef BBW_EMULATOR
+template <size_t N>
+Addon *moduleMake() {
+  return N < bbw::addonloader::count() ? bbw::addonloader::module(N).addon : nullptr;
+}
+using MakeFn = Addon *(*)();
+const MakeFn MODULE_MAKE[bbw::addonloader::MAX_MODULES] = {moduleMake<0>, moduleMake<1>, moduleMake<2>,
+                                                           moduleMake<3>};
+static_assert(bbw::addonloader::MAX_MODULES == 4, "one moduleMake<N> per module");
+#endif
+
+// Slot i is a module's when it is past the compiled-in ones.
+bool isModuleSlot(size_t i) { return i >= BBW_ADDON_COUNT && i < g_tableCount; }
+
 }  // namespace
 
 size_t compiledCount() { return BBW_ADDON_COUNT; }
 
 void begin() {
-  if (BBW_ADDON_COUNT == 0) return;  // the public firmware: nothing allocated, nothing running
+#ifndef BBW_EMULATOR
+  {
+    // Module files on the file system: read, checked and loaded (the crash guard decides first). With
+    // none, nothing is allocated and the public firmware stays as it was.
+    bbw::RamJobScope ram(bbw::RAM_ADDON);
+    g_moduleCount = bbw::addonloader::scan(millis());
+  }
+#endif
+  if (BBW_ADDON_COUNT == 0 && g_moduleCount == 0) return;  // the public firmware: nothing allocated, nothing running
   g_text = bbw::bigArray<char>(STATE_MAX);
   g_manager = bbw::bigNew<Manager>();
   g_hosts = bbw::bigArray<SlotHost>(MAX_ADDONS);
   for (size_t i = 0; i < MAX_ADDONS; ++i) new (&g_hosts[i]) SlotHost();
+  g_table = bbw::bigArray<AddonEntry>(MAX_ADDONS);
+  for (size_t i = 0; i < BBW_ADDON_COUNT && g_tableCount < MAX_ADDONS; ++i) {
+    g_table[g_tableCount++] = bbw::addon::addonTable()[i];
+  }
+#ifndef BBW_EMULATOR
+  for (size_t i = 0; i < g_moduleCount && g_tableCount < MAX_ADDONS; ++i) {
+    const bbw::addonloader::Module &m = bbw::addonloader::module(i);
+    AddonEntry &e = g_table[g_tableCount++];
+    e.id = m.id;
+    e.make = MODULE_MAKE[i];
+    e.routes[0] = e.routes[1] = nullptr;
+    if (m.state == bbw::addonloader::State::LOADED) {
+      const ModuleAddon *a = static_cast<const ModuleAddon *>(m.addon);
+      for (size_t r = 0; r < MAX_ROUTES; ++r) e.routes[r] = a->route(r);
+    }
+  }
+#endif
   {
     bbw::RamJobScope ram(bbw::RAM_ADDON);
-    g_manager->attach(bbw::addon::addonTable(), BBW_ADDON_COUNT);
+    g_manager->attach(g_table, g_tableCount);
   }
   for (size_t i = 0; i < g_manager->count(); ++i) {
     g_hosts[i].attach(i);
     g_manager->setHost(i, &g_hosts[i]);
     const Slot &s = g_manager->slot(i);
-    LOGI("addon %s: compiled in%s", s.entry->id, s.apiOk ? "" : " (built for another add-on interface: not started)");
+    LOGI("addon %s: %s%s", s.entry->id, isModuleSlot(i) ? "module" : "compiled in",
+         s.apiOk ? "" : " (not started: see the card)");
   }
   load();
   for (size_t i = 0; i < g_manager->count(); ++i) {
     Slot &s = g_manager->slot(i);
     if (!s.enabled) continue;
+    // A module that cannot start now (a crash, a rebuild due) keeps the owner's "on" for when it can.
+    if (isModuleSlot(i) && !s.apiOk) continue;
     s.enabled = false;
     s.chipBefore = chipFree();
     bbw::RamJobScope ram(bbw::RAM_ADDON);
@@ -268,6 +457,9 @@ void begin() {
 
 void loop() {
   if (!g_manager) return;
+#ifndef BBW_EMULATOR
+  if (g_moduleCount) bbw::addonloader::service(millis());
+#endif
   static bool wasShot = false;
   const bool shot = shotRunning();
   if (shot && !wasShot) g_manager->noteShotStart(millis());
@@ -312,9 +504,45 @@ void namesJson(JsonArray out) {
   for (size_t i = 0; i < g_manager->count(); ++i) out.add(g_manager->slot(i).entry->id);
 }
 
+#ifndef BBW_EMULATOR
+// Where modules come from and how the last check or download went (the card's "Add-ons from").
+static void moduleDeliveryJson(JsonObject out) {
+  const bbw::addonloader::Source src = bbw::addonloader::source();
+  out["repo"] = src.repo;
+  out["token_set"] = src.token[0] != '\0';
+  const bbw::addonloader::Delivery d = bbw::addonloader::delivery();
+  static const char *const phases[] = {"idle", "checking", "downloading", "done", "failed"};
+  out["state"] = phases[static_cast<uint8_t>(d.phase) < 5 ? static_cast<uint8_t>(d.phase) : 0];
+  out["message"] = d.message;
+  if (d.checkedEpoch) out["checked_epoch"] = d.checkedEpoch;
+  out["restart_needed"] = d.restartNeeded;
+  JsonArray offers = out["offers"].to<JsonArray>();
+  for (size_t i = 0; i < d.offerCount; ++i) {
+    JsonObject o = offers.add<JsonObject>();
+    o["id"] = d.offers[i].id;
+    o["tag"] = d.offers[i].tag;
+    o["bytes"] = d.offers[i].bytes;
+    o["installed"] = d.offers[i].installed;
+    o["differs"] = d.offers[i].differs;
+  }
+}
+#endif
+
+void moduleNamesJson(JsonArray out) {
+#ifndef BBW_EMULATOR
+  for (size_t i = 0; i < g_moduleCount; ++i) out.add(bbw::addonloader::module(i).id);
+#else
+  (void)out;
+#endif
+}
+
 void listJson(JsonObject out) {
   out["compiled"] = static_cast<unsigned>(BBW_ADDON_COUNT);
   out["api"] = ADDON_API_VERSION;
+#ifndef BBW_EMULATOR
+  out["modules"] = static_cast<unsigned>(g_moduleCount);
+  moduleDeliveryJson(out["module_source"].to<JsonObject>());
+#endif
   JsonArray list = out["addons"].to<JsonArray>();
   if (!g_manager) return;
   const uint32_t now = millis();
@@ -326,6 +554,20 @@ void listJson(JsonObject out) {
     a["id"] = s.entry->id;
     a["api_ok"] = s.apiOk;
     a["enabled"] = s.enabled;
+#ifndef BBW_EMULATOR
+    if (isModuleSlot(i)) {
+      const bbw::addonloader::Module &m = bbw::addonloader::module(i - BBW_ADDON_COUNT);
+      JsonObject mo = a["module"].to<JsonObject>();
+      mo["state"] = bbw::addonloader::stateName(m.state);
+      mo["loaded"] = m.state == bbw::addonloader::State::LOADED;
+      mo["crashed"] = m.state == bbw::addonloader::State::CRASHED;
+      mo["problem"] = m.problem;
+      mo["version"] = m.version;
+      mo["file_bytes"] = m.fileBytes;
+      mo["load_ms"] = m.loadMs;
+      mo["chip_used"] = m.chipUsed;
+    }
+#endif
     if (!s.addon) continue;
     const AddonInfo &info = s.addon->info();
     a["name"] = info.name;
@@ -337,6 +579,17 @@ void listJson(JsonObject out) {
     GrinderDriver *g = s.addon->grinder();
     a["link"] = g && s.started ? linkName(g->link()) : "off";
     a["shot_feedback_possible"] = g && (g->caps() & SHOT_FEEDBACK);
+    // What it declares for its card (steering modes, the comparison table): the page draws it as given.
+    static char *cardText = bbw::bigArray<char>(CARD_JSON_MAX);  // PSRAM, on first use
+    if (s.started && cardText) {
+      cardText[0] = '\0';
+      bbw::RamJobScope cardRam(bbw::RAM_ADDON);
+      if (s.addon->cardJson(cardText, CARD_JSON_MAX)) {
+        cardText[CARD_JSON_MAX - 1] = '\0';
+        JsonDocument card;
+        if (!deserializeJson(card, cardText) && card.is<JsonObject>()) a["card"] = card;
+      }
+    }
     JsonArray routes = a["routes"].to<JsonArray>();
     for (const char *p : s.entry->routes) {
       if (p) routes.add(p);
@@ -510,17 +763,66 @@ bool lastGrind(float &doseG, float &gapUm, uint32_t &ageS) {
   return false;
 }
 
+const char *notice() {
+  if (g_notice[0] && millis() - g_noticeAtMs > NOTICE_TTL_MS) g_notice[0] = '\0';
+  return g_notice;
+}
+
+bool filePath(const char *id, const char *name, char *path, size_t size, const char *&problem) {
+  if (!g_manager || g_manager->find(id) < 0) {
+    problem = "no such add-on";
+    return false;
+  }
+  if (!addonFilePath(id, name, path, size)) {
+    problem = "that file name is not allowed";
+    return false;
+  }
+  return true;
+}
+
 uint16_t doseForShot(const bbw::ShotRecord &shot) { return g_manager ? g_manager->doseForShot(shot.recipeId) : 0; }
 
-void shotSaved(const bbw::ShotRecord &shot) {
+void shotSaved(const bbw::ShotRecord &shot, float roomTempC) {
   if (!g_manager) return;
   ShotReport r;
   r.shotId = shot.id;
+  r.coffeeId = shot.coffeeId;
+  r.bagId = shot.bagId;
+  r.roomTempC = roomTempC;
+  strlcpy(r.coffee, shot.coffee, sizeof(r.coffee));
   r.totalTimeS = shot.shotTimeS;
   r.yieldG = shot.finalWeightG;
   r.weighed = (shot.flags & bbw::SHOT_FLAG_FINAL_VALID) != 0;
   const auto end = static_cast<bbw::EndReason>(shot.endReason);
   r.aborted = !(end == bbw::EndReason::WEIGHT || end == bbw::EndReason::WEIGHT_PREDICTED);
+  r.recipeId = shot.recipeId;
+  r.targetTimeS = shot.targetTimeS;
+  r.timeBasis = shot.timeBasis;
+  r.pourTimeS = shot.pourTimeS;
+  r.firstDropS = shot.firstDropS;
+  // The advice, worked out with this shot included (the save marked it stale; grindAdvice() works it
+  // out again), and only when it is for this shot's recipe and coffee.
+  const bbw::Recipe active = app::activeRecipe();
+  if (active.recipeId == shot.recipeId && active.coffeeId == shot.coffeeId) {
+    const bbw::GrindAdvice a = app::grindAdvice();
+    AdviceSnapshot &s = r.advice;
+    s.valid = true;
+    switch (a.action) {
+      case bbw::GrindAction::HOLD: s.action = AdviceSnapshot::HOLD; break;
+      case bbw::GrindAction::FINER: s.action = AdviceSnapshot::FINER; break;
+      case bbw::GrindAction::COARSER: s.action = AdviceSnapshot::COARSER; break;
+      default: s.action = AdviceSnapshot::NONE; break;
+    }
+    s.hasNumber = bbw::adviceHasNumber(a);
+    s.currentSteps = a.currentUm;
+    s.suggestedSteps = a.suggestedUm;
+    float um = 0.0f;
+    app::addonGrinder(um);
+    s.umPerStep = um;
+    s.umPerS = a.umPerS;
+    s.stepLimited = a.stepLimited;
+    s.counted = bbw::grindShotUse(shot, app::settings().grindTimeBasis) == bbw::GrindUse::COUNTED;
+  }
   bbw::RamJobScope ram(bbw::RAM_ADDON);
   g_manager->shotSaved(shot.recipeId, r);
 }
