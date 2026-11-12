@@ -54,7 +54,6 @@ inline const char *fileWriteRefusal(uint32_t used, uint32_t replaced, uint32_t a
 
 // What the controller knows when an add-on asks for a shot.
 struct StartContext {
-  bool webStartEnabled = false;     // "Start from the web page" (NetConfig::webStartEnabled)
   bool updateBusy = false;          // a firmware download or install is running
   bool ready = false;               // READY or READY_TO_BREW
   bool scaleConnected = false;
@@ -66,8 +65,9 @@ struct StartContext {
 };
 
 // nullptr: the controller may be asked to start (app::start(), the same path as /api/start).
+// "Start from the web page" is not asked: an add-on asks only when its owner chose that it may (the grinder
+// add-on's "Knob press: Starts the shot"), and that choice is the consent (owner, 12 Nov 2026).
 inline const char *startRefusal(const StartContext &c) {
-  if (!c.webStartEnabled) return "Start from the web page is off";
   if (c.updateBusy) return "a firmware update is running";
   if (c.dripOrResult) return "the last shot's drip or result is still up";
   if (!c.ready) return "the controller is not ready";

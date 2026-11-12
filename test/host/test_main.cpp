@@ -3634,10 +3634,9 @@ static void testAddonGroundwork() {
   // Starting a shot: every one of the checks, one at a time.
   {
     addon::StartContext c;
-    c.webStartEnabled = c.ready = c.scaleConnected = true;
+    c.ready = c.scaleConnected = true;
     c.activeRecipeId = c.wantedRecipeId = 2;
     CHECK(addon::startRefusal(c) == nullptr);
-    { auto x = c; x.webStartEnabled = false; CHECK(addon::startRefusal(x) && strstr(addon::startRefusal(x), "web page is off")); }
     { auto x = c; x.updateBusy = true; CHECK(addon::startRefusal(x) != nullptr); }
     { auto x = c; x.ready = false; CHECK(addon::startRefusal(x) != nullptr); }
     { auto x = c; x.scaleConnected = false; CHECK(addon::startRefusal(x) != nullptr); }
@@ -3646,7 +3645,7 @@ static void testAddonGroundwork() {
     { auto x = c; x.wantedRecipeId = 0; x.activeRecipeId = 0; CHECK(addon::startRefusal(x) != nullptr); }
     { auto x = c; x.cupRequired = true; x.cupPresent = false; CHECK(addon::startRefusal(x) && strstr(addon::startRefusal(x), "cup")); }
     { auto x = c; x.cupRequired = true; x.cupPresent = true; CHECK(addon::startRefusal(x) == nullptr); }
-    { auto x = c; x.webStartEnabled = false; x.activeRecipeId = 9; x.ready = false; CHECK(addon::startRefusal(x) != nullptr); }  // off wins
+    { auto x = c; x.activeRecipeId = 9; x.ready = false; CHECK(addon::startRefusal(x) != nullptr); }
   }
 
   // The C table: sizes are fixed, and match the C++ interface where they carry the same data.

@@ -270,12 +270,14 @@ meant to use, and the controller keeps to these rules for it:
   range), changes nothing while a shot runs, and leaves the recipe alone;
 - shot feedback: only after the owner turns it on;
 - starting a shot: `requestShotStart(recipeId)` goes through the controller's own start (the same path as
-  `/api/start`), and only while "Start from the web page" is on (off by default). It is also refused unless the
+  `/api/start`). An add-on asks only when its owner chose that it may (the grinder add-on's "Knob press: Starts
+  the shot", off by default); that choice is the consent, and "Start from the web page" is not needed. It is refused unless the
   controller is ready with the scale connected, the active recipe is that one (it is never switched), no drip
   or result screen is up, the cup check (if the recipe uses one) is met, and no firmware update is running.
   The add-on keeps to one start per grind. An add-on can never stop a shot or press a bot otherwise. Because
   the web API is unauthenticated, anything on the network that can reach an add-on's route could ask for a
-  start exactly as it could call `/api/start`: it gets no more than that and nothing without the switch;
+  start exactly as it could call `/api/start`: it gets no more than that, and nothing unless the owner chose
+  that the add-on may start shots;
 - files: only under `/addons/<its id>/`, names `[a-z0-9._-]` of at most 20 characters (no path, no `..`, no
   other add-on's folder), 1 MB for all of an add-on's files, and never when less than 512 kB of the file
   system would be free afterwards (the owner's shot curves come first). `fileSize` lets an add-on roll a file

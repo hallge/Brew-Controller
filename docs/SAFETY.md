@@ -19,7 +19,7 @@ a SwitchBot Bot, in daily use since October 2026; `README.md`, "Status").
 * **Delivery of a command is not the same as the machine doing it.** The pusher's reply says the arm moved; the controller then watches
   the scale for the flow to fall and presses again if it did not (`stop_confirmed`, `stop_retried`). These paths are simulated in the host tests (missed stop,
   lost acknowledgement, link down at the stop, an arm left down); they have not been measured on a machine.
-* **Remote start is off by default**, and the web API has no authentication (`docs/API.md`): use it on a network you trust. An add-on may start a shot only through the same remote start, and only while it is switched on; it can never stop a shot or press a bot otherwise.
+* **Remote start is off by default**, and the web API has no authentication (`docs/API.md`): use it on a network you trust. An add-on may start a shot only when you chose that it may (the grinder add-on's "Knob press: Starts the shot", off by default), through the same start and its checks (ready, scale connected, that recipe selected, the cup check); that choice works without "Start from the web page", and since the add-on's routes are as unauthenticated as the rest of the API, it opens shot starts to your network the same way. An add-on can never stop a shot or press a bot otherwise.
 
 ## What you must still do
 

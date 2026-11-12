@@ -3187,7 +3187,6 @@ void addonNextShotTarget(float targetG, uint16_t recipeId) {
 
 const char *addonRequestShotStart(uint16_t recipeId) {
   bbw::addon::StartContext c;
-  c.webStartEnabled = netConfig().webStartEnabled;
   c.updateBusy = bbw::updateBusy();
   c.wantedRecipeId = recipeId;
   {
