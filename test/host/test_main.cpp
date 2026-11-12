@@ -3153,15 +3153,47 @@ static void testNetGate() {
   });
   int ran = 0;
   auto job = [](void *c) { ++*static_cast<int *>(c); };
-  CHECK(gate.run(job, &ran) && ran == 1);   // no add-on job: as before
+  CHECK(gate.run(job, &ran, false) && ran == 1);   // no add-on job: as before
   CHECK(gate.submit(job, &ran) && gate.busy());
   CHECK(ran == 1);                           // handed over, not run here
   CHECK(!gate.submit(job, &ran));            // one at a time
-  CHECK(!gate.run(job, &ran) && ran == 1);   // busy: not run, and not run here instead
+  CHECK(!gate.begin(job, &ran));             // nor a background job beside it
+  CHECK(!gate.run(job, &ran, true) && ran == 1);   // busy: not run, not run here instead, not waited for
   heldFn(heldCtx);
   gate.finished();
   CHECK(ran == 2 && !gate.busy());
-  CHECK(gate.run(job, &ran) && ran == 3);
+  CHECK(gate.run(job, &ran, false) && ran == 3);
+
+  // A background job of the loop's: handed over; a web request waits for it, anything else is refused.
+  static NetGate *waitGate = nullptr;
+  static int waits = 0;
+  NetGate bg(
+      [](NetGate &, NetGate::Job fn, void *ctx) {
+        heldFn = fn;
+        heldCtx = ctx;
+      },
+      [](NetGate &g) {   // the wait: here the network task finishes the job meanwhile
+        ++waits;
+        heldFn(heldCtx);
+        g.finished();
+        return true;
+      });
+  waitGate = &bg;
+  ran = 0;
+  CHECK(bg.begin(job, &ran) && bg.backgroundBusy() && !bg.busy() && ran == 0);
+  CHECK(!bg.begin(job, &ran) && !bg.submit(job, &ran));   // one job at a time, of either kind
+  CHECK(!bg.run(job, &ran, false) && ran == 0 && waits == 0);   // the loop: refused, tries later
+  CHECK(bg.run(job, &ran, true) && waits == 1 && ran == 2);     // a web request: waited, then run
+  CHECK(!bg.backgroundBusy() && bg.submit(job, &ran));
+  heldFn(heldCtx);
+  bg.finished();
+  NetGate noWait([](NetGate &, NetGate::Job fn, void *ctx) {
+    heldFn = fn;
+    heldCtx = ctx;
+  });
+  CHECK(noWait.begin(job, &ran) && !noWait.run(job, &ran, true));   // no way to wait: refused
+  noWait.finished();
+  (void)waitGate;
 }
 
 // A grinder add-on for the tests only: what it reports is set by the test.
@@ -10569,6 +10601,7 @@ int main() {
   testLoopTiming();
   testWebCache();
   testConnPool();
+  testLibraryFetch();
   printf("\n%d checks, %d failed\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

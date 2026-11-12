@@ -30,6 +30,7 @@
 #include "ble/Ble.h"
 #include "core/AppHost.h"
 #include "core/BrewController.h"
+#include "core/LibraryFetch.h"
 #include "core/SettingsUtil.h"
 #include "net/ShotFormat.h"
 #include "net/Web.h"
@@ -203,6 +204,12 @@ char *g_shareEnvelope;  // SHARE_ENVELOPE_MAX
 // for a list of about a hundred coffees; a bigger library will need searching
 // on its side, not a whole list here.
 char *g_libraryText;    // LIBRARY_TEXT_SIZE
+// The loop's own background requests to the library (core/LibraryFetch.h): their answers land here,
+// never in g_libraryText, which the web page reads files into while one runs. And the record being
+// sent, out of the outbox, apart from g_sharePath/g_shareEnvelope, which a web request may fill meanwhile.
+char *g_fetchText;      // LIBRARY_TEXT_SIZE
+char *g_sendEnvelope;   // SHARE_ENVELOPE_MAX
+char g_sendPath[96];
 bbw::CurvePoint *g_curveOut;  // MAX_CURVE_POINTS: a shot's readings on their way to flash
 
 // Subscriptions (core/Subscriptions.h): the list, and /subs.json written from it when it changes.
@@ -245,6 +252,8 @@ void allocateBuffers() {
   g_shareBody = bbw::bigArray<char>(bbw::SHARE_BODY_MAX);
   g_shareEnvelope = bbw::bigArray<char>(bbw::SHARE_ENVELOPE_MAX);
   g_libraryText = bbw::bigArray<char>(LIBRARY_TEXT_SIZE);
+  g_fetchText = bbw::bigArray<char>(LIBRARY_TEXT_SIZE);
+  g_sendEnvelope = bbw::bigArray<char>(bbw::SHARE_ENVELOPE_MAX);
   g_curveOut = bbw::bigArray<bbw::CurvePoint>(bbw::MAX_CURVE_POINTS);
   g_subs = bbw::bigArray<bbw::Subscription>(bbw::MAX_SUBSCRIPTIONS);
   for (size_t i = 0; i < bbw::MAX_SUBSCRIPTIONS; ++i) new (&g_subs[i]) bbw::Subscription();
@@ -563,12 +572,23 @@ void queueReview() {
   LOGI("share: review queued (%s)", p.approve ? "approve" : "decline");
 }
 
-// What the library says about this controller's coffees: in review,
-// published, declined. Asked for now and then while idle.
-bool fetchStatus(const char *kid, char *out, size_t size) {
-  char path[48];
-  snprintf(path, sizeof(path), "status/%s.json", kid);
-  return bbw::libraryGet(path, out, size);
+// The loop's requests to the library, one at a time and not waited for (core/LibraryFetch.h): each
+// job asks each turn and goes on once its answer is in. A read lands in g_fetchText.
+bbw::FetchState pollLibrary() {
+  switch (bbw::libraryJobPoll()) {
+    case bbw::LibraryJob::RUNNING: return bbw::FetchState::RUNNING;
+    case bbw::LibraryJob::OK: return bbw::FetchState::OK;
+    case bbw::LibraryJob::FAILED: return bbw::FetchState::FAILED;
+    default: return bbw::FetchState::IDLE;
+  }
+}
+bbw::LibraryFetcher g_fetcher(pollLibrary);
+constexpr uint8_t FETCH_STATUS = 1, FETCH_REFRESH = 2, FETCH_SEND = 3;
+
+bbw::Fetch libraryFetch(uint8_t owner, const char *path) {
+  return g_fetcher.step(owner, path, [](const char *p, void *) {
+    return bbw::libraryGetBegin(p, g_fetchText, LIBRARY_TEXT_SIZE);
+  }, nullptr);
 }
 
 // Asking is a request to GitHub on the board: often enough to notice a
@@ -581,36 +601,46 @@ constexpr uint32_t SHARE_STATUS_PERIOD_MS = 600000;
 
 void shareReadStatus(bool idle) {
   static uint32_t lastMs = 0;
-  if (!idle || !bbw::deviceSigner().ready() || !bbw::libraryLinkReady()) return;
-  if (lastMs != 0 && millis() - lastMs < SHARE_STATUS_PERIOD_MS) return;
-  lastMs = millis();
-  // A suggested link waits for its verdict even when sharing is off: the owner sent it themselves.
-  bool linkWaiting = false;
-  {
-    Lock lock;
-    for (size_t i = 0; i < g_linkCount; ++i) {
-      const uint8_t st = g_links[i].shareState;
-      linkWaiting |= st == static_cast<uint8_t>(bbw::ShareState::QUEUED) ||
-                     st == static_cast<uint8_t>(bbw::ShareState::SENT) ||
-                     st == static_cast<uint8_t>(bbw::ShareState::IN_REVIEW);
+  static bool want = false;   // a read is decided on and not answered yet
+  static char path[48];
+  if (!want) {
+    if (!idle || !bbw::deviceSigner().ready() || !bbw::libraryLinkReady()) return;
+    if (lastMs != 0 && millis() - lastMs < SHARE_STATUS_PERIOD_MS) return;
+    lastMs = millis();
+    // A suggested link waits for its verdict even when sharing is off: the owner sent it themselves.
+    bool linkWaiting = false;
+    {
+      Lock lock;
+      for (size_t i = 0; i < g_linkCount; ++i) {
+        const uint8_t st = g_links[i].shareState;
+        linkWaiting |= st == static_cast<uint8_t>(bbw::ShareState::QUEUED) ||
+                       st == static_cast<uint8_t>(bbw::ShareState::SENT) ||
+                       st == static_cast<uint8_t>(bbw::ShareState::IN_REVIEW);
+      }
     }
-  }
-  {
-    Lock lock;
-    loadReviewState();
-    for (size_t i = 0; i < g_review.recipeCount; ++i) {
-      const uint8_t st = g_review.recipes[i].shareState;
-      linkWaiting |= st == static_cast<uint8_t>(bbw::ShareState::QUEUED) ||
-                     st == static_cast<uint8_t>(bbw::ShareState::SENT) ||
-                     st == static_cast<uint8_t>(bbw::ShareState::IN_REVIEW);
+    {
+      Lock lock;
+      loadReviewState();
+      for (size_t i = 0; i < g_review.recipeCount; ++i) {
+        const uint8_t st = g_review.recipes[i].shareState;
+        linkWaiting |= st == static_cast<uint8_t>(bbw::ShareState::QUEUED) ||
+                       st == static_cast<uint8_t>(bbw::ShareState::SENT) ||
+                       st == static_cast<uint8_t>(bbw::ShareState::IN_REVIEW);
+      }
     }
+    if (!app::settings().shareEnabled && !linkWaiting) return;
+    char kid[bbw::KEY_ID_LEN];
+    bbw::keyId(bbw::deviceSigner().publicKey(), kid);
+    snprintf(path, sizeof(path), "status/%s.json", kid);
+    want = true;
   }
-  if (!app::settings().shareEnabled && !linkWaiting) return;
-  char kid[bbw::KEY_ID_LEN];
-  bbw::keyId(bbw::deviceSigner().publicKey(), kid);
-  if (!fetchStatus(kid, g_libraryText, LIBRARY_TEXT_SIZE)) return;
+  // What the library says about this controller's coffees: in review, published, declined.
+  const bbw::Fetch got = libraryFetch(FETCH_STATUS, path);
+  if (got == bbw::Fetch::PENDING) return;
+  want = false;
+  if (got != bbw::Fetch::OK || !idle) return;   // a shot began meanwhile: asked again next period
   static JsonDocument doc;
-  if (deserializeJson(doc, g_libraryText) || doc["v"] != 1) {
+  if (deserializeJson(doc, g_fetchText) || doc["v"] != 1) {
     LOGW("share: status from the library not understood");
     return;
   }
@@ -857,29 +887,36 @@ void shareAfterShot(const bbw::ShotRecord &shot) {
 // One record a second, and never while a shot needs the radio.
 void shareSendOne(bool idle) {
   static bbw::OutboxPump pump;
-  if (!idle || g_store.outboxWaiting() == 0 || !bbw::libraryLinkReady()) return;
-  if (!pump.due(millis())) return;
-  if (!g_store.outboxPeek(g_sharePath, sizeof(g_sharePath), g_shareEnvelope,
-                          bbw::SHARE_ENVELOPE_MAX)) {
-    return;
+  static bool sending = false;   // the outbox's head is on its way (not waited for: core/LibraryFetch.h)
+  if (!sending) {
+    if (!idle || g_store.outboxWaiting() == 0 || !bbw::libraryLinkReady()) return;
+    if (!pump.due(millis())) return;
+    // Its own copy: a web request may fill g_sharePath and g_shareEnvelope while this one is sent.
+    if (!g_store.outboxPeek(g_sendPath, sizeof(g_sendPath), g_sendEnvelope, bbw::SHARE_ENVELOPE_MAX)) return;
+    sending = true;
   }
-  const bool published = publishRecord(g_sharePath, g_shareEnvelope);
+  const bbw::Fetch sent = g_fetcher.step(FETCH_SEND, g_sendPath, [](const char *path, void *) {
+    return bbw::libraryPutBegin(path, g_sendEnvelope);
+  }, nullptr);
+  if (sent == bbw::Fetch::PENDING) return;
+  sending = false;
+  const bool published = sent == bbw::Fetch::OK;
   const bool refused = !published && bbw::libraryTakeRefused();
   const bool keyMissing = !published && !refused && bbw::libraryTakeKeyMissing();
-  switch (pump.step(g_sharePath, published, refused, keyMissing)) {
+  switch (pump.step(g_sendPath, published, refused, keyMissing)) {
     case bbw::OutboxPump::Action::POP_SENT:
       g_store.outboxPop();
-      LOGI("share: sent %s", g_sharePath);
+      LOGI("share: sent %s", g_sendPath);
       break;
     case bbw::OutboxPump::Action::POP_REFUSED:
       // Refused for good: sending it again would only be refused again, and it would hold up the rest.
       g_store.outboxPop();
-      LOGW("share: %s refused by the library and dropped", g_sharePath);
+      LOGW("share: %s refused by the library and dropped", g_sendPath);
       break;
     case bbw::OutboxPump::Action::DROP_KEY:
       // The key went ahead of it three times and it is still not taken: not this record's key.
       g_store.outboxPop();
-      LOGW("share: %s still waits for a key after three tries; dropped", g_sharePath);
+      LOGW("share: %s still waits for a key after three tries; dropped", g_sendPath);
       break;
     case bbw::OutboxPump::Action::SEND_KEY_FIRST: {
       // The relay has no key for this controller: send it now, ahead of the record, which goes next time
@@ -911,8 +948,13 @@ constexpr uint32_t LIBRARY_REFRESH_MS = 60000;
 #else
 constexpr uint32_t LIBRARY_REFRESH_MS = 3600000;
 #endif
-bool fetchLibraryFile(const char *path, char *out, size_t size) {
-  return bbw::libraryGet(path, out, size);
+// One of the refresh's reads, into g_fetchText. true: it is in. false: it failed, or it is not in yet
+// (g_refreshPending: the caller leaves the step as it is and asks again next turn).
+bool g_refreshPending = false;
+bool fetchLibraryFile(const char *path) {
+  const bbw::Fetch f = libraryFetch(FETCH_REFRESH, path);
+  g_refreshPending = f == bbw::Fetch::PENDING;
+  return f == bbw::Fetch::OK;
 }
 
 constexpr uint32_t LIBRARY_STEP_MS = 2000;
@@ -948,9 +990,9 @@ bool directoryStep() {
   static char *kept = bbw::bigArray<char>(MANIFEST_SIZE);
   static bool haveManifest = false;
   if (!haveManifest) {
-    if (!fetchLibraryFile("index/directory/manifest.json", g_libraryText, LIBRARY_TEXT_SIZE)) return true;
+    if (!fetchLibraryFile("index/directory/manifest.json")) return true;
     static JsonDocument now, before;
-    if (deserializeJson(now, g_libraryText) || now["v"] != 1) return true;
+    if (deserializeJson(now, g_fetchText) || now["v"] != 1) return true;
     kept[0] = '\0';
     g_store.readText(DIR_MANIFEST, kept, MANIFEST_SIZE);
     if (deserializeJson(before, kept)) before.clear();
@@ -987,7 +1029,7 @@ bool directoryStep() {
       keep["count"] = now["count"] | 0;
       serializeJson(keep, manifest, MANIFEST_SIZE);
     }
-    g_store.writeTextIfChanged("/dirf.json", g_libraryText);  // the facets, for the search page
+    g_store.writeTextIfChanged("/dirf.json", g_fetchText);  // the facets, for the search page
     now.clear();
     before.clear();
     haveManifest = true;
@@ -996,11 +1038,12 @@ bool directoryStep() {
     char path[48], file[16];
     snprintf(path, sizeof(path), "index/directory/p%03u.json", static_cast<unsigned>(pending[pendingAt]));
     snprintf(file, sizeof(file), "/dir%03u.json", static_cast<unsigned>(pending[pendingAt]));
-    if (!fetchLibraryFile(path, g_libraryText, LIBRARY_TEXT_SIZE)) {
+    if (!fetchLibraryFile(path)) {
+      if (g_refreshPending) return false;  // not in yet: this page again next turn
       haveManifest = false;  // try the whole pass again next time
       return true;
     }
-    g_store.writeTextIfChanged(file, g_libraryText);
+    g_store.writeTextIfChanged(file, g_fetchText);
     if (++pendingAt < pendingCount) return false;
   }
   g_store.writeTextIfChanged(DIR_MANIFEST, manifest);
@@ -1018,7 +1061,7 @@ void libraryRefresh(bool idle) {
   static uint8_t count = 0;
   if (!idle || !bbw::libraryLinkReady()) return;
   const uint32_t now = millis();
-  if (step == 0 && passStartedMs != 0 && !g_libraryReadSoon &&
+  if (!g_refreshPending && step == 0 && passStartedMs != 0 && !g_libraryReadSoon &&
       now - passStartedMs < LIBRARY_REFRESH_MS) {
     return;
   }
@@ -1041,72 +1084,73 @@ void libraryRefresh(bool idle) {
       char kid[bbw::KEY_ID_LEN];
       bbw::keyId(bbw::deviceSigner().publicKey(), kid);
       snprintf(path, sizeof(path), "index/fit/%s.json", kid);
-      if (fetchLibraryFile(path, g_libraryText, LIBRARY_TEXT_SIZE) &&
-          g_store.writeTextIfChanged(FIT_CACHE, g_libraryText)) {
+      if (fetchLibraryFile(path) &&
+          g_store.writeTextIfChanged(FIT_CACHE, g_fetchText)) {
         ++g_communityStamp;
       }
     }
   } else if (step == 1) {
-    if (fetchLibraryFile("index/coffees.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
-      g_store.writeTextIfChanged(COFFEES_CACHE, g_libraryText);
+    if (fetchLibraryFile("index/coffees.json")) {
+      g_store.writeTextIfChanged(COFFEES_CACHE, g_fetchText);
     }
   } else if (step == 2) {
-    if (fetchLibraryFile("index/grinders.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
-      g_store.writeTextIfChanged(GRINDERS_CACHE, g_libraryText);
+    if (fetchLibraryFile("index/grinders.json")) {
+      g_store.writeTextIfChanged(GRINDERS_CACHE, g_fetchText);
     }
   } else if (step == 3) {
-    if (fetchLibraryFile("index/age.json", g_libraryText, LIBRARY_TEXT_SIZE) &&
-        g_store.writeTextIfChanged(AGE_CACHE, g_libraryText)) {
+    if (fetchLibraryFile("index/age.json") &&
+        g_store.writeTextIfChanged(AGE_CACHE, g_fetchText)) {
       ++g_communityStamp;
     }
   } else if (step == 4) {
-    if (fetchLibraryFile("index/machines.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
-      g_store.writeTextIfChanged(MACHINES_CACHE, g_libraryText);
+    if (fetchLibraryFile("index/machines.json")) {
+      g_store.writeTextIfChanged(MACHINES_CACHE, g_fetchText);
     }
   } else if (step == 5) {
-    if (fetchLibraryFile("index/taste.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
-      g_store.writeTextIfChanged(TASTE_CACHE, g_libraryText);
+    if (fetchLibraryFile("index/taste.json")) {
+      g_store.writeTextIfChanged(TASTE_CACHE, g_fetchText);
     }
   } else if (step == 6) {
-    if (fetchLibraryFile("index/services.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
-      g_store.writeTextIfChanged(SERVICES_CACHE, g_libraryText);
+    if (fetchLibraryFile("index/services.json")) {
+      g_store.writeTextIfChanged(SERVICES_CACHE, g_fetchText);
     }
   } else if (step == 7) {
-    if (fetchLibraryFile("index/models.json", g_libraryText, LIBRARY_TEXT_SIZE) &&
-        g_store.writeTextIfChanged(MODELS_CACHE, g_libraryText)) {
+    if (fetchLibraryFile("index/models.json") &&
+        g_store.writeTextIfChanged(MODELS_CACHE, g_fetchText)) {
       ++g_communityStamp;
     }
   } else if (step == 8) {
-    if (fetchLibraryFile("index/links.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
-      g_store.writeTextIfChanged(LINKS_CACHE, g_libraryText);
+    if (fetchLibraryFile("index/links.json")) {
+      g_store.writeTextIfChanged(LINKS_CACHE, g_fetchText);
     }
   } else if (step == 9) {
-    if (fetchLibraryFile("index/trending.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
-      g_store.writeTextIfChanged(TRENDING_CACHE, g_libraryText);
+    if (fetchLibraryFile("index/trending.json")) {
+      g_store.writeTextIfChanged(TRENDING_CACHE, g_fetchText);
     }
   } else if (step == 10) {
     // The coffee directory: the manifest, then each page whose hash changed, one per step; the
     // manifest is kept only once every page it names is here.
     if (!directoryStep()) return;  // a page fetched: the next one next time, at this step
   } else if (step == 11) {
-    if (fetchLibraryFile("index/recipes.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
-      g_store.writeTextIfChanged(RECIPES_CACHE, g_libraryText);
+    if (fetchLibraryFile("index/recipes.json")) {
+      g_store.writeTextIfChanged(RECIPES_CACHE, g_fetchText);
     }
   } else if (step == 12) {
-    if (fetchLibraryFile("index/pending.json", g_libraryText, LIBRARY_TEXT_SIZE)) {
-      g_store.writeTextIfChanged(PENDING_CACHE, g_libraryText);
+    if (fetchLibraryFile("index/pending.json")) {
+      g_store.writeTextIfChanged(PENDING_CACHE, g_fetchText);
     }
   } else if (step - LIBRARY_FIXED_STEPS < count) {
     char file[bbw::LIBRARY_ID_LEN * 2], cache[20];
     if (bbw::libraryIdToFile(libraryIds[step - LIBRARY_FIXED_STEPS], file, sizeof(file))) {
       snprintf(path, sizeof(path), "index/dialin/%s.json", file);
       dialinCache(ids[step - LIBRARY_FIXED_STEPS], cache, sizeof(cache));
-      if (fetchLibraryFile(path, g_libraryText, LIBRARY_TEXT_SIZE) &&
-          g_store.writeTextIfChanged(cache, g_libraryText)) {
+      if (fetchLibraryFile(path) &&
+          g_store.writeTextIfChanged(cache, g_fetchText)) {
         ++g_communityStamp;
       }
     }
   }
+  if (g_refreshPending) return;  // this step's read is not in yet: the same step next turn
   step = static_cast<uint8_t>(step + 1 >= count + LIBRARY_FIXED_STEPS ? 0 : step + 1);
 }
 

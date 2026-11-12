@@ -26,4 +26,16 @@ bool netRun(void (*fn)(void *), void *context);
 bool netSubmit(void (*fn)(void *), void *context);
 bool netAddonBusy();
 
+// A background job of the loop's own (a library download, a share sent: LibraryLink.h), on the
+// network task, without waiting for it, so the web page and the grinder are still answered
+// meanwhile (12 Nov 2026: a waited-for download held the loop for 7 s). fn says itself when it has
+// finished; its context must outlive the job. false: not taken (a firmware check or install, an
+// add-on's job, a netRun() job or another background job holds the task), try again later.
+// While it runs, netRun() from a web request waits for it, netRun() from anywhere else is refused
+// (false, try again later), and netSubmit() is refused.
+bool netBegin(void (*fn)(void *), void *context);
+bool netBackgroundBusy();
+// Set around each web request by the web server: such a netRun() caller waits for a background job.
+void netWebRequest(bool inside);
+
 }  // namespace bbw

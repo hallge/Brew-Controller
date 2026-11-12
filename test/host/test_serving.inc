@@ -2,6 +2,7 @@
 #include "core/LoopTiming.h"
 #include "core/WebCache.h"
 #include "core/ConnPool.h"
+#include "core/LibraryFetch.h"
 
 static void testLoopTiming() {
   printf("loop timing\n");
@@ -159,4 +160,55 @@ static void testConnPool() {
     CHECK(!p.takeReady(1, 5000, out));
     CHECK(p.size() == 1);
   }
+}
+
+// The loop's background library requests (core/LibraryFetch.h): one at a time, each job reads only its own answer.
+static bbw::FetchState g_fakeLink = bbw::FetchState::IDLE;
+static int g_fakeBegun = 0;
+static bool g_fakeRefuse = false;
+static std::string g_fakeKey;
+
+static void testLibraryFetch() {
+  printf("library requests in the background: one at a time, each job its own answer\n");
+  using bbw::Fetch;
+  using bbw::FetchState;
+  bbw::LibraryFetcher f([]() {
+    const FetchState s = g_fakeLink;
+    if (s == FetchState::OK || s == FetchState::FAILED) g_fakeLink = FetchState::IDLE;   // read once
+    return s;
+  });
+  auto begin = [](const char *key, void *) {
+    if (g_fakeRefuse) return false;
+    ++g_fakeBegun;
+    g_fakeKey = key;
+    g_fakeLink = FetchState::RUNNING;
+    return true;
+  };
+  // Started, pending while it runs, then the answer once.
+  CHECK(f.step(1, "a.json", begin, nullptr) == Fetch::PENDING && g_fakeBegun == 1 && f.busy(1) && f.busy());
+  CHECK(f.step(1, "a.json", begin, nullptr) == Fetch::PENDING && g_fakeBegun == 1);
+  // Another job meanwhile: pending, nothing started, the first job's answer untouched.
+  CHECK(f.step(2, "b.json", begin, nullptr) == Fetch::PENDING && g_fakeBegun == 1 && !f.busy(2));
+  g_fakeLink = FetchState::OK;
+  CHECK(f.step(2, "b.json", begin, nullptr) == Fetch::PENDING && g_fakeLink == FetchState::OK);
+  CHECK(f.step(1, "a.json", begin, nullptr) == Fetch::OK && !f.busy());
+  // Now the second job's turn; a failure is answered as such.
+  CHECK(f.step(2, "b.json", begin, nullptr) == Fetch::PENDING && g_fakeBegun == 2 && g_fakeKey == "b.json");
+  g_fakeLink = FetchState::FAILED;
+  CHECK(f.step(2, "b.json", begin, nullptr) == Fetch::FAIL && !f.busy());
+  // Not started (the network is busy): pending, and started on a later turn.
+  g_fakeRefuse = true;
+  CHECK(f.step(1, "c.json", begin, nullptr) == Fetch::PENDING && !f.busy() && g_fakeBegun == 2);
+  g_fakeRefuse = false;
+  CHECK(f.step(1, "c.json", begin, nullptr) == Fetch::PENDING && f.busy(1) && g_fakeBegun == 3);
+  // The job moved on to another file meanwhile: the old answer is dropped, the new one starts next turn.
+  g_fakeLink = FetchState::OK;
+  CHECK(f.step(1, "d.json", begin, nullptr) == Fetch::PENDING && !f.busy());
+  CHECK(f.step(1, "d.json", begin, nullptr) == Fetch::PENDING && g_fakeKey == "d.json");
+  g_fakeLink = FetchState::OK;
+  CHECK(f.step(1, "d.json", begin, nullptr) == Fetch::OK);
+  // An answer that never came as one (the link reset): taken as a failure, not waited on for ever.
+  CHECK(f.step(3, "e.json", begin, nullptr) == Fetch::PENDING);
+  g_fakeLink = FetchState::IDLE;
+  CHECK(f.step(3, "e.json", begin, nullptr) == Fetch::FAIL && !f.busy());
 }

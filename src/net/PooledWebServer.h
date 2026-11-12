@@ -6,6 +6,7 @@
 #include <WebServer.h>
 #include <WiFiClient.h>
 #include "core/ConnPool.h"
+#include "platform/NetWorker.h"
 
 class PooledWebServer : public WebServer {
  public:
@@ -29,7 +30,9 @@ class PooledWebServer : public WebServer {
     if (_parseRequest(_currentClient)) {
       _currentClient.setTimeout(HTTP_MAX_SEND_WAIT / 1000);
       _contentLength = CONTENT_LENGTH_NOT_SET;
+      bbw::netWebRequest(true);   // a network job asked for in this request may wait for a background one
       _handleRequest();
+      bbw::netWebRequest(false);
     }
     _currentClient = WiFiClient();
     _currentStatus = HC_NONE;

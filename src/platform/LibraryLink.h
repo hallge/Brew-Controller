@@ -75,6 +75,16 @@ void libraryLinkRelease();
 // there, does not fit, or the library could not be reached.
 bool libraryGet(const char *path, char *out, size_t size);
 
+// The same two requests as a background job (NetWorker.h netBegin): started here, answered on a
+// later pass through libraryJobPoll(), so the loop is not held while GitHub or the relay answers.
+// One at a time. false: not started (one is under way, or the network task is busy): try later.
+// `path`, and `text` or `out`, must stay as they are until the answer is in; the path is copied.
+enum class LibraryJob : uint8_t { IDLE, RUNNING, OK, FAILED };
+bool libraryGetBegin(const char *path, char *out, size_t size);
+bool libraryPutBegin(const char *path, const char *text);
+// RUNNING while it runs; OK or FAILED once when it has finished (then IDLE again).
+LibraryJob libraryJobPoll();
+
 LibraryLinkStatus libraryLinkStatus();
 
 }  // namespace bbw

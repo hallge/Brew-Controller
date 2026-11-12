@@ -37,6 +37,9 @@
 #include "emu.h"
 #include "platform/DeviceKey.h"
 #include "platform/LibraryLink.h"
+#include "platform/NetWorker.h"
+
+#include <atomic>
 
 namespace {
 
@@ -403,6 +406,53 @@ bool libraryGet(const char *path, char *out, size_t size) {
   memcpy(out, said.data(), said.size());
   out[said.size()] = '\0';
   return true;
+}
+
+// The background requests, on the emulator's network thread (FirmwareUpdate.cpp), as on the board.
+namespace {
+struct BackgroundJob {
+  char path[160];
+  const char *text;
+  char *out;
+  size_t size;
+  bool put;
+};
+BackgroundJob g_bg;
+std::atomic<LibraryJob> g_bgState{LibraryJob::IDLE};
+
+bool beginBackground(const char *path, const char *text, char *out, size_t size, bool put) {
+  if (g_bgState.load() != LibraryJob::IDLE || !path || strlen(path) >= sizeof(g_bg.path)) return false;
+  snprintf(g_bg.path, sizeof(g_bg.path), "%s", path);
+  g_bg.text = text;
+  g_bg.out = out;
+  g_bg.size = size;
+  g_bg.put = put;
+  g_bgState = LibraryJob::RUNNING;
+  if (!netBegin([](void *) {
+        const bool ok = g_bg.put ? libraryPut(g_bg.path, g_bg.text) : libraryGet(g_bg.path, g_bg.out, g_bg.size);
+        g_bgState = ok ? LibraryJob::OK : LibraryJob::FAILED;
+      }, nullptr)) {
+    g_bgState = LibraryJob::IDLE;
+    return false;
+  }
+  return true;
+}
+}  // namespace
+
+bool libraryGetBegin(const char *path, char *out, size_t size) {
+  if (!out || size < 2) return false;
+  return beginBackground(path, nullptr, out, size, false);
+}
+
+bool libraryPutBegin(const char *path, const char *text) {
+  if (!text) return false;
+  return beginBackground(path, text, nullptr, 0, true);
+}
+
+LibraryJob libraryJobPoll() {
+  const LibraryJob s = g_bgState.load();   // only the loop polls: a finished answer is read once
+  if (s == LibraryJob::OK || s == LibraryJob::FAILED) g_bgState = LibraryJob::IDLE;
+  return s;
 }
 
 LibraryLinkStatus libraryLinkStatus() {

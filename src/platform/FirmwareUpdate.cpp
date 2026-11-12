@@ -32,17 +32,26 @@ UpdateConfig g_config;
 }
 
 void tlsUseExternalMemory() {}
-// The emulator has no network task: an add-on's job runs on a thread of its own, and other jobs
-// skip their turn while it does, as on the board.
-NetGate g_gate([](NetGate &gate, NetGate::Job fn, void *context) {
-  std::thread([&gate, fn, context]() {
-    fn(context);
-    gate.finished();
-  }).detach();
-});
-bool netRun(void (*fn)(void *), void *context) { return g_gate.run(fn, context); }
+// The emulator has no network task: an add-on's or a background job runs on a thread of its own,
+// and other jobs skip their turn while an add-on's runs, as on the board. A background job is
+// waited for by any caller here (the emulator's timing does not matter).
+NetGate g_gate(
+    [](NetGate &gate, NetGate::Job fn, void *context) {
+      std::thread([&gate, fn, context]() {
+        fn(context);
+        gate.finished();
+      }).detach();
+    },
+    [](NetGate &gate) {
+      for (int i = 0; i < 3000 && gate.backgroundBusy(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      return !gate.backgroundBusy();
+    });
+bool netRun(void (*fn)(void *), void *context) { return g_gate.run(fn, context, true); }
 bool netSubmit(void (*fn)(void *), void *context) { return g_gate.submit(fn, context); }
+bool netBegin(void (*fn)(void *), void *context) { return g_gate.begin(fn, context); }
 bool netAddonBusy() { return g_gate.busy(); }
+bool netBackgroundBusy() { return g_gate.backgroundBusy(); }
+void netWebRequest(bool) {}
 void updateBegin(const UpdateConfig &config) { g_config = config; }
 void updateConfigure(const UpdateConfig &config) { g_config = config; }
 UpdateConfig updateConfig() { return g_config; }
@@ -136,6 +145,12 @@ NetJob g_job;
 volatile bool g_addonWaiting = false;
 volatile bool g_addonRunning = false;
 NetJob g_addonJob;
+// netBegin(): a background job of the loop's, not waited for. While it is set nothing else is handed over;
+// netRun() from a web request waits for it, from anywhere else it is refused.
+volatile bool g_loopJobWaiting = false;
+volatile bool g_loopJobRunning = false;
+NetJob g_loopJob;
+volatile bool g_inWebRequest = false;   // set by the web server around each request (loop task)
 volatile bool g_working = false;  // a check or an install is under way
 volatile bool g_uploading = false;  // a firmware file is arriving from the browser
 uint8_t *g_chunk;  // CHUNK bytes, PSRAM
@@ -615,6 +630,12 @@ void updateTask(void *) {
       g_addonRunning = false;
       continue;
     }
+    if (g_loopJobWaiting) {
+      g_loopJobWaiting = false;
+      g_loopJob.fn(g_loopJob.context);
+      g_loopJobRunning = false;
+      continue;
+    }
     const uint8_t want = g_want;
     if (want == WANT_NONE) {
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -650,6 +671,13 @@ bool netRun(void (*fn)(void *), void *context) {
   // An add-on's job holds the task: skip this turn (NetWorker.h). Called from that job itself (the
   // network task), it runs here.
   if (g_addonRunning && xTaskGetCurrentTaskHandle() != g_task) return false;
+  // A background job of the loop's holds the task: a web request waits for it (bounded), anything else
+  // skips this turn. Waiting on the loop would bring back the freeze netBegin() exists to avoid.
+  if (g_loopJobRunning && xTaskGetCurrentTaskHandle() != g_task) {
+    if (!g_inWebRequest) return false;
+    for (int i = 0; i < 3000 && g_loopJobRunning; ++i) vTaskDelay(pdMS_TO_TICKS(10));
+    if (g_loopJobRunning) return false;
+  }
   // Here, as before: no task yet, or called from it.
   if (!g_task || !g_jobLock || xTaskGetCurrentTaskHandle() == g_task) {
     fn(context);
@@ -660,7 +688,7 @@ bool netRun(void (*fn)(void *), void *context) {
   // stack is what this file exists to avoid (audit G8, 10 Nov 2026).
   if (g_working || g_want != WANT_NONE) return false;
   xSemaphoreTake(g_jobLock, portMAX_DELAY);
-  if (g_addonRunning || g_working || g_want != WANT_NONE) {  // an add-on's job or a check came meanwhile
+  if (g_addonRunning || g_loopJobRunning || g_working || g_want != WANT_NONE) {  // another job or a check came meanwhile
     xSemaphoreGive(g_jobLock);
     return false;
   }
@@ -675,10 +703,11 @@ bool netRun(void (*fn)(void *), void *context) {
 }
 
 bool netSubmit(void (*fn)(void *), void *context) {
-  if (!g_task || !g_jobLock || g_working || g_want != WANT_NONE || g_uploading || g_addonRunning) return false;
+  if (!g_task || !g_jobLock || g_working || g_want != WANT_NONE || g_uploading || g_addonRunning || g_loopJobRunning)
+    return false;
   // Never waits: a netRun() job being handed over or run holds the lock.
   if (xSemaphoreTake(g_jobLock, 0) != pdTRUE) return false;
-  const bool free = !g_working && g_want == WANT_NONE && !g_addonRunning && !g_jobWaiting;
+  const bool free = !g_working && g_want == WANT_NONE && !g_addonRunning && !g_loopJobRunning && !g_jobWaiting;
   if (free) {
     g_addonJob.fn = fn;
     g_addonJob.context = context;
@@ -691,6 +720,26 @@ bool netSubmit(void (*fn)(void *), void *context) {
 }
 
 bool netAddonBusy() { return g_addonRunning; }
+
+bool netBegin(void (*fn)(void *), void *context) {
+  if (!g_task || !g_jobLock || g_working || g_want != WANT_NONE || g_uploading || g_addonRunning || g_loopJobRunning)
+    return false;
+  if (xSemaphoreTake(g_jobLock, 0) != pdTRUE) return false;   // a netRun() job is being handed over or run
+  const bool free = !g_working && g_want == WANT_NONE && !g_addonRunning && !g_loopJobRunning && !g_jobWaiting;
+  if (free) {
+    g_loopJob.fn = fn;
+    g_loopJob.context = context;
+    g_loopJobRunning = true;
+    g_loopJobWaiting = true;
+  }
+  xSemaphoreGive(g_jobLock);
+  if (free) xTaskNotifyGive(g_task);
+  return free;
+}
+
+bool netBackgroundBusy() { return g_loopJobRunning; }
+
+void netWebRequest(bool inside) { g_inWebRequest = inside; }
 
 void updateBegin(const UpdateConfig &config) {
   g_mutex = xSemaphoreCreateMutex();

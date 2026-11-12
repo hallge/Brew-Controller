@@ -139,7 +139,11 @@ bool libraryTakeKeyMissing() {
   return missing;
 }
 
+void waitForBackgroundJob();
+
 void libraryLinkConfigure(const char *repo, const char *token) {
+  // A background request uses the connection and these details: let it finish first (bounded).
+  waitForBackgroundJob();
   strlcpy(g_repo, repo ? repo : "", sizeof(g_repo));
   strlcpy(g_token, token ? token : "", sizeof(g_token));
   const bool own = g_repo[0] != '\0' && g_token[0] != '\0';
@@ -307,6 +311,58 @@ bool libraryGet(const char *path, char *out, size_t size) {
     j.ok = getHere(j.path, j.out, j.size);
   }, &job)) return false;
   return job.ok;
+}
+
+namespace {
+struct BackgroundJob {
+  char path[160];
+  const char *text;
+  char *out;
+  size_t size;
+  bool put;
+};
+BackgroundJob g_bg;
+volatile LibraryJob g_bgState = LibraryJob::IDLE;
+
+void runBackground(void *) {
+  const bool ok = g_bg.put ? putHere(g_bg.path, g_bg.text) : getHere(g_bg.path, g_bg.out, g_bg.size);
+  g_bgState = ok ? LibraryJob::OK : LibraryJob::FAILED;
+}
+
+bool beginBackground(const char *path, const char *text, char *out, size_t size, bool put) {
+  if (g_bgState != LibraryJob::IDLE || !path || strlen(path) >= sizeof(g_bg.path)) return false;
+  strlcpy(g_bg.path, path, sizeof(g_bg.path));
+  g_bg.text = text;
+  g_bg.out = out;
+  g_bg.size = size;
+  g_bg.put = put;
+  g_bgState = LibraryJob::RUNNING;
+  if (!netBegin(runBackground, nullptr)) {
+    g_bgState = LibraryJob::IDLE;
+    return false;
+  }
+  return true;
+}
+}  // namespace
+
+void waitForBackgroundJob() {
+  for (int i = 0; i < 3000 && g_bgState == LibraryJob::RUNNING; ++i) delay(10);
+}
+
+bool libraryGetBegin(const char *path, char *out, size_t size) {
+  if (!out || size < 2) return false;
+  return beginBackground(path, nullptr, out, size, false);
+}
+
+bool libraryPutBegin(const char *path, const char *text) {
+  if (!text) return false;
+  return beginBackground(path, text, nullptr, 0, true);
+}
+
+LibraryJob libraryJobPoll() {
+  const LibraryJob s = g_bgState;
+  if (s == LibraryJob::OK || s == LibraryJob::FAILED) g_bgState = LibraryJob::IDLE;
+  return s;
 }
 
 LibraryLinkStatus libraryLinkStatus() {
