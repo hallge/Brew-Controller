@@ -70,6 +70,8 @@ def newest(paths):
 def main():
     # The helper extension the controller serves (/extension.zip), packed as the firmware build does.
     subprocess.check_call([sys.executable, str(ROOT / "browser-extension" / "make_zip.py")])
+    # The web page gzipped, with its tag (scripts/gen_webpage.py writes .pio/gen/WebPageGz.h).
+    subprocess.check_call([sys.executable, str(ROOT / "scripts" / "gen_webpage.py")])
     # The add-ons to build in (scripts/addons.py writes .pio/gen/AddonList.h).
     sys.path.insert(0, str(ROOT / "scripts"))
     import addons

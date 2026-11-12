@@ -659,7 +659,10 @@ cardRgb:c.length==7?[1,3,5].map(k=>parseInt(c.slice(k,k+2),16)):[38,42,47]}}
 readTC();
 const $=id=>document.getElementById(id);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const get=u=>fetch(u).then(r=>r.json());
+// A GET already on its way is shared (11 Nov 2026): the controller answers one request at a time, and on
+// load several parts of the page asked for the same thing at once. Each caller gets its own copy.
+const GETS=new Map();
+const get=u=>{let p=GETS.get(u);if(!p){p=fetch(u).then(r=>r.text());GETS.set(u,p);const done=()=>{if(GETS.get(u)===p)GETS.delete(u)};p.then(done,done)}return p.then(t=>JSON.parse(t))};
 let lastBtn=null,lastAt=0;
 const post=(u,b)=>{const btn=lastBtn&&Date.now()-lastAt<700&&document.contains(lastBtn)?lastBtn:null;lastBtn=null;if(btn)btn.classList.add('busy');
 const inp=!btn&&lastIn&&Date.now()-lastInAt<1500&&document.contains(lastIn)?lastIn:null;lastIn=null;
@@ -923,7 +926,7 @@ x.onload=()=>{let r={};try{r=JSON.parse(x.responseText)}catch(e){}if(r.ok){$('fw
 x.onerror=()=>{$('fwprog').textContent='The connection was lost while sending. The running firmware is unchanged.'};x.open('POST','/api/update');x.send(d)}
 
 function cmd(c){post('/api/cmd?c='+c).then(r=>{if(!r.ok)say(r.error||'refused')})}
-async function tick(){let s;try{s=await get('/api/status')}catch(e){$('state').textContent='offline';$('state').className='pill bad';$('link').textContent='Controller not reachable';return}
+let TICKAT=0;async function tick(){if(document.hidden&&Date.now()-TICKAT<5000)return;TICKAT=Date.now();let s;try{s=await get('/api/status')}catch(e){$('state').textContent='offline';$('state').className='pill bad';$('link').textContent='Controller not reachable';return}
 ST=s;$('link').textContent='Connected. Changes are saved on the controller.';
 $('w').textContent=f1(s.weight_g);$('t').textContent=f1(s.shot_time_s);$('f').textContent=f2(s.flow_g_s);
 const fault=/FAILED|DISCONNECTED|STALE|TIMEOUT|INVALID|ERROR/.test(s.state);
@@ -945,7 +948,7 @@ $('back').style.display=result?'':'none';$('back').textContent=s.state=='SHOT_CO
 $('ihint').textContent=run||prep||result?'':s.scale_resting?'Scale resting: the touch key wakes it and brews':!s.scale_connected?'Switch on the scale':nocup?'Waiting for a cup':'Ready: press the touch key to brew';
 const a=$('alert');if(s.manual_stop_needed){a.style.display='block';a.textContent='STOP THE MACHINE BY HAND. The stop press was not delivered or confirmed.'}
 else if(s.bot_switch_mode){a.style.display='block';a.textContent='The SwitchBot is in Switch mode. Set it to Press mode in the SwitchBot app.'}else a.style.display='none';
-if(lastShotId!==s.last_shot_id){lastShotId=s.last_shot_id;loadShots();loadLibrary();if(S)loadShare()}}
+if(lastShotId!==s.last_shot_id){const first=lastShotId===-1;lastShotId=s.last_shot_id;if(!first){loadShots();loadLibrary();if(S)loadShare()}}}
 
 async function loadSettings(){S=await get('/api/settings');if(S&&typeof S.uiTheme=='number'&&S.uiTheme!=themeNow())setTheme(S.uiTheme,false);renderThemes();if(S&&typeof S.webPanels=='number'&&S.webPanels!=PN)applyPanels(S.webPanels);renderPanels();F.forEach(k=>{const e=$(k),v=S[k];e.value=typeof v==='boolean'?(v?1:0):v});
 SB.forEach(k=>$(k).checked=!!S[k]);loadShare();loadDiag();diagNotice();$('staSsid').value=S.net.staSsid;$('webStartEnabled').checked=S.net.webStartEnabled}
@@ -1896,8 +1899,13 @@ const sw=v=>`<span style="display:inline-block;width:12px;height:12px;border-rad
 $('igleg').innerHTML=sw(STC.ok)+'landed on time'+sw(STC.fast)+'still fast'+sw(STC.slow)+'still slow'+'<span style="display:inline-block;width:16px;height:2px;background:#f08a24;margin:0 4px 0 12px;vertical-align:middle"></span>confidence';
 $('ignote').textContent=ev.length+' change'+(ev.length==1?'':'s')+' advised, '+fo.length+' followed'}
 function drawFilter(){const cur=$('fcoffee').value;$('fcoffee').innerHTML='<option value="">All coffees</option>'+[...new Set(SH.map(s=>s.coffee).filter(x=>x))].map(n=>`<option ${n==cur?'selected':''}>${esc(n)}</option>`).join('')}
-async function loadShots(){let a;try{a=await get('/api/shots?limit=500')}catch(e){return}if(!Array.isArray(a))return;SH=a;drawFilter();drawShots();
-if(SH.length){showShot(SH[0].id,'h');if(!SEL||!SH.some(s=>s.id==SEL))SEL=SH[0].id;showShot(SEL,'s')}drawScatter();loadPrev();if(location.hash=='#insights')drawInsights()}
+// n: how many, newest first (500, all, when not a number: it is also used as a .then() step). On load the
+// page asks for 20 first, so Home fills from a short list, then for all; the second answer redraws the
+// lists but not the shot already shown, when the newest is still the same.
+let SHPART=false;
+async function loadShots(n){n=typeof n=='number'?n:500;let a;try{a=await get('/api/shots?limit='+n)}catch(e){return}if(!Array.isArray(a))return;
+const same=SHPART&&SH.length&&a.length&&SH[0].id==a[0].id;SHPART=n<500;SH=a;drawFilter();drawShots();
+if(SH.length&&!same){showShot(SH[0].id,'h');if(!SEL||!SH.some(s=>s.id==SEL))SEL=SH[0].id;showShot(SEL,'s')}drawScatter();if(!same)loadPrev();if(location.hash=='#insights')drawInsights()}
 // The grind advice as it stood right after the newest shot: recorded with the shot (its context,
 // /api/contexts), so it stays what was said even once the grinder has been moved.
 let PREV=null,PREVTRY=0;
@@ -2106,7 +2114,7 @@ try{VZ=await vzSearch(q)}catch(e){VZ=[];$('vzres').textContent='Could not reach 
 $('vzres').innerHTML=VZ.length?VZ.map((b,i)=>`<div class="row" style="align-items:center"><span style="flex:1 1 240px"><b>${esc(b.name)}</b> <span class="dim">${esc([b.canonical_roaster_name,b.country,b.processing].filter(x=>x).join(', '))}</span></span><button onclick="vzUse(${i})">Fill the form</button></div>`).join(''):'Nothing found.'}
 function vzUse(i){const c=vzToCoffee(VZ[i]);C=0;drawCoffees();CF.forEach(k=>{if(k in c)$('c_'+k).value=c[k]||''});$('c_roastDate').value='';say('Filled in from visualizer.coffee. Check it, add the roast date from your bag, then Save.')}
 /*END-VZ-LOOKUP*/
-loadUpkeep();loadSettings().then(loadLibrary).then(loadShots).then(loadCommunityCoffees).then(loadCommunityGrinders);setInterval(tick,500);tick();
+loadUpkeep();loadSettings().then(loadLibrary).then(()=>loadShots(20)).then(loadCommunityCoffees).then(loadCommunityGrinders).then(()=>loadShots());setInterval(tick,500);tick();
 
 // ---- polish: finding things, and knowing a press was felt ----------------
 (function(){

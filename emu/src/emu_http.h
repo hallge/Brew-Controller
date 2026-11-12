@@ -12,6 +12,7 @@ namespace emu {
 struct HttpRequest {
   std::string method, path, body;
   std::map<std::string, std::string> query;  // URL and form-encoded body arguments
+  std::map<std::string, std::string> headers;  // names in lower case
 };
 
 struct HttpResponse {

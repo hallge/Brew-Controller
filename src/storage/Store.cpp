@@ -536,6 +536,8 @@ void Store::resetHistory() {
   header_.head = 0;
   header_.count = 0;
   ringIdsValid_ = false;
+  forgetCurves();
+  ++revision_;
   if (header_.nextId == 0) header_.nextId = 1;
   File file = LittleFS.open(HISTORY_PATH, "w");
   if (file) {
@@ -567,7 +569,9 @@ bool Store::appendShot(const ShotRecord &record) {
   if (ringIdsValid_) g_slotIds[header_.head] = record.id;
   header_.head = (header_.head + 1) % HISTORY_CAPACITY;
   if (header_.count < HISTORY_CAPACITY) ++header_.count;
+  moveCurveWindow(header_.nextId, record.id + 1);
   header_.nextId = record.id + 1;
+  ++revision_;
   // The shot that just fell out of the ring takes its data with it.
   if (record.id > HISTORY_CAPACITY) removeCurve(record.id - HISTORY_CAPACITY);
   return writeHeader();
@@ -576,7 +580,48 @@ bool Store::appendShot(const ShotRecord &record) {
 void Store::removeCurve(uint32_t id) {
   char path[20];
   curvePath(id, path, sizeof(path));
-  if (bbw::fileExists(path)) LittleFS.remove(path);
+  if (curveCached(id) && !(curveHas_[(id % CURVE_CACHE) / 8] & (1u << (id % 8))) &&
+      (curveKnown_[(id % CURVE_CACHE) / 8] & (1u << (id % 8)))) {
+    return;  // known not to be there
+  }
+  if (bbw::fileExists(path)) {
+    LittleFS.remove(path);
+    ++revision_;
+  }
+  noteCurve(id, false);
+}
+
+// The curve cache covers the ids from nextId - CURVE_CACHE up to nextId - 1: the history and the
+// shot being saved now. An id outside it is looked up on flash, as before.
+bool Store::curveCached(uint32_t id) const {
+  return id != 0 && id < header_.nextId + 1 && header_.nextId + 1 - id <= CURVE_CACHE;
+}
+
+void Store::noteCurve(uint32_t id, bool has) {
+  if (!curveCached(id)) return;
+  const uint32_t bit = id % CURVE_CACHE;
+  curveKnown_[bit / 8] |= static_cast<uint8_t>(1u << (bit % 8));
+  if (has) curveHas_[bit / 8] |= static_cast<uint8_t>(1u << (bit % 8));
+  else curveHas_[bit / 8] &= static_cast<uint8_t>(~(1u << (bit % 8)));
+}
+
+void Store::forgetCurves() {
+  memset(curveKnown_, 0, sizeof(curveKnown_));
+  memset(curveHas_, 0, sizeof(curveHas_));
+}
+
+// The ids from oldNextId + 1 up to newNextId come into the cache; each takes the bit of the id
+// CURVE_CACHE below it, which leaves it, so their bits are no longer known.
+void Store::moveCurveWindow(uint32_t oldNextId, uint32_t newNextId) {
+  if (newNextId <= oldNextId) return;
+  if (newNextId - oldNextId >= CURVE_CACHE) {
+    forgetCurves();
+    return;
+  }
+  for (uint32_t id = oldNextId + 1; id <= newNextId; ++id) {
+    const uint32_t bit = id % CURVE_CACHE;
+    curveKnown_[bit / 8] &= static_cast<uint8_t>(~(1u << (bit % 8)));
+  }
 }
 
 // An older context file (version 1, 64-byte slots; version 2, 72) rewritten as the current version:
@@ -967,6 +1012,7 @@ bool Store::saveContext(const ShotContext &context) {
   const bool ok = file.seek(offset) &&
                   file.write(reinterpret_cast<const uint8_t *>(&context), sizeof(context)) == sizeof(context);
   file.close();
+  ++revision_;  // the shot list shows the dose weighed, the room and the prep flags
   return ok;
 }
 
@@ -1035,9 +1081,15 @@ bool Store::loadContext(uint32_t id, ShotContext &out) {
 
 bool Store::hasCurve(uint32_t id) {
   if (!fsOk_) return false;
+  if (curveCached(id)) {
+    const uint32_t bit = id % CURVE_CACHE;
+    if (curveKnown_[bit / 8] & (1u << (bit % 8))) return (curveHas_[bit / 8] & (1u << (bit % 8))) != 0;
+  }
   char path[20];
   curvePath(id, path, sizeof(path));
-  return bbw::fileExists(path);
+  const bool has = bbw::fileExists(path);
+  noteCurve(id, has);
+  return has;
 }
 
 void Store::makeRoomForCurve(size_t bytes) {
@@ -1065,6 +1117,8 @@ bool Store::saveCurve(uint32_t id, const CurvePoint *points, size_t count) {
       file.write(reinterpret_cast<const uint8_t *>(points), bytes) == bytes;
   file.close();
   if (!ok) LittleFS.remove(path);  // never leave half a data set behind
+  noteCurve(id, ok);
+  ++revision_;
   return ok;
 }
 
@@ -1118,6 +1172,45 @@ void Store::scanShots(uint32_t maxShots, bool (*visit)(const ShotRecord &, void 
   file.close();
 }
 
+void Store::scanShotsWithContext(uint32_t maxShots,
+                                 bool (*visit)(const ShotRecord &, const ShotContext *, bool, void *),
+                                 void *context) {
+  if (!fsOk_ || header_.count == 0) return;
+  File file = LittleFS.open(HISTORY_PATH, "r");
+  if (!file) return;
+  // The contexts sit in the same slots as the shots (see CONTEXT_PATH); believed only when the
+  // file is the current layout and the slot holds this shot.
+  File contexts;
+  if (bbw::fileExists(CONTEXT_PATH)) {
+    contexts = LittleFS.open(CONTEXT_PATH, "r");
+    ContextHeader header = {};
+    const bool ok = contexts && contexts.read(reinterpret_cast<uint8_t *>(&header), sizeof(header)) == sizeof(header) &&
+                    header.magic == CONTEXT_MAGIC && header.version == SHOT_CONTEXT_VERSION &&
+                    header.recordSize == sizeof(ShotContext) && header.capacity == HISTORY_CAPACITY;
+    if (!ok && contexts) contexts.close();
+    if (!ok) contexts = File();
+  }
+  ShotRecord record;
+  ShotContext shotContext;
+  const uint32_t limit = maxShots < header_.count ? maxShots : header_.count;
+  for (uint32_t i = 0; i < limit; ++i) {
+    const uint32_t slot = (header_.head + HISTORY_CAPACITY - 1 - i) % HISTORY_CAPACITY;
+    if (!file.seek(sizeof(Header) + static_cast<size_t>(slot) * sizeof(ShotRecord)) ||
+        file.read(reinterpret_cast<uint8_t *>(&record), sizeof(record)) != sizeof(record)) {
+      break;
+    }
+    record.recipe[RECIPE_NAME_LEN - 1] = '\0';
+    const bool haveContext =
+        contexts && record.id != 0 &&
+        contexts.seek(sizeof(ContextHeader) + static_cast<size_t>(slot) * sizeof(ShotContext)) &&
+        contexts.read(reinterpret_cast<uint8_t *>(&shotContext), sizeof(shotContext)) == sizeof(shotContext) &&
+        shotContext.shotId == record.id;
+    if (!visit(record, haveContext ? &shotContext : nullptr, hasCurve(record.id), context)) break;
+  }
+  if (contexts) contexts.close();
+  file.close();
+}
+
 bool Store::editShot(uint32_t id, void (*edit)(ShotRecord &, void *), void *context) {
   if (!fsOk_) return false;
   ShotRecord record;
@@ -1131,6 +1224,7 @@ bool Store::editShot(uint32_t id, void (*edit)(ShotRecord &, void *), void *cont
         file.seek(sizeof(Header) + static_cast<size_t>(slot) * sizeof(ShotRecord)) &&
         file.write(reinterpret_cast<const uint8_t *>(&record), sizeof(record)) == sizeof(record);
     file.close();
+    ++revision_;
     return ok;
   }
   return false;
@@ -1163,7 +1257,7 @@ void Store::clearShots() {
   const uint32_t first = header_.nextId > HISTORY_CAPACITY + 1 ? header_.nextId - HISTORY_CAPACITY - 1 : 1;
   for (uint32_t id = first; id < header_.nextId; ++id) removeCurve(id);
   if (bbw::fileExists(CONTEXT_PATH)) LittleFS.remove(CONTEXT_PATH);
-  resetHistory();
+  resetHistory();  // bumps the revision
 }
 
 size_t Store::readText(const char *path, char *out, size_t size) {

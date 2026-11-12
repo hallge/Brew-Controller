@@ -19,8 +19,13 @@
 #include "WebPage.h"
 #include "addons/AddonHost.h"
 #include "ExtensionZip.h"   // made from browser-extension/ by its make_zip.py
+#if __has_include("WebPageGz.h")
+#include "WebPageGz.h"     // WebPage.h gzipped, with its tag: made by scripts/gen_webpage.py
+#define BBW_PAGE_GZ 1
+#endif
 #include "core/Directory.h"
 #include "core/TasteProfile.h"
+#include "core/WebCache.h"
 #include "core/SettingsUtil.h"
 #include "core/Telemetry.h"
 #include "platform/BigMem.h"
@@ -358,35 +363,72 @@ void handlePostSettings() {
   sendOk();
 }
 
+// A number chosen at boot, under the history's revision in the shot list's ETag: the revision starts
+// at 0 on every boot, and a tag from before a restart must not match.
+uint32_t g_bootNonce = 0;
+
+// The shot list (11 Nov 2026). On the board it went out as about six small writes per shot (21 KB in
+// about 6 s) after two opens and four directory lookups per shot. Now: one pass over the history and
+// its contexts (Store::scanShotsWithContext), sent in pieces of SHOTS_CHUNK, and a 304 when the
+// browser already has this revision of the history (core/WebCache.h).
+constexpr size_t SHOTS_CHUNK = 4096;
+constexpr size_t SHOT_LINE_SIZE = 3072;
+char *g_shotsChunk;   // SHOTS_CHUNK, PSRAM, made in begin()
+char *g_shotLine;     // SHOT_LINE_SIZE: one shot as JSON
+
+void sendPiece(const char *data, size_t length, void *) { server.sendContent(data, length); }
+
 void handleShots() {
   if (busyBrewing()) return sendError(409, "not while a shot is running");
   uint32_t limit = server.hasArg("limit") ? server.arg("limit").toInt() : 50;
   limit = bbw::clampTo<uint32_t>(limit, 1, bbw::Store::HISTORY_CAPACITY);
+  char tag[40];
+  if (bbw::shotsEtag(g_bootNonce, app::store().historyRevision(), limit, tag, sizeof(tag))) {
+    server.sendHeader("ETag", tag);
+    server.sendHeader("Cache-Control", "no-cache");  // asked again each time, answered 304 while the same
+    if (bbw::etagMatches(server.header("If-None-Match").c_str(), tag)) {
+      server.send(304, "application/json", "");
+      return;
+    }
+  }
   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   server.send(200, "application/json", "");
-  server.sendContent("[");
-  bbw::ShotRecord shot;
-  for (uint32_t i = 0; i < limit && app::store().readShot(i, shot); ++i) {
+  struct Pass {
+    bbw::ChunkBuffer out{g_shotsChunk, SHOTS_CHUNK, sendPiece, nullptr};
+    bool first = true;
+  };
+  static Pass *pass;   // reused: the loop task only
+  if (!pass) pass = bbw::bigNew<Pass>();
+  pass->first = true;
+  pass->out.add("[");
+  app::store().scanShotsWithContext(limit, [](const bbw::ShotRecord &shot, const bbw::ShotContext *context,
+                                              bool hasData, void *c) {
+    Pass &p = *static_cast<Pass *>(c);
     JsonDocument doc;
     bbw::shotToJson(shot, doc.to<JsonObject>());
-    doc["has_data"] = app::store().hasCurve(shot.id);
-    {
-      bbw::ShotContext context;
-      if (app::store().loadContext(shot.id, context)) {
-        doc["dose_weighed_g"] = context.doseActualDg / 10.0f;   // 0: not weighed
-        doc["purged"] = (context.prepFlags & bbw::CTX_PREP_PURGED) != 0;
-        doc["uneven"] = (context.prepFlags & bbw::CTX_PREP_UNEVEN) != 0;
-        if (context.ambientRhX10 != bbw::AMBIENT_NONE_X10) doc["ambient_rh_pct"] = context.ambientRhX10 / 10.0f;
-        if (context.ambientTempX10 != bbw::AMBIENT_NONE_X10) doc["ambient_temp_c"] = context.ambientTempX10 / 10.0f;
-        if (context.roomEffX10 != bbw::AMBIENT_NONE_X10) doc["room_eff_c"] = context.roomEffX10 / 10.0f;
-      }
+    doc["has_data"] = hasData;
+    if (context) {
+      doc["dose_weighed_g"] = context->doseActualDg / 10.0f;   // 0: not weighed
+      doc["purged"] = (context->prepFlags & bbw::CTX_PREP_PURGED) != 0;
+      doc["uneven"] = (context->prepFlags & bbw::CTX_PREP_UNEVEN) != 0;
+      if (context->ambientRhX10 != bbw::AMBIENT_NONE_X10) doc["ambient_rh_pct"] = context->ambientRhX10 / 10.0f;
+      if (context->ambientTempX10 != bbw::AMBIENT_NONE_X10) doc["ambient_temp_c"] = context->ambientTempX10 / 10.0f;
+      if (context->roomEffX10 != bbw::AMBIENT_NONE_X10) doc["room_eff_c"] = context->roomEffX10 / 10.0f;
     }
-    String line;
-    serializeJson(doc, line);
-    if (i) server.sendContent(",");
-    server.sendContent(line);
-  }
-  server.sendContent("]");
+    if (!p.first) p.out.add(",", 1);
+    p.first = false;
+    const size_t n = serializeJson(doc, g_shotLine, SHOT_LINE_SIZE);
+    if (n < SHOT_LINE_SIZE - 1) {
+      p.out.add(g_shotLine, n);
+    } else {  // longer than the line buffer (it never has been): as a String
+      String line;
+      serializeJson(doc, line);
+      p.out.add(line.c_str(), line.length());
+    }
+    return true;
+  }, pass);
+  pass->out.add("]");
+  pass->out.flush();
   server.sendContent("");
 }
 
@@ -3347,6 +3389,13 @@ void begin() {
   g_curveT = bbw::bigArray<float>(bbw::MAX_CURVE_POINTS);
   g_curveW = bbw::bigArray<float>(bbw::MAX_CURVE_POINTS);
   g_shotHead = bbw::bigArray<char>(SHOT_HEAD_SIZE);
+  g_shotsChunk = bbw::bigArray<char>(SHOTS_CHUNK);
+  g_shotLine = bbw::bigArray<char>(SHOT_LINE_SIZE);
+#ifdef BBW_EMULATOR
+  g_bootNonce = static_cast<uint32_t>(time(nullptr)) * 2654435761u ^ millis();
+#else
+  g_bootNonce = esp_random();
+#endif
   g_presetList = bbw::bigArray<bbw::Recipe>(bbw::MAX_PRESETS);
   for (size_t i = 0; i < bbw::MAX_PRESETS; ++i) new (&g_presetList[i]) bbw::Recipe();
   const bbw::NetConfig net = app::netConfig();
@@ -3376,7 +3425,23 @@ void begin() {
   server.on("/", HTTP_GET, []() {
     // Always the page of the firmware now running: a browser holding on to
     // the page from before an update runs old code against the new API.
+    // So it is asked for every time (no-cache), and answered 304 when the
+    // browser's copy is this very page (its tag is a hash of the page).
     server.sendHeader("Cache-Control", "no-cache");
+#ifdef BBW_PAGE_GZ
+    server.sendHeader("ETag", WEB_PAGE_TAG);
+    server.sendHeader("Vary", "Accept-Encoding");
+    if (bbw::etagMatches(server.header("If-None-Match").c_str(), WEB_PAGE_TAG)) {
+      server.send(304, "text/html", "");
+      return;
+    }
+    // 113 KB instead of 361 KB, which took about 3 s over the board's Wi-Fi.
+    if (bbw::acceptsGzip(server.header("Accept-Encoding").c_str())) {
+      server.sendHeader("Content-Encoding", "gzip");
+      server.send_P(200, "text/html", reinterpret_cast<const char *>(WEB_PAGE_GZ), WEB_PAGE_GZ_LEN);
+      return;
+    }
+#endif
     server.send_P(200, "text/html", WEB_PAGE);
   });
   server.on("/api/status", HTTP_GET, handleStatus);
@@ -3847,6 +3912,12 @@ void begin() {
     }
     sendError(404, "not found");
   });
+  // The request headers the handlers read (the server keeps only those named here).
+  static const char *HEADERS[] = {"If-None-Match", "Accept-Encoding"};
+  server.collectHeaders(HEADERS, sizeof(HEADERS) / sizeof(HEADERS[0]));
+#ifndef BBW_EMULATOR
+  server.enableDelay(false);  // the loop sleeps at its end; handleClient is called several times a pass
+#endif
   server.begin();
   LOGI("web: access point %s, http://192.168.4.1", apSsid);
 }
@@ -3885,7 +3956,11 @@ void serviceAccessPoint(uint32_t now) {
 #endif
 
 void loop() {
-  server.handleClient();
+  // The server takes one connection per call, and reads it only once its request has come in (often
+  // the call after the one that accepted it). A few calls per pass of the loop: a request no longer
+  // waits a whole pass between being accepted and being answered, and several queued ones are
+  // served in one pass (11 Nov 2026: on the board a pass could take about a second).
+  for (int i = 0; i < 4; ++i) server.handleClient();
 #ifndef BBW_EMULATOR
   serviceAccessPoint(millis());
 #endif

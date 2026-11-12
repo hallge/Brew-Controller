@@ -32,6 +32,10 @@ class WebServer {
   void sendContent(const String &chunk) { body_ += chunk.std(); }
   String arg(const char *name);
   bool hasArg(const char *name);
+  // Request headers: the real server keeps only those named in collectHeaders; this one keeps all.
+  void collectHeaders(const char *headers[], size_t count) { (void)headers; (void)count; }
+  String header(const char *name);
+  bool hasHeader(const char *name);
   // The request being handled (the not-found handler offers it to add-ons).
   String uri() const { return String(uri_.c_str()); }
   HTTPMethod method() const { return method_; }
@@ -45,6 +49,7 @@ class WebServer {
   std::vector<Route> routes_;
   Handler notFound_;
   std::map<std::string, std::string> args_;
+  std::map<std::string, std::string> requestHeaders_;
   std::string uri_;
   HTTPMethod method_ = HTTP_GET;
   int code_ = 200;

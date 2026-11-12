@@ -70,6 +70,7 @@ void WebServer::handleClient() {
     const emu::HttpRequest &request = pending->request;
     args_ = request.query;
     args_["plain"] = request.body;
+    requestHeaders_ = request.headers;
     code_ = 200;
     type_ = "text/plain";
     body_.clear();
@@ -114,6 +115,19 @@ String WebServer::arg(const char *name) {
 }
 
 bool WebServer::hasArg(const char *name) { return args_.count(name) != 0; }
+
+static std::string lowerName(const char *name) {
+  std::string s = name ? name : "";
+  for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  return s;
+}
+
+String WebServer::header(const char *name) {
+  const auto it = requestHeaders_.find(lowerName(name));
+  return it == requestHeaders_.end() ? String() : String(it->second);
+}
+
+bool WebServer::hasHeader(const char *name) { return requestHeaders_.count(lowerName(name)) != 0; }
 
 // ============================================================ emulator API ==
 

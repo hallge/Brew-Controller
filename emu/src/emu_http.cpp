@@ -45,6 +45,7 @@ const char *reason(int code) {
   switch (code) {
     case 200: return "OK";
     case 204: return "No Content";
+    case 304: return "Not Modified";
     case 400: return "Bad Request";
     case 403: return "Forbidden";
     case 404: return "Not Found";
@@ -100,6 +101,18 @@ void serveConnection(SOCKET s, std::function<void(const HttpRequest &, HttpRespo
     const size_t q = target.find('?');
     request.path = urlDecode(target.substr(0, q));
     if (q != std::string::npos) parseArgs(target.substr(q + 1), request.query);
+    for (size_t at = lineEnd; at != std::string::npos && at < head.size();) {
+      const size_t from = at + 2, to = head.find("\r\n", from);
+      const std::string h = head.substr(from, to == std::string::npos ? std::string::npos : to - from);
+      const size_t colon = h.find(':');
+      if (colon != std::string::npos) {
+        std::string name = h.substr(0, colon), value = h.substr(colon + 1);
+        for (char &c : name) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        while (!value.empty() && (value[0] == ' ' || value[0] == '\t')) value.erase(0, 1);
+        request.headers[name] = value;
+      }
+      at = to;
+    }
     request.body = buffer.substr(headerEnd + 4, contentLength);
     buffer.erase(0, headerEnd + 4 + contentLength);
     if (head.find("application/x-www-form-urlencoded") != std::string::npos) {
@@ -111,10 +124,18 @@ void serveConnection(SOCKET s, std::function<void(const HttpRequest &, HttpRespo
 
     char status[256];
     snprintf(status, sizeof(status),
-             "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\n"
-             "Cache-Control: no-store\r\nConnection: keep-alive\r\n",
+             "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: keep-alive\r\n",
              response.code, reason(response.code), response.type.c_str(), response.body.size());
     std::string out = status;
+    // no-store unless the handler says otherwise (the page and the shot list are no-cache with an
+    // ETag, as on the board, whose server adds no Cache-Control of its own).
+    bool cacheSaid = false;
+    for (const auto &h : response.headers) {
+      std::string name = h.first;
+      for (char &c : name) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+      if (name == "cache-control") cacheSaid = true;
+    }
+    if (!cacheSaid) out += "Cache-Control: no-store\r\n";
     for (const auto &h : response.headers) out += h.first + ": " + h.second + "\r\n";
     out += "\r\n";
     if (!sendAll(s, out.data(), out.size()) ||

@@ -139,6 +139,12 @@ extern "C" uint32_t millis(void) {
                                    .count());
 }
 
+extern "C" uint32_t micros(void) {
+  return static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                   std::chrono::steady_clock::now() - emu::g_bootTime)
+                                   .count());
+}
+
 extern "C" void delay(uint32_t ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 
 extern "C" size_t strlcpy(char *dst, const char *src, size_t size) {

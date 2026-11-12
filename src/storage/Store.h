@@ -90,6 +90,16 @@ class Store {
   // Newest first, one file open for the whole pass. The callback returns
   // false to stop early.
   void scanShots(uint32_t maxShots, bool (*visit)(const ShotRecord &, void *), void *context);
+  // The same pass with each shot's context (nullptr: none stored) and whether its data set is
+  // stored: two files open for the whole pass, the curves from a cache (11 Nov 2026: the shot list
+  // did two opens and four directory lookups per shot).
+  void scanShotsWithContext(uint32_t maxShots,
+                            bool (*visit)(const ShotRecord &, const ShotContext *, bool hasData, void *),
+                            void *context);
+  // Goes up with every change to what the shot list shows: a shot added, edited or removed, its
+  // context or its data set written or removed, the history cleared. Starts at 0 each boot; the web
+  // server pairs it with a number of its own for the shot list's ETag.
+  uint32_t historyRevision() const { return revision_; }
   uint32_t nextShotId() const { return header_.nextId; }
   bool setShotGrind(uint32_t id, uint16_t grindUm);  // correct a shot after the fact
   bool setShotRating(uint32_t id, uint8_t rating, uint8_t taste);
@@ -199,6 +209,16 @@ class Store {
 
   Header header_ = {};
   bool ringIdsValid_ = false;  // the cache of the ids in the history slots is current
+  // Whether shot `id` has a data set, cached for the newest CURVE_CACHE ids (id % CURVE_CACHE):
+  // known says the bit in has is current. Filled as hasCurve asks, kept by saveCurve/removeCurve.
+  static constexpr uint32_t CURVE_CACHE = 512;  // more than HISTORY_CAPACITY
+  uint8_t curveKnown_[CURVE_CACHE / 8] = {};
+  uint8_t curveHas_[CURVE_CACHE / 8] = {};
+  bool curveCached(uint32_t id) const;  // id is one the cache covers
+  void noteCurve(uint32_t id, bool has);
+  void forgetCurves();
+  void moveCurveWindow(uint32_t oldNextId, uint32_t newNextId);
+  uint32_t revision_ = 0;
   bool fsOk_ = false;
 };
 

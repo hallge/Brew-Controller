@@ -35,6 +35,7 @@
 #include "net/Web.h"
 #include "platform/BigMem.h"
 #include "platform/RamWatch.h"
+#include "core/LoopTiming.h"
 #include "platform/DeviceKey.h"
 #include "platform/FsUtil.h"
 #include "platform/HomeAssistantLink.h"
@@ -1369,6 +1370,11 @@ void logHealth() {
 
 // Which jobs ran when chip RAM reached each new low (platform/RamWatch.h). Sampled every loop.
 bbw::RamLow g_ramLow;   // loop task only; read by diagnostics
+// How long each pass of the loop takes, by job (core/LoopTiming.h). Loop task only; read by
+// diagnostics, which runs on the loop too.
+bbw::LoopTiming g_loopTiming;
+uint32_t loopMicros() { return micros(); }
+using LoopSpan = bbw::LoopSpanT<loopMicros>;
 bool g_ramSmallToPsram = false;   // as this start-up found it (bbw::smallAllocsToPsram)
 void ramWatch() {
 #ifndef BBW_EMULATOR
@@ -4019,6 +4025,22 @@ void diagnostics(JsonObject out) {
     mem["low_at_uptime_s"] = g_ramLow.uptimeS;
   }
   mem["small_to_psram"] = g_ramSmallToPsram;
+  {
+    // The loop's passes (core/LoopTiming.h): the web server answers one connection per pass.
+    const bbw::LoopWindow &w = bbw::loopReportWindow(g_loopTiming);
+    JsonObject lp = out["loop"].to<JsonObject>();
+    lp["passes"] = w.passes;
+    lp["avg_ms"] = w.passes ? static_cast<float>(w.totalUs / w.passes) / 1000.0f : 0.0f;
+    lp["max_ms"] = w.maxPassUs / 1000u;
+    lp["max_job"] = bbw::LOOP_JOB_NAMES[w.maxPassJob];
+    lp["max_job_ms"] = w.maxPassJobUs / 1000u;
+    JsonObject jobs = lp["job_max_ms"].to<JsonObject>();
+    for (size_t j = 0; j < bbw::LOOP_JOB_COUNT; ++j) jobs[bbw::LOOP_JOB_NAMES[j]] = w.jobMaxUs[j] / 1000u;
+    lp["boot_max_ms"] = g_loopTiming.bootMaxPassUs / 1000u;
+    lp["boot_max_job"] = bbw::LOOP_JOB_NAMES[g_loopTiming.bootMaxJob];
+    lp["boot_max_job_ms"] = g_loopTiming.bootMaxJobUs / 1000u;
+    lp["boot_max_at_uptime_s"] = g_loopTiming.bootMaxAtS;
+  }
   mem["small_to_psram_next"] = ramSmallToPsramStored();
 #ifndef BBW_EMULATOR
   JsonObject stacks = out["stack_left"].to<JsonObject>();
@@ -5131,18 +5153,27 @@ void homeAssistantService(bool idle) {
 }
 
 void loop() {
+  bbw::loopPassBegin(g_loopTiming, micros(), millis());
   {
     bbw::RamJobScope job(bbw::RAM_UI);
+    LoopSpan span(g_loopTiming, bbw::LOOP_UI);
     ui::loop();
   }
   {
     bbw::RamJobScope job(bbw::RAM_WEB);
+    LoopSpan span(g_loopTiming, bbw::LOOP_WEB);
     web::loop();
   }
-  addons::loop();  // marks its own work (RAM_ADDON)
+  {
+    LoopSpan span(g_loopTiming, bbw::LOOP_ADDON);
+    addons::loop();  // marks its own work (RAM_ADDON)
+  }
   handleButton();
   handleSerial();
-  logLoop();
+  {
+    LoopSpan span(g_loopTiming, bbw::LOOP_LOG);
+    logLoop();
+  }
   confirmFirmware();
   logHealth();
 
@@ -5180,6 +5211,7 @@ void loop() {
       if (saveLibrary) (*g_librarySaving) = g_library;
     }
   }
+  const uint32_t shotSaveUs = micros();
   if (haveShot) {
     bbw::RamJobScope saving(bbw::RAM_SHOT_SAVE);
     printShot(shot);
@@ -5260,6 +5292,7 @@ void loop() {
     shareAfterShot(shot);
     bbw::RamJobScope ha(bbw::RAM_HA);
     haAfterShot(shot);
+    bbw::loopSpanAdd(g_loopTiming, bbw::LOOP_SHOT_SAVE, micros() - shotSaveUs);
   }
   if (idle && g_maintenanceDirty) {
     static bbw::Maintenance snapshot;
@@ -5272,10 +5305,12 @@ void loop() {
   }
   {
     bbw::RamJobScope job(bbw::RAM_LOG);
+    LoopSpan span(g_loopTiming, bbw::LOOP_LOG);
     bbw::logService(idle);
   }
   {
     bbw::RamJobScope job(bbw::RAM_UPDATE);
+    LoopSpan span(g_loopTiming, bbw::LOOP_UPDATE);
     bbw::updateService(idle, true);
   }
   if (bbw::updateStatus().phase == bbw::UpdatePhase::INSTALLED) {
@@ -5283,23 +5318,28 @@ void loop() {
   }
   {
     bbw::RamJobScope job(bbw::RAM_SHARE);
+    LoopSpan span(g_loopTiming, bbw::LOOP_SHARE);
     shareSendOne(idle);
   }
   {
     bbw::RamJobScope job(bbw::RAM_DIAG);
+    LoopSpan span(g_loopTiming, bbw::LOOP_DIAG);
     diagService(idle);
   }
   {
     bbw::RamJobScope job(bbw::RAM_SHARE);
+    LoopSpan span(g_loopTiming, bbw::LOOP_SHARE);
     shareReadStatus(idle);
     libraryRefresh(idle);
   }
   {
     bbw::RamJobScope job(bbw::RAM_SUBS);
+    LoopSpan span(g_loopTiming, bbw::LOOP_SUBS);
     subscriptionsService(idle);
   }
   {
     bbw::RamJobScope job(bbw::RAM_HA);
+    LoopSpan span(g_loopTiming, bbw::LOOP_HA);
     homeAssistantService(idle);
   }
   ramWatch();
@@ -5360,6 +5400,20 @@ void loop() {
   }
   // Standby (scale off, screen dark): the loop only has the web server and
   // the touch panel to look after, so it can idle most of the time.
+  {
+    // A pass that held the web server (and the touch panel) for seconds, with the job that took it.
+    const uint32_t passUs = bbw::loopPassEnd(g_loopTiming, micros(), millis());
+    static uint32_t saidAtMs = 0;
+    if (passUs >= 3000000u && (!saidAtMs || millis() - saidAtMs >= 10000u)) {
+      saidAtMs = millis() ? millis() : 1;
+      uint8_t top = bbw::LOOP_OTHER;
+      for (size_t j = 0; j < bbw::LOOP_JOB_COUNT; ++j) {
+        if (g_loopTiming.passJobUs[j] > g_loopTiming.passJobUs[top]) top = static_cast<uint8_t>(j);
+      }
+      LOGW("loop: a pass took %u ms, %u of them in %s", static_cast<unsigned>(passUs / 1000u),
+           static_cast<unsigned>(g_loopTiming.passJobUs[top] / 1000u), bbw::LOOP_JOB_NAMES[top]);
+    }
+  }
   delay(ui::isOff() ? 25 : 2);
 }
 

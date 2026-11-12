@@ -64,6 +64,7 @@ static int g_checks = 0;
 #define CHECK_NEAR(a, b, tol) CHECK(fabs(static_cast<double>(a) - static_cast<double>(b)) <= (tol))
 #include "test_apphost.inc"  // needs CHECK above
 #include "test_advice.inc"   // needs CHECK above
+#include "test_serving.inc"  // needs CHECK above
 
 // ------------------------------------------------------------- simulation --
 
@@ -10566,6 +10567,8 @@ int main() {
   testGrinderUnitTidy();
   testAppHost();
   testSafety();
+  testLoopTiming();
+  testWebCache();
   printf("\n%d checks, %d failed\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

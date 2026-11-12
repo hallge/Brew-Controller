@@ -193,6 +193,97 @@ static ShotContext contextFor(uint32_t id) {
 
 // ------------------------------------------------------------------- tests --
 
+// The shot list's one pass, the curve cache and the history's revision (11 Nov 2026).
+static void testShotListPass() {
+  printf("shot list: one pass with contexts, curves cached, revision on every change\n");
+  freshWorld();
+  Store store;
+  CHECK(store.begin());
+  CurvePoint points[4] = {};
+  uint32_t rev = store.historyRevision();
+  for (uint32_t id = 1; id <= 3; ++id) {
+    CHECK(store.appendShot(shotWithId(id)));
+    CHECK(store.historyRevision() > rev);
+    rev = store.historyRevision();
+  }
+  CHECK(store.saveCurve(1, points, 4));
+  CHECK(store.historyRevision() > rev);
+  rev = store.historyRevision();
+  CHECK(store.saveCurve(3, points, 4));
+  CHECK(store.saveContext(contextFor(2)));
+  CHECK(store.saveContext(contextFor(3)));
+  CHECK(store.historyRevision() > rev);
+  rev = store.historyRevision();
+  CHECK(store.setShotRating(2, 4, 1));
+  CHECK(store.historyRevision() > rev);
+  rev = store.historyRevision();
+  CHECK(!store.setShotRating(77, 4, 1));          // no such shot: nothing changed
+  CHECK(store.historyRevision() == rev);
+  CHECK(store.hasCurve(1) && !store.hasCurve(2) && store.hasCurve(3));
+  CHECK(!store.hasCurve(2));                       // asked twice: the cached answer is the same
+  CHECK(store.historyRevision() == rev);           // asking changes nothing
+
+  struct Seen {
+    uint32_t ids[8] = {};
+    bool context[8] = {};
+    bool data[8] = {};
+    uint16_t dose[8] = {};
+    uint8_t rating[8] = {};
+    size_t n = 0;
+  } seen;
+  store.scanShotsWithContext(500, [](const ShotRecord &r, const ShotContext *c, bool hasData, void *x) {
+    Seen &s = *static_cast<Seen *>(x);
+    s.ids[s.n] = r.id;
+    s.context[s.n] = c != nullptr;
+    s.dose[s.n] = c ? c->doseActualDg : 0;
+    s.data[s.n] = hasData;
+    s.rating[s.n] = r.rating;
+    ++s.n;
+    return true;
+  }, &seen);
+  CHECK(seen.n == 3);
+  CHECK(seen.ids[0] == 3 && seen.ids[1] == 2 && seen.ids[2] == 1);          // newest first
+  CHECK(seen.context[0] && seen.context[1] && !seen.context[2]);
+  CHECK(seen.dose[1] == contextFor(2).doseActualDg);
+  CHECK(seen.data[0] && !seen.data[1] && seen.data[2]);
+  CHECK(seen.rating[1] == 4);
+  // Stopping early, and a limit.
+  seen = Seen();
+  store.scanShotsWithContext(2, [](const ShotRecord &r, const ShotContext *, bool, void *x) {
+    static_cast<Seen *>(x)->ids[static_cast<Seen *>(x)->n++] = r.id;
+    return true;
+  }, &seen);
+  CHECK(seen.n == 2 && seen.ids[1] == 2);
+
+  // A restart: no cache yet, the same answers from flash.
+  {
+    Store again;
+    CHECK(again.begin());
+    CHECK(again.hasCurve(1) && !again.hasCurve(2) && again.hasCurve(3));
+  }
+
+  // The ring goes round: the curve of the shot that falls out goes, the ones in the history stay.
+  for (uint32_t id = 4; id <= 520; ++id) {
+    CHECK(store.appendShot(shotWithId(id)));
+    CHECK(store.saveCurve(id, points, 4));
+  }
+  CHECK(store.shotCount() == 500);
+  CHECK(!store.hasCurve(1) && !store.hasCurve(3) && !store.hasCurve(20));   // fell out of the history
+  CHECK(!haveFile("/c20.bin") && haveFile("/c21.bin"));
+  CHECK(store.hasCurve(21) && store.hasCurve(520) && !store.hasCurve(521));
+  {
+    Store again;
+    CHECK(again.begin());
+    CHECK(!again.hasCurve(20) && again.hasCurve(21) && again.hasCurve(520));
+  }
+  // Clearing the history: no curves, a new revision.
+  rev = store.historyRevision();
+  store.clearShots();
+  CHECK(store.historyRevision() > rev);
+  CHECK(store.shotCount() == 0 && !store.hasCurve(520) && !store.hasCurve(21));
+  CHECK(!haveFile("/c520.bin"));
+}
+
 // Layout of everything the firmware keeps on flash in binary form. A later build may add fields at the
 // END of a record and nothing else; these numbers say what the builds so far wrote, so a change to any
 // of them is a decision and not an accident. (Every member is 1, 2 or 4 bytes wide, so the host and the
@@ -647,6 +738,7 @@ int main() {
   testLongBlobRollback();
   testUnreadHistoryComesBack();
   testContextsFollowTheHistory();
+  testShotListPass();
   testContextsConversion();
   testContextsSetAside();
   testHistoryResetDropsStaleData();
