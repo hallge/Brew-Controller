@@ -1,6 +1,7 @@
 // Loop timing and the web serving helpers (core/LoopTiming.h, core/WebCache.h), 11 Nov 2026.
 #include "core/LoopTiming.h"
 #include "core/WebCache.h"
+#include "core/ConnPool.h"
 
 static void testLoopTiming() {
   printf("loop timing\n");
@@ -94,4 +95,68 @@ static void testWebCache() {
   CHECK(sink.writes == 4);
   cb.flush();
   CHECK(sink.writes == 4);   // nothing waiting: nothing sent
+}
+
+// A fake client for the connection pool.
+struct FakeConn {
+  int id = 0;
+  int bytes = 0;
+  bool up = true;
+  int available() const { return bytes; }
+  bool connected() const { return up; }
+};
+
+static void testConnPool() {
+  printf("connection pool\n");
+  using Pool = bbw::ConnPool<FakeConn, 3>;
+  FakeConn out;
+  {  // An idle client does not block a ready one behind it.
+    Pool p;
+    p.add({1, 0, true}, 0);
+    p.add({2, 10, true}, 100);
+    CHECK(p.takeReady(200, 5000, out) && out.id == 2);
+    CHECK(p.size() == 1);   // the idle one stays
+    CHECK(!p.takeReady(300, 5000, out));
+    CHECK(p.size() == 1);
+  }
+  {  // An idle client is dropped once it has waited longer than the limit, not before.
+    Pool p;
+    p.add({1, 0, true}, 1000);
+    CHECK(!p.takeReady(6000, 5000, out) && p.size() == 1);   // exactly 5000: kept
+    CHECK(!p.takeReady(6001, 5000, out) && p.size() == 0);
+    // The clock wrapping does not drop a fresh one.
+    p.add({2, 0, true}, 0xFFFFFF00u);
+    CHECK(!p.takeReady(0x100u, 5000, out) && p.size() == 1);
+  }
+  {  // A disconnected client is dropped; one that sent its request and closed is still served.
+    Pool p;
+    p.add({1, 0, false}, 0);
+    p.add({2, 5, false}, 0);
+    p.add({3, 0, true}, 0);
+    CHECK(p.takeReady(10, 5000, out) && out.id == 2);
+    CHECK(p.size() == 1);   // 1 dropped, 3 kept
+    CHECK(!p.takeReady(20, 5000, out) && p.size() == 1);
+  }
+  {  // A full pool refuses more; room comes back when one is served.
+    Pool p;
+    CHECK(p.add({1, 0, true}, 0));
+    CHECK(p.add({2, 0, true}, 0));
+    CHECK(p.add({3, 7, true}, 0));
+    CHECK(p.full());
+    CHECK(!p.add({4, 0, true}, 0));
+    CHECK(p.size() == 3);
+    CHECK(p.takeReady(1, 5000, out) && out.id == 3);
+    CHECK(!p.full());
+    CHECK(p.add({4, 0, true}, 1));
+  }
+  {  // Among ready ones, first come first served.
+    Pool p;
+    p.add({1, 0, true}, 0);
+    p.add({2, 4, true}, 0);
+    p.add({3, 9, true}, 0);
+    CHECK(p.takeReady(1, 5000, out) && out.id == 2);
+    CHECK(p.takeReady(1, 5000, out) && out.id == 3);
+    CHECK(!p.takeReady(1, 5000, out));
+    CHECK(p.size() == 1);
+  }
 }

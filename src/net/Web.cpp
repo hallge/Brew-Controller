@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <WebServer.h>
+#include "net/PooledWebServer.h"
 #include <WiFi.h>
 #include <LittleFS.h>
 #ifndef BBW_EMULATOR
@@ -45,7 +46,11 @@ namespace web {
 
 namespace {
 
+#ifdef BBW_EMULATOR
 WebServer server(80);
+#else
+PooledWebServer server(80);   // accepts every waiting connection, serves the ones whose request is in
+#endif
 char apSsid[32];
 bool restartPending = false;
 uint32_t restartAtMs = 0;
@@ -3956,10 +3961,10 @@ void serviceAccessPoint(uint32_t now) {
 #endif
 
 void loop() {
-  // The server takes one connection per call, and reads it only once its request has come in (often
-  // the call after the one that accepted it). A few calls per pass of the loop: a request no longer
-  // waits a whole pass between being accepted and being answered, and several queued ones are
-  // served in one pass (11 Nov 2026: on the board a pass could take about a second).
+  // Each call accepts every waiting connection into a pool (PooledWebServer) and serves one whose
+  // request has come in, so an idle connection (a browser's spare, a client that never sends) no
+  // longer holds up the others for 5 s. A few calls per pass of the loop: several queued requests
+  // are served in one pass (11-12 Nov 2026: on the board a pass could take about a second).
   for (int i = 0; i < 4; ++i) server.handleClient();
 #ifndef BBW_EMULATOR
   serviceAccessPoint(millis());
