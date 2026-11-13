@@ -179,8 +179,13 @@ struct SeenDevice {
 struct RadioTest {
   std::atomic<uint16_t> scanInterval{160};    // 0.625 ms units
   std::atomic<uint16_t> scanWindow{80};
-  std::atomic<uint16_t> connectInterval{16};  // the scan while connecting
-  std::atomic<uint16_t> connectWindow{16};
+  // The scan while connecting to a pusher: 100 ms on each channel, all the time. Was 10 ms (the scale
+  // still uses 10 ms). Measured on the board
+  // with the scale linked (v0.1.39, 13 Nov 2026, 10 reconnects of the brew bot each, interleaved):
+  // 10 ms averaged about 32 s with 6 of 10 at 23 s or more and one over 2 min; 100 ms averaged 12 s,
+  // worst 29 s. 30 ms, the scale's own link interval, was the worst of the three.
+  std::atomic<uint16_t> connectInterval{160};
+  std::atomic<uint16_t> connectWindow{160};
   std::atomic<int8_t> active{-1};             // -1 automatic, 0 passive, 1 active
   std::atomic<bool> alwaysScan{false};        // scan even when nothing needs it
   std::atomic<bool> holdConnects{false};      // start no new bot connections

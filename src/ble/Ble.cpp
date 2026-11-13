@@ -19,7 +19,9 @@ void configureClient(NimBLEClient *client, bool pusher) {
   client->setConnectionParams(pusher ? t.botIntervalMin.load() : t.linkIntervalMin.load(),
                               pusher ? t.botIntervalMax.load() : t.linkIntervalMax.load(), 0,
                               pusher ? t.botTimeout.load() : t.linkTimeout.load(),
-                              t.connectInterval.load(), t.connectWindow.load());
+                              // The scale keeps the 10 ms connect scan it has always had: the 100 ms
+                              // one was measured for the pushers only.
+                              pusher ? t.connectInterval.load() : 16, pusher ? t.connectWindow.load() : 16);
   // Long enough to span one of a sleeping SwitchBot's advertisements
   // (every 10-15 s); each restart of the attempt loses time.
   client->setConnectTimeout(10);
