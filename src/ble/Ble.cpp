@@ -14,10 +14,12 @@ namespace {
 
 
 // 15-30 ms connection interval, 4 s supervision timeout (the radio test can change both).
-void configureClient(NimBLEClient *client) {
-  client->setConnectionParams(g_radioTest.linkIntervalMin.load(), g_radioTest.linkIntervalMax.load(), 0,
-                              g_radioTest.linkTimeout.load(), g_radioTest.connectInterval.load(),
-                              g_radioTest.connectWindow.load());
+void configureClient(NimBLEClient *client, bool pusher) {
+  const RadioTest &t = g_radioTest;
+  client->setConnectionParams(pusher ? t.botIntervalMin.load() : t.linkIntervalMin.load(),
+                              pusher ? t.botIntervalMax.load() : t.linkIntervalMax.load(), 0,
+                              pusher ? t.botTimeout.load() : t.linkTimeout.load(),
+                              t.connectInterval.load(), t.connectWindow.load());
   // Long enough to span one of a sleeping SwitchBot's advertisements
   // (every 10-15 s); each restart of the attempt loses time.
   client->setConnectTimeout(10);
@@ -100,7 +102,7 @@ bool BleScale::connectTo(const NimBLEAddress &address) {
     client_ = NimBLEDevice::createClient();
     client_->setClientCallbacks(new ClientCallbacks(*this), false);
   }
-  configureClient(client_);
+  configureClient(client_, false);
   ready_ = false;
   // Holding the mutex keeps the control task's writes away from the
   // attribute objects while connect() rebuilds them.
@@ -271,7 +273,7 @@ bool BlePusher::connectTo(const NimBLEAddress &address) {
     client_ = NimBLEDevice::createClient();
     client_->setClientCallbacks(new ClientCallbacks(*this), false);
   }
-  configureClient(client_);
+  configureClient(client_, true);
   ready_ = false;
   xSemaphoreTake(mutex_, portMAX_DELAY);
   writeChar_ = nullptr;

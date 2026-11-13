@@ -190,7 +190,14 @@ struct RadioTest {
   std::atomic<uint16_t> linkIntervalMax{24};
   std::atomic<uint16_t> linkTimeout{400};
   // How long a scale that has just been switched on is left before the first connection (0: not at all).
-  std::atomic<uint16_t> scaleFreshMs{2000};
+  // 4 s: at 2 s one link in two set up and then stayed mute (1 notification in 5 s); at 4 s two of two
+  // were clean (board, v0.1.38, 13 Nov 2026).
+  std::atomic<uint16_t> scaleFreshMs{4000};
+  // The pushers' links have their own interval and timeout, same units and defaults as the scale's.
+  // The scale's must stay at 15-30 ms: on 30-50 ms every Lunar link went silent (6 of 6, same day).
+  std::atomic<uint16_t> botIntervalMin{12};
+  std::atomic<uint16_t> botIntervalMax{24};
+  std::atomic<uint16_t> botTimeout{400};
   std::atomic<uint32_t> generation{0};        // bumped on every change
 };
 extern RadioTest g_radioTest;

@@ -1773,6 +1773,17 @@ void handleRadioTest(bool post) {
       t.linkIntervalMax = static_cast<uint16_t>(hi);
       t.linkTimeout = static_cast<uint16_t>(keep);
     }
+    {
+      const int lo = in["bot_interval_min"] | static_cast<int>(t.botIntervalMin.load());
+      const int hi = in["bot_interval_max"] | static_cast<int>(t.botIntervalMax.load());
+      const int keep = in["bot_timeout"] | static_cast<int>(t.botTimeout.load());
+      if (lo < 6 || hi > 400 || lo > hi || keep < 100 || keep > 3200 || keep * 8 < hi * 6) {
+        return sendError(400, "bot_interval_min..max are 6..400 (1.25 ms units), bot_timeout 100..3200 (10 ms units)");
+      }
+      t.botIntervalMin = static_cast<uint16_t>(lo);
+      t.botIntervalMax = static_cast<uint16_t>(hi);
+      t.botTimeout = static_cast<uint16_t>(keep);
+    }
     if (in["scale_fresh_ms"].is<int>()) {
       const int ms = in["scale_fresh_ms"];
       if (ms < 0 || ms > 10000) return sendError(400, "scale_fresh_ms is 0..10000");
@@ -1815,6 +1826,9 @@ void handleRadioTest(bool post) {
   doc["link_interval_max"] = t.linkIntervalMax.load();
   doc["link_timeout"] = t.linkTimeout.load();
   doc["scale_fresh_ms"] = t.scaleFreshMs.load();
+  doc["bot_interval_min"] = t.botIntervalMin.load();
+  doc["bot_interval_max"] = t.botIntervalMax.load();
+  doc["bot_timeout"] = t.botTimeout.load();
   doc["wifi_sleep"] = wifiSleep;
   doc["coex"] = coex;
   app::radioTestReport(doc.as<JsonObject>());
