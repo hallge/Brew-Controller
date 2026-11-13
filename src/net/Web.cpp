@@ -1760,6 +1760,19 @@ void handleRadioTest(bool post) {
     }
     if (t.scanWindow.load() > t.scanInterval.load()) t.scanWindow = t.scanInterval.load();
     if (t.connectWindow.load() > t.connectInterval.load()) t.connectWindow = t.connectInterval.load();
+    // The links themselves, from the next connection on. Checked together: a silent link must be
+    // kept for longer than a few of its intervals, or it cannot be made at all.
+    {
+      const int lo = in["link_interval_min"] | static_cast<int>(t.linkIntervalMin.load());
+      const int hi = in["link_interval_max"] | static_cast<int>(t.linkIntervalMax.load());
+      const int keep = in["link_timeout"] | static_cast<int>(t.linkTimeout.load());
+      if (lo < 6 || hi > 400 || lo > hi || keep < 100 || keep > 3200 || keep * 8 < hi * 6) {
+        return sendError(400, "link_interval_min..max are 6..400 (1.25 ms units), link_timeout 100..3200 (10 ms units)");
+      }
+      t.linkIntervalMin = static_cast<uint16_t>(lo);
+      t.linkIntervalMax = static_cast<uint16_t>(hi);
+      t.linkTimeout = static_cast<uint16_t>(keep);
+    }
     if (in["active"].is<const char *>()) {
       const String a = in["active"].as<const char *>();
       t.active = a == "on" ? 1 : a == "off" ? 0 : -1;
@@ -1793,6 +1806,9 @@ void handleRadioTest(bool post) {
   doc["active"] = t.active.load() < 0 ? "auto" : t.active.load() ? "on" : "off";
   doc["always_scan"] = t.alwaysScan.load();
   doc["hold_connects"] = t.holdConnects.load();
+  doc["link_interval_min"] = t.linkIntervalMin.load();
+  doc["link_interval_max"] = t.linkIntervalMax.load();
+  doc["link_timeout"] = t.linkTimeout.load();
   doc["wifi_sleep"] = wifiSleep;
   doc["coex"] = coex;
   app::radioTestReport(doc.as<JsonObject>());

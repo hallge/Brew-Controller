@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "Log.h"
+#include "core/AppHost.h"
 #include "platform/RamWatch.h"
 
 namespace bbw {
@@ -12,9 +13,10 @@ RadioTest g_radioTest;
 namespace {
 
 
-// 15-30 ms connection interval, 4 s supervision timeout.
+// 15-30 ms connection interval, 4 s supervision timeout (the radio test can change both).
 void configureClient(NimBLEClient *client) {
-  client->setConnectionParams(12, 24, 0, 400, g_radioTest.connectInterval.load(),
+  client->setConnectionParams(g_radioTest.linkIntervalMin.load(), g_radioTest.linkIntervalMax.load(), 0,
+                              g_radioTest.linkTimeout.load(), g_radioTest.connectInterval.load(),
                               g_radioTest.connectWindow.load());
   // Long enough to span one of a sleeping SwitchBot's advertisements
   // (every 10-15 s); each restart of the attempt loses time.
@@ -32,13 +34,26 @@ const char *connectFailText(int code) {
     case 14: return "already connected";
     case 15: return "radio busy";
     case 0x208: return "link lost (supervision timeout)";
-    case 0x213: return "the pusher closed the link";
+    case 0x213: return "the device closed the link";
     case 0x216: return "closed by this controller";
     case 0x21a: case 0x23b: return "connection settings refused";
     case 0x23e: return "the link could not be set up";
     default: return "BLE error";
   }
 }
+
+// Why a link ended. The BLE library's own disconnect callback does not say, so the host is asked
+// directly: it tells every listener about each link that closes, whoever closed it.
+int onGapEvent(struct ble_gap_event *event, void *) {
+  if (event->type == BLE_GAP_EVENT_DISCONNECT) {
+    const uint8_t *a = event->disconnect.conn.peer_id_addr.val;
+    const int code = event->disconnect.reason;
+    LOGI("ble: link to %02x:%02x:%02x:%02x:%02x:%02x ended: %s (code %d)", a[5], a[4], a[3], a[2], a[1],
+         a[0], connectFailText(code), code);
+  }
+  return 0;
+}
+struct ble_gap_event_listener g_gapListener;
 
 }  // namespace
 
@@ -84,15 +99,19 @@ bool BleScale::connectTo(const NimBLEAddress &address) {
   if (!client_) {
     client_ = NimBLEDevice::createClient();
     client_->setClientCallbacks(new ClientCallbacks(*this), false);
-    configureClient(client_);
   }
+  configureClient(client_);
   ready_ = false;
   // Holding the mutex keeps the control task's writes away from the
   // attribute objects while connect() rebuilds them.
   xSemaphoreTake(mutex_, portMAX_DELAY);
   writeChar_ = nullptr;
   link_.close();
+  const uint32_t startMs = millis();
   bool ok = client_->connect(address, true);
+  linkMs_ = ok ? millis() - startMs : 0;
+  setupMs_ = 0;
+  const uint32_t linkedMs = millis();
   ScaleDriver *driver = nullptr;
   NimBLERemoteCharacteristic *readChar = nullptr;
   NimBLERemoteCharacteristic *writeChar = nullptr;
@@ -141,6 +160,7 @@ bool BleScale::connectTo(const NimBLEAddress &address) {
       delay(50);
     }
   }
+  setupMs_ = millis() - linkedMs;
   if (!ok) {
     writeChar_ = nullptr;
     xSemaphoreGive(mutex_);
@@ -255,8 +275,12 @@ bool BlePusher::connectTo(const NimBLEAddress &address) {
   ready_ = false;
   xSemaphoreTake(mutex_, portMAX_DELAY);
   writeChar_ = nullptr;
+  const uint32_t startMs = millis();
   bool ok = client_->connect(address, true);
   connectError_ = ok ? 0 : client_->getLastError();
+  linkMs_ = ok ? millis() - startMs : 0;
+  setupMs_ = 0;
+  const uint32_t linkedMs = millis();
   PusherDriver *driver = nullptr;
   NimBLERemoteCharacteristic *notifyChar = nullptr;
   NimBLERemoteCharacteristic *writeChar = nullptr;
@@ -304,6 +328,7 @@ bool BlePusher::connectTo(const NimBLEAddress &address) {
       LOGW("%s: no supported pusher service/characteristics usable", name_);
     }
   }
+  setupMs_ = millis() - linkedMs;
   if (!ok) {
     xSemaphoreGive(mutex_);
     if (client_->isConnected()) client_->disconnect();
@@ -317,7 +342,8 @@ bool BlePusher::connectTo(const NimBLEAddress &address) {
   // the pusher's session, if it has one, and asks for battery and mode.
   link_.connected(driver);
   ready_ = true;
-  LOGI("%s: connected (%s)", name_, driver->label());
+  LOGI("%s: connected (%s; link in %lu ms, set up in %lu ms)", name_, driver->label(),
+       static_cast<unsigned long>(linkMs_), static_cast<unsigned long>(setupMs_));
   return true;
 }
 
@@ -370,6 +396,7 @@ bool BleManager::begin(const Pairing &pairing, const char *powerAddress,
   NimBLEDevice::init("BrewByWeight");
   if (!NimBLEDevice::getInitialized()) return false;
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+  ble_gap_event_listener_register(&g_gapListener, onGapEvent, nullptr);
   NimBLEScan *scan = NimBLEDevice::getScan();
   scan->setAdvertisedDeviceCallbacks(new ScanCallbacks(*this), true);
   // Active scan: the Bot's device-type byte is in its scan response.
@@ -588,6 +615,12 @@ void BleManager::servePusher(BlePusher &pusher, const char *name, const char *ad
     xSemaphoreGive(mutex_);
     LOGW("%s: connect failed after %lu ms: %s (code %d); %s", name,
          static_cast<unsigned long>(millis() - startMs), connectFailText(code), code, heard);
+    if (pusher.lastLinkMs() != 0) {
+      // The pusher answered and the link was made; what failed is the set-up over it.
+      LOGW("%s: the link was made in %lu ms and lost %lu ms later, with the scale %s", name,
+           static_cast<unsigned long>(pusher.lastLinkMs()), static_cast<unsigned long>(pusher.lastSetupMs()),
+           scale_.linkUp() ? "linked" : "not linked");
+    }
     // A press is waiting on this link: retry fast, back off to 2 s at most.
     if (failures < 10) ++failures;
     retryAtMs = millis() + std::min<uint32_t>(2000, 250u * failures);
@@ -599,6 +632,11 @@ void BleManager::run() {
   uint32_t testGeneration = 0;
   for (;;) {
     const uint32_t now = millis();
+    // The scale's connection is set up alone (core/AppHost.h ScaleFirst).
+    const bool machineMayRun = scale_.shotRunning();
+    const bool pusherLinkUp = bot_.linkUp() || power_.linkUp() || stop_.linkUp();
+    const bool pusherBusy = (bot_.linkUp() && bot_.busy()) || (power_.linkUp() && power_.busy()) ||
+                            (stop_.linkUp() && stop_.busy());
     if (g_radioTest.generation.load() != testGeneration) {
       testGeneration = g_radioTest.generation.load();
       if (scan->isScanning()) scan->stop();
@@ -619,11 +657,21 @@ void BleManager::run() {
     const bool botPaired = paired.botAddress[0] != '\0';
     const bool resting = scaleResting_.load();
     const bool wantScale = !scale_.linkUp() && !resting;
-    const bool connectScale = wantScale && scaleFound_ &&
-                              static_cast<int32_t>(now - scaleRetryAtMs_) >= 0;
+    const bool scaleDue = wantScale && scaleFound_ &&
+                          static_cast<int32_t>(now - scaleRetryAtMs_) >= 0;
+    if (!scaleDue) scaleDueSinceMs_ = 0;
+    else if (scaleDueSinceMs_ == 0) scaleDueSinceMs_ = now ? now : 1;
+    const ScaleFirst::Step scaleStep =
+        scaleDue ? ScaleFirst::step(pusherLinkUp, pusherBusy, machineMayRun, now - scaleDueSinceMs_)
+                 : ScaleFirst::Step::WAIT;
+    const bool connectScale = scaleDue && scaleStep == ScaleFirst::Step::CONNECT;
     const SeenDevice scaleTarget = scaleCandidate_;
     if (connectScale || resting) scaleFound_ = false;
     xSemaphoreGive(mutex_);
+    const uint32_t scaleHeardAtForTurn = scaleHeardAtMs_.load();
+    const bool pushersWait = ScaleFirst::pushersWait(
+        wantScale, scaleDue, scaleHeardAtForTurn == 0 ? UINT32_MAX : now - scaleHeardAtForTurn,
+        machineMayRun, scaleFailures_);
     // Let go of an idle scale so that it can switch itself off.
     if (resting && scale_.linkUp()) {
       LOGI("scale: idle, letting it go so it can switch itself off");
@@ -631,14 +679,14 @@ void BleManager::run() {
     }
 
     // The bots a shot needs first: they are the only way to stop the machine.
-    servePusher(bot_, "bot", paired.botAddress, paired.botAddressType, botWanted_, false,
+    servePusher(bot_, "bot", paired.botAddress, paired.botAddressType, botWanted_, pushersWait,
                 botFailures_, botRetryAtMs_, scan, botStats_);
     // Three links at most: the scale, the brew bot, and one of these two.
     // Whichever is up keeps its place until it has been let go (the
     // application decides which is wanted when; a press in progress is
     // never cut off), and only then is the other connected.
-    servePusher(stop_, "stop", stopAddress, stopType, stopWanted_, power_.linkUp(), stopFailures_,
-                stopRetryAtMs_, scan, stopStats_);
+    servePusher(stop_, "stop", stopAddress, stopType, stopWanted_, power_.linkUp() || pushersWait,
+                stopFailures_, stopRetryAtMs_, scan, stopStats_);
     // Kept while the scale is off: not connected, and not heard for 30 s
     // (a scale switched on advertises until it is connected). Also 30 s since
     // its link was last up: while connected it does not advertise, so when
@@ -653,10 +701,23 @@ void BleManager::run() {
                            ((scaleHeardAt == 0 || static_cast<int32_t>(now - scaleHeardAt) > 30000) &&
                             (scaleLinkUpAtMs_ == 0 || static_cast<int32_t>(now - scaleLinkUpAtMs_) > 30000)));
     const bool powerWanted = powerWanted_.load() || (powerKept_.load() && scaleOff);
-    servePusher(power_, "power", powerAddress, powerType, powerWanted, stop_.linkUp(),
+    servePusher(power_, "power", powerAddress, powerType, powerWanted, stop_.linkUp() || pushersWait,
                 powerFailures_, powerRetryAtMs_, scan, powerStats_);
+    if (scaleDue && scaleStep == ScaleFirst::Step::RELEASE) {
+      // Taken again by servePusher() once the scale is up, if still wanted.
+      BlePusher *const pushers[] = {&bot_, &power_, &stop_};
+      for (BlePusher *p : pushers) {
+        if (!p->linkUp() || p->busy()) continue;
+        LOGI("%s: let go while the scale connects", p == &bot_ ? "bot" : p == &power_ ? "power" : "stop");
+        p->disconnect();
+      }
+    }
     if (connectScale) {
       scan->stop();
+      if (pusherLinkUp) {
+        LOGW("scale: connecting with a pusher still linked (%s)",
+             machineMayRun ? "a shot may be running" : "it did not let go in time");
+      }
       LOGI("scale: connecting to %s (%s)", scaleTarget.address, scaleTarget.name);
       scale_.setName(scaleTarget.name);  // some makes are only told apart by it
       attemptStarted(scaleStats_);
@@ -666,6 +727,16 @@ void BleManager::run() {
         scaleConnected = scale_.connectTo(NimBLEAddress(scaleTarget.address, scaleTarget.addressType));
       }
       attemptEnded(scaleStats_, scaleConnected);
+      scaleDueSinceMs_ = 0;
+      if (scaleConnected) {
+        LOGI("scale: link in %lu ms, set up in %lu ms", static_cast<unsigned long>(scale_.lastLinkMs()),
+             static_cast<unsigned long>(scale_.lastSetupMs()));
+      } else if (scale_.lastLinkMs() != 0) {
+        LOGW("scale: the link was made in %lu ms and lost %lu ms later",
+             static_cast<unsigned long>(scale_.lastLinkMs()), static_cast<unsigned long>(scale_.lastSetupMs()));
+      } else {
+        LOGW("scale: no link made");
+      }
       if (scaleConnected) {
         scaleFailures_ = 0;
         xSemaphoreTake(mutex_, portMAX_DELAY);

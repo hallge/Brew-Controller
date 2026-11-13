@@ -38,6 +38,25 @@ static void testAppHost() {
     CHECK(holdExtended(0xFFFFFFF0u, 5u) == 5u);
     CHECK(holdExtended(5u, 0xFFFFFFF0u) == 5u);
   }
+  // ---- the scale connects with no other link up; never by dropping a bot under a shot.
+  {
+    typedef ScaleFirst::Step S;
+    CHECK(ScaleFirst::step(false, false, false, 0) == S::CONNECT);
+    CHECK(ScaleFirst::step(true, false, false, 0) == S::RELEASE);   // an idle pusher is let go first
+    CHECK(ScaleFirst::step(true, false, false, 100) == S::RELEASE); // and waited for
+    CHECK(ScaleFirst::step(true, true, false, 0) == S::WAIT);       // a press is never cut off
+    CHECK(ScaleFirst::step(true, true, false, ScaleFirst::CLEAR_WAIT_MS) == S::CONNECT);
+    CHECK(ScaleFirst::step(true, false, false, ScaleFirst::CLEAR_WAIT_MS) == S::CONNECT);
+    CHECK(ScaleFirst::step(true, false, true, 0) == S::CONNECT);    // a shot may be running: the bot stays
+    CHECK(ScaleFirst::step(true, true, true, 0) == S::CONNECT);
+    CHECK(ScaleFirst::pushersWait(true, true, UINT32_MAX, false, 0));
+    CHECK(ScaleFirst::pushersWait(true, false, 5000, false, 0));
+    CHECK(!ScaleFirst::pushersWait(true, false, ScaleFirst::HEARD_MS, false, 0));  // the scale is off
+    CHECK(!ScaleFirst::pushersWait(false, true, 0, false, 0));      // resting, or already linked
+    CHECK(!ScaleFirst::pushersWait(true, true, 0, true, 0));        // under a shot the bots come first
+    CHECK(!ScaleFirst::pushersWait(true, true, 0, false, ScaleFirst::GIVE_UP_FAILURES));
+    CHECK(ScaleFirst::pushersWait(true, true, 0, false, ScaleFirst::GIVE_UP_FAILURES - 1));
+  }
   // ---- links: during a shot only the stop bot, never the power bot.
   {
     LinkPlanner::Inputs in;

@@ -55,6 +55,10 @@ class BleScale : public IScale {
   uint32_t caps() const { return ready_ ? link_.caps() : 0; }
   // While a shot runs nothing is asked of the scale that the shot does not need.
   void setShotRunning(bool running) { shotRunning_ = running; }
+  bool shotRunning() const { return shotRunning_.load(); }
+  // The last connectTo(): how long the link took to make (0: never made), and from then to set up or lost.
+  uint32_t lastLinkMs() const { return linkMs_; }
+  uint32_t lastSetupMs() const { return setupMs_; }
   // Timer value last reported by the scale; false if none arrived recently.
   bool timer(uint32_t nowMs, uint32_t &timerMs) const {
     return ready_ && link_.timer(nowMs, timerMs);
@@ -73,6 +77,7 @@ class BleScale : public IScale {
   ScaleLink link_;
   std::atomic<bool> shotRunning_{false};
   char name_[24] = {};
+  uint32_t linkMs_ = 0, setupMs_ = 0;  // BLE task
 };
 
 class BlePusher : public IActuator, private PusherWriter {
@@ -97,6 +102,9 @@ class BlePusher : public IActuator, private PusherWriter {
   // Why the last connectTo() failed: the BLE host's code (0 = no answer in
   // the connect time), or -1 when it connected but could not be set up.
   int lastConnectError() const { return connectError_; }
+  // The last connectTo(): how long the link took to make (0: never made), and from then to set up or lost.
+  uint32_t lastLinkMs() const { return linkMs_; }
+  uint32_t lastSetupMs() const { return setupMs_; }
   bool linkUp() const { return client_ && client_->isConnected(); }
   void disconnect();
   // True while a press is in progress or the arm still has to come back up.
@@ -131,6 +139,7 @@ class BlePusher : public IActuator, private PusherWriter {
   std::atomic<bool> ready_{false};
   std::atomic<bool> gaveUp_{false};
   int connectError_ = 0;
+  uint32_t linkMs_ = 0, setupMs_ = 0;  // BLE task
   PusherLink link_;
 };
 
@@ -173,6 +182,11 @@ struct RadioTest {
   std::atomic<int8_t> active{-1};             // -1 automatic, 0 passive, 1 active
   std::atomic<bool> alwaysScan{false};        // scan even when nothing needs it
   std::atomic<bool> holdConnects{false};      // start no new bot connections
+  // The links themselves, used from the next connection on: the interval between two exchanges
+  // (1.25 ms units) and how long a silent link is kept (10 ms units).
+  std::atomic<uint16_t> linkIntervalMin{12};
+  std::atomic<uint16_t> linkIntervalMax{24};
+  std::atomic<uint16_t> linkTimeout{400};
   std::atomic<uint32_t> generation{0};        // bumped on every change
 };
 extern RadioTest g_radioTest;
@@ -271,6 +285,7 @@ class BleManager {
   bool scaleFound_ = false;
   SeenDevice scaleCandidate_;
   uint8_t scaleFailures_ = 0, botFailures_ = 0;
+  uint32_t scaleDueSinceMs_ = 0;  // BLE task: since when the scale waits for the other links to clear; 0: not
   uint32_t scaleRetryAtMs_ = 0, botRetryAtMs_ = 0;
   // Written by the BLE task only; a reading one update behind is fine.
   LinkStats scaleStats_, botStats_, powerStats_, stopStats_;

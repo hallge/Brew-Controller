@@ -97,6 +97,34 @@ class LinkPlanner {
   }
 };
 
+// ------------------------------------------------------------------ scale first --
+// The scale's connection is set up with no other Bluetooth link up. Measured from the board's stored
+// log (13 Nov 2026, v0.1.30-v0.1.36): the Lunar's set-up worked 14 times of 14 with no pusher linked,
+// 2 of 11 started in the instant the power bot was let go (its link was still up), and 0 of 28 with
+// the brew bot linked: the link was made, went silent, and was lost 4 s later. So a pusher's link is
+// let go first and taken again once the scale is up. Never under a shot: the bots are then the only
+// way to stop the machine, and the scale is tried with them linked.
+class ScaleFirst {
+ public:
+  static constexpr uint32_t CLEAR_WAIT_MS = 3000;  // a press ending, or a link coming down
+  static constexpr uint8_t GIVE_UP_FAILURES = 6;   // a scale that will not connect does not keep the bots out
+  static constexpr uint32_t HEARD_MS = 15000;      // the scale counts as there this long after an advertisement
+  enum class Step : uint8_t { CONNECT, RELEASE, WAIT };
+
+  // The scale is due a connection attempt now. waitedMs: since it first was, this time round.
+  static Step step(bool pusherLinkUp, bool pusherBusy, bool machineMayRun, uint32_t waitedMs) {
+    if (!pusherLinkUp || machineMayRun || waitedMs >= CLEAR_WAIT_MS) return Step::CONNECT;
+    return pusherBusy ? Step::WAIT : Step::RELEASE;
+  }
+
+  // No new pusher connection is started while the scale is wanted and there to be connected.
+  static bool pushersWait(bool scaleWanted, bool scaleDue, uint32_t heardAgoMs, bool machineMayRun,
+                          uint8_t scaleFailures) {
+    return scaleWanted && !machineMayRun && scaleFailures < GIVE_UP_FAILURES &&
+           (scaleDue || heardAgoMs < HEARD_MS);
+  }
+};
+
 // ------------------------------------------------------------------ outbox pump --
 // What becomes of the record at the head of the share outbox after one try. The HTTPS work and the
 // storage stay with the caller.
