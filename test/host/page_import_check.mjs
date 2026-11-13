@@ -160,6 +160,32 @@ const clean = (r, what) => check(!PERSONAL.test(JSON.stringify(r)), what + ': no
   check(none.state == 'none', 'generic: nothing found');
 }
 
+// ---- Shopify's customer account: the order list (laid out as Portrait Coffee's, 13 Nov 2026) --------
+{
+  const text = ['Skip to content', 'Orders', 'Profile', 'Manage Subscription', 'Orders', 'Sort by: Newest to oldest',
+    'Order #100003', 'Order includes Example Natural - 310 g / Whole Bean', 'Arrives tomorrow', '#100003·$22.83 USD', 'Buy again',
+    'Order #100002', 'Order includes DOUBLE EXAMPLE - 310 g / Whole Bean', 'Delivered Oct 16', '#100002·$22.83 USD', 'Buy again',
+    'Order #100001', 'Order includes Old Example - 310 g / Whole Bean', 'Delivered Dec 20', '#100001·$22.83 USD', 'Buy again',
+    'Order #90000', 'Order includes Gone Example - 310 g / Whole Bean', 'Cancelled', '#90000·$22.83 USD',
+    'Order #80000', 'Order includes Brick Example - 310 g / Whole Bean', 'Delivered May 2, 2024', '#80000·$20.75 USD'].join('\n');
+  const r = await reader.bbwReadSubscription(Object.assign(env({href: 'https://shopify.com/123/account/orders', text}), {today: 20261113}));
+  const s = r.data ? r.data.shipments : [];
+  check(r.state == 'done' && r.data.platform == 'shopify', 'shopify orders: read');
+  check(s[0] && s[0].coffee == 'Example Natural' && s[0].delivered == 0 && s[0].eta == 20261114 && s[0].status == 'shipped',
+        'shopify orders: arriving tomorrow is on its way');
+  check(s[1] && s[1].coffee == 'DOUBLE EXAMPLE' && s[1].delivered == 20261016, 'shopify orders: delivered, this year');
+  check(s[2] && s[2].delivered == 20251220, 'shopify orders: a delivery later in the year than today is last year\'s');
+  check(!s.some(x => x.coffee == 'Gone Example') && s[3] && s[3].delivered == 20240502, 'shopify orders: cancelled skipped, a full date kept');
+  const soon = await reader.bbwReadSubscription(Object.assign(env({href: 'https://shopify.com/123/account/orders',
+    text: 'Order #1\nOrder includes Late Example - 310 g / Whole Bean\nArrives Jan 3\n'}), {today: 20261230}));
+  check(soon.data && soon.data.shipments[0].eta == 20270103, 'shopify orders: an arrival early next year');
+  const loading = await reader.bbwReadSubscription(env({href: 'https://shopify.com/123/account/orders', text: 'Orders\nProfile'}));
+  check(loading.state == 'none', 'shopify orders: a list not drawn yet gives nothing');
+  const login = await reader.bbwReadSubscription(env({href: 'https://shopify.com/123/account/orders', text: 'Sign in', hasPassword: true}));
+  check(login.state == 'wait', 'shopify orders: sign-in waits');
+  clean(r, 'shopify orders');
+}
+
 // ---- dates, cadences, where the worker may go -------------------------------------------------------
 check(reader.ymd('MON, DECEMBER 7, 2026') == 20261207 && reader.ymd('Dec 27, 2026') == 20261227 &&
       reader.ymd('2026-10-16T18:34:28.000Z') == 20261016 && reader.ymd('7 Dec 2026') == 20261207 && reader.ymd('soon') == 0, 'dates');

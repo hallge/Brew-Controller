@@ -221,6 +221,55 @@
     return {state: 'done', data: {v: 1, site: host, platform: 'page', plan: null, next: {date: nextDate, items: []}, later: [], shipments: shipments.slice(0, 2)}};
   }
 
+  // ---- Shopify's customer account (shopify.com/<shop id>/account/orders) -----------------------------
+  // Each order is a card, newest first (Portrait Coffee, 13 Nov 2026):
+  //   Order #140472 / Order includes Stankonia Coffee - 310 g / Whole Bean / Arrives tomorrow / #140472·$22.83 USD
+  //   Order #138018 / Order includes DOUBLE DOUBLE - 310 g / Whole Bean / Delivered Oct 16 / ...
+  // A date in the current year has no year: a delivery is the latest such day not after today, an arrival
+  // the next one not long before it.
+  function shopifyDay(text, now, past) {
+    const full = ymd(text);
+    if (full) return full;
+    const y = Math.floor(now / 10000), base = new Date(y, Math.floor(now / 100) % 100 - 1, now % 100);
+    const asYmd = d => d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+    if (/\btoday\b/i.test(text)) return now;
+    if (/\btomorrow\b/i.test(text)) return asYmd(new Date(base.getTime() + 864e5));
+    if (/\byesterday\b/i.test(text)) return asYmd(new Date(base.getTime() - 864e5));
+    const m = String(text).match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\b/i);
+    if (!m) return 0;
+    let d = y * 10000 + MONTHS[m[1].toLowerCase()] * 100 + +m[2];
+    if (past && d > now) d -= 10000;
+    if (!past && d < now - 200) d += 10000;   // more than about two months back: next year's
+    return d;
+  }
+
+  function readShopifyOrders(env, host) {
+    const ls = lines(env.text());
+    const now = env.today || todayYmd();
+    const shipments = [];
+    for (let k = 0; k < ls.length && shipments.length < 6; ++k) {
+      if (!/^order\s+#\s?\w+$/i.test(ls[k])) continue;
+      let end = k + 1;
+      while (end < ls.length && end < k + 12 && !/^order\s+#\s?\w+$/i.test(ls[end])) ++end;
+      const card = ls.slice(k + 1, end);
+      const what = card.find(l => /^order includes\s/i.test(l));
+      const status = card.find(l => /^(delivered|arriv|on its way|out for delivery|in transit|shipped|confirmed|processing|preparing|ready|cancel|refund)/i.test(l)) || '';
+      if (!what || !status || /^(cancel|refund)/i.test(status)) continue;
+      // "Stankonia Coffee - 310 g / Whole Bean": the coffee is the product, not its size and grind.
+      const coffee = clean(what.replace(/^order includes\s+/i, '').replace(/\s+-\s+\d[^-]*$/, '').replace(/\s+and\s+\d+\s+more.*$/i, ''), 60);
+      if (!coffee) continue;
+      if (/^delivered/i.test(status)) {
+        const delivered = shopifyDay(status, now, true);
+        if (delivered) shipments.push({coffee, delivered, status: 'delivered'});
+      } else {
+        const eta = /^arriv/i.test(status) ? shopifyDay(status, now, false) : 0;
+        shipments.push({coffee, delivered: 0, eta, status: 'shipped'});
+      }
+    }
+    if (!shipments.length) return null;
+    return {state: 'done', data: {v: 1, site: host, platform: 'shopify', plan: null, next: {date: 0, items: []}, later: [], shipments}};
+  }
+
   function sameSite(a, b) {
     try {
       const h = u => new URL(u).hostname.replace(/^www\./, '');
@@ -258,6 +307,13 @@
       if (!/account\.drinktrade\.com$/.test(host)) return {state: 'go', url: 'https://account.drinktrade.com/'};
       if (!/recent delivery|explore plans|my subscription/i.test(env.text())) return {state: 'none', why: 'the account page did not finish loading'};
       return readTrade(env, host);
+    }
+    // Shopify's customer account: its order list says what is on its way and what has come.
+    if (/^shopify\.com$/.test(host) && /\/account\/orders\/?$/.test(env.href.split(/[?#]/)[0])) {
+      if (signInPage(env)) return {state: 'wait', why: 'sign in'};
+      const r = readShopifyOrders(env, host);
+      if (r) return r;
+      if (!/order\s+#/i.test(env.text())) return {state: 'none', why: 'the orders page did not finish loading'};
     }
     // Bottomless first: its data answers only for a shop that runs it (and a signed-in customer), and a
     // shop's page may be too long to find its name in, or also load another subscription app's widget.
@@ -310,6 +366,12 @@
     if (/(^|\.)account\.drinktrade\.com$/.test(location.hostname)) {
       const drawn = () => { const t = deepText(); return /delivered on|in transit|out for delivery|^shipped/im.test(t) ||
                                                     /^(log in|sign in)$/im.test(t) || !/recent delivery/i.test(t) && /explore plans|my subscription/i.test(t); };
+      for (let i = 0; i < 30 && !drawn(); ++i) await new Promise(r => setTimeout(r, 500));
+    }
+    // Shopify's customer account draws its order list after the page has loaded.
+    if (/^shopify\.com$/.test(location.hostname.replace(/^www\./, '')) && /\/account\/orders\/?$/.test(location.pathname)) {
+      const drawn = () => { const t = deepText(); return /^order includes\s/im.test(t) || /no orders|haven.t placed/i.test(t) ||
+                                                    /^(log in|sign in)$/im.test(t) || !!document.querySelector('input[type=password]'); };
       for (let i = 0; i < 30 && !drawn(); ++i) await new Promise(r => setTimeout(r, 500));
     }
     const env = {

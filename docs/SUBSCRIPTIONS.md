@@ -60,6 +60,8 @@ one is read only from its own card):
 - **Bottomless** shops, through the shop's own `/apps/bottomless/` data and its subscription page;
 - the **Recharge** customer portal;
 - **Trade**'s account pages;
+- **Shopify**'s customer-account order list (`shopify.com/<shop>/account/orders`): an order that is
+  arriving is added as on its way, a delivered one as come;
 - the next-delivery wording of other pages.
 
 **Rules:**
