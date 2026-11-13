@@ -189,6 +189,8 @@ struct RadioTest {
   std::atomic<uint16_t> linkIntervalMin{12};
   std::atomic<uint16_t> linkIntervalMax{24};
   std::atomic<uint16_t> linkTimeout{400};
+  // How long a scale that has just been switched on is left before the first connection (0: not at all).
+  std::atomic<uint16_t> scaleFreshMs{2000};
   std::atomic<uint32_t> generation{0};        // bumped on every change
 };
 extern RadioTest g_radioTest;
@@ -289,6 +291,10 @@ class BleManager {
   uint8_t scaleFailures_ = 0, botFailures_ = 0;
   uint32_t scaleDueSinceMs_ = 0;  // BLE task: since when the scale waits for the other links to clear; 0: not
   uint32_t scaleSetUpAtMs_ = 0;   // BLE task: when the scale's connection was last set up
+  // BLE task: when the scale was last heard or linked, the advertisement last looked at, when it last
+  // appeared after being away (0: not seen appearing), and whether the wait for it has been logged.
+  uint32_t scalePresentAtMs_ = 0, scaleHeardSeenMs_ = 0, scaleAppearedAtMs_ = 0;
+  bool scaleEverPresent_ = false, scaleFreshLogged_ = false;
   uint32_t scaleRetryAtMs_ = 0, botRetryAtMs_ = 0;
   // Written by the BLE task only; a reading one update behind is fine.
   LinkStats scaleStats_, botStats_, powerStats_, stopStats_;

@@ -1773,6 +1773,11 @@ void handleRadioTest(bool post) {
       t.linkIntervalMax = static_cast<uint16_t>(hi);
       t.linkTimeout = static_cast<uint16_t>(keep);
     }
+    if (in["scale_fresh_ms"].is<int>()) {
+      const int ms = in["scale_fresh_ms"];
+      if (ms < 0 || ms > 10000) return sendError(400, "scale_fresh_ms is 0..10000");
+      t.scaleFreshMs = static_cast<uint16_t>(ms);
+    }
     if (in["active"].is<const char *>()) {
       const String a = in["active"].as<const char *>();
       t.active = a == "on" ? 1 : a == "off" ? 0 : -1;
@@ -1809,6 +1814,7 @@ void handleRadioTest(bool post) {
   doc["link_interval_min"] = t.linkIntervalMin.load();
   doc["link_interval_max"] = t.linkIntervalMax.load();
   doc["link_timeout"] = t.linkTimeout.load();
+  doc["scale_fresh_ms"] = t.scaleFreshMs.load();
   doc["wifi_sleep"] = wifiSleep;
   doc["coex"] = coex;
   app::radioTestReport(doc.as<JsonObject>());

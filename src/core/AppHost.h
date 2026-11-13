@@ -127,6 +127,17 @@ class ScaleFirst {
     return scaleLinked && !machineMayRun && notifications < SETTLED_NOTIFICATIONS && linkedForMs < SETTLE_MS;
   }
 
+  // A scale that has just appeared (not heard and not linked for a while: it was switched on) is given
+  // a moment before the first connection. Seen on the board with v0.1.37 (13 Nov 2026): with no other
+  // link up, the first attempt after switch-on made the link in 83 ms and lost it at the 4 s timeout,
+  // the second set up in 4.3 s; the same in nearly every run that day. Never under a shot: a scale
+  // whose link dropped mid-shot is taken back at once.
+  static constexpr uint32_t ABSENT_MS = 5000;  // not heard and not linked this long: it was off
+  static bool appeared(bool everPresent, uint32_t absentForMs) { return !everPresent || absentForMs > ABSENT_MS; }
+  static bool fresh(bool appearedKnown, uint32_t sinceAppearedMs, uint32_t freshMs, bool machineMayRun) {
+    return appearedKnown && !machineMayRun && sinceAppearedMs < freshMs;
+  }
+
   // No new pusher connection is started while the scale is wanted and there to be connected.
   static bool pushersWait(bool scaleWanted, bool scaleDue, uint32_t heardAgoMs, bool machineMayRun,
                           uint8_t scaleFailures) {

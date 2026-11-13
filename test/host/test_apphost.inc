@@ -63,6 +63,15 @@ static void testAppHost() {
     CHECK(!ScaleFirst::settling(true, 0, ScaleFirst::SETTLE_MS, false));
     CHECK(!ScaleFirst::settling(false, 0, 100, false));
     CHECK(!ScaleFirst::settling(true, 0, 100, true));
+    // a scale just switched on gets a moment before its first connection; never under a shot
+    CHECK(ScaleFirst::appeared(false, 0));
+    CHECK(ScaleFirst::appeared(true, ScaleFirst::ABSENT_MS + 1));
+    CHECK(!ScaleFirst::appeared(true, ScaleFirst::ABSENT_MS));      // a link that just dropped: not new
+    CHECK(ScaleFirst::fresh(true, 500, 2000, false));
+    CHECK(!ScaleFirst::fresh(true, 2000, 2000, false));
+    CHECK(!ScaleFirst::fresh(true, 500, 0, false));                 // switched off by the radio test
+    CHECK(!ScaleFirst::fresh(false, 500, 2000, false));             // never seen appearing: no wait
+    CHECK(!ScaleFirst::fresh(true, 500, 2000, true));
   }
   // ---- links: during a shot only the stop bot, never the power bot.
   {

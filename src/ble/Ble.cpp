@@ -634,6 +634,24 @@ void BleManager::run() {
     const uint32_t now = millis();
     // The scale's connection is set up alone (core/AppHost.h ScaleFirst).
     const bool machineMayRun = scale_.shotRunning();
+    // Has the scale just appeared (switched on)? Linked or heard counts as present.
+    {
+      const uint32_t heardAt = scaleHeardAtMs_.load();
+      const bool linked = scale_.linkUp();
+      if (!linked && heardAt != 0 && heardAt != scaleHeardSeenMs_) {
+        if (ScaleFirst::appeared(scaleEverPresent_, heardAt - scalePresentAtMs_)) {
+          scaleAppearedAtMs_ = heardAt;
+          scaleFreshLogged_ = false;
+        }
+        scalePresentAtMs_ = heardAt;
+        scaleEverPresent_ = true;
+      }
+      scaleHeardSeenMs_ = heardAt;
+      if (linked) {
+        scalePresentAtMs_ = now;
+        scaleEverPresent_ = true;
+      }
+    }
     const bool pusherLinkUp = bot_.linkUp() || power_.linkUp() || stop_.linkUp();
     const bool pusherBusy = (bot_.linkUp() && bot_.busy()) || (power_.linkUp() && power_.busy()) ||
                             (stop_.linkUp() && stop_.busy());
@@ -657,7 +675,9 @@ void BleManager::run() {
     const bool botPaired = paired.botAddress[0] != '\0';
     const bool resting = scaleResting_.load();
     const bool wantScale = !scale_.linkUp() && !resting;
-    const bool scaleDue = wantScale && scaleFound_ &&
+    const bool scaleFresh = ScaleFirst::fresh(scaleAppearedAtMs_ != 0, now - scaleAppearedAtMs_,
+                                              g_radioTest.scaleFreshMs.load(), machineMayRun);
+    const bool scaleDue = wantScale && scaleFound_ && !scaleFresh &&
                           static_cast<int32_t>(now - scaleRetryAtMs_) >= 0;
     if (!scaleDue) scaleDueSinceMs_ = 0;
     else if (scaleDueSinceMs_ == 0) scaleDueSinceMs_ = now ? now : 1;
@@ -665,6 +685,7 @@ void BleManager::run() {
         scaleDue ? ScaleFirst::step(pusherLinkUp, pusherBusy, machineMayRun, now - scaleDueSinceMs_)
                  : ScaleFirst::Step::WAIT;
     const bool connectScale = scaleDue && scaleStep == ScaleFirst::Step::CONNECT;
+    const bool scaleFreshWaiting = scaleFresh && wantScale && scaleFound_;
     const SeenDevice scaleTarget = scaleCandidate_;
     if (connectScale || resting) scaleFound_ = false;
     xSemaphoreGive(mutex_);
@@ -674,6 +695,10 @@ void BleManager::run() {
         machineMayRun, scaleFailures_) ||
         ScaleFirst::settling(scale_.linkUp(), scale_.notificationsSinceStart(), now - scaleSetUpAtMs_,
                              machineMayRun);
+    if (scaleFreshWaiting && !scaleFreshLogged_) {
+      scaleFreshLogged_ = true;
+      LOGI("scale: just switched on, connecting in %u ms", static_cast<unsigned>(g_radioTest.scaleFreshMs.load()));
+    }
     // Let go of an idle scale so that it can switch itself off.
     if (resting && scale_.linkUp()) {
       LOGI("scale: idle, letting it go so it can switch itself off");
