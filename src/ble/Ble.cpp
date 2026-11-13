@@ -671,7 +671,9 @@ void BleManager::run() {
     const uint32_t scaleHeardAtForTurn = scaleHeardAtMs_.load();
     const bool pushersWait = ScaleFirst::pushersWait(
         wantScale, scaleDue, scaleHeardAtForTurn == 0 ? UINT32_MAX : now - scaleHeardAtForTurn,
-        machineMayRun, scaleFailures_);
+        machineMayRun, scaleFailures_) ||
+        ScaleFirst::settling(scale_.linkUp(), scale_.notificationsSinceStart(), now - scaleSetUpAtMs_,
+                             machineMayRun);
     // Let go of an idle scale so that it can switch itself off.
     if (resting && scale_.linkUp()) {
       LOGI("scale: idle, letting it go so it can switch itself off");
@@ -738,6 +740,7 @@ void BleManager::run() {
         LOGW("scale: no link made");
       }
       if (scaleConnected) {
+        scaleSetUpAtMs_ = millis();
         scaleFailures_ = 0;
         xSemaphoreTake(mutex_, portMAX_DELAY);
         if (pairing_.scaleAddress[0] == '\0') {

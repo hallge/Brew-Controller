@@ -117,6 +117,16 @@ class ScaleFirst {
     return pusherBusy ? Step::WAIT : Step::RELEASE;
   }
 
+  // A scale just linked is left alone until its readings flow. Seen on the board (13 Nov 2026): the brew
+  // bot's connection attempt started 100 ms after the scale's set-up, the scale's readings never came
+  // ("no readings yet", 1 notification in 5 s), its link was dropped, and the bot, linked by then, kept
+  // the scale from connecting again.
+  static constexpr uint32_t SETTLE_MS = 5000;
+  static constexpr uint32_t SETTLED_NOTIFICATIONS = 3;
+  static bool settling(bool scaleLinked, uint32_t notifications, uint32_t linkedForMs, bool machineMayRun) {
+    return scaleLinked && !machineMayRun && notifications < SETTLED_NOTIFICATIONS && linkedForMs < SETTLE_MS;
+  }
+
   // No new pusher connection is started while the scale is wanted and there to be connected.
   static bool pushersWait(bool scaleWanted, bool scaleDue, uint32_t heardAgoMs, bool machineMayRun,
                           uint8_t scaleFailures) {

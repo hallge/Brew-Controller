@@ -56,6 +56,13 @@ static void testAppHost() {
     CHECK(!ScaleFirst::pushersWait(true, true, 0, true, 0));        // under a shot the bots come first
     CHECK(!ScaleFirst::pushersWait(true, true, 0, false, ScaleFirst::GIVE_UP_FAILURES));
     CHECK(ScaleFirst::pushersWait(true, true, 0, false, ScaleFirst::GIVE_UP_FAILURES - 1));
+    // a scale just linked: the bots wait for its readings, but not for ever and not under a shot
+    CHECK(ScaleFirst::settling(true, 0, 100, false));
+    CHECK(ScaleFirst::settling(true, ScaleFirst::SETTLED_NOTIFICATIONS - 1, 4000, false));
+    CHECK(!ScaleFirst::settling(true, ScaleFirst::SETTLED_NOTIFICATIONS, 100, false));
+    CHECK(!ScaleFirst::settling(true, 0, ScaleFirst::SETTLE_MS, false));
+    CHECK(!ScaleFirst::settling(false, 0, 100, false));
+    CHECK(!ScaleFirst::settling(true, 0, 100, true));
   }
   // ---- links: during a shot only the stop bot, never the power bot.
   {

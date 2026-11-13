@@ -56,6 +56,8 @@ class BleScale : public IScale {
   // While a shot runs nothing is asked of the scale that the shot does not need.
   void setShotRunning(bool running) { shotRunning_ = running; }
   bool shotRunning() const { return shotRunning_.load(); }
+  // Notifications from the scale since this connection was set up.
+  uint32_t notificationsSinceStart() const { return link_.notificationsSinceStart(); }
   // The last connectTo(): how long the link took to make (0: never made), and from then to set up or lost.
   uint32_t lastLinkMs() const { return linkMs_; }
   uint32_t lastSetupMs() const { return setupMs_; }
@@ -286,6 +288,7 @@ class BleManager {
   SeenDevice scaleCandidate_;
   uint8_t scaleFailures_ = 0, botFailures_ = 0;
   uint32_t scaleDueSinceMs_ = 0;  // BLE task: since when the scale waits for the other links to clear; 0: not
+  uint32_t scaleSetUpAtMs_ = 0;   // BLE task: when the scale's connection was last set up
   uint32_t scaleRetryAtMs_ = 0, botRetryAtMs_ = 0;
   // Written by the BLE task only; a reading one update behind is fine.
   LinkStats scaleStats_, botStats_, powerStats_, stopStats_;
